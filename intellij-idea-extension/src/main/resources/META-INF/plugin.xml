@@ -2,7 +2,7 @@
     <id>local.felidae.intellij</id>
     <name>Felidae</name>
 
-    <vendor email="felidae@example.com" url="https://github.com/vishalkrishnaag/logicPrompts">
+    <vendor email="felidae@example.com" url="https://github.com/xnvtserver/Felidae">
         Felidae Project
     </vendor>
 
@@ -114,3 +114,4 @@
         </action>
     </actions>
 </idea-plugin>
+

@@ -1742,11 +1742,28 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
     }
 
     if (call.name == "str:len" || call.name == "str:contains" ||
-        call.name == "str:concat" || call.name == "str:lower" ||
+        call.name == "str:concat" || call.name == "str:join" || call.name == "str:lower" ||
         call.name == "str:upper" || call.name == "str:trim" ||
         call.name == "str:split" || call.name == "str:replace" ||
         call.name == "str:startsWith" || call.name == "str:endsWith") {
         if (!valueArg({"left", "data", "value"}, 0, a)) return false;
+        if (call.name == "str:join") {
+            std::vector<std::shared_ptr<Expr>> items;
+            if (!exprAsArrayItems(a, items)) return false;
+            std::string delimiter;
+            if (!valueArg({"delimiter", "separator"}, 1, b) || !argAsString(b, delimiter)) return false;
+            std::ostringstream joined;
+            for (size_t i = 0; i < items.size(); ++i) {
+                if (i) joined << delimiter;
+                std::string itemText;
+                if (argAsString(items[i], itemText)) joined << itemText;
+                else joined << valueToString(items[i]);
+            }
+            result = std::make_shared<StringExpr>(joined.str());
+            const Arg* out = namedArg("result");
+            if (!out) out = outArg("out", 2);
+            return out && unifyExpr(out->value, result, env);
+        }
         std::string text;
         if (!argAsString(a, text)) return false;
         if (call.name == "str:len") {
@@ -2409,6 +2426,21 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
+    if (term.name == "str:join") {
+        if (args.empty()) throw InterpreterError("str.join expects array argument 'data'");
+        std::vector<std::shared_ptr<Expr>> items;
+        if (!exprAsArrayItems(args[0], items)) throw InterpreterError("str.join expects array argument 'data'");
+        std::string delimiter = requireNamedString({"delimiter", "separator"}, 1, "delimiter");
+        std::ostringstream joined;
+        for (size_t i = 0; i < items.size(); ++i) {
+            if (i) joined << delimiter;
+            std::string itemText;
+            if (argAsString(items[i], itemText)) joined << itemText;
+            else joined << valueToString(items[i]);
+        }
+        out = std::make_shared<StringExpr>(joined.str());
+        return true;
+    }
     if (term.name == "str:lower" || term.name == "str:upper") {
         std::string text = requireNamedString({"data", "value"}, 0, "data");
         for (char& ch : text) {
@@ -3746,7 +3778,7 @@ bool Interpreter::isBuiltinFunctionName(const std::string& name) const {
     static const std::set<std::string> names = {
         "count", "sum", "average", "min", "max", "sort", "search", "contains",
         "lower", "upper", "length", "ParseDoc",
-        "str:len", "str:contains", "str:concat", "str:lower", "str:upper",
+        "str:len", "str:contains", "str:concat", "str:join", "str:lower", "str:upper",
         "str:trim", "str:split", "str:replace", "str:startsWith", "str:endsWith",
         "console:readLine", "console:writeLine", "console:write", "system:print",
         "file:readFile", "file:readLines", "file:readLine", "file:writeFile", "file:writeLines", "file:appendFile", "file:exists", "file:deleteFile",

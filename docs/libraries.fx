@@ -1,26 +1,26 @@
-import "html_components.fx".
+import ("html_components.fx" "str").
+
+LibraryLinkCard(title: string, text: string, href: string) =>
+    intro := RenderParagraph(text: text),
+    link := RenderAnchor(input: HtmlAnchorData(label: "Open", href: href, class: "tool-button")),
+    return (RenderMiniCardContent(input: HtmlCardContentData(title: title, content: str.concat(left: intro, right: link)))).
 
 DocsLibraries() =>
-    arrayCard := RenderMiniCard(input: HtmlCardData(title: "array", text: "Index and construct bounded arrays.")),
-    strCard := RenderMiniCard(input: HtmlCardData(title: "str", text: "String length, concat, split, trim, replace, case, and prefix/suffix checks.")),
-    dbCard := RenderMiniCard(input: HtmlCardData(title: "db", text: "No-SQL access to loaded facts: all, find, first, count, types, and fields.")),
-    probabilityCard := RenderMiniCard(input: HtmlCardData(title: "probability", text: "Statistics, distributions, entropy, sampling, and weighted choice.")),
-    fileCard := RenderMiniCard(input: HtmlCardData(title: "file", text: "Read, write, append, and existence helpers.")),
-    httpCard := RenderMiniCard(input: HtmlCardData(title: "http", text: "HTTP client calls, static response hosting, response records, URL helpers, and HTML/JSON serve helpers.")),
-    dataCard := RenderMiniCard(input: HtmlCardData(title: "csv/json", text: "Parse external data, convert rows to facts, and serialize runtime values.")),
-    mlCard := RenderMiniCard(input: HtmlCardData(title: "ml/math", text: "Vector helpers, loss functions, numeric functions, and math operators.")),
-    processCard := RenderMiniCard(input: HtmlCardData(title: "process/thread", text: "Platform, command, sleep, and cooperative thread declarations.")),
-    systemCard := RenderMiniCard(input: HtmlCardData(title: "system/console", text: "Runtime input/output, print, and console helpers.")),
-    part1 := str.concat(left: arrayCard, right: strCard),
-    part2 := str.concat(left: part1, right: dbCard),
-    part3 := str.concat(left: part2, right: probabilityCard),
-    part4 := str.concat(left: part3, right: fileCard),
-    part5 := str.concat(left: part4, right: httpCard),
-    part6 := str.concat(left: part5, right: dataCard),
-    part7 := str.concat(left: part6, right: mlCard),
-    part8 := str.concat(left: part7, right: processCard),
-    part9 := str.concat(left: part8, right: systemCard),
-    cards := RenderModuleGrid(content: part9),
-    guidance := RenderGuidance(doText: "Choose modules by data boundary: db for loaded facts, probability for numeric arrays, json/csv for exchange formats, and http for serving or client calls.", dontText: "Do not import a broad set of modules into every example. Unused imports make documentation harder to trust.", recommendText: "When adding a new module page, include one fact-backed example, one main() return tuple, and one note explaining whether the module is pure Felidae or native-backed."),
-    content := str.concat(left: guidance, right: cards),
-    return (HtmlRichSectionData(id: "libraries", title: "Core Modules And Libraries", p: "Felidae keeps core libraries as explicit modules. Each module has a declaration file under core/*.fx, and native-backed modules dispatch heavy work to C++ implementations. Helper methods can live in those same core files when they are ordinary Felidae code layered above native primitives.", p2: "Use this route as the module index. Each module card is a subpage-style entry inside the SPA, and examples below show how modules compose with facts and methods. For HTTP, use native http.get/post/put/delete/serveStatic for I/O and Http* helpers for response records and small servers.", content: content, code: "import (\"array\" \"str\" \"db\" \"probability\" \"file\" \"http\" \"csv\" \"json\" \"math\" \"ml\" \"process\" \"thread\").\n\nmain() =>\n    facts := db.all(type: \"Person\"),\n    names := sort(lambda(facts, p => p.name)),\n    text := json.toText(data: names),\n    label := str.concat(left: \"people=\", right: text),\n    return (label: label, names: names).", note: "Module pages are intentionally data-shaped: this route is generated from one Felidae content record, and each card can later become its own route without changing the rendering contract.", code2: "Common calls:\ndb.first(type: \"Rain\", field: \"month\", equals: \"August\")\nprobability.normalize(data: chances)\nstr.concat(left: \"hello\", right: \" world\")\nHttpServeJson(host: \"127.0.0.1\", port: 8090, body: jsonText)")).
+    overview := RenderParagraph(text: "Use this index when you know the module name or the kind of boundary you are working with. Every linked route focuses on one module only: one import, one API surface, one set of examples."),
+    cards := str.join(data: [
+        LibraryLinkCard(title: "str", text: "Text projection, matching, cleanup, splitting, joining, and replacement.", href: "#lib-str"),
+        LibraryLinkCard(title: "array", text: "Ordered values: get, len, and push.", href: "#lib-array"),
+        LibraryLinkCard(title: "db", text: "No-SQL access to loaded Felidae facts.", href: "#lib-db"),
+        LibraryLinkCard(title: "json", text: "JSON parsing, key access, shape checks, updates, and serialization.", href: "#lib-json"),
+        LibraryLinkCard(title: "csv", text: "CSV parsing, row updates, exports, and fact generation.", href: "#lib-csv"),
+        LibraryLinkCard(title: "file", text: "Local file reads, writes, appends, existence checks, and deletes.", href: "#lib-file"),
+        LibraryLinkCard(title: "http", text: "HTTP client calls, response helpers, and static documentation serving.", href: "#lib-http"),
+        LibraryLinkCard(title: "math", text: "Scalar constants, numeric helpers, and trigonometry.", href: "#lib-math"),
+        LibraryLinkCard(title: "ml", text: "Small vector scoring and activation helpers.", href: "#lib-ml"),
+        LibraryLinkCard(title: "system", text: "Runtime print and type inspection helpers.", href: "#lib-system"),
+        LibraryLinkCard(title: "console", text: "Interactive terminal input and output.", href: "#lib-console"),
+        LibraryLinkCard(title: "process", text: "Platform detection, host commands, and sleep.", href: "#lib-process"),
+        LibraryLinkCard(title: "thread", text: "Independent method execution with thread handles.", href: "#lib-thread")
+    ], delimiter: ""),
+    content := str.concat(left: overview, right: RenderModuleGrid(content: cards)),
+    return (HtmlRichSectionData(id: "libraries", title: "Library Index", p: "Felidae library documentation is organized one subject at a time. The index is only a chooser; the focused module page carries the signatures, examples, notes, and risks for that module.", p2: "This keeps the docs straightforward: open json for JSON, csv for CSV, file for file I/O, http for HTTP, and so on. Cross-cutting workflows such as probability analysis, native modules, and server hosting keep their own pages.", content: content, code: "# Reading flow\n# 1. Standard Library: understand the module map\n# 2. Library Index: choose one module\n# 3. Module page: read one API surface\n# 4. Copy, download, or run the focused example", note: "Avoid mixed module pages. They make examples look convenient, but they hide which import owns which behavior.", code2: "import (\"db\" \"json\" \"str\").\n\nmain() =>\n    rows := db.all(type: \"Person\"),\n    names := lambda(rows, p => p.name),\n    return (json: json.toText(data: names), label: str.join(data: names, delimiter: \", \"))")).

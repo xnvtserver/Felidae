@@ -2384,7 +2384,7 @@ async function ensureInterpreterInstalled(interpreterPath, label) {
     const settingsQuery = label.toLowerCase().includes("celidae") ? "felidae.celidaePath" : "felidae.interpreterPath";
     const choice = await vscode.window.showWarningMessage(`You have not installed the ${label}, or the configured path was not found: ${interpreterPath}`, downloadLabel, "Open Settings");
     if (choice === downloadLabel) {
-        await vscode.env.openExternal(vscode.Uri.parse("https://github.com/vishalkrishnaag/logicPrompts/releases"));
+        await vscode.env.openExternal(vscode.Uri.parse("https://github.com/xnvtserver/Felidae/releases"));
     }
     else if (choice === "Open Settings") {
         await vscode.commands.executeCommand("workbench.action.openSettings", settingsQuery);
@@ -3180,3 +3180,4 @@ function activate(context) {
 }
 function deactivate() { }
 //# sourceMappingURL=extension.js.map
+

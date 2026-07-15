@@ -6,11 +6,11 @@
   "publisher": "local",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vishalkrishnaag/logicPrompts.git"
+    "url": "https://github.com/xnvtserver/Felidae.git"
   },
-  "homepage": "https://github.com/vishalkrishnaag/logicPrompts/tree/main/vs-code-extension",
+  "homepage": "https://github.com/xnvtserver/Felidae/tree/main/vs-code-extension",
   "bugs": {
-    "url": "https://github.com/vishalkrishnaag/logicPrompts/issues"
+    "url": "https://github.com/xnvtserver/Felidae/issues"
   },
   "engines": {
     "vscode": "^1.85.0"
@@ -221,3 +221,4 @@
     "cytoscape": "^3.34.0"
   }
 }
+

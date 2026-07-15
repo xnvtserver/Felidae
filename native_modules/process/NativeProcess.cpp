@@ -20,11 +20,15 @@ std::string platform() {
 }
 
 std::string exec(const std::string& command) {
-#if defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+    (void)command;
+    throw Error("process.exec is not available in the browser WASM runtime");
+#elif defined(_WIN32)
     FILE* pipe = _popen(command.c_str(), "r");
 #else
     FILE* pipe = popen(command.c_str(), "r");
 #endif
+#if !defined(__EMSCRIPTEN__)
     if (!pipe) throw Error("process.exec failed to start command");
     std::string output;
     std::array<char, 4096> buffer{};
@@ -38,6 +42,7 @@ std::string exec(const std::string& command) {
 #endif
     if (status != 0) throw Error("process.exec command failed with status " + std::to_string(status));
     return output;
+#endif
 }
 
 std::string sleepMs(int milliseconds) {
@@ -47,3 +52,4 @@ std::string sleepMs(int milliseconds) {
 }
 
 } // namespace Felidae::NativeProcess
+

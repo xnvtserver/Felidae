@@ -74,17 +74,67 @@ older editor installs.
 
 ## Build
 
-On this Windows checkout, direct `clang++` builds are the most reliable path:
+Use the platform build wrapper when possible:
 
-```powershell
-clang++ -std=c++17 -Wall -Wextra -Isrc -Ithird_party src/main.cpp src/FelidaeRuntime.cpp src/Visualization.cpp src/Lexer.cpp src/Parser.cpp src/Interpreter.cpp src/Env.cpp src/Memory.cpp native_modules/csv/NativeCsv.cpp native_modules/http/NativeHttp.cpp native_modules/process/NativeProcess.cpp -o build/felidae.exe
-
-clang++ -std=c++17 -Wall -Wextra -Isrc -Ithird_party src/felidae_debug.cpp src/FelidaeRuntime.cpp src/Visualization.cpp src/Lexer.cpp src/Parser.cpp src/Interpreter.cpp src/Env.cpp src/Memory.cpp src/AstAnalyzer.cpp native_modules/csv/NativeCsv.cpp native_modules/http/NativeHttp.cpp native_modules/process/NativeProcess.cpp -o build/celidae.exe
+```bash
+./build.sh
 ```
 
-CMake targets are also provided:
+`build.sh` detects Linux and macOS hosts, asks before using `sudo` to install
+missing build dependencies, and builds `build/felidae`, `build/celidae`, and
+`build/felidae_debug`. Supported dependency installers include apt
+(Debian/Ubuntu), dnf (Fedora), zypper (openSUSE), pacman (Arch), and Apple
+Command Line Tools/Homebrew on macOS.
+
+On Windows:
 
 ```powershell
+.\build.cmd
+```
+
+Android is available as an NDK cross-build target when the NDK is installed:
+
+```bash
+ANDROID_NDK_HOME=/opt/android-ndk ANDROID_ABI=arm64-v8a ./build.sh --target android
+```
+
+Build the browser playground runtime with Emscripten when docs code blocks need in-browser execution:
+
+On Windows:
+
+```powershell
+.\build.cmd wasm
+```
+
+On Linux/macOS:
+
+```bash
+./build.sh --target wasm
+```
+
+Without host Emscripten, use Docker:
+
+```bash
+./build/felidae wasm.fx
+```
+
+`wasm.fx` calls `emcc.fx`, which uses the common `docker.fx` helpers with `emscripten/emsdk:latest`, mounts the repository, and runs the same `./build.sh --target wasm` path inside the container.
+
+That emits `docs/wasm/felidae_wasm.js`, `docs/wasm/felidae_wasm.wasm`, and `docs/wasm/felidae_wasm.data`, with `core/*.fx` packaged for language-native imports.
+
+Linux packages can be created after a successful native Linux build:
+
+```bash
+scripts/package-linux.sh
+```
+
+The package helper always creates a tarball and creates `.deb`, `.rpm`, or
+`.pkg.tar.zst` packages when local distro packaging tools are available.
+
+CMake targets are also provided for environments that prefer generated build
+files:
+
+```bash
 cmake -S . -B build
 cmake --build build
 ```
@@ -168,3 +218,4 @@ the Gradle distribution and IntelliJ Platform dependencies.
 Felidae source files use `.fx`. `.gitattributes` marks them as Felidae, but
 GitHub will show Felidae as a first-class language only after GitHub Linguist
 adds upstream support for the language.
+

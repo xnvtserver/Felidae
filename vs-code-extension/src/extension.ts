@@ -2503,7 +2503,7 @@ async function ensureInterpreterInstalled(interpreterPath: string, label: string
     "Open Settings"
   );
   if (choice === downloadLabel) {
-    await vscode.env.openExternal(vscode.Uri.parse("https://github.com/vishalkrishnaag/logicPrompts/releases"));
+    await vscode.env.openExternal(vscode.Uri.parse("https://github.com/xnvtserver/Felidae/releases"));
   } else if (choice === "Open Settings") {
     await vscode.commands.executeCommand("workbench.action.openSettings", settingsQuery);
   }
@@ -3410,3 +3410,4 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {}
+

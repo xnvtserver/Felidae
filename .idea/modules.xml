@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/logicPrompts.iml" filepath="$PROJECT_DIR$/.idea/logicPrompts.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/Felidae.iml" filepath="$PROJECT_DIR$/.idea/Felidae.iml" />
     </modules>
   </component>
 </project>

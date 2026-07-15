@@ -2,15 +2,19 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 
-#if __has_include("../../third_party/cpp-httplib/httplib.h")
+#if !defined(__EMSCRIPTEN__) && __has_include("../../third_party/cpp-httplib/httplib.h")
 #include "../../third_party/cpp-httplib/httplib.h"
 #define FELIDAE_HAS_CPP_HTTPLIB 1
 #endif
 
 namespace Felidae::NativeHttp {
+
+namespace fs = std::filesystem;
 
 struct UrlParts {
     std::string scheme;
@@ -18,6 +22,43 @@ struct UrlParts {
     std::string path;
 };
 
+
+static bool startsWith(const std::string& text, const std::string& prefix) {
+    return text.rfind(prefix, 0) == 0;
+}
+
+static std::string lower(std::string text);
+
+static std::string contentTypeForPath(const fs::path& path, const std::string& fallback) {
+    const std::string extension = lower(path.extension().string());
+    if (extension == ".js") return "application/javascript";
+    if (extension == ".wasm") return "application/wasm";
+    if (extension == ".json") return "application/json";
+    if (extension == ".css") return "text/css";
+    if (extension == ".html" || extension == ".htm") return "text/html";
+    return fallback.empty() ? "application/octet-stream" : fallback;
+}
+
+static bool isStaticAssetRequest(const std::string& requestPath) {
+    return startsWith(requestPath, "/wasm/");
+}
+
+static bool readStaticAsset(const std::string& requestPath, std::string& body, std::string& contentType) {
+    if (!startsWith(requestPath, "/wasm/")) return false;
+    fs::path relative = fs::path(requestPath.substr(1)).lexically_normal();
+    fs::path target = (fs::current_path() / "docs" / relative).lexically_normal();
+    fs::path docsRoot = (fs::current_path() / "docs").lexically_normal();
+    const std::string targetText = target.string();
+    const std::string docsText = docsRoot.string();
+    if (targetText.rfind(docsText, 0) != 0 || !fs::exists(target) || !fs::is_regular_file(target)) return false;
+    std::ifstream in(target, std::ios::binary);
+    if (!in) return false;
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    body = buffer.str();
+    contentType = contentTypeForPath(target, "application/octet-stream");
+    return true;
+}
 static std::string lower(std::string text) {
     for (char& ch : text) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     return text;
@@ -83,10 +124,21 @@ std::string serveStatic(const std::string& host,
 #ifdef FELIDAE_HAS_CPP_HTTPLIB
     if (port <= 0 || port > 65535) throw Error("http.serveStatic expects a valid TCP port");
     httplib::Server server;
-    auto handler = [&](const httplib::Request&, httplib::Response& response) {
+    auto handler = [&](const httplib::Request& request, httplib::Response& response) {
+        std::string assetBody;
+        std::string assetContentType;
+        if (readStaticAsset(request.path, assetBody, assetContentType)) {
+            response.set_content(std::move(assetBody), assetContentType);
+            return;
+        }
+        if (isStaticAssetRequest(request.path)) {
+            response.status = 404;
+            response.set_content("WASM asset not found. Build docs/wasm with ./build.sh --target wasm.", "text/plain");
+            return;
+        }
         response.set_content(responseText, contentType.empty() ? "text/plain" : contentType);
     };
-    server.Get("/", handler);
+    server.Get(R"(/.*)", handler);
     server.Post("/", handler);
     server.Put("/", handler);
     server.Delete("/", handler);
@@ -105,3 +157,4 @@ std::string serveStatic(const std::string& host,
 }
 
 } // namespace Felidae::NativeHttp
+

@@ -3,6 +3,7 @@
 str.len(data: string, equals: number) => ().
 str.contains(data: string, needle: string, access: string) => ().
 str.concat(left: string, right: string, result: string) => ().
+str.join(data: array, delimiter: string, result: string) => ().
 str.lower(data: string, equals: string) => ().
 str.upper(data: string, equals: string) => ().
 str.trim(data: string, access: string) => ().
