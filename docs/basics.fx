@@ -1,0 +1,14 @@
+import "html_components.fx".
+
+DocsBasics() =>
+    facts := RenderMiniCard(input: HtmlCardData(title: "Facts", text: "Facts describe what is true: a person, relationship, event, row, or nested data record.")),
+    rules := RenderMiniCard(input: HtmlCardData(title: "Rules", text: "Rules derive new truth from existing facts and conditions.")),
+    queries := RenderMiniCard(input: HtmlCardData(title: "Queries", text: "Queries usually live in main() or named methods, where results can be returned and checked.")),
+    methods := RenderMiniCard(input: HtmlCardData(title: "Methods", text: "Methods are explicit transformations over provided data, not hidden database scans.")),
+    guidance := RenderGuidance(doText: "Model durable knowledge as facts with named fields, then write main() to collect, filter, aggregate, and return the answer as a tuple.", dontText: "Do not hide important application behavior only in command-line queries. CLI queries are useful for inspection, but they are not a substitute for repeatable program output.", recommendText: "Start every learning example with a tiny fact database, one method or rule, and a main() return value. That pattern makes examples easy to test, document, and serve."),
+    part1 := str.concat(left: facts, right: rules),
+    part2 := str.concat(left: part1, right: queries),
+    part3 := str.concat(left: part2, right: methods),
+    cards := RenderGrid(content: part3),
+    content := str.concat(left: cards, right: guidance),
+    return (HtmlRichSectionData(id: "basics", title: "Logic Programming Basics", p: "Logic programming starts from declarations of truth. Instead of describing every step like an imperative program, you describe facts and rules, then ask questions. In Felidae, the most accountable way to ask those questions is to put them in main() and return the answer as data.", p2: "Facts form an in-memory database, command-line queries can inspect that database, and methods transform inputs with immutable bindings. This makes Felidae useful for knowledge records, CSV/JSON-shaped data, logs, probability over fact arrays, and documentation generated from facts.", content: content, code: "Parent(parent: \"Alice\", child: \"Bob\").\nParent(parent: \"Bob\", child: \"Chandra\").\n\nGrandparent(grandparent: gp, child: c) =>\n    Parent(parent: gp, child: p),\n    Parent(parent: p, child: c).\n\nmain() =>\n    rows := lambda(Grandparent, row => row),\n    return (grandparents: rows, total: count(rows)).", note: "The important habit is to name fields clearly. A fact should read like a small database row and a small piece of executable knowledge at the same time.", code2: "# Optional terminal inspection:\n# ./build/felidae family.fx '? Grandparent(grandparent: GP, child: Child)'\n\nPerson(name: \"Alice\", role: \"Engineer\").\n\nmain() =>\n    engineers := lambda(Person, p => p.role == \"Engineer\"),\n    return (count: count(engineers)).")).

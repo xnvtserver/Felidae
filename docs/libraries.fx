@@ -1,0 +1,26 @@
+import "html_components.fx".
+
+DocsLibraries() =>
+    arrayCard := RenderMiniCard(input: HtmlCardData(title: "array", text: "Index and construct bounded arrays.")),
+    strCard := RenderMiniCard(input: HtmlCardData(title: "str", text: "String length, concat, split, trim, replace, case, and prefix/suffix checks.")),
+    dbCard := RenderMiniCard(input: HtmlCardData(title: "db", text: "No-SQL access to loaded facts: all, find, first, count, types, and fields.")),
+    probabilityCard := RenderMiniCard(input: HtmlCardData(title: "probability", text: "Statistics, distributions, entropy, sampling, and weighted choice.")),
+    fileCard := RenderMiniCard(input: HtmlCardData(title: "file", text: "Read, write, append, and existence helpers.")),
+    httpCard := RenderMiniCard(input: HtmlCardData(title: "http", text: "HTTP client calls, static response hosting, response records, URL helpers, and HTML/JSON serve helpers.")),
+    dataCard := RenderMiniCard(input: HtmlCardData(title: "csv/json", text: "Parse external data, convert rows to facts, and serialize runtime values.")),
+    mlCard := RenderMiniCard(input: HtmlCardData(title: "ml/math", text: "Vector helpers, loss functions, numeric functions, and math operators.")),
+    processCard := RenderMiniCard(input: HtmlCardData(title: "process/thread", text: "Platform, command, sleep, and cooperative thread declarations.")),
+    systemCard := RenderMiniCard(input: HtmlCardData(title: "system/console", text: "Runtime input/output, print, and console helpers.")),
+    part1 := str.concat(left: arrayCard, right: strCard),
+    part2 := str.concat(left: part1, right: dbCard),
+    part3 := str.concat(left: part2, right: probabilityCard),
+    part4 := str.concat(left: part3, right: fileCard),
+    part5 := str.concat(left: part4, right: httpCard),
+    part6 := str.concat(left: part5, right: dataCard),
+    part7 := str.concat(left: part6, right: mlCard),
+    part8 := str.concat(left: part7, right: processCard),
+    part9 := str.concat(left: part8, right: systemCard),
+    cards := RenderModuleGrid(content: part9),
+    guidance := RenderGuidance(doText: "Choose modules by data boundary: db for loaded facts, probability for numeric arrays, json/csv for exchange formats, and http for serving or client calls.", dontText: "Do not import a broad set of modules into every example. Unused imports make documentation harder to trust.", recommendText: "When adding a new module page, include one fact-backed example, one main() return tuple, and one note explaining whether the module is pure Felidae or native-backed."),
+    content := str.concat(left: guidance, right: cards),
+    return (HtmlRichSectionData(id: "libraries", title: "Core Modules And Libraries", p: "Felidae keeps core libraries as explicit modules. Each module has a declaration file under core/*.fx, and native-backed modules dispatch heavy work to C++ implementations. Helper methods can live in those same core files when they are ordinary Felidae code layered above native primitives.", p2: "Use this route as the module index. Each module card is a subpage-style entry inside the SPA, and examples below show how modules compose with facts and methods. For HTTP, use native http.get/post/put/delete/serveStatic for I/O and Http* helpers for response records and small servers.", content: content, code: "import (\"array\" \"str\" \"db\" \"probability\" \"file\" \"http\" \"csv\" \"json\" \"math\" \"ml\" \"process\" \"thread\").\n\nmain() =>\n    facts := db.all(type: \"Person\"),\n    names := sort(lambda(facts, p => p.name)),\n    text := json.toText(data: names),\n    label := str.concat(left: \"people=\", right: text),\n    return (label: label, names: names).", note: "Module pages are intentionally data-shaped: this route is generated from one Felidae content record, and each card can later become its own route without changing the rendering contract.", code2: "Common calls:\ndb.first(type: \"Rain\", field: \"month\", equals: \"August\")\nprobability.normalize(data: chances)\nstr.concat(left: \"hello\", right: \" world\")\nHttpServeJson(host: \"127.0.0.1\", port: 8090, body: jsonText)")).

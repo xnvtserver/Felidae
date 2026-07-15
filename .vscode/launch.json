@@ -1,0 +1,25 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "felidae",
+            "request": "launch",
+            "name": "Debug Felidae Main",
+            "program": "${file}",
+            "interpreterPath": "${workspaceFolder}/build/felidae_debug.exe",
+            "stopOnEntry": true
+        },
+        {
+            "type": "felidae",
+            "request": "launch",
+            "name": "Debug Felidae Query",
+            "program": "${file}",
+            "query": "? Engineer(name: name)",
+            "interpreterPath": "${workspaceFolder}/build/felidae_debug.exe",
+            "stopOnEntry": true
+        }
+    ]
+}

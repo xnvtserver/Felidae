@@ -1,0 +1,199 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Felidae",
+  "scopeName": "source.felidae",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#imports"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#rules"
+    },
+    {
+      "include": "#queries"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#structures"
+    },
+    {
+      "include": "#libraryCalls"
+    },
+    {
+      "include": "#dataTypes"
+    },
+    {
+      "include": "#predicates"
+    },
+    {
+      "include": "#separators"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "invalid.illegal.comment.unsupported-slash.felidae",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.line.number-sign.felidae",
+          "match": "#.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.Felidae",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.Felidae",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.Felidae",
+          "match": "\\b\\d+(?:\\.\\d+)?\\b"
+        }
+      ]
+    },
+    "imports": {
+      "patterns": [
+        {
+          "name": "keyword.control.import.Felidae",
+          "match": "\\bimport\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.felidae",
+          "match": "\\b(?:extend|where|else|return|lambda)\\b"
+        }
+      ]
+    },
+    "rules": {
+      "patterns": [
+        {
+          "name": "keyword.operator.rule.Felidae",
+          "match": "=>|:="
+        },
+        {
+          "name": "punctuation.accessor.module.Felidae",
+          "match": "\\.(?=[A-Za-z_][A-Za-z0-9_]*\\s*\\()"
+        }
+      ]
+    },
+    "queries": {
+      "patterns": [
+        {
+          "name": "keyword.operator.query.Felidae",
+          "match": "\\?"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.comparison.Felidae",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.arithmetic.Felidae",
+          "match": "[+*/-]"
+        },
+        {
+          "name": "keyword.operator.logical.and.Felidae",
+          "match": ","
+        },
+        {
+          "name": "keyword.operator.logical.or.Felidae",
+          "match": "\\|"
+        },
+        {
+          "name": "punctuation.terminator.statement.Felidae",
+          "match": "\\."
+        }
+      ]
+    },
+    "structures": {
+      "patterns": [
+        {
+          "name": "punctuation.definition.group.Felidae",
+          "match": "[()]"
+        },
+        {
+          "name": "punctuation.definition.map.Felidae",
+          "match": "[{}]"
+        },
+        {
+          "name": "punctuation.definition.array.Felidae",
+          "match": "[\\[\\]]"
+        }
+      ]
+    },
+    "predicates": {
+      "patterns": [
+        {
+          "name": "entity.name.function.predicate.Felidae",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?:(?:\\:|\\.)[A-Za-z_][A-Za-z0-9_]*)*(?=\\s*\\()"
+        }
+      ]
+    },
+    "libraryCalls": {
+      "patterns": [
+        {
+          "name": "support.class.library.felidae",
+          "match": "\\b(?:array|console|csv|file|fn|http|json|math|ml|pair|process|str|system|thread)(?=\\s*[:.])"
+        },
+        {
+          "name": "punctuation.accessor.library.felidae",
+          "match": "[:.](?=\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\()"
+        },
+        {
+          "name": "support.function.library.felidae",
+          "match": "(?<=[:.])\\s*[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
+        }
+      ]
+    },
+    "dataTypes": {
+      "patterns": [
+        {
+          "name": "storage.type.primitive.felidae",
+          "match": "(?<=:)\\s*\\b(?:any|array|bool|boolean|decimal|double|float|int|number|string)\\b"
+        }
+      ]
+    },
+    "separators": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.key-value.Felidae",
+          "match": ":"
+        }
+      ]
+    }
+  }
+}
