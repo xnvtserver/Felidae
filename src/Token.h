@@ -11,6 +11,7 @@ enum class TokenType {
     Number,
 
     Import,
+    Then,
 
     LParen,
     RParen,
@@ -53,6 +54,7 @@ inline std::string tokenTypeName(TokenType type) {
         case TokenType::String: return "String";
         case TokenType::Number: return "Number";
         case TokenType::Import: return "Import";
+        case TokenType::Then: return "then";
         case TokenType::LParen: return "(";
         case TokenType::RParen: return ")";
         case TokenType::LBrace: return "{";

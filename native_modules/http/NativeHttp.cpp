@@ -8,7 +8,15 @@
 #include <sstream>
 
 #if !defined(__EMSCRIPTEN__) && __has_include("../../third_party/cpp-httplib/httplib.h")
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
+#pragma clang diagnostic ignored "-Wold-style-cast"
+#endif
 #include "../../third_party/cpp-httplib/httplib.h"
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 #define FELIDAE_HAS_CPP_HTTPLIB 1
 #endif
 

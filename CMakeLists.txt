@@ -4,6 +4,7 @@ project(felidae_interpreter LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 8)
     message(FATAL_ERROR "Felidae requires GCC 8 or newer for std::filesystem. Use GCC 8+, Clang 7+, AppleClang 10+, or MSVC 2019+.")
@@ -13,17 +14,24 @@ add_executable(felidae
     src/main.cpp
     src/FelidaeRuntime.cpp
     src/Visualization.cpp
+    src/BuiltinRegistry.cpp
     src/Lexer.cpp
     src/Parser.cpp
     src/Interpreter.cpp
     src/Env.cpp
     src/Memory.cpp
+    src/NativeRuntime.cpp
     native_modules/csv/NativeCsv.cpp
     native_modules/http/NativeHttp.cpp
     native_modules/process/NativeProcess.cpp
 )
 
-target_include_directories(felidae PRIVATE src third_party)
+target_include_directories(felidae PRIVATE src)
+target_include_directories(felidae SYSTEM PRIVATE third_party)
+target_compile_options(felidae PRIVATE
+    $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
+    $<$<CXX_COMPILER_ID:MSVC>:/W4>
+)
 if(UNIX AND NOT APPLE)
     target_link_libraries(felidae PRIVATE dl)
 endif()
@@ -32,11 +40,13 @@ set(CELIDAE_SOURCES
     src/felidae_debug.cpp
     src/FelidaeRuntime.cpp
     src/Visualization.cpp
+    src/BuiltinRegistry.cpp
     src/Lexer.cpp
     src/Parser.cpp
     src/Interpreter.cpp
     src/Env.cpp
     src/Memory.cpp
+    src/NativeRuntime.cpp
     src/AstAnalyzer.cpp
     native_modules/csv/NativeCsv.cpp
     native_modules/http/NativeHttp.cpp
@@ -44,7 +54,12 @@ set(CELIDAE_SOURCES
 )
 
 add_executable(celidae ${CELIDAE_SOURCES})
-target_include_directories(celidae PRIVATE src third_party)
+target_include_directories(celidae PRIVATE src)
+target_include_directories(celidae SYSTEM PRIVATE third_party)
+target_compile_options(celidae PRIVATE
+    $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
+    $<$<CXX_COMPILER_ID:MSVC>:/W4>
+)
 if(UNIX AND NOT APPLE)
     target_link_libraries(celidae PRIVATE dl)
 endif()
@@ -52,7 +67,12 @@ endif()
 # Legacy target kept so existing editor/plugin installations do not break while
 # Celidae becomes the product name for debugger, analytics, and visualization.
 add_executable(felidae_debug ${CELIDAE_SOURCES})
-target_include_directories(felidae_debug PRIVATE src third_party)
+target_include_directories(felidae_debug PRIVATE src)
+target_include_directories(felidae_debug SYSTEM PRIVATE third_party)
+target_compile_options(felidae_debug PRIVATE
+    $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
+    $<$<CXX_COMPILER_ID:MSVC>:/W4>
+)
 if(UNIX AND NOT APPLE)
     target_link_libraries(felidae_debug PRIVATE dl)
 endif()

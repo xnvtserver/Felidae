@@ -280,6 +280,7 @@ public final class FelidaeSyntaxHighlighter
                 "else",
                 "return",
                 "lambda",
+                "then",
                 "true",
                 "false",
                 "nil"

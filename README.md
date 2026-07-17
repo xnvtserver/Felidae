@@ -90,7 +90,17 @@ On Windows:
 
 ```powershell
 .\build.cmd
+.\build.cmd native --configuration production
+.\build.cmd --target windows-x64 --configuration release
+.\build.cmd --target windows-arm64 --configuration release
 ```
+
+Build configurations are `debug`, `release`, `production`, and `sanitize`.
+Production builds use `-O3`, `NDEBUG`, LTO, and `lld`. Build targets include
+`native`, `windows-x64`, `windows-arm64`, `linux-x64`, `linux-arm64`,
+`macos-x64`, `macos-arm64`, `android`, and `wasm`. Cross-targets require the
+matching platform SDK/toolchain; for Ubuntu LTS package verification, run the
+Linux target inside the intended Ubuntu 22.04 or 24.04 build container/runner.
 
 Android is available as an NDK cross-build target when the NDK is installed:
 
@@ -154,6 +164,23 @@ build\celidae.exe examples\diagnostics_ast_warnings.fx --check-json
 build\celidae.exe examples\invalid\undeclared_body_var.fx --check-json
 build\celidae.exe examples\main.fx --visualize-data-json --load-imports
 ```
+
+Run the production quality gate:
+
+```powershell
+.\scripts\run_quality.ps1 -Configuration production -RunFullExamples
+```
+
+On Linux or WSL, the same quality gate can also run Valgrind when installed:
+
+```bash
+./scripts/run_quality.sh --configuration production --full-examples
+```
+
+The quality scripts run the stricter compiler build, `clang-tidy`, `cppcheck`
+when installed, CodeChecker when installed, Valgrind on Linux when installed,
+and Felidae `.fx` smoke or regression programs. Reports are written to
+`build/quality/report.md`.
 
 ## Native Modules
 

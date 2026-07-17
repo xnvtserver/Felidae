@@ -97,8 +97,25 @@ android_clangxx() {
     esac
 }
 
-TARGET="${1:-native}"
-if [[ "$TARGET" == "--target" ]]; then TARGET="${2:-native}"; fi
+TARGET="native"
+CONFIGURATION="debug"
+WARNINGS_AS_ERRORS=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --target) TARGET="${2:-native}"; shift 2 ;;
+        --configuration) CONFIGURATION="${2:-debug}"; shift 2 ;;
+        --warnings-as-errors) WARNINGS_AS_ERRORS=1; shift ;;
+        native|linux-x64|linux-arm64|macos-x64|macos-arm64|android|wasm)
+            TARGET="$1"; shift ;;
+        debug|release|production|sanitize)
+            CONFIGURATION="$1"; shift ;;
+        *)
+            echo "Unknown build option: $1" >&2
+            exit 2
+            ;;
+    esac
+done
+
 if [[ "$TARGET" == "wasm" ]]; then
     if ! need_cmd em++; then
         echo "WASM build requires Emscripten. Install and activate the Emscripten SDK so em++ is on PATH." >&2
@@ -115,6 +132,44 @@ FELIDAE="build/felidae${EXT}"
 CELIDAE="build/celidae${EXT}"
 FELIDAE_DEBUG="build/felidae_debug${EXT}"
 CXX="clang++"
+TARGET_FLAGS=()
+case "$TARGET" in
+    linux-x64)
+        TARGET_FLAGS=(--target=x86_64-linux-gnu)
+        FELIDAE="build/felidae-linux-x64"
+        CELIDAE="build/celidae-linux-x64"
+        FELIDAE_DEBUG="build/felidae_debug-linux-x64"
+        ;;
+    linux-arm64)
+        TARGET_FLAGS=(--target=aarch64-linux-gnu)
+        FELIDAE="build/felidae-linux-arm64"
+        CELIDAE="build/celidae-linux-arm64"
+        FELIDAE_DEBUG="build/felidae_debug-linux-arm64"
+        ;;
+    macos-x64)
+        TARGET_FLAGS=(--target=x86_64-apple-darwin)
+        FELIDAE="build/felidae-macos-x64"
+        CELIDAE="build/celidae-macos-x64"
+        FELIDAE_DEBUG="build/felidae_debug-macos-x64"
+        ;;
+    macos-arm64)
+        TARGET_FLAGS=(--target=arm64-apple-darwin)
+        FELIDAE="build/felidae-macos-arm64"
+        CELIDAE="build/celidae-macos-arm64"
+        FELIDAE_DEBUG="build/felidae_debug-macos-arm64"
+        ;;
+esac
+
+WARNING_FLAGS=(-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual)
+if [[ "$WARNINGS_AS_ERRORS" -eq 1 ]]; then WARNING_FLAGS+=(-Werror); fi
+
+case "$CONFIGURATION" in
+    debug) CONFIG_FLAGS=(-O0 -g) ;;
+    release) CONFIG_FLAGS=(-O2 -DNDEBUG) ;;
+    production) CONFIG_FLAGS=(-O3 -DNDEBUG -flto -fuse-ld=lld) ;;
+    sanitize) CONFIG_FLAGS=(-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer) ;;
+    *) echo "Unknown configuration: $CONFIGURATION" >&2; exit 2 ;;
+esac
 
 if [[ "$TARGET" == "android" ]]; then
     CXX="$(android_clangxx)" || {
@@ -128,8 +183,9 @@ if [[ "$TARGET" == "android" ]]; then
 fi
 
 COMMON_SOURCES=(
-    src/FelidaeRuntime.cpp src/Visualization.cpp src/Lexer.cpp src/Parser.cpp
-    src/Interpreter.cpp src/Env.cpp src/Memory.cpp
+    src/FelidaeRuntime.cpp src/Visualization.cpp src/BuiltinRegistry.cpp
+    src/Lexer.cpp src/Parser.cpp src/Interpreter.cpp src/Env.cpp
+    src/Memory.cpp src/NativeRuntime.cpp
     native_modules/csv/NativeCsv.cpp native_modules/http/NativeHttp.cpp native_modules/process/NativeProcess.cpp
 )
 DEBUG_SOURCES=("${COMMON_SOURCES[@]}" src/AstAnalyzer.cpp)
@@ -153,13 +209,13 @@ if [[ "$TARGET" == "wasm" ]]; then
     exit 0
 fi
 echo "Building $FELIDAE"
-"$CXX" -std=c++17 -Wall -Wextra -Isrc -Ithird_party src/main.cpp "${COMMON_SOURCES[@]}" -o "$FELIDAE" "${EXTRA_LIBS[@]}"
+"$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -Isrc -isystem third_party src/main.cpp "${COMMON_SOURCES[@]}" -o "$FELIDAE" "${EXTRA_LIBS[@]}"
 
 echo "Building $CELIDAE"
-"$CXX" -std=c++17 -Wall -Wextra -Isrc -Ithird_party src/felidae_debug.cpp "${DEBUG_SOURCES[@]}" -o "$CELIDAE" "${EXTRA_LIBS[@]}"
+"$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -Isrc -isystem third_party src/felidae_debug.cpp "${DEBUG_SOURCES[@]}" -o "$CELIDAE" "${EXTRA_LIBS[@]}"
 
 echo "Building $FELIDAE_DEBUG"
-"$CXX" -std=c++17 -Wall -Wextra -Isrc -Ithird_party src/felidae_debug.cpp "${DEBUG_SOURCES[@]}" -o "$FELIDAE_DEBUG" "${EXTRA_LIBS[@]}"
+"$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -Isrc -isystem third_party src/felidae_debug.cpp "${DEBUG_SOURCES[@]}" -o "$FELIDAE_DEBUG" "${EXTRA_LIBS[@]}"
 
 echo "Built $FELIDAE, $CELIDAE, and $FELIDAE_DEBUG"
 

@@ -1,4 +1,5 @@
 #include "Interpreter.h"
+#include "BuiltinRegistry.h"
 #include "Lexer.h"
 #include "Visualization.h"
 #include "../native_modules/csv/NativeCsv.h"
@@ -20,21 +21,50 @@
 #include <set>
 #include <sstream>
 
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
-
 #ifdef FELIDAE_HAS_EIGEN
 #include <Eigen/Dense>
 #endif
 
 namespace Felidae {
 namespace fs = std::filesystem;
+
+namespace {
+
+constexpr size_t kMaxCachedEnvFrames = 4096;
+
+class PipelineResultClearScope {
+public:
+    explicit PipelineResultClearScope(std::vector<std::shared_ptr<Expr>>& results)
+        : results_(results), saved_(std::move(results)) {
+        results_.clear();
+    }
+
+    ~PipelineResultClearScope() {
+        results_ = std::move(saved_);
+    }
+
+private:
+    std::vector<std::shared_ptr<Expr>>& results_;
+    std::vector<std::shared_ptr<Expr>> saved_;
+};
+
+class PipelineResultValueScope {
+public:
+    PipelineResultValueScope(std::vector<std::shared_ptr<Expr>>& results,
+                             const std::shared_ptr<Expr>& value)
+        : results_(results) {
+        results_.push_back(value->clone());
+    }
+
+    ~PipelineResultValueScope() {
+        results_.pop_back();
+    }
+
+private:
+    std::vector<std::shared_ptr<Expr>>& results_;
+};
+
+}
 
 static std::string jsonEscape(const std::string& value) {
     std::ostringstream out;
@@ -119,7 +149,8 @@ static std::vector<MapEntry> cloneEntries(const std::vector<MapEntry>& entries) 
 }
 
 static std::shared_ptr<Expr> cloneExprOrNil(const std::shared_ptr<Expr>& value) {
-    return value ? value->clone() : std::static_pointer_cast<Expr>(std::make_shared<NilExpr>());
+    if (value) return value->clone();
+    return std::make_shared<NilExpr>();
 }
 
 static bool exprAsMapEntries(const std::shared_ptr<Expr>& expr, std::vector<MapEntry>& out) {
@@ -271,15 +302,13 @@ static void appendFactEntry(std::vector<MapEntry>& entries, const std::string& k
 static bool isMethodTruthTupleWithFalse(const std::shared_ptr<Expr>& expr) {
     auto tuple = std::dynamic_pointer_cast<TermExpr>(expr);
     if (!tuple || tuple->name != "fn:tuple" || tuple->args.empty()) return false;
-    bool sawBool = false;
     for (const auto& arg : tuple->args) {
         auto text = std::dynamic_pointer_cast<StringExpr>(arg.value);
         if (!text) return false;
         if (text->value != "true" && text->value != "false") return false;
-        sawBool = true;
         if (text->value == "false") return true;
     }
-    return sawBool && false;
+    return false;
 }
 
 static std::string lowerText(std::string text) {
@@ -390,98 +419,6 @@ static bool isBareModuleImport(const std::string& pattern) {
 static fs::path resolveCoreImport(const fs::path& baseDir, const std::string& pattern) {
     fs::path root = sourceRootFromBase(baseDir);
     return fs::absolute(root / "core" / (pattern + ".fx")).lexically_normal();
-}
-
-static std::vector<std::string> nativeLibraryFileNames(const std::string& moduleName) {
-#if defined(_WIN32)
-    return {
-        moduleName + ".dll",
-        "felidae_" + moduleName + ".dll"
-    };
-#elif defined(__APPLE__)
-    return {
-        "lib" + moduleName + ".dylib",
-        "libfelidae_" + moduleName + ".dylib",
-        moduleName + ".dylib"
-    };
-#else
-    return {
-        "lib" + moduleName + ".so",
-        "libfelidae_" + moduleName + ".so",
-        moduleName + ".so"
-    };
-#endif
-}
-
-static bool hasNativeLibraryExtension(const fs::path& path) {
-    std::string extension = lowerText(path.extension().string());
-#if defined(_WIN32)
-    return extension == ".dll";
-#elif defined(__APPLE__)
-    return extension == ".dylib" || extension == ".so";
-#else
-    return extension == ".so";
-#endif
-}
-
-static void* openSharedLibrary(const fs::path& path) {
-#if defined(_WIN32)
-    HMODULE handle = LoadLibraryW(path.wstring().c_str());
-    return reinterpret_cast<void*>(handle);
-#else
-    return dlopen(path.string().c_str(), RTLD_NOW | RTLD_LOCAL);
-#endif
-}
-
-static std::string sharedLibraryError() {
-#if defined(_WIN32)
-    DWORD code = GetLastError();
-    if (code == 0) return "unknown loader error";
-    LPSTR buffer = nullptr;
-    DWORD size = FormatMessageA(
-        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-        nullptr,
-        code,
-        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-        reinterpret_cast<LPSTR>(&buffer),
-        0,
-        nullptr);
-    std::string message = size && buffer ? std::string(buffer, size) : ("Windows loader error " + std::to_string(code));
-    if (buffer) LocalFree(buffer);
-    return message;
-#else
-    const char* error = dlerror();
-    return error ? std::string(error) : "unknown loader error";
-#endif
-}
-
-static void closeSharedLibrary(void* handle) {
-    if (!handle) return;
-#if defined(_WIN32)
-    FreeLibrary(reinterpret_cast<HMODULE>(handle));
-#else
-    dlclose(handle);
-#endif
-}
-
-static void* findSharedLibrarySymbol(void* handle, const char* name) {
-    if (!handle) return nullptr;
-#if defined(_WIN32)
-    return reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(handle), name));
-#else
-    return dlsym(handle, name);
-#endif
-}
-
-static std::string nativeModuleNameFromPath(const fs::path& path) {
-    std::string stem = path.stem().string();
-    const std::string felidaePrefix = "felidae_";
-    const std::string libFelidaePrefix = "libfelidae_";
-    const std::string libPrefix = "lib";
-    if (stem.rfind(libFelidaePrefix, 0) == 0) return stem.substr(libFelidaePrefix.size());
-    if (stem.rfind(felidaePrefix, 0) == 0) return stem.substr(felidaePrefix.size());
-    if (stem.rfind(libPrefix, 0) == 0) return stem.substr(libPrefix.size());
-    return stem;
 }
 
 static std::string exprToJson(const std::shared_ptr<Expr>& expr) {
@@ -732,10 +669,11 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
 
     auto clausesSnapshot = clauses_;
     auto memorySnapshot = memory_;
-    auto globalsSnapshot = globals_;
+    auto globalsSnapshot = cloneEnv(globals_);
     auto lazySnapshot = lazyModules_;
     auto loadedFilesSnapshot = loadedFiles_;
     auto currentLoadingFileSnapshot = currentLoadingFile_;
+    auto nativeLibraryPathsSnapshot = nativeLibraryPaths_;
     auto functionName = task->functionName;
 
     task->worker = std::thread([this,
@@ -746,7 +684,8 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
                                 globalsSnapshot = std::move(globalsSnapshot),
                                 lazySnapshot = std::move(lazySnapshot),
                                 loadedFilesSnapshot = std::move(loadedFilesSnapshot),
-                                currentLoadingFileSnapshot = std::move(currentLoadingFileSnapshot)]() mutable {
+                                currentLoadingFileSnapshot = std::move(currentLoadingFileSnapshot),
+                                nativeLibraryPathsSnapshot = std::move(nativeLibraryPathsSnapshot)]() mutable {
         try {
             Interpreter child;
             child.clauses_ = std::move(clausesSnapshot);
@@ -755,6 +694,9 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
             child.lazyModules_ = std::move(lazySnapshot);
             child.loadedFiles_ = std::move(loadedFilesSnapshot);
             child.currentLoadingFile_ = std::move(currentLoadingFileSnapshot);
+            for (const auto& nativePath : nativeLibraryPathsSnapshot) {
+                child.loadNativeLibrary(nativePath);
+            }
 
             if (!child.hasMethod(functionName)) {
                 throw InterpreterError("Thread function '" + functionName + "' not found");
@@ -773,10 +715,10 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
 
             std::string result = "false";
             if (!solutions.empty()) {
-                auto returned = solutions.front().env.find("__return");
-                result = returned == solutions.front().env.end()
+                auto returned = findReturnValue(solutions.front().env);
+                result = !returned
                     ? "true"
-                    : child.valueToString(returned->second);
+                    : child.valueToString(returned);
             }
 
             std::lock_guard<std::mutex> lock(threadMutex_);
@@ -807,6 +749,10 @@ std::shared_ptr<Expr> Interpreter::threadTaskResult(const std::shared_ptr<Expr>&
     return std::make_shared<StringExpr>(task->result);
 }
 
+void Interpreter::collectExecutionGarbage() {
+    envFramePool_.collectGarbage(kMaxCachedEnvFrames);
+}
+
 void Interpreter::loadNativeLibrary(const std::filesystem::path& file) {
     fs::path normalized = fs::absolute(file).lexically_normal();
     if (nativeLibraryPaths_.count(normalized)) return;
@@ -814,8 +760,8 @@ void Interpreter::loadNativeLibrary(const std::filesystem::path& file) {
     if (!handle) {
         throw InterpreterError("Cannot load native module library '" + normalized.string() + "': " + sharedLibraryError());
     }
-    auto call = reinterpret_cast<NativeCallFn>(findSharedSymbol(handle, "felidae_native_call"));
-    auto free = reinterpret_cast<NativeFreeFn>(findSharedSymbol(handle, "felidae_native_free"));
+    auto call = reinterpret_cast<NativeCallFn>(findSharedLibrarySymbol(handle, "felidae_native_call"));
+    auto free = reinterpret_cast<NativeFreeFn>(findSharedLibrarySymbol(handle, "felidae_native_free"));
     if (!call || !free) {
         closeSharedLibrary(handle);
         throw InterpreterError("Native module library '" + normalized.string() +
@@ -847,7 +793,7 @@ void Interpreter::addProgram(const Program& program) {
 
 void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
     invalidateCaches();
-    if (clause->isFact()) {
+    if (clause->isFact() && globals_.count(clause->head.name) == 0) {
         auto factMap = factToMap(*clause, clause->parentName);
         Call mergedHead(clause->head.name, {});
         for (const auto& entry : factMap->entries) {
@@ -861,9 +807,9 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
             }
         }
         clause = std::make_shared<ClauseStmt>(std::move(mergedHead), clause->parentName, std::vector<std::shared_ptr<Goal>>{});
-        memory_.addFact(clause->head.name, clause->parentName, factMap);
+        memory_.addFact(clause->head.name, clause->parentName, factMap, currentLoadingFile_);
         if (!clause->parentName.empty() && !memory_.parents().count(clause->head.name)) {
-            memory_.setParent(clause->head.name, clause->parentName);
+            memory_.setParent(clause->head.name, clause->parentName, currentLoadingFile_);
         }
     }
     if (!currentLoadingFile_.empty()) {
@@ -887,15 +833,24 @@ void Interpreter::addLazyImport(const std::filesystem::path& baseDir, const std:
 std::vector<Solution> Interpreter::solve(const std::vector<std::shared_ptr<Goal>>& queryGoals,
                                          size_t maxSolutions) {
     ++solveEpoch_;
-    const std::string cacheKey = solveCacheKey(queryGoals, maxSolutions);
-    auto cached = solveCache_.find(cacheKey);
-    if (cached != solveCache_.end()) return cached->second;
+    const bool cacheable = isCacheableQuery(queryGoals);
+    const std::string cacheKey = cacheable ? solveCacheKey(queryGoals, maxSolutions) : std::string{};
+    if (cacheable) {
+        auto cached = solveCache_.find(cacheKey);
+        if (cached != solveCache_.end()) return cached->second;
+    }
 
     std::vector<Solution> out;
     Env env;
-    solveRecursive(queryGoals, std::move(env), out, maxSolutions, 0);
+    try {
+        solveRecursive(queryGoals, std::move(env), out, maxSolutions, 0);
+    } catch (...) {
+        collectExecutionGarbage();
+        throw;
+    }
     evictColdModules();
-    solveCache_[cacheKey] = out;
+    collectExecutionGarbage();
+    if (cacheable) solveCache_[cacheKey] = out;
     return out;
 }
 
@@ -960,11 +915,11 @@ std::shared_ptr<Expr> Interpreter::callMain(const std::shared_ptr<Expr>& systemI
     if (out.empty()) {
         throw InterpreterError("main() produced no result. A goal in main failed; add an explicit return or check method calls used as values.");
     }
-    auto it = out.front().env.find("__return");
-    if (it == out.front().env.end()) {
+    auto returned = findReturnValue(out.front().env);
+    if (!returned) {
         throw InterpreterError("main() completed without a return value");
     }
-    return it->second->clone();
+    return returned->clone();
 }
 
 std::string Interpreter::valueToString(const std::shared_ptr<Expr>& value) const {
@@ -987,15 +942,32 @@ void Interpreter::solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals
                                  std::vector<Solution>& out,
                                  size_t maxSolutions,
                                  size_t depth) {
+    try {
+        {
+            EnvFrame frame = envFramePool_.acquireMove(std::move(env));
+            solveRecursiveFrame(goals, frame.get(), out, maxSolutions, depth);
+        }
+        if (depth == 0) collectExecutionGarbage();
+    } catch (...) {
+        if (depth == 0) collectExecutionGarbage();
+        throw;
+    }
+}
+
+void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& goals,
+                                      Env& env,
+                                      std::vector<Solution>& out,
+                                      size_t maxSolutions,
+                                      size_t depth) {
     if (out.size() >= maxSolutions) return;
     if (depth > 10000) throw InterpreterError("Maximum recursion depth reached");
 
     if (goals.empty()) {
-        out.push_back(Solution{std::move(env)});
+        out.push_back(Solution{cloneEnv(env)});
         return;
     }
 
-    auto first = goals.front();
+    const auto& first = goals.front();
     std::vector<std::shared_ptr<Goal>> rest(goals.begin() + 1, goals.end());
 
     if (auto groupGoal = std::dynamic_pointer_cast<GroupGoal>(first)) {
@@ -1003,7 +975,7 @@ void Interpreter::solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals
         combined.reserve(groupGoal->goals.size() + rest.size());
         for (const auto& g : groupGoal->goals) combined.push_back(g);
         for (const auto& g : rest) combined.push_back(g);
-        solveRecursive(combined, std::move(env), out, maxSolutions, depth + 1);
+        solveRecursiveFrame(combined, env, out, maxSolutions, depth + 1);
         return;
     }
 
@@ -1013,48 +985,49 @@ void Interpreter::solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals
             combined.reserve(branch.size() + rest.size());
             for (const auto& g : branch) combined.push_back(g);
             for (const auto& g : rest) combined.push_back(g);
-            solveRecursive(combined, env, out, maxSolutions, depth + 1);
+            EnvFrame branchEnv = envFramePool_.acquireCopy(env);
+            solveRecursiveFrame(combined, branchEnv.get(), out, maxSolutions, depth + 1);
             if (out.size() >= maxSolutions) return;
         }
         return;
     }
 
     if (auto assign = std::dynamic_pointer_cast<AssignGoal>(first)) {
-        Env nextEnv = env;
-        if (solveAssignGoal(*assign, nextEnv)) {
-            solveRecursive(rest, std::move(nextEnv), out, maxSolutions, depth + 1);
+        EnvFrame nextEnv = envFramePool_.acquireCopy(env);
+        if (solveAssignGoal(*assign, nextEnv.get())) {
+            solveRecursiveFrame(rest, nextEnv.get(), out, maxSolutions, depth + 1);
         }
         return;
     }
 
     if (auto multiAssign = std::dynamic_pointer_cast<MultiAssignGoal>(first)) {
-        Env nextEnv = env;
-        if (solveMultiAssignGoal(*multiAssign, nextEnv)) {
-            solveRecursive(rest, std::move(nextEnv), out, maxSolutions, depth + 1);
+        EnvFrame nextEnv = envFramePool_.acquireCopy(env);
+        if (solveMultiAssignGoal(*multiAssign, nextEnv.get())) {
+            solveRecursiveFrame(rest, nextEnv.get(), out, maxSolutions, depth + 1);
         }
         return;
     }
 
     if (auto bin = std::dynamic_pointer_cast<BinaryGoal>(first)) {
-        Env nextEnv = env;
-        if (solveBinaryGoal(*bin, nextEnv)) {
-            solveRecursive(rest, std::move(nextEnv), out, maxSolutions, depth + 1);
+        EnvFrame nextEnv = envFramePool_.acquireCopy(env);
+        if (solveBinaryGoal(*bin, nextEnv.get())) {
+            solveRecursiveFrame(rest, nextEnv.get(), out, maxSolutions, depth + 1);
         }
         return;
     }
 
     if (auto where = std::dynamic_pointer_cast<WhereGoal>(first)) {
-        Env nextEnv = env;
-        if (solveWhereGoal(*where, nextEnv)) {
-            solveRecursive(rest, std::move(nextEnv), out, maxSolutions, depth + 1);
+        EnvFrame nextEnv = envFramePool_.acquireCopy(env);
+        if (solveWhereGoal(*where, nextEnv.get())) {
+            solveRecursiveFrame(rest, nextEnv.get(), out, maxSolutions, depth + 1);
         }
         return;
     }
 
     if (auto ret = std::dynamic_pointer_cast<ReturnGoal>(first)) {
-        Env nextEnv = env;
-        if (solveReturnGoal(*ret, nextEnv)) {
-            solveRecursive(rest, std::move(nextEnv), out, maxSolutions, depth + 1);
+        EnvFrame nextEnv = envFramePool_.acquireCopy(env);
+        if (solveReturnGoal(*ret, nextEnv.get())) {
+            solveRecursiveFrame(rest, nextEnv.get(), out, maxSolutions, depth + 1);
         }
         return;
     }
@@ -1068,9 +1041,9 @@ void Interpreter::solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals
     }
     const bool preferLocalClause = it != clauses_.end() && callGoal->call.name.find(':') == std::string::npos;
     if (!preferLocalClause) {
-        Env builtinEnv = env;
-        if (solveBuiltin(callGoal->call, builtinEnv)) {
-            solveRecursive(rest, std::move(builtinEnv), out, maxSolutions, depth + 1);
+        EnvFrame builtinEnv = envFramePool_.acquireCopy(env);
+        if (solveBuiltin(callGoal->call, builtinEnv.get())) {
+            solveRecursiveFrame(rest, builtinEnv.get(), out, maxSolutions, depth + 1);
             if (out.size() >= maxSolutions) return;
         }
     }
@@ -1082,7 +1055,8 @@ void Interpreter::solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals
             std::vector<Solution> methodSolutions;
             solveMethodCall(callGoal->call, originalClause, env, methodSolutions, maxSolutions, depth + 1);
             for (auto& solution : methodSolutions) {
-                solveRecursive(rest, std::move(solution.env), out, maxSolutions, depth + 1);
+                EnvFrame methodEnv = envFramePool_.acquireMove(std::move(solution.env));
+                solveRecursiveFrame(rest, methodEnv.get(), out, maxSolutions, depth + 1);
                 if (out.size() >= maxSolutions) return;
             }
             if (out.size() >= maxSolutions) return;
@@ -1095,7 +1069,8 @@ void Interpreter::solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals
             for (const auto& g : clause->body) combined.push_back(g);
             for (const auto& g : rest) combined.push_back(g);
 
-            solveRecursive(combined, std::move(nextEnv), out, maxSolutions, depth + 1);
+            EnvFrame unifiedEnv = envFramePool_.acquireMove(std::move(nextEnv));
+            solveRecursiveFrame(combined, unifiedEnv.get(), out, maxSolutions, depth + 1);
             if (out.size() >= maxSolutions) return;
         }
     }
@@ -1116,7 +1091,8 @@ void Interpreter::solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals
         }
         factHead.name = callGoal->call.name;
         for (auto& nextEnv : unifyCallAlternatives(callGoal->call, factHead, env)) {
-            solveRecursive(rest, std::move(nextEnv), out, maxSolutions, depth + 1);
+            EnvFrame factEnv = envFramePool_.acquireMove(std::move(nextEnv));
+            solveRecursiveFrame(rest, factEnv.get(), out, maxSolutions, depth + 1);
             if (out.size() >= maxSolutions) return;
         }
     }
@@ -1663,15 +1639,16 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
                 auto clause = standardizeApart(*originalClause);
                 if (!unifyCall(handler, clause->head, attempt)) continue;
 
+                if (clause->body.empty()) {
+                    env = std::move(attempt);
+                    handled = true;
+                    break;
+                }
+
                 std::vector<Solution> nested;
                 solveRecursive(clause->body, std::move(attempt), nested, 1, 0);
                 if (!nested.empty()) {
                     env = std::move(nested.front().env);
-                    handled = true;
-                    break;
-                }
-                if (clause->body.empty()) {
-                    env = std::move(attempt);
                     handled = true;
                     break;
                 }
@@ -1923,6 +1900,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         std::shared_ptr<Expr> resultValue;
         if (call.name == "json:keys") {
             std::vector<std::shared_ptr<Expr>> keys;
+            keys.reserve(entries.size());
             for (const auto& entry : entries) keys.push_back(std::make_shared<StringExpr>(entry.key));
             resultValue = std::make_shared<ArrayExpr>(std::move(keys));
             const Arg* out = namedArg("access");
@@ -1979,22 +1957,22 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
 
     if (call.name == "csv:toText" || call.name == "csv:toFelidaeFacts") {
         if (!valueArg({"data", "rows"}, 0, a)) return false;
-        std::shared_ptr<Expr> result;
+        std::shared_ptr<Expr> csvResult;
         try {
             if (call.name == "csv:toText") {
-                result = std::make_shared<StringExpr>(NativeCsv::toText(a, call.name));
+                csvResult = std::make_shared<StringExpr>(NativeCsv::toText(a, call.name));
             } else {
                 if (!valueArg({"type", "fact"}, 1, b)) return false;
                 std::string typeName;
                 if (!argAsString(b, typeName)) return false;
-                result = std::make_shared<StringExpr>(NativeCsv::toFelidaeFacts(a, typeName, call.name));
+                csvResult = std::make_shared<StringExpr>(NativeCsv::toFelidaeFacts(a, typeName, call.name));
             }
         } catch (const NativeCsv::Error& ex) {
             throw InterpreterError(ex.what());
         }
         const Arg* out = namedArg("access");
         if (!out) out = outArg("out", call.name == "csv:toFelidaeFacts" ? 2 : 1);
-        return out && unifyExpr(out->value, result, env);
+        return out && unifyExpr(out->value, csvResult, env);
     }
 
     if (call.name == "csv:addRow" || call.name == "csv:findRows" ||
@@ -2043,10 +2021,6 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
     }
 
     return false;
-}
-
-void* Interpreter::findSharedSymbol(void* handle, const char* name) const {
-    return findSharedLibrarySymbol(handle, name);
 }
 
 const ClauseStmt* Interpreter::nativeDeclarationFor(const std::string& name) const {
@@ -2192,6 +2166,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
     }
     if (term.name == "fn:tuple") {
         std::vector<Arg> termArgs;
+        termArgs.reserve(args.size());
         for (auto& arg : args) termArgs.push_back(Arg{"value", arg});
         out = std::make_shared<TermExpr>("fn:tuple", std::move(termArgs));
         return true;
@@ -2204,12 +2179,14 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
             }
         }
         std::vector<Arg> termArgs;
+        termArgs.reserve(args.size());
         for (auto& arg : args) termArgs.push_back(Arg{"data", arg});
         out = std::make_shared<TermExpr>("fn:array", std::move(termArgs));
         return true;
     }
     if (term.name == "json:object") {
         std::vector<Arg> termArgs;
+        termArgs.reserve(args.size());
         for (auto& arg : args) termArgs.push_back(Arg{"field", arg});
         out = std::make_shared<TermExpr>("json:object", std::move(termArgs));
         return true;
@@ -2242,6 +2219,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
     }
 
     std::vector<Arg> termArgs;
+    termArgs.reserve(args.size());
     for (auto& arg : args) termArgs.push_back(Arg{"value", arg});
     out = std::make_shared<TermExpr>(term.name, std::move(termArgs));
     return true;
@@ -2309,14 +2287,17 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
             if (clause->body.empty() && !isMethodClause(*clause)) continue;
             std::vector<Solution> solutions;
             const bool previousValueCallMode = valueCallMode_;
-            valueCallMode_ = true;
-            try {
-                solveMethodCall(call, clause, env, solutions, 1, 0);
-            } catch (...) {
+            {
+                PipelineResultClearScope clearPipelineResults(pipelineResults_);
+                valueCallMode_ = true;
+                try {
+                    solveMethodCall(call, clause, env, solutions, 1, 0);
+                } catch (...) {
+                    valueCallMode_ = previousValueCallMode;
+                    throw;
+                }
                 valueCallMode_ = previousValueCallMode;
-                throw;
             }
-            valueCallMode_ = previousValueCallMode;
             if (!solutions.empty()) {
                 auto returned = solutions.front().env.find("__return");
                 if (returned != solutions.front().env.end()) {
@@ -2332,7 +2313,10 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
             }
         }
         std::vector<Solution> goalSolutions;
-        solveRecursive({std::make_shared<CallGoal>(call)}, env, goalSolutions, 1, 0);
+        {
+            PipelineResultClearScope clearPipelineResults(pipelineResults_);
+            solveRecursive({std::make_shared<CallGoal>(call)}, env, goalSolutions, 1, 0);
+        }
         if (!goalSolutions.empty()) {
             out = std::make_shared<StringExpr>("true");
             return true;
@@ -2679,6 +2663,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         if (!exprAsMapEntries(dataValue, entries)) throw InterpreterError(term.name + " expects map/object argument 'data'");
         if (term.name == "json:keys") {
             std::vector<std::shared_ptr<Expr>> keys;
+            keys.reserve(entries.size());
             for (const auto& entry : entries) keys.push_back(std::make_shared<StringExpr>(entry.key));
             out = std::make_shared<ArrayExpr>(std::move(keys));
             return true;
@@ -2867,6 +2852,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
                 types.insert(parent.second);
             }
             std::vector<std::shared_ptr<Expr>> items;
+            items.reserve(types.size());
             for (const auto& type : types) items.push_back(std::make_shared<StringExpr>(type));
             out = std::make_shared<ArrayExpr>(std::move(items));
             return true;
@@ -2902,6 +2888,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
                 }
             }
             std::vector<std::shared_ptr<Expr>> items;
+            items.reserve(fields.size());
             for (const auto& field : fields) items.push_back(std::make_shared<StringExpr>(field));
             out = std::make_shared<ArrayExpr>(std::move(items));
             return true;
@@ -3139,7 +3126,8 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
             if (std::fabs(leftVar) < 1e-12 || std::fabs(rightVar) < 1e-12) {
                 throw InterpreterError("probability.correlation expects non-constant arrays");
             }
-            out = std::make_shared<NumberExpr>(covariance / std::sqrt((leftVar / left.size()) * (rightVar / right.size())));
+            const double count = static_cast<double>(left.size());
+            out = std::make_shared<NumberExpr>(covariance / std::sqrt((leftVar / count) * (rightVar / count)));
             return true;
         }
 
@@ -3253,7 +3241,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
             total += number;
         }
         if (term.name == "average" && array->items.empty()) throw InterpreterError("average expects a non-empty array");
-        out = std::make_shared<NumberExpr>(term.name == "average" ? total / array->items.size() : total);
+        out = std::make_shared<NumberExpr>(term.name == "average" ? total / static_cast<double>(array->items.size()) : total);
         return true;
     }
 
@@ -3324,6 +3312,9 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
 }
 
 bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& env, std::shared_ptr<Expr>& out) {
+    if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
+        return evalPipelineExpr(*pipeline, env, out);
+    }
     auto resolved = resolveExpr(expr, env);
     if (auto lambda = std::dynamic_pointer_cast<LambdaExpr>(resolved)) {
         auto sourceValues = valuesForLambdaSource(lambda->source, env);
@@ -3331,6 +3322,7 @@ bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& en
         for (const auto& item : sourceValues) {
             Env lambdaEnv = env;
             lambdaEnv[lambda->variable] = item;
+            PipelineResultClearScope clearPipelineResults(pipelineResults_);
             if (!lambda->op.empty()) {
                 std::shared_ptr<Expr> left;
                 std::shared_ptr<Expr> right;
@@ -3421,6 +3413,24 @@ bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& en
         return evalExprValue(globalIt->second, env, out);
     }
     out = resolved->clone();
+    return true;
+}
+
+bool Interpreter::evalPipelineExpr(const PipelineExpr& pipeline, const Env& env, std::shared_ptr<Expr>& out) {
+    std::shared_ptr<Expr> previous;
+    if (!evalExprValue(pipeline.left, env, previous) || std::dynamic_pointer_cast<NilExpr>(previous)) {
+        out = std::make_shared<NilExpr>();
+        return true;
+    }
+
+    PipelineResultValueScope pipelineResult(pipelineResults_, previous);
+    std::shared_ptr<Expr> next;
+    bool ok = evalExprValue(pipeline.right, env, next);
+    if (!ok || std::dynamic_pointer_cast<NilExpr>(next)) {
+        out = std::make_shared<NilExpr>();
+        return true;
+    }
+    out = next;
     return true;
 }
 
@@ -3598,8 +3608,23 @@ bool Interpreter::unifyExpr(const std::shared_ptr<Expr>& a,
 
 std::shared_ptr<Expr> Interpreter::resolveExpr(const std::shared_ptr<Expr>& expr, const Env& env) const {
     auto var = std::dynamic_pointer_cast<VarExpr>(expr);
+    if (var && var->name == "system:result") {
+        if (pipelineResults_.empty()) {
+            throw InterpreterError("system.result is only available inside a then pipeline");
+        }
+        return pipelineResults_.back()->clone();
+    }
     if (!var) {
         if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
+            if (access->key == "result") {
+                auto targetVar = std::dynamic_pointer_cast<VarExpr>(access->target);
+                if (targetVar && targetVar->name == "system") {
+                    if (pipelineResults_.empty()) {
+                        throw InterpreterError("system.result is only available inside a then pipeline");
+                    }
+                    return pipelineResults_.back()->clone();
+                }
+            }
             std::shared_ptr<Expr> target;
             if (!const_cast<Interpreter*>(this)->evalExprValue(access->target, env, target)) return expr;
             auto value = findMapValue(target, access->key);
@@ -3643,6 +3668,7 @@ std::shared_ptr<ClauseStmt> Interpreter::standardizeApart(const ClauseStmt& clau
         }
     }
     std::vector<std::shared_ptr<Goal>> body;
+    body.reserve(clause.body.size());
     for (const auto& g : clause.body) body.push_back(renameGoal(g, prefix));
     std::vector<std::vector<std::shared_ptr<Goal>>> fallbackBranches;
     fallbackBranches.reserve(clause.fallbackBranches.size());
@@ -3719,6 +3745,7 @@ std::shared_ptr<Goal> Interpreter::renameGoal(const std::shared_ptr<Goal>& goal,
 
 std::shared_ptr<Expr> Interpreter::renameExpr(const std::shared_ptr<Expr>& expr, const std::string& prefix) {
     if (auto v = std::dynamic_pointer_cast<VarExpr>(expr)) {
+        if (v->name == "system:result") return v->clone();
         if (globals_.count(v->name) > 0) return v->clone();
         return std::make_shared<VarExpr>(prefix + v->name);
     }
@@ -3743,6 +3770,10 @@ std::shared_ptr<Expr> Interpreter::renameExpr(const std::shared_ptr<Expr>& expr,
         return std::make_shared<MapExpr>(std::move(entries));
     }
     if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
+        auto targetVar = std::dynamic_pointer_cast<VarExpr>(access->target);
+        if (access->key == "result" && targetVar && targetVar->name == "system") {
+            return access->clone();
+        }
         return std::make_shared<AccessExpr>(renameExpr(access->target, prefix), access->key);
     }
     if (auto lambda = std::dynamic_pointer_cast<LambdaExpr>(expr)) {
@@ -3759,6 +3790,11 @@ std::shared_ptr<Expr> Interpreter::renameExpr(const std::shared_ptr<Expr>& expr,
             binary->op,
             renameExpr(binary->right, prefix));
     }
+    if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
+        return std::make_shared<PipelineExpr>(
+            renameExpr(pipeline->left, prefix),
+            renameExpr(pipeline->right, prefix));
+    }
     return expr->clone();
 }
 
@@ -3774,34 +3810,94 @@ bool Interpreter::isGroundLiteral(const std::shared_ptr<Expr>& expr) const {
            static_cast<bool>(std::dynamic_pointer_cast<NilExpr>(expr));
 }
 
-bool Interpreter::isBuiltinFunctionName(const std::string& name) const {
-    static const std::set<std::string> names = {
-        "count", "sum", "average", "min", "max", "sort", "search", "contains",
-        "lower", "upper", "length", "ParseDoc",
-        "str:len", "str:contains", "str:concat", "str:join", "str:lower", "str:upper",
-        "str:trim", "str:split", "str:replace", "str:startsWith", "str:endsWith",
-        "console:readLine", "console:writeLine", "console:write", "system:print",
-        "file:readFile", "file:readLines", "file:readLine", "file:writeFile", "file:writeLines", "file:appendFile", "file:exists", "file:deleteFile",
-        "csv:parse", "csv:toFacts", "csv:toText", "csv:toFelidaeFacts",
-        "csv:addRow", "csv:findRows", "csv:updateRows", "csv:deleteRows",
-        "db:all", "db:find", "db:count", "db:first", "db:types", "db:fields",
-        "json:parse", "json:get", "json:has", "json:keys", "json:set", "json:remove", "json:toText",
-        "visualize:dataJson", "visualize:dataHtml", "visualize:graphJson",
-        "thread:createThread", "thread:start", "thread:pause", "thread:stop", "thread:status", "thread:result",
-        "http:get", "http:post", "http:put", "http:delete", "http:serveStatic",
-        "process:platform", "process:exec", "process:sleep",
-        "math:pi", "math:e", "math:random", "math:pow", "math:atan2",
-        "math:sqrt", "math:sin", "math:cos", "math:tan", "math:asin", "math:acos", "math:atan",
-        "math:log", "math:log10", "math:exp", "math:abs", "math:floor", "math:ceil", "math:round",
-        "probability:mean", "probability:variance", "probability:stddev", "probability:normalize",
-        "probability:entropy", "probability:covariance", "probability:correlation",
-        "probability:bernoulli", "probability:binomialPmf", "probability:binomialCdf",
-        "probability:poissonPmf", "probability:poissonCdf", "probability:normalPdf",
-        "probability:normalCdf", "probability:uniformPdf", "probability:uniformCdf",
-        "probability:sample", "probability:weightedChoice",
-        "ml:sigmoid", "ml:relu", "ml:dot", "ml:meanSquaredError"
-    };
-    return names.count(name) > 0;
+bool Interpreter::isCacheableQuery(const std::vector<std::shared_ptr<Goal>>& goals) const {
+    for (const auto& goal : goals) {
+        if (goalMayHaveSideEffects(goal)) return false;
+    }
+    return true;
+}
+
+bool Interpreter::goalMayHaveSideEffects(const std::shared_ptr<Goal>& goal) const {
+    if (!goal) return false;
+    if (auto call = std::dynamic_pointer_cast<CallGoal>(goal)) {
+        if (nativeDeclarationFor(call->call.name)) return true;
+        if (isBuiltinFunctionName(call->call.name) && !isBuiltinPure(call->call.name)) return true;
+        for (const auto& arg : call->call.args) {
+            if (exprMayHaveSideEffects(arg.value)) return true;
+        }
+        return false;
+    }
+    if (auto assign = std::dynamic_pointer_cast<AssignGoal>(goal)) {
+        return exprMayHaveSideEffects(assign->expr) || goalMayHaveSideEffects(assign->goal);
+    }
+    if (auto multi = std::dynamic_pointer_cast<MultiAssignGoal>(goal)) {
+        return exprMayHaveSideEffects(multi->expr);
+    }
+    if (auto binary = std::dynamic_pointer_cast<BinaryGoal>(goal)) {
+        return exprMayHaveSideEffects(binary->left) || exprMayHaveSideEffects(binary->right);
+    }
+    if (auto where = std::dynamic_pointer_cast<WhereGoal>(goal)) {
+        return goalMayHaveSideEffects(where->condition);
+    }
+    if (auto ret = std::dynamic_pointer_cast<ReturnGoal>(goal)) {
+        for (const auto& field : ret->fields) {
+            if (exprMayHaveSideEffects(field.value)) return true;
+        }
+        return false;
+    }
+    if (auto group = std::dynamic_pointer_cast<GroupGoal>(goal)) {
+        for (const auto& nested : group->goals) {
+            if (goalMayHaveSideEffects(nested)) return true;
+        }
+        return false;
+    }
+    if (auto orGoal = std::dynamic_pointer_cast<OrGoal>(goal)) {
+        for (const auto& branch : orGoal->branches) {
+            for (const auto& nested : branch) {
+                if (goalMayHaveSideEffects(nested)) return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool Interpreter::exprMayHaveSideEffects(const std::shared_ptr<Expr>& expr) const {
+    if (!expr) return false;
+    if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
+        if (nativeDeclarationFor(term->name)) return true;
+        if (isBuiltinFunctionName(term->name) && !isBuiltinPure(term->name)) return true;
+        for (const auto& arg : term->args) {
+            if (exprMayHaveSideEffects(arg.value)) return true;
+        }
+        return false;
+    }
+    if (auto array = std::dynamic_pointer_cast<ArrayExpr>(expr)) {
+        for (const auto& item : array->items) {
+            if (exprMayHaveSideEffects(item)) return true;
+        }
+        return false;
+    }
+    if (auto map = std::dynamic_pointer_cast<MapExpr>(expr)) {
+        for (const auto& entry : map->entries) {
+            if (exprMayHaveSideEffects(entry.value)) return true;
+        }
+        return false;
+    }
+    if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
+        return exprMayHaveSideEffects(access->target);
+    }
+    if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
+        return exprMayHaveSideEffects(binary->left) || exprMayHaveSideEffects(binary->right);
+    }
+    if (auto lambda = std::dynamic_pointer_cast<LambdaExpr>(expr)) {
+        return exprMayHaveSideEffects(lambda->source) ||
+               exprMayHaveSideEffects(lambda->body) ||
+               exprMayHaveSideEffects(lambda->right);
+    }
+    if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
+        return exprMayHaveSideEffects(pipeline->left) || exprMayHaveSideEffects(pipeline->right);
+    }
+    return false;
 }
 
 bool Interpreter::isMethodClause(const ClauseStmt& clause) const {
@@ -3859,12 +3955,17 @@ std::shared_ptr<MapExpr> Interpreter::factToMap(const ClauseStmt& clause, const 
     upsertEntry(entries, "__type", std::make_shared<StringExpr>(clause.head.name));
     if (!parentType.empty()) upsertEntry(entries, "__parent", std::make_shared<StringExpr>(parentType));
     Env env;
+    std::set<std::string> childFields;
     for (const auto& arg : clause.head.args) {
         std::shared_ptr<Expr> value;
         if (!evalExprValue(arg.value, env, value)) {
             throw InterpreterError("Cannot evaluate fact field '" + arg.name + "' for " + clause.head.name);
         }
-        appendFactEntry(entries, arg.name, value->clone());
+        if (!childFields.insert(arg.name).second || parentType.empty()) {
+            appendFactEntry(entries, arg.name, value->clone());
+        } else {
+            upsertEntry(entries, arg.name, value->clone());
+        }
     }
     return std::make_shared<MapExpr>(std::move(entries));
 }
@@ -4137,6 +4238,11 @@ std::string Interpreter::runtimeGraphJson() const {
             collectExprCalls(binary->right);
             return;
         }
+        if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
+            collectExprCalls(pipeline->left);
+            collectExprCalls(pipeline->right);
+            return;
+        }
         if (auto array = std::dynamic_pointer_cast<ArrayExpr>(expr)) {
             for (const auto& item : array->items) collectExprCalls(item);
             return;
@@ -4337,6 +4443,11 @@ std::string Interpreter::runtimeGraphJson() const {
                 if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
                     writeExprEdges(binary->left);
                     writeExprEdges(binary->right);
+                    return;
+                }
+                if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
+                    writeExprEdges(pipeline->left);
+                    writeExprEdges(pipeline->right);
                     return;
                 }
                 if (auto array = std::dynamic_pointer_cast<ArrayExpr>(expr)) {

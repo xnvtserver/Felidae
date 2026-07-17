@@ -22,3 +22,17 @@ main(arguments: system.stdin) =>
   (clause)
   (clause)
   (clause))
+
+==================
+then pipeline
+==================
+
+main() =>
+    result := StepOne()
+        then StepTwo(input: system.result),
+    return result.
+
+---
+
+(source_file
+  (clause))

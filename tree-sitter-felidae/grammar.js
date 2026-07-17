@@ -128,6 +128,7 @@ module.exports = grammar({
     ),
 
     expression: $ => choice(
+      $.pipeline_expression,
       $.lambda_expression,
       $.binary_expression,
       $.access_expression,
@@ -142,6 +143,12 @@ module.exports = grammar({
       $.identifier,
       seq("(", $.expression, ")")
     ),
+
+    pipeline_expression: $ => prec.left(2, seq(
+      $.expression,
+      "then",
+      $.expression
+    )),
 
     lambda_expression: $ => seq(
       "lambda",

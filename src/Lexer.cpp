@@ -65,6 +65,7 @@ Token Lexer::readIdentifier() {
         }
     }
     if (text == "import") return Token{TokenType::Import, text, startLine, startCol};
+    if (text == "then") return Token{TokenType::Then, text, startLine, startCol};
     return Token{TokenType::Ident, text, startLine, startCol};
 }
 

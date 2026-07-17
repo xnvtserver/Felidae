@@ -3,6 +3,7 @@
 #include "AST.h"
 #include "Env.h"
 #include "Memory.h"
+#include "NativeRuntime.h"
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -45,17 +46,6 @@ public:
     void loadAllImports();
 
 private:
-    using NativeCallFn = char* (*)(const char*, const char*);
-    using NativeFreeFn = void (*)(char*);
-
-    struct NativeLibrary {
-        std::filesystem::path path;
-        std::string moduleName;
-        void* handle = nullptr;
-        NativeCallFn call = nullptr;
-        NativeFreeFn free = nullptr;
-    };
-
     struct LazyModule {
         std::filesystem::path baseDir;
         std::string pattern;
@@ -87,17 +77,24 @@ private:
     std::set<std::filesystem::path> nativeLibraryPaths_;
     std::unordered_map<std::string, std::shared_ptr<ThreadTask>> threadTasks_;
     mutable std::mutex threadMutex_;
+    EnvFramePool envFramePool_;
     size_t solveEpoch_ = 0;
     size_t renameCounter_ = 0;
     size_t threadCounter_ = 0;
     bool strictValueFailures_ = false;
     bool valueCallMode_ = false;
+    std::vector<std::shared_ptr<Expr>> pipelineResults_;
 
     void solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals,
                         Env env,
                         std::vector<Solution>& out,
                         size_t maxSolutions,
                         size_t depth);
+    void solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& goals,
+                             Env& env,
+                             std::vector<Solution>& out,
+                             size_t maxSolutions,
+                             size_t depth);
 
     bool solveAssignGoal(const AssignGoal& goal, Env& env);
     bool solveMultiAssignGoal(const MultiAssignGoal& goal, Env& env);
@@ -118,6 +115,7 @@ private:
     bool solveNativeCall(const Call& call, Env& env);
     bool evalBuiltinTerm(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
     bool evalCallAsValue(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
+    bool evalPipelineExpr(const PipelineExpr& pipeline, const Env& env, std::shared_ptr<Expr>& out);
     bool evalExprValue(const std::shared_ptr<Expr>& expr, const Env& env, std::shared_ptr<Expr>& out);
     bool compareResolved(const std::shared_ptr<Expr>& left,
                          const std::string& op,
@@ -141,7 +139,9 @@ private:
 
     bool isSameVariable(const std::shared_ptr<Expr>& a, const std::shared_ptr<Expr>& b) const;
     bool isGroundLiteral(const std::shared_ptr<Expr>& expr) const;
-    bool isBuiltinFunctionName(const std::string& name) const;
+    bool isCacheableQuery(const std::vector<std::shared_ptr<Goal>>& goals) const;
+    bool goalMayHaveSideEffects(const std::shared_ptr<Goal>& goal) const;
+    bool exprMayHaveSideEffects(const std::shared_ptr<Expr>& expr) const;
     bool isMethodClause(const ClauseStmt& clause) const;
     std::shared_ptr<MapExpr> factToMap(const ClauseStmt& clause, const std::string& parentType);
     std::vector<std::shared_ptr<Expr>> valuesForLambdaSource(const std::shared_ptr<Expr>& source, const Env& env);
@@ -160,7 +160,7 @@ private:
     std::string startThreadTask(const std::shared_ptr<Expr>& handle);
     std::string threadTaskStatus(const std::shared_ptr<Expr>& handle);
     std::shared_ptr<Expr> threadTaskResult(const std::shared_ptr<Expr>& handle);
-    void* findSharedSymbol(void* handle, const char* name) const;
+    void collectExecutionGarbage();
     const ClauseStmt* nativeDeclarationFor(const std::string& name) const;
     void validateNativeCallTypes(const Call& call, const ClauseStmt& declaration, const Env& env);
     std::vector<std::filesystem::path> expandImportPattern(const std::filesystem::path& baseDir,

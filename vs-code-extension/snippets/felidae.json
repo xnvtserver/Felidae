@@ -99,6 +99,15 @@
     ],
     "description": "Create a lambda filter or map expression"
   },
+  "Then Pipeline": {
+    "prefix": "then",
+    "body": [
+      "${1:result} := ${2:StepOne}(${3:input}: ${4:value})",
+      "    then ${5:StepTwo}(${6:input}: system.result)",
+      "    then ${7:StepThree}(${8:input}: system.result)"
+    ],
+    "description": "Create a then pipeline using scoped system.result"
+  },
   "Query": {
     "prefix": "query",
     "body": [

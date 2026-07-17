@@ -5,6 +5,7 @@
   "return"
   "else"
   "lambda"
+  "then"
 ] @keyword
 
 [

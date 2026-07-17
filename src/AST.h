@@ -161,6 +161,23 @@ public:
     }
 };
 
+class PipelineExpr final : public Expr {
+public:
+    PipelineExpr(std::shared_ptr<Expr> left, std::shared_ptr<Expr> right)
+        : left(std::move(left)), right(std::move(right)) {}
+
+    std::shared_ptr<Expr> left;
+    std::shared_ptr<Expr> right;
+
+    std::shared_ptr<Expr> clone() const override {
+        return std::make_shared<PipelineExpr>(left->clone(), right->clone());
+    }
+
+    std::string debug() const override {
+        return left->debug() + " then " + right->debug();
+    }
+};
+
 struct Arg {
     std::string name; // empty means positional argument
     std::shared_ptr<Expr> value;

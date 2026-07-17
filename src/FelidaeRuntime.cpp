@@ -30,24 +30,40 @@ struct CachedProgram {
     Program program;
 };
 
-std::mutex gProgramCacheMutex;
-std::unordered_map<std::string, CachedProgram> gProgramCache;
-bool gProgramCacheEnabled = false;
-std::uint64_t gProgramCacheClock = 0;
+std::mutex& programCacheMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::unordered_map<std::string, CachedProgram>& programCache() {
+    static auto* cache = new std::unordered_map<std::string, CachedProgram>();
+    return *cache;
+}
+
+bool& programCacheEnabled() {
+    static bool enabled = false;
+    return enabled;
+}
+
+std::uint64_t& programCacheClock() {
+    static std::uint64_t clock = 0;
+    return clock;
+}
 
 std::string normalizedCacheKey(const fs::path& path) {
     return fs::absolute(path).lexically_normal().string();
 }
 
 void evictProgramCacheIfNeeded() {
-    if (gProgramCache.size() <= kMaxProgramCacheEntries) return;
-    auto oldest = gProgramCache.end();
-    for (auto it = gProgramCache.begin(); it != gProgramCache.end(); ++it) {
-        if (oldest == gProgramCache.end() || it->second.lastUsed < oldest->second.lastUsed) {
+    auto& cache = programCache();
+    if (cache.size() <= kMaxProgramCacheEntries) return;
+    auto oldest = cache.end();
+    for (auto it = cache.begin(); it != cache.end(); ++it) {
+        if (oldest == cache.end() || it->second.lastUsed < oldest->second.lastUsed) {
             oldest = it;
         }
     }
-    if (oldest != gProgramCache.end()) gProgramCache.erase(oldest);
+    if (oldest != cache.end()) cache.erase(oldest);
 }
 
 } // namespace
@@ -92,18 +108,18 @@ void readSourceLines(const fs::path& path, const std::function<void(const std::s
 }
 
 void setProgramAstCacheEnabled(bool enabled) {
-    std::lock_guard<std::mutex> lock(gProgramCacheMutex);
-    gProgramCacheEnabled = enabled;
+    std::lock_guard<std::mutex> lock(programCacheMutex());
+    programCacheEnabled() = enabled;
     if (!enabled) {
-        gProgramCache.clear();
-        gProgramCacheClock = 0;
+        programCache().clear();
+        programCacheClock() = 0;
     }
 }
 
 void clearProgramAstCache() {
-    std::lock_guard<std::mutex> lock(gProgramCacheMutex);
-    gProgramCache.clear();
-    gProgramCacheClock = 0;
+    std::lock_guard<std::mutex> lock(programCacheMutex());
+    programCache().clear();
+    programCacheClock() = 0;
 }
 
 Program parseProgramFile(const fs::path& path) {
@@ -116,13 +132,14 @@ Program parseProgramFile(const fs::path& path) {
     if (ec) throw std::runtime_error("Cannot inspect file: " + normalized.string() + ": " + ec.message());
 
     {
-        std::lock_guard<std::mutex> lock(gProgramCacheMutex);
-        if (gProgramCacheEnabled) {
-            auto found = gProgramCache.find(key);
-            if (found != gProgramCache.end() &&
+        std::lock_guard<std::mutex> lock(programCacheMutex());
+        auto& cache = programCache();
+        if (programCacheEnabled()) {
+            auto found = cache.find(key);
+            if (found != cache.end() &&
                 found->second.size == size &&
                 found->second.modified == modified) {
-                found->second.lastUsed = ++gProgramCacheClock;
+                found->second.lastUsed = ++programCacheClock();
                 return found->second.program;
             }
         }
@@ -130,9 +147,9 @@ Program parseProgramFile(const fs::path& path) {
 
     Program program = parseProgramText(readSourceFile(normalized));
     {
-        std::lock_guard<std::mutex> lock(gProgramCacheMutex);
-        if (gProgramCacheEnabled) {
-            gProgramCache[key] = CachedProgram{size, modified, ++gProgramCacheClock, program};
+        std::lock_guard<std::mutex> lock(programCacheMutex());
+        if (programCacheEnabled()) {
+            programCache()[key] = CachedProgram{size, modified, ++programCacheClock(), program};
             evictProgramCacheIfNeeded();
         }
     }
@@ -177,7 +194,8 @@ std::vector<std::shared_ptr<Goal>> parseQueryText(const std::string& query) {
 
 static void collectVarsExpr(const std::shared_ptr<Expr>& expr, std::vector<std::string>& vars) {
     if (auto v = std::dynamic_pointer_cast<VarExpr>(expr)) {
-        if (v->name.rfind("__r", 0) != 0 && v->name.rfind("__anon", 0) != 0) {
+        if (v->name != "system:result" &&
+            v->name.rfind("__r", 0) != 0 && v->name.rfind("__anon", 0) != 0) {
             for (const auto& existing : vars) {
                 if (existing == v->name) return;
             }
@@ -194,10 +212,15 @@ static void collectVarsExpr(const std::shared_ptr<Expr>& expr, std::vector<std::
     } else if (auto map = std::dynamic_pointer_cast<MapExpr>(expr)) {
         for (const auto& entry : map->entries) collectVarsExpr(entry.value, vars);
     } else if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
+        auto targetVar = std::dynamic_pointer_cast<VarExpr>(access->target);
+        if (access->key == "result" && targetVar && targetVar->name == "system") return;
         collectVarsExpr(access->target, vars);
     } else if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
         collectVarsExpr(binary->left, vars);
         collectVarsExpr(binary->right, vars);
+    } else if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
+        collectVarsExpr(pipeline->left, vars);
+        collectVarsExpr(pipeline->right, vars);
     }
 }
 

@@ -10,7 +10,8 @@ namespace Felidae {
 namespace {
 
 bool isIgnoredName(const std::string& name) {
-    return name.empty() || name == "_" || name.rfind("__anon", 0) == 0 || name.rfind("__r", 0) == 0;
+    return name.empty() || name == "_" || name == "system:result" ||
+           name.rfind("__anon", 0) == 0 || name.rfind("__r", 0) == 0;
 }
 
 bool isBuiltinTypeName(const std::string& name) {
@@ -55,10 +56,15 @@ void collectExprUses(const std::shared_ptr<Expr>& expr,
     } else if (auto map = std::dynamic_pointer_cast<MapExpr>(expr)) {
         for (const auto& entry : map->entries) collectExprUses(entry.value, vars, calls);
     } else if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
+        auto targetVar = std::dynamic_pointer_cast<VarExpr>(access->target);
+        if (access->key == "result" && targetVar && targetVar->name == "system") return;
         collectExprUses(access->target, vars, calls);
     } else if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
         collectExprUses(binary->left, vars, calls);
         collectExprUses(binary->right, vars, calls);
+    } else if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
+        collectExprUses(pipeline->left, vars, calls);
+        collectExprUses(pipeline->right, vars, calls);
     }
 }
 

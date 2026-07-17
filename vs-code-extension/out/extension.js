@@ -41,6 +41,16 @@ const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const semanticLegend = new vscode.SemanticTokensLegend(["variable"], ["readonly"]);
 const builtinDocs = {
+    "then": {
+        heading: "then",
+        description: "Pipes one expression into the next expression from left to right. The right side can read the previous successful step through system.result.",
+        example: "score := Load() then Normalize(input: system.result) then Rank(input: system.result)"
+    },
+    "system:result": {
+        heading: "system.result",
+        description: "Read-only value for the previous successful step inside the right side of a then pipeline. It is unavailable outside that pipeline scope.",
+        example: "result := StepOne() then StepTwo(input: system.result)"
+    },
     "lambda": {
         heading: "lambda",
         description: "Filters or maps an array/fact collection with a local immutable item variable.",
@@ -879,7 +889,7 @@ function collectVariableNames(tokens, start, end) {
             continue;
         if (token.text === "nil")
             continue;
-        if (["else", "extend", "where", "return", "lambda"].includes(token.text))
+        if (["else", "extend", "where", "return", "lambda", "then"].includes(token.text))
             continue;
         const prev = tokens[i - 1];
         const next = tokens[i + 1];
@@ -1104,7 +1114,7 @@ function validateStatements(document, tokens, diagnostics) {
     }
 }
 function validateCalls(document, tokens, diagnostics) {
-    const lowercaseBuiltins = new Set(["throw", "lambda", "type", "instanceof", "return"]);
+    const lowercaseBuiltins = new Set(["throw", "lambda", "then", "type", "instanceof", "return"]);
     for (let i = 0; i < tokens.length; i++) {
         const token = tokens[i];
         const next = tokens[i + 1];
@@ -1378,7 +1388,7 @@ class FelidaeSemanticTokensProvider {
             const isAssignmentTarget = next?.kind === "bind";
             const isLambdaItem = previous?.kind === "comma" && next?.kind === "arrow";
             const isMemberBase = (next?.kind === "dot" || next?.kind === "colon") && nextNext?.kind === "ident";
-            const isKeyword = ["else", "extend", "where", "return", "lambda", "nil"].includes(token.text);
+            const isKeyword = ["else", "extend", "where", "return", "lambda", "then", "nil"].includes(token.text);
             const isCall = next?.kind === "lparen";
             if (isKeyword || isCall)
                 continue;
@@ -1508,7 +1518,7 @@ function buildFelidaeGraph(document) {
         }
         if (body) {
             for (const call of collectGraphCalls(body)) {
-                if (call === name || ["return", "where", "else", "lambda"].includes(call))
+                if (call === name || ["return", "where", "else", "lambda", "then"].includes(call))
                     continue;
                 graph.nodes.set(call, isLibraryName(call) ? "library" : "method");
                 graph.edges.push({ from: name, to: call });
@@ -3032,7 +3042,7 @@ class FelidaeDebugAdapter {
     findMethodCallOnLine(line) {
         const withoutComment = line.split("#", 1)[0];
         const calls = withoutComment.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*(?:(?:[:.])[A-Za-z_][A-Za-z0-9_]*)*)\s*\(/g);
-        const ignored = new Set(["return", "where", "lambda", "else"]);
+        const ignored = new Set(["return", "where", "lambda", "else", "then"]);
         for (const match of calls) {
             const name = match[1].replace(/\./g, ":");
             const base = name.split(":").pop() ?? name;
@@ -3180,4 +3190,3 @@ function activate(context) {
 }
 function deactivate() { }
 //# sourceMappingURL=extension.js.map
-

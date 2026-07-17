@@ -16,6 +16,55 @@ bool isTypeAnnotationName(const std::string& name) {
     return !name.empty() &&
            (std::isupper(static_cast<unsigned char>(name.front())) || isBuiltinTypeName(name));
 }
+
+struct TokenChain {
+    std::vector<std::string> parts;
+    size_t end = 0;
+};
+
+TokenChain parseTokenChain(const std::vector<Token>& tokens, size_t pos) {
+    TokenChain chain{{}, pos};
+    if (pos >= tokens.size() || tokens[pos].type != TokenType::Ident) return chain;
+
+    chain.parts.push_back(tokens[pos].text);
+    chain.end = pos + 1;
+    while (chain.end + 1 < tokens.size() &&
+           (tokens[chain.end].type == TokenType::Colon ||
+            tokens[chain.end].type == TokenType::Dot) &&
+           tokens[chain.end + 1].type == TokenType::Ident &&
+           (tokens[chain.end].type != TokenType::Dot ||
+            tokens[chain.end].line == tokens[chain.end + 1].line)) {
+        chain.parts.push_back(tokens[chain.end + 1].text);
+        chain.end += 2;
+    }
+    return chain;
+}
+
+bool tokenChainEquals(const TokenChain& chain, std::initializer_list<const char*> expected) {
+    if (chain.parts.size() != expected.size()) return false;
+    size_t i = 0;
+    for (const char* part : expected) {
+        if (chain.parts[i++] != part) return false;
+    }
+    return true;
+}
+
+bool isAssignmentToChain(const std::vector<Token>& tokens, size_t pos, std::initializer_list<const char*> chainParts) {
+    const auto chain = parseTokenChain(tokens, pos);
+    return tokenChainEquals(chain, chainParts) &&
+           chain.end < tokens.size() &&
+           tokens[chain.end].type == TokenType::Bind;
+}
+
+bool isSystemResultExpr(const std::shared_ptr<Expr>& expr) {
+    if (auto var = std::dynamic_pointer_cast<VarExpr>(expr)) {
+        return var->name == "system:result";
+    }
+    auto access = std::dynamic_pointer_cast<AccessExpr>(expr);
+    if (!access || access->key != "result") return false;
+    auto target = std::dynamic_pointer_cast<VarExpr>(access->target);
+    return target && target->name == "system";
+}
 }
 
 const Token& Parser::peek() const { return tokens_[pos_]; }
@@ -72,6 +121,7 @@ std::vector<std::shared_ptr<Goal>> Parser::parseQuery() {
         // optional query marker
     }
     auto goals = parseGoalList();
+    for (const auto& goal : goals) validateGoalSystemResultUsage(goal);
     if (match(TokenType::Dot)) {
         // optional ending dot
     }
@@ -82,6 +132,7 @@ std::vector<std::shared_ptr<Goal>> Parser::parseQuery() {
 std::shared_ptr<Expr> Parser::parseExpressionText() {
     rejectUnsupportedTokens();
     auto expr = parseExpr();
+    validateSystemResultUsage(expr, false);
     if (match(TokenType::Dot)) {
         // optional expression terminator for REPL convenience
     }
@@ -90,6 +141,9 @@ std::shared_ptr<Expr> Parser::parseExpressionText() {
 }
 
 std::shared_ptr<Statement> Parser::parseStatement() {
+    if (isAssignmentToChain(tokens_, pos_, {"system", "result"})) {
+        throw ParserError("system.result is read-only and can only be read inside a then pipeline");
+    }
     if (checkElse()) throw ParserError("'else' is only valid inside method fallback branches");
     if (check(TokenType::Ident) && peek().text == "return") {
         throw ParserError("'return' is only valid inside a method body. If this follows another goal, separate the previous goal with ',' instead of ending it with '.'.");
@@ -177,6 +231,10 @@ std::shared_ptr<ClauseStmt> Parser::parseClause() {
             }
         }
         validateRuleVars(head, body, fallbackBranches);
+        for (const auto& goal : body) validateGoalSystemResultUsage(goal);
+        for (const auto& branch : fallbackBranches) {
+            for (const auto& goal : branch) validateGoalSystemResultUsage(goal);
+        }
     }
     const Token& terminator = consume(TokenType::Dot, "Expected '.' after fact/rule");
     if (!isAtEnd() && peek().line == terminator.line) {
@@ -210,6 +268,7 @@ std::shared_ptr<GlobalBindingStmt> Parser::parseGlobalBinding() {
     std::string name = consume(TokenType::Ident, "Expected binding name").text;
     consume(TokenType::Bind, "Expected ':=' after binding name");
     auto expr = parseExpr();
+    validateSystemResultUsage(expr, false);
     const Token& terminator = consume(TokenType::Dot, "Expected '.' after global binding");
     if (!isAtEnd() && peek().line == terminator.line) {
         throw ParserError("Unexpected token after statement terminator '.' on the same line");
@@ -219,14 +278,11 @@ std::shared_ptr<GlobalBindingStmt> Parser::parseGlobalBinding() {
 }
 
 std::string Parser::parseQualifiedName() {
-    std::string name = consume(TokenType::Ident, "Expected name").text;
-    while ((check(TokenType::Colon) || check(TokenType::Dot)) &&
-           pos_ + 1 < tokens_.size() &&
-           tokens_[pos_ + 1].type == TokenType::Ident &&
-           (!check(TokenType::Dot) || tokens_[pos_].line == tokens_[pos_ + 1].line)) {
-        advance(); // ':' or '.'
-        name += ":" + advance().text;
-    }
+    const auto chain = parseTokenChain(tokens_, pos_);
+    if (chain.parts.empty()) consume(TokenType::Ident, "Expected name");
+    pos_ = chain.end;
+    std::string name = chain.parts.front();
+    for (size_t i = 1; i < chain.parts.size(); ++i) name += ":" + chain.parts[i];
     return name;
 }
 
@@ -252,6 +308,9 @@ Arg Parser::parseArg() {
 }
 
 std::shared_ptr<Goal> Parser::parseGoal() {
+    if (isAssignmentToChain(tokens_, pos_, {"system", "result"})) {
+        throw ParserError("system.result is read-only and can only be read inside a then pipeline");
+    }
     if (match(TokenType::LParen)) {
         auto grouped = parseGoalList();
         consume(TokenType::RParen, "Expected ')' after grouped goals");
@@ -436,6 +495,14 @@ void Parser::splitFallbackPrelude(std::vector<std::shared_ptr<Goal>>& primary,
 }
 
 std::shared_ptr<Expr> Parser::parseExpr() {
+    auto expr = parseAccessExpr();
+    while (match(TokenType::Then)) {
+        expr = std::make_shared<PipelineExpr>(std::move(expr), parseAccessExpr());
+    }
+    return expr;
+}
+
+std::shared_ptr<Expr> Parser::parseAccessExpr() {
     auto expr = parseAdditiveExpr();
     while ((check(TokenType::Colon) || check(TokenType::Dot)) &&
            pos_ + 1 < tokens_.size() &&
@@ -572,6 +639,9 @@ std::shared_ptr<Expr> Parser::parseArrayExpr() {
 
 bool Parser::containsAccessExpr(const std::shared_ptr<Expr>& expr) const {
     if (std::dynamic_pointer_cast<AccessExpr>(expr)) return true;
+    if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
+        return containsAccessExpr(pipeline->left) || containsAccessExpr(pipeline->right);
+    }
     if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
         return containsAccessExpr(binary->left) || containsAccessExpr(binary->right);
     }
@@ -597,9 +667,81 @@ bool Parser::containsAccessExpr(const std::shared_ptr<Expr>& expr) const {
     return false;
 }
 
+void Parser::validateSystemResultUsage(const std::shared_ptr<Expr>& expr, bool allowed) const {
+    if (!expr) return;
+    if (isSystemResultExpr(expr)) {
+        if (!allowed) {
+            throw ParserError("system.result is only available inside the right side of a then pipeline");
+        }
+        return;
+    }
+    if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
+        validateSystemResultUsage(pipeline->left, allowed);
+        validateSystemResultUsage(pipeline->right, true);
+        return;
+    }
+    if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
+        for (const auto& arg : term->args) validateSystemResultUsage(arg.value, allowed);
+        return;
+    }
+    if (auto array = std::dynamic_pointer_cast<ArrayExpr>(expr)) {
+        for (const auto& item : array->items) validateSystemResultUsage(item, allowed);
+        return;
+    }
+    if (auto map = std::dynamic_pointer_cast<MapExpr>(expr)) {
+        for (const auto& entry : map->entries) validateSystemResultUsage(entry.value, allowed);
+        return;
+    }
+    if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
+        validateSystemResultUsage(access->target, allowed);
+        return;
+    }
+    if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
+        validateSystemResultUsage(binary->left, allowed);
+        validateSystemResultUsage(binary->right, allowed);
+        return;
+    }
+    if (auto lambda = std::dynamic_pointer_cast<LambdaExpr>(expr)) {
+        validateSystemResultUsage(lambda->source, allowed);
+        validateSystemResultUsage(lambda->body, false);
+        if (lambda->right) validateSystemResultUsage(lambda->right, false);
+    }
+}
+
+void Parser::validateGoalSystemResultUsage(const std::shared_ptr<Goal>& goal) const {
+    if (!goal) return;
+    if (auto call = std::dynamic_pointer_cast<CallGoal>(goal)) {
+        for (const auto& arg : call->call.args) validateSystemResultUsage(arg.value, false);
+    } else if (auto assign = std::dynamic_pointer_cast<AssignGoal>(goal)) {
+        validateSystemResultUsage(assign->expr, false);
+        validateGoalSystemResultUsage(assign->goal);
+    } else if (auto multi = std::dynamic_pointer_cast<MultiAssignGoal>(goal)) {
+        validateSystemResultUsage(multi->expr, false);
+    } else if (auto binary = std::dynamic_pointer_cast<BinaryGoal>(goal)) {
+        validateSystemResultUsage(binary->left, false);
+        validateSystemResultUsage(binary->right, false);
+    } else if (auto where = std::dynamic_pointer_cast<WhereGoal>(goal)) {
+        validateGoalSystemResultUsage(where->condition);
+    } else if (auto ret = std::dynamic_pointer_cast<ReturnGoal>(goal)) {
+        for (const auto& field : ret->fields) validateSystemResultUsage(field.value, false);
+    } else if (auto group = std::dynamic_pointer_cast<GroupGoal>(goal)) {
+        for (const auto& nested : group->goals) validateGoalSystemResultUsage(nested);
+    } else if (auto orGoal = std::dynamic_pointer_cast<OrGoal>(goal)) {
+        for (const auto& branch : orGoal->branches) {
+            for (const auto& nested : branch) validateGoalSystemResultUsage(nested);
+        }
+    }
+}
+
 void Parser::collectExprVars(const std::shared_ptr<Expr>& expr, std::set<std::string>& vars) const {
+    if (isSystemResultExpr(expr)) return;
     if (auto var = std::dynamic_pointer_cast<VarExpr>(expr)) {
         if (var->name != "nil" && var->name.rfind("__anon", 0) != 0) vars.insert(var->name);
+        return;
+    }
+    if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
+        collectExprVars(pipeline->left, vars);
+        collectExprVars(pipeline->right, vars);
         return;
     }
     if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
@@ -662,6 +804,7 @@ void Parser::validateGoalVars(const std::shared_ptr<Goal>& goal, std::set<std::s
                 call->call.name + "(...) declarations and named fact queries are supported; use lambda(" +
                 call->call.name + ", item => ...) for fact iteration, or iterate an explicit list/array");
         }
+        std::set<std::string> directVars;
         for (const auto& arg : call->call.args) {
             if (call->call.name == "throw" && arg.name == "target") continue;
             if (call->call.name == "instanceof" &&
@@ -672,8 +815,29 @@ void Parser::validateGoalVars(const std::shared_ptr<Goal>& goal, std::set<std::s
                     continue;
                 }
             }
-            collectExprVars(arg.value, used);
+            if (auto var = std::dynamic_pointer_cast<VarExpr>(arg.value)) {
+                if (var->name != "nil" && var->name.rfind("__anon", 0) != 0) {
+                    directVars.insert(var->name);
+                }
+            } else {
+                collectExprVars(arg.value, used);
+            }
         }
+        for (const auto& name : used) {
+            if (!isDeclaredName(name, declared)) {
+                throw ParserError("Variable '" + name + "' is used before declaration. Declare it in the rule head or assign it before use");
+            }
+        }
+        if (isBuiltinCallName(call->call.name)) {
+            for (const auto& name : directVars) {
+                if (!isDeclaredName(name, declared)) {
+                    throw ParserError("Variable '" + name + "' is used before declaration. Declare it in the rule head or assign it before use");
+                }
+            }
+        } else {
+            declared.insert(directVars.begin(), directVars.end());
+        }
+        return;
     } else if (auto binary = std::dynamic_pointer_cast<BinaryGoal>(goal)) {
         collectExprVars(binary->left, used);
         collectExprVars(binary->right, used);

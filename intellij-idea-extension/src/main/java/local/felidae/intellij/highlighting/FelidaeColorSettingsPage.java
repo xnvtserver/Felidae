@@ -104,8 +104,9 @@ public final class FelidaeColorSettingsPage
 
                 isEngineer(input: Employee) =>
                     employee := input,
+                    label := employee.name
+                        then system.print(value: system.result),
                     where employee.role == "Engineer",
-                    system.print(value: employee.name),
                     return (
                         name: employee.name,
                         active: true

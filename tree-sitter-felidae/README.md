@@ -34,6 +34,7 @@ The current grammar covers the MVP syntax:
 - maps, arrays, strings, numbers, `nil`, booleans, `_`
 - member/module access with `.` or `:`
 - lambda expressions
+- `then` pipelines with scoped `system.result`
 
 It is intentionally kept separate from the C++ parser. The C++ interpreter
 remains the source of truth for execution and diagnostics.

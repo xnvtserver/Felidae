@@ -16,7 +16,14 @@ if (-not (Test-Path -LiteralPath $DebugExe) -and (Test-Path -LiteralPath "build\
 $smokeSource = "native_modules\smoke\NativeSmoke.cpp"
 $smokeLibrary = "native_modules\smoke\felidae_smoke.dll"
 if ((Test-Path -LiteralPath $smokeSource) -and (Get-Command clang++ -ErrorAction SilentlyContinue)) {
-    & clang++ -std=c++17 -shared $smokeSource -o $smokeLibrary 2>&1 | Out-Null
+    $needsSmokeBuild = -not (Test-Path -LiteralPath $smokeLibrary)
+    if (-not $needsSmokeBuild) {
+        $needsSmokeBuild = (Get-Item -LiteralPath $smokeSource).LastWriteTimeUtc -gt
+            (Get-Item -LiteralPath $smokeLibrary).LastWriteTimeUtc
+    }
+    if ($needsSmokeBuild) {
+        & clang++ -std=c++17 -shared $smokeSource -o $smokeLibrary 2>&1 | Out-Null
+    }
 }
 
 $tests = @(
@@ -87,7 +94,13 @@ $negativeTests = @(
     @{ Name = "reject escaped method local"; File = "examples\invalid\local_scope_escape.fx"; Query = ""; Expect = "Variable 'temp' is used before declaration" },
     @{ Name = "reject tuple assignment type mismatch"; File = "examples\invalid\tuple_assignment_type_mismatch.fx"; Query = ""; Expect = "ProgrammingError: tuple assignment target 'active' expects number" },
     @{ Name = "reject tuple assignment arity mismatch"; File = "examples\invalid\tuple_assignment_arity_mismatch.fx"; Query = ""; Expect = "ProgrammingError: tuple assignment expected 2 value(s), got 3" },
-    @{ Name = "reject tuple assignment duplicate target"; File = "examples\invalid\tuple_assignment_duplicate_target.fx"; Query = ""; Expect = "Duplicate tuple assignment target 'name'" }
+    @{ Name = "reject tuple assignment duplicate target"; File = "examples\invalid\tuple_assignment_duplicate_target.fx"; Query = ""; Expect = "Duplicate tuple assignment target 'name'" },
+    @{ Name = "reject system.result outside then"; File = "examples\invalid\system_result_outside_pipeline.fx"; Query = ""; Expect = "system.result is only available inside the right side of a then pipeline" },
+    @{ Name = "reject system.result assignment"; File = "examples\invalid\system_result_assignment.fx"; Query = ""; Expect = "system.result is read-only" },
+    @{ Name = "reject system.result in lambda body"; File = "examples\invalid\system_result_in_lambda.fx"; Query = ""; Expect = "system.result is only available inside the right side of a then pipeline" },
+    @{ Name = "reject system.result in method body"; File = "examples\invalid\system_result_in_method_body.fx"; Query = ""; Expect = "system.result is only available inside the right side of a then pipeline" },
+    @{ Name = "reject statement-level then"; File = "examples\invalid\then_statement_prefix.fx"; Query = ""; Expect = "Expected expression" },
+    @{ Name = "reject dot-then syntax"; File = "examples\invalid\dot_then_pipeline.fx"; Query = ""; Expect = "Unexpected token after statement terminator" }
 )
 
 $falseTests = @(
@@ -102,6 +115,7 @@ $directTests = @(
     @{ Name = "direct main execution"; Args = @("examples\direct_main.fx", "one", "two"); Expect = @("count: 3", 'names: ["Ravi", "Sita", "Ramesh"]', 'args: ["one", "two"]') },
     @{ Name = "direct imported method call"; Args = @("examples\function_caller.fx"); Expect = @("RemoteRole called with name: Anu, role: Student", 'result: fn:tuple(value: "true")') },
     @{ Name = "direct backtracking unification"; Args = @("examples\backtracking_unification.fx"); Expect = @("choice_count: 4", "same_pair_count: 2", "employee_count: 2", "nested_count: 2") },
+    @{ Name = "recursive multi-clause method"; Args = @("examples\recursive_ancestor.fx", "? AncestorOf(descendant: descendant, ancestor: ancestor)"); Expect = @('descendant = "kitten", ancestor = "cat"', 'descendant = "kitten", ancestor = "organism"', 'descendant = "cat", ancestor = "organism"') },
     @{ Name = "interpreter viewer json loads imported country fact db"; Args = @("examples\country_query.fx", "--visualize-data-json", "--load-imports"); Expect = @("FELIDAE_GRAPH_BEGIN", '"label":"Country","kind":"fact","detail":"records=249 fields=4"', '"label":"IndiaCountry","kind":"method"') },
     @{ Name = "interpreter viewer html loads imported country fact db"; Args = @("examples\country_query.fx", "--visualize-data-html", "--load-imports"); Expect = @("<!doctype html>", "Celidae Data Visualization", '"label":"Country","kind":"fact","detail":"records=249 fields=4"') },
     @{ Name = "interpreter programmatic visualization builtins"; Args = @("examples\visualize_programmatic.fx"); Expect = @('json_has_country: "true"', 'json_has_records: "true"', 'html_has_document: "true"', 'wrote_html: "ok"') },
@@ -119,11 +133,14 @@ $directTests = @(
     @{ Name = "data structure stress"; Args = @("examples\data_structure_stress.fx"); Expect = @('count: 2', 'generated: "ok"', 'name: "Alice"', 'known_gap: "expression array:get is not evaluated yet"') },
     @{ Name = "arithmetic and boolean methods"; Args = @("examples\arithmetic_and_boolean.fx"); Expect = @('first_has_manager: fn:tuple(value: "true", value: "true")', 'add: 5', 'sub: 6', 'mul: 42', 'div: 4', 'precedence: 14', 'grouped: 20') },
     @{ Name = "native ABI smoke"; Args = @("examples\native_module_smoke.fx"); Expect = @('"native module loaded"') },
+    @{ Name = "native ABI in thread"; Args = @("examples\native_thread_smoke.fx"); Expect = @('started: "started"', 'thread native ok') },
     @{ Name = "native ABI expression"; Args = @("examples\native_abi_success.fx"); Expect = @('expression: "expression ok"') },
     @{ Name = "colon dot interchangeable access"; Args = @("examples\access_interchange.fx"); Expect = @("dot: 42", "colon: 42", "mixed: 42", "direct: 42", "checked: {dot: 42, colon: 42, mixed: 42}") },
     @{ Name = "method false tuple value"; Args = @("examples\invalid\method_value_no_result.fx"); Expect = @('result: fn:tuple(value: "false")') },
     @{ Name = "native stdlib execution"; Args = @("examples\native_stdlib.fx"); Expect = @("writeStatus: `"ok`"", "readBack: `"Felidae IO`"", "exists: `"true`"", "root: 9", "powered: 256", "activation: 0.5", "dot: 32", "mse: 1.33333333333333") },
     @{ Name = "cache import thread stress"; Args = @("examples\cache_thread_import_stress.fx"); Expect = @('start1: "started"', 'start2: "started"', 'start3: "started"', 'count: 12', 'Eve', 'Engineer') },
+    @{ Name = "then pipeline direct execution"; Args = @("examples\then_pipeline.fx"); Expect = @('direct: {seen: 4, tag: "wrapped"}', 'nested: {seen: 13, tag: "wrapped"}', 'stopped: nil', 'arithmeticPrecedence: 10') },
+    @{ Name = "then pipeline command line query"; Args = @("examples\then_pipeline.fx", "? Increment(value: 1) then Double(value: system.result) == 4"); Expect = @("true") },
     @{ Name = "auto system print"; Args = @("examples\system_print.fx"); Expect = @("Felidae system running!", "{}") },
     @{ Name = "main returns status value"; Args = @("examples\main_comment_return.fx"); Expect = @("Felidae system running!", '"true"') },
     @{ Name = "direct no main"; Args = @("examples\family.fx"); Expect = @("Program loaded successfully. No main() method found.", "Use a query argument or run with --repl.") },
