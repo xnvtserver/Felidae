@@ -32,6 +32,8 @@ const std::unordered_map<std::string, BuiltinEffect>& builtinEffects() {
         {"str:startsWith", BuiltinEffect::Pure},
         {"str:endsWith", BuiltinEffect::Pure},
         {"console:readLine", BuiltinEffect::ReadsExternalState},
+        {"console:input", BuiltinEffect::ReadsExternalState},
+        {"console:inputNumber", BuiltinEffect::ReadsExternalState},
         {"console:writeLine", BuiltinEffect::WritesExternalState},
         {"console:write", BuiltinEffect::WritesExternalState},
         {"system:print", BuiltinEffect::WritesExternalState},

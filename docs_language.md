@@ -39,9 +39,9 @@ mismatch raises a `ProgrammingError` instead of silently binding the wrong value
 import "file.fx".
 import "directory".
 import "directory/*".
-import ("one.fx" "two.fx").
+import ("one.fx", "two.fx").
 import "math".
-import ("file" "math" "ml" "db" "probability").
+import ("file", "math", "ml", "db", "probability").
 import "system". # optional; system is available automatically
 ```
 
@@ -303,7 +303,7 @@ Native standard-library calls are dispatched to C++ implementations, keeping
 heavy work out of the interpreter loop:
 
 ```felidae
-import ("file" "math" "ml").
+import ("file", "math", "ml").
 
 file.readFile(path: "data.txt")
 file.readLines(path: "data.txt")

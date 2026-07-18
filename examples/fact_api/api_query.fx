@@ -1,4 +1,4 @@
-import ("csv" "json" "db.fx").
+import ("csv", "json", "db.fx").
 
 main() =>
     rows := lambda(Customer, c => CustomerRow(input: c)),

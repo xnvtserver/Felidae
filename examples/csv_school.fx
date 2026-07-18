@@ -1,4 +1,4 @@
-import ("file" "csv").
+import ("file", "csv").
 
 SchoolRows := csv.toFacts(
     data: file.readFile(path: "examples/data/School.csv"),

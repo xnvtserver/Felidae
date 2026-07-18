@@ -1,4 +1,4 @@
-import ("db" "probability").
+import ("db", "probability").
 
 Rain(
     month: "August",

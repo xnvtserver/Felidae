@@ -1,4 +1,4 @@
-import ("array" "db" "file" "http" "json" "probability").
+import ("array", "db", "file", "http", "json", "probability").
 
 # The Open English WordNet project publishes current English WordNet releases
 # in JSON form. This method downloads a JSON resource into the local workspace.

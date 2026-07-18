@@ -1,4 +1,4 @@
-import ("docker.fx" "str").
+import ("docker.fx", "str").
 
 EmscriptenImage() =>
     return ("emscripten/emsdk:latest").

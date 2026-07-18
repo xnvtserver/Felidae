@@ -1,4 +1,4 @@
-import ("html_components.fx" "str").
+import ("html_components.fx", "str").
 
 DownloadReleaseUrl() =>
     return ("https://github.com/xnvtserver/Felidae/releases").

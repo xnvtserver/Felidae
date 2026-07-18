@@ -1,4 +1,4 @@
-import ("http" "json" "str" "system").
+import ("http", "json", "str", "system").
 
 ServerRoute(method: "GET", path: "/", description: "Return the generated Felidae HTML page.").
 ServerRoute(method: "POST", path: "/", description: "Return the same generated response for smoke tests.").

@@ -1,4 +1,4 @@
-import ("json" "csv" "file").
+import ("json", "csv", "file").
 
 RawPeopleCsv := "name,role,office\nAlice,Engineer,SEA\nBob,Manager,LAX\nCarol,Engineer,SEA\n".
 

@@ -3,7 +3,7 @@
 # flibrary loader, while system.flibrary.wordnet.* stays as the typed ABI
 # contract for native_modules/wordnet.
 
-import ("flibrary" "system.flibrary.wordnet").
+import ("flibrary", "system.flibrary.wordnet").
 
 wordnet.lookup(text: string, language: string, pos: string) =>
     return (system_library_loader(module: "wordnet", function: "lookup", args: {text: text, language: language, pos: pos})).

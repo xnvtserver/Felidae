@@ -100,7 +100,12 @@ $negativeTests = @(
     @{ Name = "reject system.result in lambda body"; File = "examples\invalid\system_result_in_lambda.fx"; Query = ""; Expect = "system.result is only available inside the right side of a then pipeline" },
     @{ Name = "reject system.result in method body"; File = "examples\invalid\system_result_in_method_body.fx"; Query = ""; Expect = "system.result is only available inside the right side of a then pipeline" },
     @{ Name = "reject statement-level then"; File = "examples\invalid\then_statement_prefix.fx"; Query = ""; Expect = "Expected expression" },
-    @{ Name = "reject dot-then syntax"; File = "examples\invalid\dot_then_pipeline.fx"; Query = ""; Expect = "Unexpected token after statement terminator" }
+    @{ Name = "reject dot-then syntax"; File = "examples\invalid\dot_then_pipeline.fx"; Query = ""; Expect = "Unexpected token after statement terminator" },
+    @{ Name = "reject deprecated import list without commas"; File = "examples\invalid\import_list_without_commas.fx"; Query = ""; Expect = "Deprecated import list syntax. Use comma-separated imports" },
+    @{ Name = "reject invalid fact algorithm"; File = "examples\invalid\fact_invalid_algorithm.fx"; Query = ""; Expect = "FactConfigError: unsupported algorithm 'approximate_magic' before calling native library" },
+    @{ Name = "reject invalid fact threshold"; File = "examples\invalid\fact_invalid_threshold.fx"; Query = ""; Expect = "FactConfigError: 'threshold' must be between 0 and 1 before calling native library" },
+    @{ Name = "reject invalid fact analysis required fields"; File = "examples\invalid\fact_analysis_invalid_required_fields.fx"; Query = ""; Expect = "expects argument 'required_fields' to be array" },
+    @{ Name = "reject fact comparison non object"; File = "examples\invalid\fact_compare_non_object.fx"; Query = ""; Expect = "fact-shaped object values" }
 )
 
 $falseTests = @(
@@ -108,7 +113,8 @@ $falseTests = @(
     @{ Name = "empty declaration returns no result"; File = "examples\empty_declaration.fx"; Query = "? DocOnly(input: `"x`")"; Expect = "false" },
     @{ Name = "empty brace declaration returns no result"; File = "examples\empty_brace_declaration.fx"; Query = "? DocBrace(input: `"x`")"; Expect = "false" },
     @{ Name = "single positional method call remains valid"; File = "examples\empty_declaration.fx"; Query = "? DocOnly(1)"; Expect = "false" },
-    @{ Name = "typed builtin method rejects wrong input"; File = "examples\typed_methods.fx"; Query = "? add(x: `"two`", y: 3, output: value)"; Expect = "false" }
+    @{ Name = "typed builtin method rejects wrong input"; File = "examples\typed_methods.fx"; Query = "? add(x: `"two`", y: 3, output: value)"; Expect = "false" },
+    @{ Name = "fact import keeps ordinary unification exact"; File = "examples\fact_import_keeps_exact_unification.fx"; Query = "? Person(name: `"Alice`")"; Expect = "false" }
 )
 
 $directTests = @(
@@ -140,6 +146,19 @@ $directTests = @(
     @{ Name = "native stdlib execution"; Args = @("examples\native_stdlib.fx"); Expect = @("writeStatus: `"ok`"", "readBack: `"Felidae IO`"", "exists: `"true`"", "root: 9", "powered: 256", "activation: 0.5", "dot: 32", "mse: 1.33333333333333") },
     @{ Name = "native WordNet semantic algorithms"; Args = @("examples\wordnet_native_demo.fx"); Expect = @('synset: "cat.n.01"', 'pathSimilarity: {score: 0.333333', 'wuPalmer: {score: 0.666667', 'resnik: {score:', 'factSimilarity: {score: 0.333333', 'score: 4', 'text: "gato"') },
     @{ Name = "native WordNet command-line query"; Args = @("examples\wordnet_native_demo.fx", "? WordNetCliSmoke(result: Result)"); Expect = @('Result = {score: 0.333333', 'lcs: "animal.n.01"') },
+    @{ Name = "native fact semantic phase 1"; Args = @("examples\fact_semantic_phase1.fx"); Expect = @('projection: {kind: "fact"', 'node_count:', 'similarity: {score:', 'algorithm: "semantic_recursive"', 'lexical_algorithm: "wu_palmer"', 'difference: {mode: "property_exact"', 'near: {matched:', 'wordnet_internal_service_pending_for_phase_2') },
+    @{ Name = "fact semantic unify is explicit"; Args = @("examples\fact_import_keeps_exact_unification.fx"); Expect = @('semantic: {unified:', 'threshold:', 'wordnet_internal_service_pending_for_phase_2') },
+    @{ Name = "minimal fact similarity"; Args = @("examples\fact_similarity_minimal.fx"); Expect = @('similar: {score:', 'lexical_algorithm: "leacock_chodorow"', 'propertyMatch: {score:', 'difference: {mode: "property_exact"', 'nearest: {count: 1', 'name: "Ravi"') },
+    @{ Name = "fact reasoning and analysis phase 2"; Args = @("examples\fact_reasoning_phase2.fx"); Expect = @('propertyComparison: {score:', 'mode: "property_exact"', 'semanticSimilarity: {score:', 'lexical_algorithm: "leacock_chodorow"', 'common: {ancestor_type: "Person"', 'path: {reachable:', 'distance: 2', 'evidence: {probability: 0.733333', 'nearest: {count: 1', 'next: {prediction: {__type: "ClimatePrediction"', 'method: "numeric_gini_stump"', 'split: {feature: "humidity"', 'model_fx: "DecisionTreeModel(', 'applied: {prediction: "rainy"', 'decision_route: ["numeric_split_right"]', 'evaluated: {model_type: "decision_tree"', 'accuracy: 1', 'savedModel: "ok"') },
+    @{ Name = "fact data science boundaries"; Args = @("examples\fact_data_science_boundaries.fx"); Expect = @('floatArithmetic: {sum: 0.3', 'numericStats: {meanWeight:', 'profile: {method: "numeric_fact_profile"', 'clusters: {model_type: "k_means"', 'scaling: "standardized"', 'classified: {prediction: "livestock"', 'predictedWeight: {prediction:', 'goatSheep: {score:', 'method: "fact_property_ancestor"', 'property_score:', 'common_ancestor: "Ruminant"', 'goatWolf: {score:', 'common_ancestor: "CommonFact"', 'nearestLivestock: {count: 2', 'rejected_count: 1', 'generatedSynset: {__type: "RuminantSynset"', 'ancestor: "Ruminant"') },
+    @{ Name = "fact comparison scenarios"; Args = @("examples\fact_comparison_scenarios.fx"); Expect = @('employeeSibling: {score:', 'method: "fact_property_ancestor"', 'common_ancestor: "Employee"', 'employeeContractor: {score:', 'common_ancestor: "CommonFact"', 'sensorSibling: {score:', 'common_ancestor: "Sensor"', 'sauceSibling: {score:', 'common_ancestor: "Sauce"', 'personnelRanking: {count: 2', 'rejected_count: 1', 'EmployeeCapabilitySynset', 'SauceFlavorSynset', 'scenarioConfidence:') },
+    @{ Name = "fact comparison edge cases"; Args = @("examples\fact_comparison_edge_cases.fx"); Expect = @('propertyNoAncestor: {score:', 'common_ancestor: "CommonFact"', 'ancestorPoorProperties: {score:', 'common_ancestor: "Sensor"', 'missingFieldComparison: {score:', 'exactPropertyComparison: {score:', 'constrained: {count: 2', 'matched_candidate_count: 2', 'rejected_count: 2') },
+    @{ Name = "fact graph wordnet style algorithms"; Args = @("examples\fact_graph_wordnet_algorithms.fx"); Expect = @('direct: {matched: "true"', 'ancestors: {fact: "Goat"', 'facts: ["Ruminant", "Mammal", "Animal", "LivingThing"]', 'descendants: {fact: "Mammal"', 'lowestCommonAncestor: {ancestor_type: "Ruminant"', 'shortestPath: {reachable: "true", distance: 4', 'pathSimilarity: {score: 0.2', 'algorithm: "path"', 'wuPalmer: {score: 0.8', 'algorithm: "wu_palmer"', 'resnik: {score:', 'algorithm: "resnik"', 'lin: {score:', 'algorithm: "lin"', 'frequencyStats: {method: "fact_frequency_statistics"', 'normalized: {input: "Black Sheep", normalized: "black_sheep"', 'clusters: {model_type: "k_means"', 'classification: {goatGraphScore: {score: 0.8') },
+    @{ Name = "advanced mortality fact reasoning"; Args = @("examples\advanced_mortality_fact_reasoning.fx"); Expect = @('socratesProof: {subject: "Socrates", mortal: "true"', 'path: ["Socrates", "Man", "Human", "MortalBeing"]', 'ancestors: {fact: "Socrates"', 'facts: ["Man", "Human", "MortalBeing", "LivingThing"]', 'ramProof: {subject: "Ram", mortal: "true"', 'rule: "mortal_by_inherited_fact_similarity_to_proven_mortal"', 'common_ancestor: "Man"', 'graphSimilarity: {score: 0.8', 'statueComparison: {score:', 'statueGraphSimilarity: {score: 0', 'manToHuman: {matched: "true"', 'socratesToMan: {matched: "true"', 'ramToMan: {matched: "true"', 'inheritedFields: {socratesMortality: "true", ramMortality: "true"', 'socratesRamLowestCommonAncestor: {ancestor_type: "Man"', 'socratesRamPath: {reachable: "true", distance: 2') },
+    @{ Name = "ml fact mining"; Args = @("examples\ml_fact_mining.fx"); Expect = @('profile: {method: "numeric_fact_profile"', 'spendVisitCorrelation: {method: "pearson_fact_correlation"', 'clusters: {model_type: "k_means"', 'method: "k_means_numeric_facts"', 'trained_count: 4', 'associations: {method: "key_value_association_mining"', 'region=south', 'segment=starter', 'model: {model_type: "decision_tree"', 'spendModel: {model_type: "linear_regression"', 'split: {feature: "age"', 'predicted: {prediction: "premium"', 'predictedSpend: {prediction:', 'factPrediction: {prediction: {prediction: "starter"', 'numericPrediction: {prediction: {prediction:', 'savedModel: "ok"', 'savedRegression: "ok"') },
+    @{ Name = "ml sensor fact mining"; Args = @("examples\ml_sensor_fact_mining.fx"); Expect = @('profile: {method: "numeric_fact_profile"', 'clusters: {model_type: "k_means"', 'correlation: {method: "pearson_fact_correlation"', 'stateModel: {model_type: "decision_tree"', 'split: {feature: "vibration"', 'newReading: {prediction: "risk"') },
+    @{ Name = "ml sales forecast"; Args = @("examples\ml_sales_forecast.fx"); Expect = @('profile: {method: "numeric_fact_profile"', 'visitorRevenue: {method: "pearson_fact_correlation"', 'revenueModel: {model_type: "linear_regression"', 'feature: "visitors"', 'forecast: {prediction:', 'generated: {prediction: {prediction:', 'saved: "ok"') },
+    @{ Name = "cooking expert system"; Args = @("examples\cooking_expert_system.fx"); Expect = @('proposal: {request:', 'predictedDishType: {prediction: "starter"', 'rankedIngredients: {count: 1', 'matched_candidate_count: 1', 'rejected_count: 7', 'required_fields: ["category", "role"]', 'name: "Tomato"', 'important_differences:', 'ingredientFitnessExample: {ingredient: "Tomato"', 'ingredientClusters: {model_type: "k_means"', 'ingredientProfile: {method: "numeric_fact_profile"', 'dishAssociations: {method: "key_value_association_mining"', 'dishType=starter', 'evidence: {probability:', 'justification: "The proposal is based on property similarity') },
     @{ Name = "cache import thread stress"; Args = @("examples\cache_thread_import_stress.fx"); Expect = @('start1: "started"', 'start2: "started"', 'start3: "started"', 'count: 12', 'Eve', 'Engineer') },
     @{ Name = "then pipeline direct execution"; Args = @("examples\then_pipeline.fx"); Expect = @('direct: {seen: 4, tag: "wrapped"}', 'nested: {seen: 13, tag: "wrapped"}', 'stopped: nil', 'arithmeticPrecedence: 10') },
     @{ Name = "then pipeline command line query"; Args = @("examples\then_pipeline.fx", "? Increment(value: 1) then Double(value: system.result) == 4"); Expect = @("true") },
@@ -157,6 +176,11 @@ $debugCheckTests = @(
     @{ Name = "celidae profiles country fact db"; Args = @("examples\data\converted_csv_country.fx", "--inspect-graph"); Expect = @('"detail":"records=249 fields=4"', '"detail":"present=249 missing=0 coverage=100.0%"') },
     @{ Name = "celidae viewer json loads imported country fact db"; Args = @("examples\country_query.fx", "--visualize-data-json", "--load-imports"); Expect = @("FELIDAE_GRAPH_BEGIN", '"label":"Country","kind":"fact","detail":"records=249 fields=4"', '"label":"IndiaCountry","kind":"method"') },
     @{ Name = "celidae viewer html loads imported country fact db"; Args = @("examples\country_query.fx", "--visualize-data-html", "--load-imports"); Expect = @("<!doctype html>", "Celidae Data Visualization", '"label":"Country","kind":"fact","detail":"records=249 fields=4"') }
+)
+
+$directInputTests = @(
+    @{ Name = "console input number true branch"; File = "examples\console_input_branch.fx"; Input = "10`n"; Expect = @('enter x:', 'x: 10', 'matched: "true"', 'message: "x is ten"') },
+    @{ Name = "console input number false branch"; File = "examples\console_input_branch.fx"; Input = "7`n"; Expect = @('enter x:', 'x: 7', 'matched: "false"', 'message: "x is not ten"') }
 )
 
 $replTests = @(
@@ -276,6 +300,30 @@ if (Test-Path -LiteralPath $DebugExe) {
     }
 } else {
     Write-Host "[SKIP] debug check loads native module (missing $DebugExe)"
+}
+
+foreach ($test in $directInputTests) {
+    $output = $test.Input | & $Exe $test.File 2>&1
+    $text = ($output | Out-String).Trim()
+    $ok = $LASTEXITCODE -eq 0
+
+    foreach ($expected in $test.Expect) {
+        if (-not $text.Contains($expected)) {
+            $ok = $false
+            break
+        }
+    }
+
+    if ($ok) {
+        Write-Host "[PASS] $($test.Name)"
+    } else {
+        $failed++
+        Write-Host "[FAIL] $($test.Name)"
+        Write-Host "  File:  $($test.File)"
+        Write-Host "  Exit:  $LASTEXITCODE"
+        Write-Host "  Output:"
+        Write-Host $text
+    }
 }
 
 foreach ($test in $replTests) {

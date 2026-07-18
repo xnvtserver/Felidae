@@ -1,4 +1,4 @@
-import ("csv" "json").
+import ("csv", "json").
 
 Employee(name: "Alice", role: "Engineer", office: "SEA").
 Employee(name: "Bob", role: "Manager", office: "LAX").

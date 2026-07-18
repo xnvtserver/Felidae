@@ -1,4 +1,4 @@
-import ("file" "csv").
+import ("file", "csv").
 
 CountryRows := csv.toFacts(
     data: file.readFile(path: "data/countries.csv"),

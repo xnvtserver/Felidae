@@ -1,4 +1,4 @@
-import ("csv" "file" "fact_customers.fx").
+import ("csv", "file", "fact_customers.fx").
 
 UpdateCustomer(input: any) =>
     row := input,

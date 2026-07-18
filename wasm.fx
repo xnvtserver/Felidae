@@ -1,4 +1,4 @@
-import ("emcc.fx" "file").
+import ("emcc.fx", "file").
 
 WasmArtifactStatus() =>
     js := file.exists(path: "docs/wasm/felidae_wasm.js"),

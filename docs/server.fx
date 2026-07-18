@@ -1,4 +1,4 @@
-import ("http" "str" "system" "html_components.fx" "docs_search.fx" "overview.fx" "basics.fx" "getting_started.fx" "syntax.fx" "facts.fx" "queries.fx" "methods.fx" "data_structures_algorithms.fx" "testing.fx" "language_reference.fx" "stdlib.fx" "libraries.fx" "library_pages.fx" "probability.fx" "native_modules.fx" "debugging.fx" "hosting.fx" "server_features.fx" "download_page.fx" "version.fx" "milestones.fx" "about.fx" "playground.fx").
+import ("http", "str", "system", "html_components.fx", "docs_search.fx", "overview.fx", "basics.fx", "getting_started.fx", "syntax.fx", "facts.fx", "queries.fx", "methods.fx", "data_structures_algorithms.fx", "testing.fx", "language_reference.fx", "stdlib.fx", "libraries.fx", "library_pages.fx", "probability.fx", "native_modules.fx", "debugging.fx", "hosting.fx", "server_features.fx", "download_page.fx", "version.fx", "milestones.fx", "about.fx", "playground.fx").
 
 DocumentationSections() =>
     return ([

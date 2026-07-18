@@ -1,4 +1,4 @@
-import ("db" "json").
+import ("db", "json").
 
 Customer(name: "Alice", city: "SEA", status: "active", total: 250).
 Customer(name: "Bob", city: "LAX", status: "active", total: 90).

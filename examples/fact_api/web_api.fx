@@ -1,4 +1,4 @@
-import ("http" "json").
+import ("http", "json").
 
 ApiContract := {
     service: "Felidae Facts DB API",

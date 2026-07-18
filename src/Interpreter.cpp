@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -2219,6 +2220,123 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
 
     validateNativeCallTypes(call, *declaration, env);
 
+    const bool factNativePreflight = nativeFunctionName.rfind("system:flibrary:fact:", 0) == 0;
+    const bool factAnalysisNativePreflight = nativeFunctionName.rfind("system:flibrary:fact_analysis:", 0) == 0;
+    if (factNativePreflight || factAnalysisNativePreflight) {
+        auto valueFor = [&](const std::string& name, size_t index) -> std::shared_ptr<Expr> {
+            if (genericLibraryLoader && loaderArgs) {
+                for (const auto& entry : loaderArgs->entries) {
+                    if (entry.key == name) return entry.value;
+                }
+                return {};
+            }
+            const Arg* arg = findArgByNameOrIndex(call, name, index);
+            if (!arg) return {};
+            std::shared_ptr<Expr> value;
+            if (!evalExprValue(arg->value, env, value)) return {};
+            return value;
+        };
+        auto stringValueFor = [&](const std::string& name, size_t index, std::string& out) -> bool {
+            auto value = valueFor(name, index);
+            return value && argAsString(value, out);
+        };
+        auto numberValueFor = [&](const std::string& name, size_t index, double& out) -> bool {
+            auto value = valueFor(name, index);
+            if (!value) return false;
+            auto number = std::dynamic_pointer_cast<NumberExpr>(value);
+            if (!number) return false;
+            out = number->value;
+            return true;
+        };
+        auto requireOption = [&](const std::string& name,
+                                 size_t index,
+                                 const std::set<std::string>& allowed,
+                                 bool required) {
+            auto value = valueFor(name, index);
+            if (!value) {
+                if (required) throw InterpreterError("FactConfigError: missing '" + name + "' before calling native library");
+                return;
+            }
+            std::string text;
+            if (!argAsString(value, text)) {
+                throw InterpreterError("FactConfigError: '" + name + "' expects a string before calling native library");
+            }
+            if (!allowed.count(text)) {
+                throw InterpreterError("FactConfigError: unsupported " + name + " '" + text + "' before calling native library");
+            }
+        };
+        auto requireThreshold = [&](const std::string& name, size_t index, bool required) {
+            auto value = valueFor(name, index);
+            if (!value) {
+                if (required) throw InterpreterError("FactConfigError: missing '" + name + "' before calling native library");
+                return;
+            }
+            double number = 0.0;
+            if (!numberValueFor(name, index, number) || !std::isfinite(number)) {
+                throw InterpreterError("FactConfigError: '" + name + "' expects a finite number before calling native library");
+            }
+            if (number < 0.0 || number > 1.0) {
+                throw InterpreterError("FactConfigError: '" + name + "' must be between 0 and 1 before calling native library");
+            }
+        };
+        auto requirePositiveLimit = [&](const std::string& name, size_t index) {
+            auto value = valueFor(name, index);
+            if (!value) return;
+            double number = 0.0;
+            if (!numberValueFor(name, index, number) || !std::isfinite(number) || number < 1.0) {
+                throw InterpreterError("FactConfigError: '" + name + "' must be a positive finite number before calling native library");
+            }
+        };
+        auto requireStringArray = [&](const std::string& name, size_t index) {
+            auto value = valueFor(name, index);
+            if (!value) return;
+            auto array = std::dynamic_pointer_cast<ArrayExpr>(value);
+            if (!array) {
+                throw InterpreterError("FactConfigError: '" + name + "' expects an array of strings before calling native library");
+            }
+            for (const auto& item : array->items) {
+                auto text = std::dynamic_pointer_cast<StringExpr>(item);
+                if (!text || text->value.empty()) {
+                    throw InterpreterError("FactConfigError: '" + name + "' expects non-empty string field names before calling native library");
+                }
+            }
+        };
+
+        if (factNativePreflight) {
+            requireOption("algorithm", 2, {"exact_recursive", "structural", "semantic_recursive", "semantic_pattern", "relationship_aware"}, false);
+            requireOption("lexical_algorithm", 3, {"path", "wup", "wu_palmer", "Wu-Palmer", "Wu Palmer", "resnik", "jiang_conrath", "Jiang-Conrath", "Jiang Conrath", "lin", "edit", "Leacock-Chodorow", "Leacock–Chodorow", "Leacock Chodorow", "leacock_chodorow", "lch"}, false);
+            requireOption("field_alignment", 4, {"exact", "semantic"}, false);
+            requireOption("collection_mode", 5, {"auto", "ordered", "unordered"}, false);
+            requireOption("missing_field_policy", 6, {"penalize", "ignore"}, false);
+            requireOption("mode", 2, {"exact", "semantic"}, false);
+            requireThreshold("threshold", 7, false);
+            requirePositiveLimit("maximum_depth", 8);
+            requirePositiveLimit("maximum_fields", 9);
+            std::string explain;
+            if (stringValueFor("explain", 10, explain) && explain != "true" && explain != "false") {
+                throw InterpreterError("FactConfigError: 'explain' expects \"true\" or \"false\" before calling native library");
+            }
+        }
+        if (factAnalysisNativePreflight) {
+            if (nativeFunctionName == "system:flibrary:fact_analysis:find_nearest" ||
+                nativeFunctionName == "system:flibrary:fact_analysis:find_nearest_where") {
+                requirePositiveLimit("count", 2);
+                if (nativeFunctionName == "system:flibrary:fact_analysis:find_nearest_where") {
+                    requireStringArray("required_fields", 3);
+                }
+            } else if (nativeFunctionName == "system:flibrary:fact_analysis:cluster_facts") {
+                requireStringArray("features", 1);
+                requirePositiveLimit("clusters", 2);
+            } else if (nativeFunctionName == "system:flibrary:fact_analysis:discover_associations") {
+                requireThreshold("min_support", 1, false);
+            } else if (nativeFunctionName == "system:flibrary:fact_analysis:profile_facts") {
+                requireStringArray("features", 1);
+            } else if (nativeFunctionName == "system:flibrary:fact_analysis:train_decision_tree") {
+                requireStringArray("features", 2);
+            }
+        }
+    }
+
     std::ostringstream json;
     json << "{";
     bool first = true;
@@ -2557,10 +2675,36 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return {};
     };
 
-    if (term.name == "console:readLine") {
+    if (term.name == "console:readLine" || term.name == "console:input" || term.name == "console:inputNumber") {
+        if (term.name == "console:input" || term.name == "console:inputNumber") {
+            if (args.size() > 1) throw InterpreterError(term.name + " expects zero arguments or one prompt argument");
+            const Arg* promptArg = findTermArgByNameOrIndex(term, "print", 0);
+            if (!promptArg) promptArg = findTermArgByNameOrIndex(term, "prompt", 0);
+            if (promptArg) {
+                std::shared_ptr<Expr> promptValue;
+                if (!evalExprValue(promptArg->value, env, promptValue)) {
+                    throw InterpreterError(term.name + " prompt did not evaluate");
+                }
+                std::string promptText = requireString(promptValue, term.name, "print");
+                std::cout << promptText;
+                std::cout.flush();
+            }
+        } else if (!args.empty()) {
+            throw InterpreterError("console.readLine expects no arguments");
+        }
         std::string line;
         if (!std::getline(std::cin, line)) line.clear();
-        out = std::make_shared<StringExpr>(line);
+        if (term.name == "console:inputNumber") {
+            char* end = nullptr;
+            const double number = std::strtod(line.c_str(), &end);
+            while (end && *end && std::isspace(static_cast<unsigned char>(*end))) ++end;
+            if (line.empty() || !end || *end != '\0' || !std::isfinite(number)) {
+                throw InterpreterError("console.inputNumber expected a numeric input");
+            }
+            out = std::make_shared<NumberExpr>(number);
+        } else {
+            out = std::make_shared<StringExpr>(line);
+        }
         return true;
     }
 

@@ -92,6 +92,22 @@ set_target_properties(wordnet PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/wordnet"
 )
 
+add_library(fact SHARED native_modules/fact/NativeFact.cpp)
+target_include_directories(fact PRIVATE native_modules/fact)
+set_target_properties(fact PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/fact"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/fact"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/fact"
+)
+
+add_library(fact_analysis SHARED native_modules/fact/NativeFact.cpp)
+target_include_directories(fact_analysis PRIVATE native_modules/fact)
+set_target_properties(fact_analysis PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/fact_analysis"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/fact_analysis"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/fact_analysis"
+)
+
 find_package(Eigen3 QUIET)
 if(Eigen3_FOUND)
     target_compile_definitions(felidae PRIVATE FELIDAE_HAS_EIGEN=1)

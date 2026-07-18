@@ -1,4 +1,4 @@
-import ("process" "str").
+import ("process", "str").
 
 DockerVersion() =>
     return (process.exec(command: "docker --version")).

@@ -164,9 +164,19 @@ std::shared_ptr<ImportStmt> Parser::parseImport() {
     consume(TokenType::Import, "Expected import");
     std::vector<std::string> paths;
     if (match(TokenType::LParen)) {
-        do {
+        if (!check(TokenType::RParen)) {
             paths.push_back(consume(TokenType::String, "Expected string path in import list").text);
-        } while (!check(TokenType::RParen) && !isAtEnd());
+            while (!check(TokenType::RParen) && !isAtEnd()) {
+                if (check(TokenType::String)) {
+                    throw ParserError("Deprecated import list syntax. Use comma-separated imports like import (\"flibrary\", \"file\", \"math\").");
+                }
+                consume(TokenType::Comma, "Expected ',' between import paths");
+                if (check(TokenType::RParen)) {
+                    throw ParserError("Expected string path after ',' in import list");
+                }
+                paths.push_back(consume(TokenType::String, "Expected string path in import list").text);
+            }
+        }
         consume(TokenType::RParen, "Expected ')' after import list");
     } else {
         paths.push_back(consume(TokenType::String, "Expected string path after import").text);

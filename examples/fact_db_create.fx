@@ -1,4 +1,4 @@
-import ("csv" "file").
+import ("csv", "file").
 
 SourceCustomer(name: "Alice", city: "SEA", total: 250, status: "active").
 SourceCustomer(name: "Bob", city: "LAX", total: 90, status: "active").

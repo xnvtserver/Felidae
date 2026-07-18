@@ -1,4 +1,4 @@
-import ("str" "html_components.fx").
+import ("str", "html_components.fx").
 
 MilestoneItem(step: string, title: string) =>
     stepTag := RenderDiv(input: HtmlDivData(name: "div", id: "", class: "milestone-year", content: step)),

@@ -1,4 +1,4 @@
-import ("array" "csv" "file" "db.fx" "temp_insert.fx").
+import ("array", "csv", "file", "db.fx", "temp_insert.fx").
 
 # temp_insert.fx represents a request payload written by the API adapter.
 # Insert appends fact rows and rewrites the fact store output file only.

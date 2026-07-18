@@ -223,5 +223,17 @@ mkdir -p native_modules/wordnet
 echo "Building $WORDNET_LIB"
 "$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -Inative_modules/wordnet -shared -fPIC native_modules/wordnet/NativeWordNet.cpp -o "$WORDNET_LIB"
 
-echo "Built $FELIDAE, $CELIDAE, $FELIDAE_DEBUG, and $WORDNET_LIB"
+FACT_LIB="native_modules/fact/libfact.so"
+if [[ "$(uname -s)" == "Darwin" ]]; then FACT_LIB="native_modules/fact/libfact.dylib"; fi
+mkdir -p native_modules/fact
+echo "Building $FACT_LIB"
+"$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -Inative_modules/fact -shared -fPIC native_modules/fact/NativeFact.cpp -o "$FACT_LIB"
+
+FACT_ANALYSIS_LIB="native_modules/fact_analysis/libfact_analysis.so"
+if [[ "$(uname -s)" == "Darwin" ]]; then FACT_ANALYSIS_LIB="native_modules/fact_analysis/libfact_analysis.dylib"; fi
+mkdir -p native_modules/fact_analysis
+echo "Building $FACT_ANALYSIS_LIB"
+"$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -Inative_modules/fact -shared -fPIC native_modules/fact/NativeFact.cpp -o "$FACT_ANALYSIS_LIB"
+
+echo "Built $FELIDAE, $CELIDAE, $FELIDAE_DEBUG, $WORDNET_LIB, $FACT_LIB, and $FACT_ANALYSIS_LIB"
 

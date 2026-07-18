@@ -1,4 +1,4 @@
-import ("http" "process").
+import ("http", "process").
 
 StartServerCommand(platform: string) =>
     where platform == "windows",

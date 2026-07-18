@@ -1,4 +1,4 @@
-import ("audit_modules/provenance.fx" "audit_modules/configs.fx").
+import ("audit_modules/provenance.fx", "audit_modules/configs.fx").
 
 AuditProof(proofs: proofs) =>
     proofs := provenance.BuildFromRecording(rec: "rec", store: "store", goal: "goal", options: {}),

@@ -114,4 +114,18 @@ if ($LASTEXITCODE -ne 0) {
     throw "clang++ failed while building native_modules/wordnet/wordnet.dll"
 }
 
-Write-Host "Built build/felidae$suffix.exe, build/celidae$suffix.exe, build/felidae_debug$suffix.exe, and native_modules/wordnet/wordnet.dll"
+New-Item -ItemType Directory -Force -Path "native_modules/fact" | Out-Null
+Write-Host "Building native_modules/fact/fact.dll"
+& clang++ -std=c++17 @warningFlags @configFlags @targetFlags -Inative_modules/fact native_modules/fact/NativeFact.cpp -shared -o native_modules/fact/fact.dll
+if ($LASTEXITCODE -ne 0) {
+    throw "clang++ failed while building native_modules/fact/fact.dll"
+}
+
+New-Item -ItemType Directory -Force -Path "native_modules/fact_analysis" | Out-Null
+Write-Host "Building native_modules/fact_analysis/fact_analysis.dll"
+& clang++ -std=c++17 @warningFlags @configFlags @targetFlags -Inative_modules/fact native_modules/fact/NativeFact.cpp -shared -o native_modules/fact_analysis/fact_analysis.dll
+if ($LASTEXITCODE -ne 0) {
+    throw "clang++ failed while building native_modules/fact_analysis/fact_analysis.dll"
+}
+
+Write-Host "Built build/felidae$suffix.exe, build/celidae$suffix.exe, build/felidae_debug$suffix.exe, native_modules/wordnet/wordnet.dll, native_modules/fact/fact.dll, and native_modules/fact_analysis/fact_analysis.dll"

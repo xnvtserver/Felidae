@@ -1,4 +1,4 @@
-import ("csv" "file" "data/customer_facts.fx").
+import ("csv", "file", "data/customer_facts.fx").
 
 UpdateCustomer(input: row) =>
     c := row,

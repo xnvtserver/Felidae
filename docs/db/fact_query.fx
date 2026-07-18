@@ -1,4 +1,4 @@
-import ("db" "fact_customers.fx").
+import ("db", "fact_customers.fx").
 
 main() =>
     sea := db.find(type: "Customer", field: "city", equals: "SEA"),
