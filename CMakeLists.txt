@@ -84,6 +84,14 @@ set_target_properties(felidae_smoke PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/smoke"
 )
 
+add_library(wordnet SHARED native_modules/wordnet/NativeWordNet.cpp)
+target_include_directories(wordnet PRIVATE native_modules/wordnet)
+set_target_properties(wordnet PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/wordnet"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/wordnet"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/wordnet"
+)
+
 find_package(Eigen3 QUIET)
 if(Eigen3_FOUND)
     target_compile_definitions(felidae PRIVATE FELIDAE_HAS_EIGEN=1)

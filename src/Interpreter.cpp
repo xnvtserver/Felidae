@@ -1039,7 +1039,7 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
     if (it == clauses_.end() && ensurePredicateLoaded(callGoal->call.name)) {
         it = clauses_.find(callGoal->call.name);
     }
-    const bool preferLocalClause = it != clauses_.end() && callGoal->call.name.find(':') == std::string::npos;
+    const bool preferLocalClause = it != clauses_.end() && !nativeDeclarationFor(callGoal->call.name);
     if (!preferLocalClause) {
         EnvFrame builtinEnv = envFramePool_.acquireCopy(env);
         if (solveBuiltin(callGoal->call, builtinEnv.get())) {
@@ -1112,7 +1112,7 @@ bool Interpreter::solveAssignGoal(const AssignGoal& goal, Env& env) {
         std::shared_ptr<Expr> value;
         if (!evalExprValue(goal.expr, env, value)) {
             if (strictValueFailures_) {
-                throw InterpreterError("Assignment '" + goal.name + " := ...' did not produce a value");
+                throw InterpreterError("Assignment '" + goal.debug() + "' did not produce a value");
             }
             return false;
         }
@@ -1120,6 +1120,30 @@ bool Interpreter::solveAssignGoal(const AssignGoal& goal, Env& env) {
     }
 
     if (auto callGoal = std::dynamic_pointer_cast<CallGoal>(goal.goal)) {
+        bool expressionReturningCall = nativeDeclarationFor(callGoal->call.name) != nullptr;
+        auto valueIt = clauses_.find(callGoal->call.name);
+        if (valueIt == clauses_.end() && ensurePredicateLoaded(callGoal->call.name)) {
+            valueIt = clauses_.find(callGoal->call.name);
+        }
+        if (valueIt != clauses_.end()) {
+            for (const auto& clause : valueIt->second) {
+                if (clause && bodyHasReturnGoal(clause->body)) {
+                    expressionReturningCall = true;
+                    break;
+                }
+            }
+        }
+        if (expressionReturningCall) {
+            TermExpr term(callGoal->call.name, {});
+            for (const auto& arg : callGoal->call.args) {
+                term.args.push_back(Arg{arg.name, arg.value->clone()});
+            }
+            std::shared_ptr<Expr> callValue;
+            if (evalCallAsValue(term, env, callValue)) {
+                return unifyExpr(var, callValue, env);
+            }
+        }
+
         Call builtinCall = callGoal->call;
         builtinCall.args.push_back(Arg{"out", var});
 
@@ -1165,7 +1189,7 @@ bool Interpreter::solveAssignGoal(const AssignGoal& goal, Env& env) {
         }
 
         if (strictValueFailures_) {
-            throw InterpreterError("Assignment '" + goal.name + " := ...' did not produce a value");
+            throw InterpreterError("Assignment '" + goal.debug() + "' did not produce a value");
         }
         return false;
     }
@@ -1261,7 +1285,9 @@ bool Interpreter::solveReturnGoal(const ReturnGoal& goal, Env& env) {
     if (goal.fields.size() == 1 && goal.fields.front().name.empty()) {
         std::shared_ptr<Expr> value;
         if (!evalExprValue(goal.fields.front().value, env, value)) {
-            if (strictValueFailures_) throw InterpreterError("return value did not evaluate");
+            if (strictValueFailures_) {
+                throw InterpreterError("return value '" + goal.fields.front().value->debug() + "' did not evaluate");
+            }
             return false;
         }
         env["__return"] = value;
@@ -1274,7 +1300,7 @@ bool Interpreter::solveReturnGoal(const ReturnGoal& goal, Env& env) {
         std::shared_ptr<Expr> value;
         if (!evalExprValue(field.value, env, value)) {
             if (strictValueFailures_) {
-                throw InterpreterError("return field '" + field.name + "' did not evaluate");
+                throw InterpreterError("return field '" + field.name + ": " + field.value->debug() + "' did not evaluate");
             }
             return false;
         }
@@ -1366,6 +1392,7 @@ bool Interpreter::solveMethodCall(const Call& call,
         const Arg* callArg = findArg(call, param, paramIndex);
         for (const auto& candidate : candidates) {
             if (!callArg) {
+                if (typedParam && bodyHasReturnGoal(originalClause->body)) continue;
                 nextCandidates.push_back(candidate);
                 continue;
             }
@@ -2032,12 +2059,42 @@ const ClauseStmt* Interpreter::nativeDeclarationFor(const std::string& name) con
     return nullptr;
 }
 
-void Interpreter::validateNativeCallTypes(const Call& call, const ClauseStmt& declaration, const Env& env) {
+void Interpreter::validateNativeCallTypes(const Call& call,
+                                          const ClauseStmt& declaration,
+                                          const Env& env,
+                                          bool requireDeclaredInputs) {
+    auto isOutputName = [](const std::string& name) {
+        return name == "access" || name == "out" || name == "result" || name == "equals";
+    };
+    if (requireDeclaredInputs) {
+        for (size_t providedIndex = 0; providedIndex < call.args.size(); ++providedIndex) {
+            const Arg& provided = call.args[providedIndex];
+            if (provided.name.empty()) continue;
+            bool declaredName = false;
+            for (const auto& declared : declaration.head.args) {
+                if (declared.name == provided.name) {
+                    declaredName = true;
+                    break;
+                }
+            }
+            if (!declaredName) {
+                throw InterpreterError(call.name + " does not declare argument '" + provided.name + "'");
+            }
+        }
+    }
+
     for (size_t i = 0; i < declaration.head.args.size(); ++i) {
         const Arg& declared = declaration.head.args[i];
         const Arg* provided = findArg(call, declared, i);
-        if (!provided) continue;
         auto typeName = std::dynamic_pointer_cast<VarExpr>(declared.value);
+        if (!provided) {
+            if (requireDeclaredInputs && typeName && isBuiltinTypeName(typeName->name) && !isOutputName(declared.name)) {
+                throw InterpreterError(call.name + " expects argument '" +
+                                       (declared.name.empty() ? std::to_string(i) : declared.name) +
+                                       "' before calling native library");
+            }
+            continue;
+        }
         if (!typeName || !isBuiltinTypeName(typeName->name)) continue;
 
         std::shared_ptr<Expr> value;
@@ -2056,13 +2113,74 @@ void Interpreter::validateNativeCallTypes(const Call& call, const ClauseStmt& de
 }
 
 bool Interpreter::solveNativeCall(const Call& call, Env& env) {
-    if (nativeLibraries_.empty()) return false;
     const ClauseStmt* declaration = nativeDeclarationFor(call.name);
     if (!declaration) return false;
+    const bool systemLibraryCall = call.name.rfind("system:flibrary:", 0) == 0;
+    if (!systemLibraryCall && isBuiltinFunctionName(call.name)) return false;
+    const bool genericLibraryLoader = call.name == "system:flibrary:call";
 
     std::string moduleName = call.name;
     size_t sep = moduleName.find(':');
     if (sep != std::string::npos) moduleName = moduleName.substr(0, sep);
+    if (systemLibraryCall) {
+        size_t moduleStart = std::string("system:flibrary:").size();
+        size_t moduleEnd = call.name.find(':', moduleStart);
+        moduleName = call.name.substr(moduleStart, moduleEnd == std::string::npos ? std::string::npos : moduleEnd - moduleStart);
+    }
+    std::string nativeFunctionName = call.name;
+    std::shared_ptr<MapExpr> loaderArgs;
+    if (genericLibraryLoader) {
+        const Arg* moduleArg = findArgByNameOrIndex(call, "module", 0);
+        const Arg* functionArg = findArgByNameOrIndex(call, "function", 1);
+        const Arg* argsArg = findArgByNameOrIndex(call, "args", 2);
+        if (!moduleArg || !functionArg || !argsArg) {
+            throw InterpreterError("system.flibrary.call expects module, function, and args");
+        }
+        std::shared_ptr<Expr> moduleValue;
+        std::shared_ptr<Expr> functionValue;
+        std::shared_ptr<Expr> argsValue;
+        if (!evalExprValue(moduleArg->value, env, moduleValue) ||
+            !evalExprValue(functionArg->value, env, functionValue) ||
+            !evalExprValue(argsArg->value, env, argsValue)) {
+            return false;
+        }
+        if (!argAsString(moduleValue, moduleName) || moduleName.empty()) {
+            throw InterpreterError("system.flibrary.call expects string argument 'module'");
+        }
+        std::string functionName;
+        if (!argAsString(functionValue, functionName) || functionName.empty()) {
+            throw InterpreterError("system.flibrary.call expects string argument 'function'");
+        }
+        loaderArgs = std::dynamic_pointer_cast<MapExpr>(argsValue);
+        if (!loaderArgs) {
+            throw InterpreterError("system.flibrary.call expects map argument 'args'");
+        }
+        nativeFunctionName = "system:flibrary:" + moduleName + ":" + functionName;
+        Call targetCall(nativeFunctionName, {});
+        for (const auto& entry : loaderArgs->entries) {
+            targetCall.args.push_back(Arg{entry.key, entry.value->clone()});
+        }
+        auto targetIt = clauses_.find(nativeFunctionName);
+        if (targetIt != clauses_.end()) {
+            bool matchedDeclaration = false;
+            std::string firstMismatch;
+            for (const auto& targetDeclaration : targetIt->second) {
+                if (!targetDeclaration || !targetDeclaration->emptyDeclaration) continue;
+                try {
+                    validateNativeCallTypes(targetCall, *targetDeclaration, env, true);
+                    matchedDeclaration = true;
+                    break;
+                } catch (const InterpreterError& error) {
+                    if (firstMismatch.empty()) firstMismatch = error.what();
+                }
+            }
+            if (!matchedDeclaration) {
+                throw InterpreterError(firstMismatch.empty()
+                    ? ("No native declaration overload matches " + nativeFunctionName)
+                    : firstMismatch);
+            }
+        }
+    }
 
     const NativeLibrary* library = nullptr;
     for (const auto& candidate : nativeLibraries_) {
@@ -2071,8 +2189,33 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
             break;
         }
     }
-    if (!library && nativeLibraries_.size() == 1) library = &nativeLibraries_.front();
-    if (!library) return false;
+    if (!library) {
+        fs::path baseDir = fs::current_path();
+        auto origin = clauseOrigins_.find(declaration);
+        if (origin != clauseOrigins_.end()) baseDir = origin->second.parent_path();
+        fs::path nativeFile = resolveNativeImport(baseDir, moduleName);
+        if (nativeFile.empty()) {
+            fs::path root = sourceRootFromBase(baseDir);
+            const bool nativeModuleExpected =
+                systemLibraryCall ||
+                fs::exists(root / "native_modules" / moduleName) ||
+                fs::exists(root / "modules" / moduleName);
+            if (!nativeModuleExpected) return false;
+            throw InterpreterError("Native module library for '" + moduleName +
+                                   "' not found while executing '" + call.name + "'");
+        }
+        loadNativeLibrary(nativeFile);
+        for (const auto& candidate : nativeLibraries_) {
+            if (candidate.moduleName == moduleName) {
+                library = &candidate;
+                break;
+            }
+        }
+        if (!library) {
+            throw InterpreterError("Native module library '" + nativeFile.string() +
+                                   "' did not register as module '" + moduleName + "'");
+        }
+    }
 
     validateNativeCallTypes(call, *declaration, env);
 
@@ -2080,42 +2223,60 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
     json << "{";
     bool first = true;
     std::vector<const Arg*> outputArgs;
-    for (size_t i = 0; i < call.args.size(); ++i) {
-        const Arg& arg = call.args[i];
-        std::shared_ptr<Expr> value;
-        if (!evalExprValue(arg.value, env, value)) {
-            if (std::dynamic_pointer_cast<VarExpr>(arg.value)) {
-                outputArgs.push_back(&arg);
-                continue;
-            }
-            return false;
+    if (genericLibraryLoader) {
+        for (const auto& entry : loaderArgs->entries) {
+            if (!first) json << ",";
+            first = false;
+            json << "\"" << jsonEscape(entry.key) << "\":" << exprToJson(entry.value);
         }
-        if (!first) json << ",";
-        first = false;
-        std::string key = arg.name.empty() ? ("arg" + std::to_string(i)) : arg.name;
-        json << "\"" << jsonEscape(key) << "\":" << exprToJson(value);
+    } else {
+        for (size_t i = 0; i < call.args.size(); ++i) {
+            const Arg& arg = call.args[i];
+            std::shared_ptr<Expr> value;
+            if (!evalExprValue(arg.value, env, value)) {
+                if (std::dynamic_pointer_cast<VarExpr>(arg.value)) {
+                    outputArgs.push_back(&arg);
+                    continue;
+                }
+                return false;
+            }
+            if (!first) json << ",";
+            first = false;
+            std::string key = arg.name.empty() ? ("arg" + std::to_string(i)) : arg.name;
+            json << "\"" << jsonEscape(key) << "\":" << exprToJson(value);
+        }
     }
+    if (!first) json << ",";
+    json << "\"__facts\":[";
+    bool firstFact = true;
+    for (const auto& fact : memory_.facts()) {
+        if (!fact.value) continue;
+        if (!firstFact) json << ",";
+        firstFact = false;
+        json << exprToJson(fact.value);
+    }
+    json << "]";
     json << "}";
 
-    char* response = library->call(call.name.c_str(), json.str().c_str());
-    if (!response) throw InterpreterError("Native function '" + call.name + "' returned a null response");
+    char* response = library->call(nativeFunctionName.c_str(), json.str().c_str());
+    if (!response) throw InterpreterError("Native function '" + nativeFunctionName + "' returned a null response");
     std::string responseText(response);
     library->free(response);
 
     std::shared_ptr<Expr> parsed;
     size_t pos = 0;
     if (!parseJsonValue(responseText, pos, parsed)) {
-        throw InterpreterError("Native function '" + call.name + "' returned invalid JSON");
+        throw InterpreterError("Native function '" + nativeFunctionName + "' returned invalid JSON");
     }
     skipJsonWs(responseText, pos);
     if (pos != responseText.size()) {
-        throw InterpreterError("Native function '" + call.name + "' returned trailing data after JSON");
+        throw InterpreterError("Native function '" + nativeFunctionName + "' returned trailing data after JSON");
     }
 
     if (auto errorValue = findMapValue(parsed, "error")) {
         std::string message;
         if (argAsString(errorValue, message) && !message.empty()) {
-            throw InterpreterError("Native function '" + call.name + "' failed: " + message);
+            throw InterpreterError("Native function '" + nativeFunctionName + "' failed: " + message);
         }
     }
 
@@ -2132,6 +2293,10 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
             if (!value) value = findMapValue(parsed, "result");
             if (!value) value = findMapValue(parsed, "value");
             if (!value && returnedMap->entries.size() == 1) value = returnedMap->entries.front().value;
+            if (!value && (outArg->name == "result" || outArg->name == "out" ||
+                           outArg->name == "access" || outArg->name == "equals")) {
+                value = parsed;
+            }
         } else {
             value = parsed;
         }
@@ -2202,6 +2367,9 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
     };
     if (hasMethod(term.name) || hasCallableBody()) return evalCallAsValue(term, env, out);
     if (isBuiltinFunctionName(term.name)) return evalCallAsValue(term, env, out);
+    if (term.name.find(':') != std::string::npos && !term.args.empty()) {
+        if (evalCallAsValue(term, env, out)) return true;
+    }
 
     if (term.name.find(':') == std::string::npos && !term.args.empty()) {
         std::vector<MapEntry> entries;
@@ -2229,7 +2397,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
     if (!nativeDeclarationFor(term.name)) {
         ensurePredicateLoaded(term.name);
     }
-    if (!nativeLibraries_.empty() && nativeDeclarationFor(term.name)) {
+    if (nativeDeclarationFor(term.name)) {
         Call nativeCall(term.name, {});
         for (const auto& arg : term.args) nativeCall.args.push_back(Arg{arg.name, arg.value->clone()});
         Env nativeEnv = env;
@@ -2267,6 +2435,9 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
     }
 
     auto callableIt = clauses_.find(term.name);
+    if (callableIt == clauses_.end() && ensurePredicateLoaded(term.name)) {
+        callableIt = clauses_.find(term.name);
+    }
     bool callableBody = false;
     if (callableIt != clauses_.end()) {
         for (const auto& clause : callableIt->second) {
@@ -2276,7 +2447,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
             }
         }
     }
-    if (term.name.find(':') == std::string::npos && callableBody) {
+    if (callableBody && !nativeDeclarationFor(term.name)) {
         Call call(term.name, {});
         for (size_t i = 0; i < args.size(); ++i) {
             call.args.push_back(Arg{term.args[i].name, args[i]});
@@ -4068,7 +4239,7 @@ void Interpreter::loadLazyModule(LazyModule& module) {
     for (const auto& file : files) {
         loadProgramFile(file);
     }
-    if (!nativeLibrary.empty()) {
+    if (!nativeLibrary.empty() && files.empty()) {
         loadNativeLibrary(nativeLibrary);
     }
 }
@@ -4111,6 +4282,14 @@ std::vector<std::filesystem::path> Interpreter::expandImportPattern(const std::f
     }
 
     fs::path raw(pattern);
+    if (pattern.rfind("system.flibrary.", 0) == 0 && pattern.find('*') == std::string::npos) {
+        std::string moduleName = pattern.substr(std::string("system.flibrary.").size());
+        fs::path coreFile = fs::absolute(sourceRootFromBase(baseDir) / "core" / "system" / "flibrary" / (moduleName + ".fx")).lexically_normal();
+        if (fs::exists(coreFile) && fs::is_regular_file(coreFile)) {
+            files.push_back(coreFile);
+            return files;
+        }
+    }
     fs::path target = raw.is_absolute() ? raw : (baseDir / raw);
     target = fs::absolute(target).lexically_normal();
 
@@ -4137,6 +4316,13 @@ std::vector<std::filesystem::path> Interpreter::expandImportPattern(const std::f
     }
 
     if (!fs::exists(target)) {
+        if (!raw.has_parent_path() && raw.extension() == ".fx") {
+            fs::path coreFile = fs::absolute(sourceRootFromBase(baseDir) / "core" / raw.filename()).lexically_normal();
+            if (fs::exists(coreFile) && fs::is_regular_file(coreFile)) {
+                files.push_back(coreFile);
+                return files;
+            }
+        }
         fs::path nativeFile = resolveNativeImport(baseDir, pattern);
         if (!nativeFile.empty()) return files;
         throw InterpreterError("Import file not found: " + target.string());
@@ -4165,6 +4351,14 @@ std::filesystem::path Interpreter::resolveNativeImport(const std::filesystem::pa
     std::string moduleName = raw.stem().string();
     if (isBareModuleImport(pattern)) {
         moduleName = pattern;
+    }
+    if (pattern.rfind("system.flibrary.", 0) == 0) {
+        moduleName = pattern.substr(std::string("system.flibrary.").size());
+    }
+    if (pattern.rfind("system:flibrary:", 0) == 0) {
+        size_t moduleStart = std::string("system:flibrary:").size();
+        size_t moduleEnd = pattern.find(':', moduleStart);
+        moduleName = pattern.substr(moduleStart, moduleEnd == std::string::npos ? std::string::npos : moduleEnd - moduleStart);
     }
     if (!moduleName.empty() && moduleName.find('*') == std::string::npos) {
         for (const auto& fileName : nativeLibraryFileNames(moduleName)) {

@@ -107,4 +107,11 @@ Invoke-FelidaeBuild -Output "build/felidae$suffix.exe" -Sources (@("src/main.cpp
 Invoke-FelidaeBuild -Output "build/celidae$suffix.exe" -Sources (@("src/felidae_debug.cpp") + $debugSources)
 Invoke-FelidaeBuild -Output "build/felidae_debug$suffix.exe" -Sources (@("src/felidae_debug.cpp") + $debugSources)
 
-Write-Host "Built build/felidae$suffix.exe, build/celidae$suffix.exe, and build/felidae_debug$suffix.exe"
+New-Item -ItemType Directory -Force -Path "native_modules/wordnet" | Out-Null
+Write-Host "Building native_modules/wordnet/wordnet.dll"
+& clang++ -std=c++17 @warningFlags @configFlags @targetFlags -Inative_modules/wordnet native_modules/wordnet/NativeWordNet.cpp -shared -o native_modules/wordnet/wordnet.dll
+if ($LASTEXITCODE -ne 0) {
+    throw "clang++ failed while building native_modules/wordnet/wordnet.dll"
+}
+
+Write-Host "Built build/felidae$suffix.exe, build/celidae$suffix.exe, build/felidae_debug$suffix.exe, and native_modules/wordnet/wordnet.dll"

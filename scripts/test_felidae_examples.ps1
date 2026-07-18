@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = "Continue"
 
 if (-not (Test-Path -LiteralPath $Exe)) {
-    Write-Error "Missing $Exe. Build first, for example: clang++ -std=c++17 -Wall -Wextra -Isrc -Ithird_party src\main.cpp src\FelidaeRuntime.cpp src\Visualization.cpp src\Lexer.cpp src\Parser.cpp src\Interpreter.cpp src\Env.cpp src\Memory.cpp native_modules\csv\NativeCsv.cpp native_modules\http\NativeHttp.cpp native_modules\process\NativeProcess.cpp -o build\felidae.exe"
+    Write-Error "Missing $Exe. Build first, for example: .\build.cmd"
 }
 
 if (-not (Test-Path -LiteralPath $DebugExe) -and (Test-Path -LiteralPath "build\felidae_debug.exe")) {
@@ -138,6 +138,8 @@ $directTests = @(
     @{ Name = "colon dot interchangeable access"; Args = @("examples\access_interchange.fx"); Expect = @("dot: 42", "colon: 42", "mixed: 42", "direct: 42", "checked: {dot: 42, colon: 42, mixed: 42}") },
     @{ Name = "method false tuple value"; Args = @("examples\invalid\method_value_no_result.fx"); Expect = @('result: fn:tuple(value: "false")') },
     @{ Name = "native stdlib execution"; Args = @("examples\native_stdlib.fx"); Expect = @("writeStatus: `"ok`"", "readBack: `"Felidae IO`"", "exists: `"true`"", "root: 9", "powered: 256", "activation: 0.5", "dot: 32", "mse: 1.33333333333333") },
+    @{ Name = "native WordNet semantic algorithms"; Args = @("examples\wordnet_native_demo.fx"); Expect = @('synset: "cat.n.01"', 'pathSimilarity: {score: 0.333333', 'wuPalmer: {score: 0.666667', 'resnik: {score:', 'factSimilarity: {score: 0.333333', 'score: 4', 'text: "gato"') },
+    @{ Name = "native WordNet command-line query"; Args = @("examples\wordnet_native_demo.fx", "? WordNetCliSmoke(result: Result)"); Expect = @('Result = {score: 0.333333', 'lcs: "animal.n.01"') },
     @{ Name = "cache import thread stress"; Args = @("examples\cache_thread_import_stress.fx"); Expect = @('start1: "started"', 'start2: "started"', 'start3: "started"', 'count: 12', 'Eve', 'Engineer') },
     @{ Name = "then pipeline direct execution"; Args = @("examples\then_pipeline.fx"); Expect = @('direct: {seen: 4, tag: "wrapped"}', 'nested: {seen: 13, tag: "wrapped"}', 'stopped: nil', 'arithmeticPrecedence: 10') },
     @{ Name = "then pipeline command line query"; Args = @("examples\then_pipeline.fx", "? Increment(value: 1) then Double(value: system.result) == 4"); Expect = @("true") },

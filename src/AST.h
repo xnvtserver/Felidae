@@ -319,11 +319,13 @@ public:
 
     std::shared_ptr<Goal> clone() const override {
         if (goal) return std::make_shared<AssignGoal>(name, goal->clone());
+        if (!expr) return std::make_shared<AssignGoal>(name, std::shared_ptr<Expr>{});
         return std::make_shared<AssignGoal>(name, expr->clone());
     }
 
     std::string debug() const override {
-        return name + " := " + (goal ? goal->debug() : expr->debug());
+        if (goal) return name + " := " + goal->debug();
+        return name + " := " + (expr ? expr->debug() : "<missing expression>");
     }
 };
 

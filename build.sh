@@ -217,5 +217,11 @@ echo "Building $CELIDAE"
 echo "Building $FELIDAE_DEBUG"
 "$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -Isrc -isystem third_party src/felidae_debug.cpp "${DEBUG_SOURCES[@]}" -o "$FELIDAE_DEBUG" "${EXTRA_LIBS[@]}"
 
-echo "Built $FELIDAE, $CELIDAE, and $FELIDAE_DEBUG"
+WORDNET_LIB="native_modules/wordnet/libwordnet.so"
+if [[ "$(uname -s)" == "Darwin" ]]; then WORDNET_LIB="native_modules/wordnet/libwordnet.dylib"; fi
+mkdir -p native_modules/wordnet
+echo "Building $WORDNET_LIB"
+"$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -Inative_modules/wordnet -shared -fPIC native_modules/wordnet/NativeWordNet.cpp -o "$WORDNET_LIB"
+
+echo "Built $FELIDAE, $CELIDAE, $FELIDAE_DEBUG, and $WORDNET_LIB"
 

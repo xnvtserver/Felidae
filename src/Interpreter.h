@@ -162,7 +162,10 @@ private:
     std::shared_ptr<Expr> threadTaskResult(const std::shared_ptr<Expr>& handle);
     void collectExecutionGarbage();
     const ClauseStmt* nativeDeclarationFor(const std::string& name) const;
-    void validateNativeCallTypes(const Call& call, const ClauseStmt& declaration, const Env& env);
+    void validateNativeCallTypes(const Call& call,
+                                 const ClauseStmt& declaration,
+                                 const Env& env,
+                                 bool requireDeclaredInputs = false);
     std::vector<std::filesystem::path> expandImportPattern(const std::filesystem::path& baseDir,
                                                            const std::string& pattern) const;
     std::filesystem::path resolveNativeImport(const std::filesystem::path& baseDir,
