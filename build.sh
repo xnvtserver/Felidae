@@ -235,5 +235,20 @@ mkdir -p native_modules/fact_analysis
 echo "Building $FACT_ANALYSIS_LIB"
 "$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -Inative_modules/fact -shared -fPIC native_modules/fact/NativeFact.cpp -o "$FACT_ANALYSIS_LIB"
 
-echo "Built $FELIDAE, $CELIDAE, $FELIDAE_DEBUG, $WORDNET_LIB, $FACT_LIB, and $FACT_ANALYSIS_LIB"
+PLOT_LIB="native_modules/plot/libplot.so"
+if [[ "$(uname -s)" == "Darwin" ]]; then PLOT_LIB="native_modules/plot/libplot.dylib"; fi
+mkdir -p native_modules/plot
+echo "Building $PLOT_LIB"
+"$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -DFELIDAE_PLOT_BUILD -Inative_modules/plot -shared -fPIC native_modules/plot/NativePlot.cpp -o "$PLOT_LIB"
+
+GTK_LIB="native_modules/gtk/libgtk.so"
+QT_LIB="native_modules/qt/libqt.so"
+if [[ "$(uname -s)" == "Darwin" ]]; then GTK_LIB="native_modules/gtk/libgtk.dylib"; QT_LIB="native_modules/qt/libqt.dylib"; fi
+mkdir -p native_modules/gtk native_modules/qt
+echo "Building $GTK_LIB"
+"$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -DFELIDAE_GRAPHICS_BUILD -Inative_modules/graphics -shared -fPIC native_modules/gtk/NativeGtk.cpp -o "$GTK_LIB"
+echo "Building $QT_LIB"
+"$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -DFELIDAE_GRAPHICS_BUILD -Inative_modules/graphics -shared -fPIC native_modules/qt/NativeQt.cpp -o "$QT_LIB"
+
+echo "Built $FELIDAE, $CELIDAE, $FELIDAE_DEBUG, $WORDNET_LIB, $FACT_LIB, $FACT_ANALYSIS_LIB, $PLOT_LIB, $GTK_LIB, and $QT_LIB"
 

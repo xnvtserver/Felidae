@@ -128,4 +128,25 @@ if ($LASTEXITCODE -ne 0) {
     throw "clang++ failed while building native_modules/fact_analysis/fact_analysis.dll"
 }
 
-Write-Host "Built build/felidae$suffix.exe, build/celidae$suffix.exe, build/felidae_debug$suffix.exe, native_modules/wordnet/wordnet.dll, native_modules/fact/fact.dll, and native_modules/fact_analysis/fact_analysis.dll"
+New-Item -ItemType Directory -Force -Path "native_modules/plot" | Out-Null
+Write-Host "Building native_modules/plot/plot.dll"
+& clang++ -std=c++17 @warningFlags @configFlags @targetFlags -DFELIDAE_PLOT_BUILD -Inative_modules/plot native_modules/plot/NativePlot.cpp -shared -o native_modules/plot/plot.dll
+if ($LASTEXITCODE -ne 0) {
+    throw "clang++ failed while building native_modules/plot/plot.dll"
+}
+
+New-Item -ItemType Directory -Force -Path "native_modules/gtk" | Out-Null
+Write-Host "Building native_modules/gtk/gtk.dll"
+& clang++ -std=c++17 @warningFlags @configFlags @targetFlags -DFELIDAE_GRAPHICS_BUILD -Inative_modules/graphics native_modules/gtk/NativeGtk.cpp -shared -o native_modules/gtk/gtk.dll
+if ($LASTEXITCODE -ne 0) {
+    throw "clang++ failed while building native_modules/gtk/gtk.dll"
+}
+
+New-Item -ItemType Directory -Force -Path "native_modules/qt" | Out-Null
+Write-Host "Building native_modules/qt/qt.dll"
+& clang++ -std=c++17 @warningFlags @configFlags @targetFlags -DFELIDAE_GRAPHICS_BUILD -Inative_modules/graphics native_modules/qt/NativeQt.cpp -shared -o native_modules/qt/qt.dll
+if ($LASTEXITCODE -ne 0) {
+    throw "clang++ failed while building native_modules/qt/qt.dll"
+}
+
+Write-Host "Built build/felidae$suffix.exe, build/celidae$suffix.exe, build/felidae_debug$suffix.exe, native_modules/wordnet/wordnet.dll, native_modules/fact/fact.dll, native_modules/fact_analysis/fact_analysis.dll, native_modules/plot/plot.dll, native_modules/gtk/gtk.dll, and native_modules/qt/qt.dll"

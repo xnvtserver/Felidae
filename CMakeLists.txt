@@ -108,6 +108,32 @@ set_target_properties(fact_analysis PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/fact_analysis"
 )
 
+add_library(plot SHARED native_modules/plot/NativePlot.cpp)
+target_include_directories(plot PRIVATE native_modules/plot)
+set_target_properties(plot PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/plot"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/plot"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/plot"
+)
+
+add_library(gtk SHARED native_modules/gtk/NativeGtk.cpp)
+target_include_directories(gtk PRIVATE native_modules/gtk native_modules/graphics)
+target_compile_definitions(gtk PRIVATE FELIDAE_GRAPHICS_BUILD=1)
+set_target_properties(gtk PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/gtk"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/gtk"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/gtk"
+)
+
+add_library(qt SHARED native_modules/qt/NativeQt.cpp)
+target_include_directories(qt PRIVATE native_modules/qt native_modules/graphics)
+target_compile_definitions(qt PRIVATE FELIDAE_GRAPHICS_BUILD=1)
+set_target_properties(qt PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/qt"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/qt"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/qt"
+)
+
 find_package(Eigen3 QUIET)
 if(Eigen3_FOUND)
     target_compile_definitions(felidae PRIVATE FELIDAE_HAS_EIGEN=1)
