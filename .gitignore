@@ -1,0 +1,38 @@
+# Build outputs
+build/
+build-clang/
+*.exe
+*.obj
+*.o
+*.pdb
+*.ilk
+*.dll
+*.lib
+*.a
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+
+# VS Code extension dependencies and package output
+vs-code-extension/node_modules/
+vs-code-extension/*.vsix
+vs-code-extension/.vscode-test/
+
+# IntelliJ IDEA extension generated files
+intellij-idea-extension/.gradle/
+intellij-idea-extension/.intellijPlatform/
+intellij-idea-extension/build/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Editor/OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+node_modules

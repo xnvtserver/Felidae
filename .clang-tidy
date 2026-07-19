@@ -1,0 +1,15 @@
+Checks: >
+  clang-diagnostic-*,
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  portability-*,
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-exception-escape,
+  -portability-avoid-pragma-once
+WarningsAsErrors: ''
+HeaderFilterRegex: 'src/.*'
+CheckOptions:
+  - key: bugprone-argument-comment.StrictMode
+    value: 'false'

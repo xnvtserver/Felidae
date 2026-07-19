@@ -1,0 +1,13 @@
+{
+  "iconDefinitions": {
+    "_felidae_fx": {
+      "iconPath": "./fx-dark.svg"
+    }
+  },
+  "fileExtensions": {
+    "fx": "_felidae_fx"
+  },
+  "languageIds": {
+    "felidae": "_felidae_fx"
+  }
+}

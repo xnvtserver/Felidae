@@ -1,0 +1,38 @@
+==================
+facts and methods
+==================
+
+Employee(name: "Alice", role: "Engineer").
+
+HasManager(employee: e, name: string) =>
+    name == e.name,
+    e.manager != nil.
+
+main(arguments: system.stdin) =>
+    rows := csv.parse(data: "name,role\nAlice,Engineer\n"),
+    names := lambda(rows, row => row.name),
+    return (
+        names: names,
+        ok: true
+    ).
+
+---
+
+(source_file
+  (clause)
+  (clause)
+  (clause))
+
+==================
+then pipeline
+==================
+
+main() =>
+    result := StepOne()
+        then StepTwo(input: system.result),
+    return result.
+
+---
+
+(source_file
+  (clause))
