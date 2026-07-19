@@ -65,6 +65,7 @@ private:
     std::shared_ptr<Expr> parseAccessExpr();
     std::shared_ptr<Expr> parseAdditiveExpr();
     std::shared_ptr<Expr> parseMultiplicativeExpr();
+    std::shared_ptr<Expr> parseUnaryExpr();
     std::shared_ptr<Expr> parsePrimaryExpr();
     std::shared_ptr<Expr> parseLambdaExpr();
     std::shared_ptr<Expr> parseMapExpr();

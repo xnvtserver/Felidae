@@ -537,12 +537,26 @@ std::shared_ptr<Expr> Parser::parseAdditiveExpr() {
 }
 
 std::shared_ptr<Expr> Parser::parseMultiplicativeExpr() {
-    auto expr = parsePrimaryExpr();
+    auto expr = parseUnaryExpr();
     while (check(TokenType::Star) || check(TokenType::Slash)) {
         std::string op = advance().text;
-        expr = std::make_shared<BinaryExpr>(std::move(expr), op, parsePrimaryExpr());
+        expr = std::make_shared<BinaryExpr>(std::move(expr), op, parseUnaryExpr());
     }
     return expr;
+}
+
+std::shared_ptr<Expr> Parser::parseUnaryExpr() {
+    if (match(TokenType::Minus)) {
+        auto operand = parseUnaryExpr();
+        if (auto number = std::dynamic_pointer_cast<NumberExpr>(operand)) {
+            return std::make_shared<NumberExpr>(-number->value);
+        }
+        return std::make_shared<BinaryExpr>(std::make_shared<NumberExpr>(0.0), "-", std::move(operand));
+    }
+    if (match(TokenType::Plus)) {
+        return parseUnaryExpr();
+    }
+    return parsePrimaryExpr();
 }
 
 std::shared_ptr<Expr> Parser::parsePrimaryExpr() {
