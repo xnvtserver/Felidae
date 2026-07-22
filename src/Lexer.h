@@ -32,6 +32,7 @@ private:
 
     void add(TokenType type, std::string text, std::vector<Token>& out, int line, int col);
     void skipWhitespaceAndComments();
+    void consumePhysicalNewline();
     Token readIdentifier();
     Token readNumber();
     Token readString();

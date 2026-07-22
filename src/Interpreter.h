@@ -64,11 +64,26 @@ private:
         std::string error;
         bool started = false;
     };
+    struct MethodParamPlan {
+        std::string localName;
+        std::string typeName;
+        bool typedParam = false;
+        bool builtinType = false;
+    };
+    struct MethodRuntimeInfo {
+        size_t callCount = 0;
+        bool methodKnown = false;
+        bool isMethod = false;
+        bool paramsPrepared = false;
+        bool cacheEligible = false;
+        std::vector<MethodParamPlan> params;
+    };
 
     std::unordered_map<std::string, std::vector<std::shared_ptr<ClauseStmt>>> clauses_;
     FactMemory memory_;
-    std::unordered_map<std::string, std::shared_ptr<Expr>> globals_;
+    GlobalEnv globals_;
     std::unordered_map<std::string, std::vector<Solution>> solveCache_;
+    mutable std::unordered_map<const ClauseStmt*, MethodRuntimeInfo> methodRuntimeCache_;
     std::vector<LazyModule> lazyModules_;
     std::set<std::filesystem::path> loadedFiles_;
     std::unordered_map<const ClauseStmt*, std::filesystem::path> clauseOrigins_;
@@ -81,6 +96,8 @@ private:
     size_t solveEpoch_ = 0;
     size_t renameCounter_ = 0;
     size_t threadCounter_ = 0;
+    size_t cacheInvalidationDepth_ = 0;
+    bool pendingCacheInvalidation_ = false;
     bool strictValueFailures_ = false;
     bool valueCallMode_ = false;
     std::vector<std::shared_ptr<Expr>> pipelineResults_;
@@ -91,6 +108,7 @@ private:
                         size_t maxSolutions,
                         size_t depth);
     void solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& goals,
+                             size_t goalIndex,
                              Env& env,
                              std::vector<Solution>& out,
                              size_t maxSolutions,
@@ -118,7 +136,7 @@ private:
     bool evalPipelineExpr(const PipelineExpr& pipeline, const Env& env, std::shared_ptr<Expr>& out);
     bool evalExprValue(const std::shared_ptr<Expr>& expr, const Env& env, std::shared_ptr<Expr>& out);
     bool compareResolved(const std::shared_ptr<Expr>& left,
-                         const std::string& op,
+                         TokenType op,
                          const std::shared_ptr<Expr>& right) const;
 
     bool unifyCall(const Call& goal, const Call& head, Env& env);
@@ -131,6 +149,9 @@ private:
     const Arg* findArgByNameOrIndex(const Call& call, const std::string& name, size_t index) const;
     std::string solveCacheKey(const std::vector<std::shared_ptr<Goal>>& goals, size_t maxSolutions) const;
     void invalidateCaches();
+    void beginCacheInvalidationBatch();
+    void endCacheInvalidationBatch();
+    void clearCachesNow();
 
     std::shared_ptr<ClauseStmt> standardizeApart(const ClauseStmt& clause);
     Call renameCall(const Call& call, const std::string& prefix);
@@ -143,12 +164,17 @@ private:
     bool goalMayHaveSideEffects(const std::shared_ptr<Goal>& goal) const;
     bool exprMayHaveSideEffects(const std::shared_ptr<Expr>& expr) const;
     bool isMethodClause(const ClauseStmt& clause) const;
+    bool methodMetadataCacheEligible(const ClauseStmt& clause) const;
+    MethodParamPlan makeMethodParamPlan(const Arg& param) const;
+    std::vector<MethodParamPlan> buildMethodParamPlan(const ClauseStmt& clause) const;
+    const std::vector<MethodParamPlan>* hotMethodParamPlan(const std::shared_ptr<ClauseStmt>& clause);
     std::shared_ptr<MapExpr> factToMap(const ClauseStmt& clause, const std::string& parentType);
     std::vector<std::shared_ptr<Expr>> valuesForLambdaSource(const std::shared_ptr<Expr>& source, const Env& env);
 
     bool ensurePredicateLoaded(const std::string& predicate);
     void touchClauses(const std::vector<std::shared_ptr<ClauseStmt>>& clauses);
     void evictColdModules();
+    void unloadModule(LazyModule& module);
     void loadLazyModule(LazyModule& module);
     void loadProgramFile(const std::filesystem::path& file);
     void loadNativeLibrary(const std::filesystem::path& file);

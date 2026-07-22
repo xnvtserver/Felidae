@@ -32,6 +32,7 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr size_t kMaxCachedEnvFrames = 4096;
+constexpr size_t kHotMethodPrepareThreshold = 2;
 
 class PipelineResultClearScope {
 public:
@@ -107,15 +108,15 @@ static bool argAsString(const std::shared_ptr<Expr>& expr, std::string& out) {
 }
 
 static std::vector<std::shared_ptr<Expr>> termArgs(const std::shared_ptr<Expr>& expr,
-                                                   const std::string& name) {
+                                                   BuiltinId id) {
     if (auto t = std::dynamic_pointer_cast<TermExpr>(expr)) {
-        if (t->name == name) {
+        if (t->builtinId == id) {
             std::vector<std::shared_ptr<Expr>> out;
             for (const auto& arg : t->args) out.push_back(arg.value);
             return out;
         }
     }
-    if (name == "fn:array") {
+    if (id == BuiltinId::FnArray) {
         if (auto a = std::dynamic_pointer_cast<ArrayExpr>(expr)) return a->items;
     }
     return {};
@@ -123,17 +124,19 @@ static std::vector<std::shared_ptr<Expr>> termArgs(const std::shared_ptr<Expr>& 
 
 static std::shared_ptr<Expr> findMapValue(const std::shared_ptr<Expr>& expr,
                                           const std::string& key) {
+    const SymbolId keyId = symbolIdForName(key);
     if (auto m = std::dynamic_pointer_cast<MapExpr>(expr)) {
         for (const auto& entry : m->entries) {
-            if (entry.key == key) return entry.value;
+            if (entry.keyId == keyId && entry.key == key) return entry.value;
         }
     }
     if (auto t = std::dynamic_pointer_cast<TermExpr>(expr)) {
-        if (t->name == "json:object") {
+        if (t->builtinId == BuiltinId::JsonObject) {
             for (const auto& field : t->args) {
-                auto pair = termArgs(field.value, "fn:pair");
+                auto pair = termArgs(field.value, BuiltinId::FnPair);
                 std::string fieldName;
-                if (pair.size() == 2 && argAsString(pair[0], fieldName) && fieldName == key) {
+                if (pair.size() == 2 && argAsString(pair[0], fieldName) &&
+                    symbolIdForName(fieldName) == keyId && fieldName == key) {
                     return pair[1];
                 }
             }
@@ -160,10 +163,10 @@ static bool exprAsMapEntries(const std::shared_ptr<Expr>& expr, std::vector<MapE
         return true;
     }
     if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
-        if (term->name == "json:object") {
+        if (term->builtinId == BuiltinId::JsonObject) {
             out.clear();
             for (const auto& field : term->args) {
-                auto pair = termArgs(field.value, "fn:pair");
+                auto pair = termArgs(field.value, BuiltinId::FnPair);
                 std::string key;
                 if (pair.size() != 2 || !argAsString(pair[0], key)) return false;
                 out.push_back(MapEntry{key, pair[1]->clone()});
@@ -182,7 +185,7 @@ static bool exprAsArrayItems(const std::shared_ptr<Expr>& expr, std::vector<std:
         return true;
     }
     if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
-        if (term->name == "fn:array") {
+        if (term->builtinId == BuiltinId::FnArray) {
             out.clear();
             for (const auto& arg : term->args) {
                 if (arg.name == "data") {
@@ -223,8 +226,9 @@ static double factorialTerm(double n, const std::string& fn, const std::string& 
 }
 
 static void upsertEntry(std::vector<MapEntry>& entries, const std::string& key, std::shared_ptr<Expr> value) {
+    const SymbolId keyId = symbolIdForName(key);
     for (auto& entry : entries) {
-        if (entry.key == key) {
+        if (entry.keyId == keyId && entry.key == key) {
             entry.value = std::move(value);
             return;
         }
@@ -234,8 +238,9 @@ static void upsertEntry(std::vector<MapEntry>& entries, const std::string& key, 
 
 static bool removeEntry(std::vector<MapEntry>& entries, const std::string& key) {
     auto oldSize = entries.size();
+    const SymbolId keyId = symbolIdForName(key);
     entries.erase(std::remove_if(entries.begin(), entries.end(),
-        [&](const MapEntry& entry) { return entry.key == key; }), entries.end());
+        [&](const MapEntry& entry) { return entry.keyId == keyId && entry.key == key; }), entries.end());
     return entries.size() != oldSize;
 }
 
@@ -262,6 +267,10 @@ static bool exprEqualsLiteral(const std::shared_ptr<Expr>& a, const std::shared_
     if (auto sa = std::dynamic_pointer_cast<StringExpr>(a)) {
         auto sb = std::dynamic_pointer_cast<StringExpr>(b);
         return sb && sa->value == sb->value;
+    }
+    if (auto ba = std::dynamic_pointer_cast<BoolExpr>(a)) {
+        auto bb = std::dynamic_pointer_cast<BoolExpr>(b);
+        return bb && ba->value == bb->value;
     }
     if (auto na = std::dynamic_pointer_cast<NumberExpr>(a)) {
         auto nb = std::dynamic_pointer_cast<NumberExpr>(b);
@@ -302,7 +311,7 @@ static void appendFactEntry(std::vector<MapEntry>& entries, const std::string& k
 
 static bool isMethodTruthTupleWithFalse(const std::shared_ptr<Expr>& expr) {
     auto tuple = std::dynamic_pointer_cast<TermExpr>(expr);
-    if (!tuple || tuple->name != "fn:tuple" || tuple->args.empty()) return false;
+    if (!tuple || tuple->builtinId != BuiltinId::FnTuple || tuple->args.empty()) return false;
     for (const auto& arg : tuple->args) {
         auto text = std::dynamic_pointer_cast<StringExpr>(arg.value);
         if (!text) return false;
@@ -336,7 +345,7 @@ static bool exprAsArray(const std::shared_ptr<Expr>& expr, std::vector<std::shar
         return true;
     }
     if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
-        if (term->name == "fn:array") {
+        if (term->builtinId == BuiltinId::FnArray) {
             out.clear();
             for (const auto& arg : term->args) {
                 if (arg.name == "data") {
@@ -349,18 +358,6 @@ static bool exprAsArray(const std::shared_ptr<Expr>& expr, std::vector<std::shar
         }
     }
     return false;
-}
-
-static bool isBuiltinTypeName(const std::string& name) {
-    static const std::set<std::string> names = {
-        "any", "array", "bool", "boolean", "decimal", "double", "float", "int", "number", "string"
-    };
-    return names.count(name) > 0;
-}
-
-static bool isTypeAnnotationName(const std::string& name) {
-    return !name.empty() &&
-           (std::isupper(static_cast<unsigned char>(name.front())) || isBuiltinTypeName(name));
 }
 
 static bool valueMatchesBuiltinType(const std::shared_ptr<Expr>& value, const std::string& type) {
@@ -381,6 +378,7 @@ static bool valueMatchesBuiltinType(const std::shared_ptr<Expr>& value, const st
         return exprAsArray(value, items);
     }
     if (lowered == "bool" || lowered == "boolean") {
+        if (std::dynamic_pointer_cast<BoolExpr>(value)) return true;
         auto text = std::dynamic_pointer_cast<StringExpr>(value);
         return text && (text->value == "true" || text->value == "false");
     }
@@ -424,6 +422,7 @@ static fs::path resolveCoreImport(const fs::path& baseDir, const std::string& pa
 
 static std::string exprToJson(const std::shared_ptr<Expr>& expr) {
     if (auto s = std::dynamic_pointer_cast<StringExpr>(expr)) return "\"" + jsonEscape(s->value) + "\"";
+    if (auto b = std::dynamic_pointer_cast<BoolExpr>(expr)) return b->value ? "true" : "false";
     if (auto n = std::dynamic_pointer_cast<NumberExpr>(expr)) {
         std::ostringstream out;
         out << std::setprecision(15) << n->value;
@@ -569,12 +568,12 @@ static bool parseJsonValue(const std::string& text, size_t& pos, std::shared_ptr
     }
     if (text.compare(pos, 4, "true") == 0) {
         pos += 4;
-        out = std::make_shared<StringExpr>("true");
+        out = std::make_shared<BoolExpr>(true);
         return true;
     }
     if (text.compare(pos, 5, "false") == 0) {
         pos += 5;
-        out = std::make_shared<StringExpr>("false");
+        out = std::make_shared<BoolExpr>(false);
         return true;
     }
     if (text[pos] == '{') return parseJsonObjectValue(text, pos, out);
@@ -629,13 +628,13 @@ void Interpreter::joinThreads() {
 
 std::shared_ptr<Expr> Interpreter::makeThreadHandle(const std::string& id) const {
     return std::make_shared<MapExpr>(std::vector<MapEntry>{
-        {"__type", std::make_shared<StringExpr>("Thread")},
+        {std::string(InternalSymbol::Type), std::make_shared<StringExpr>("Thread")},
         {"id", std::make_shared<StringExpr>(id)}
     });
 }
 
 std::shared_ptr<Interpreter::ThreadTask> Interpreter::threadTaskFromHandle(const std::shared_ptr<Expr>& handle) {
-    auto typeValue = findMapValue(handle, "__type");
+    auto typeValue = findMapValue(handle, std::string(InternalSymbol::Type));
     auto idValue = findMapValue(handle, "id");
     auto type = std::dynamic_pointer_cast<StringExpr>(typeValue);
     auto id = std::dynamic_pointer_cast<StringExpr>(idValue);
@@ -670,7 +669,7 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
 
     auto clausesSnapshot = clauses_;
     auto memorySnapshot = memory_;
-    auto globalsSnapshot = cloneEnv(globals_);
+    auto globalsSnapshot = cloneEnv(globals_.values());
     auto lazySnapshot = lazyModules_;
     auto loadedFilesSnapshot = loadedFiles_;
     auto currentLoadingFileSnapshot = currentLoadingFile_;
@@ -691,7 +690,7 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
             Interpreter child;
             child.clauses_ = std::move(clausesSnapshot);
             child.memory_ = std::move(memorySnapshot);
-            child.globals_ = std::move(globalsSnapshot);
+            child.globals_.replaceValues(std::move(globalsSnapshot));
             child.lazyModules_ = std::move(lazySnapshot);
             child.loadedFiles_ = std::move(loadedFilesSnapshot);
             child.currentLoadingFile_ = std::move(currentLoadingFileSnapshot);
@@ -773,23 +772,37 @@ void Interpreter::loadNativeLibrary(const std::filesystem::path& file) {
 }
 
 void Interpreter::addProgram(const Program& program) {
-    for (const auto& stmt : program.statements) {
-        if (auto clause = std::dynamic_pointer_cast<ClauseStmt>(stmt)) {
-            addClause(clause);
-        } else if (auto binding = std::dynamic_pointer_cast<GlobalBindingStmt>(stmt)) {
-            if (globals_.count(binding->name) || clauses_.count(binding->name)) {
-                throw InterpreterError("Global '" + binding->name + "' is already defined and immutable");
+    beginCacheInvalidationBatch();
+    try {
+        for (const auto& statement : program.statements) {
+            switch (statement->kind()) {
+                case StatementKind::Import:
+                    break;
+                case StatementKind::Clause:
+                    addClause(std::static_pointer_cast<ClauseStmt>(statement));
+                    break;
+                case StatementKind::GlobalBinding: {
+                    auto binding = std::static_pointer_cast<GlobalBindingStmt>(statement);
+                    if (globals_.count(binding->name) || clauses_.count(binding->name)) {
+                        throw InterpreterError("Global '" + binding->name + "' is already defined and immutable");
+                    }
+                    Env env;
+                    std::shared_ptr<Expr> value;
+                    if (!evalExprValue(binding->expr, env, value)) {
+                        throw InterpreterError("Cannot evaluate global binding '" + binding->name + "'");
+                    }
+                    globals_.bind(binding->name, value, currentLoadingFile_);
+                    Call head(binding->name, std::vector<Arg>{{"value", value->clone()}});
+                    addClause(std::make_shared<ClauseStmt>(std::move(head), std::vector<std::shared_ptr<Goal>>{}));
+                    break;
+                }
             }
-            Env env;
-            std::shared_ptr<Expr> value;
-            if (!evalExprValue(binding->expr, env, value)) {
-                throw InterpreterError("Cannot evaluate global binding '" + binding->name + "'");
-            }
-            globals_[binding->name] = value->clone();
-            Call head(binding->name, std::vector<Arg>{{"value", value->clone()}});
-            addClause(std::make_shared<ClauseStmt>(std::move(head), std::vector<std::shared_ptr<Goal>>{}));
         }
+    } catch (...) {
+        endCacheInvalidationBatch();
+        throw;
     }
+    endCacheInvalidationBatch();
 }
 
 void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
@@ -798,7 +811,7 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
         auto factMap = factToMap(*clause, clause->parentName);
         Call mergedHead(clause->head.name, {});
         for (const auto& entry : factMap->entries) {
-            if (entry.key != "__type" && entry.key != "__parent") {
+            if (entry.keyId != InternalSymbol::TypeId && entry.keyId != InternalSymbol::ParentId) {
                 std::vector<std::shared_ptr<Expr>> items;
                 if (exprAsArrayItems(entry.value, items)) {
                     for (const auto& item : items) mergedHead.args.push_back(Arg{entry.key, item->clone()});
@@ -946,7 +959,7 @@ void Interpreter::solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals
     try {
         {
             EnvFrame frame = envFramePool_.acquireMove(std::move(env));
-            solveRecursiveFrame(goals, frame.get(), out, maxSolutions, depth);
+            solveRecursiveFrame(goals, 0, frame.get(), out, maxSolutions, depth);
         }
         if (depth == 0) collectExecutionGarbage();
     } catch (...) {
@@ -956,6 +969,7 @@ void Interpreter::solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals
 }
 
 void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& goals,
+                                      size_t goalIndex,
                                       Env& env,
                                       std::vector<Solution>& out,
                                       size_t maxSolutions,
@@ -963,78 +977,111 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
     if (out.size() >= maxSolutions) return;
     if (depth > 10000) throw InterpreterError("Maximum recursion depth reached");
 
-    if (goals.empty()) {
+    if (goalIndex >= goals.size()) {
         out.push_back(Solution{cloneEnv(env)});
         return;
     }
 
-    const auto& first = goals.front();
-    std::vector<std::shared_ptr<Goal>> rest(goals.begin() + 1, goals.end());
+    const auto& first = goals[goalIndex];
+    const size_t nextGoalIndex = goalIndex + 1;
 
-    if (auto groupGoal = std::dynamic_pointer_cast<GroupGoal>(first)) {
-        std::vector<std::shared_ptr<Goal>> combined;
-        combined.reserve(groupGoal->goals.size() + rest.size());
-        for (const auto& g : groupGoal->goals) combined.push_back(g);
-        for (const auto& g : rest) combined.push_back(g);
-        solveRecursiveFrame(combined, env, out, maxSolutions, depth + 1);
-        return;
-    }
+    auto appendRemainingGoals = [&](std::vector<std::shared_ptr<Goal>>& target) {
+        target.reserve(target.size() + goals.size() - nextGoalIndex);
+        for (size_t i = nextGoalIndex; i < goals.size(); ++i) target.push_back(goals[i]);
+    };
 
-    if (auto orGoal = std::dynamic_pointer_cast<OrGoal>(first)) {
-        for (const auto& branch : orGoal->branches) {
+    switch (first->kind()) {
+        case GoalKind::Group: {
+            auto groupGoal = std::static_pointer_cast<GroupGoal>(first);
             std::vector<std::shared_ptr<Goal>> combined;
-            combined.reserve(branch.size() + rest.size());
-            for (const auto& g : branch) combined.push_back(g);
-            for (const auto& g : rest) combined.push_back(g);
-            EnvFrame branchEnv = envFramePool_.acquireCopy(env);
-            solveRecursiveFrame(combined, branchEnv.get(), out, maxSolutions, depth + 1);
-            if (out.size() >= maxSolutions) return;
+            combined.reserve(groupGoal->goals.size() + goals.size() - nextGoalIndex);
+            for (const auto& g : groupGoal->goals) combined.push_back(g);
+            appendRemainingGoals(combined);
+            solveRecursiveFrame(combined, 0, env, out, maxSolutions, depth + 1);
+            return;
         }
-        return;
+        case GoalKind::Or: {
+            auto orGoal = std::static_pointer_cast<OrGoal>(first);
+            for (const auto& branch : orGoal->branches) {
+                std::vector<std::shared_ptr<Goal>> combined;
+                combined.reserve(branch.size() + goals.size() - nextGoalIndex);
+                for (const auto& g : branch) combined.push_back(g);
+                appendRemainingGoals(combined);
+                EnvFrame branchEnv = envFramePool_.acquireCopy(env);
+                solveRecursiveFrame(combined, 0, branchEnv.get(), out, maxSolutions, depth + 1);
+                if (out.size() >= maxSolutions) return;
+            }
+            return;
+        }
+        case GoalKind::If: {
+            auto ifGoal = std::static_pointer_cast<IfGoal>(first);
+            std::vector<Solution> conditionSolutions;
+            {
+                EnvFrame conditionEnv = envFramePool_.acquireCopy(env);
+                std::vector<std::shared_ptr<Goal>> conditionGoal{ifGoal->condition};
+                solveRecursiveFrame(conditionGoal, 0, conditionEnv.get(), conditionSolutions, 1, depth + 1);
+            }
+
+            const auto& selectedBranch = conditionSolutions.empty() ? ifGoal->elseBranch : ifGoal->thenBranch;
+            std::vector<std::shared_ptr<Goal>> combined;
+            combined.reserve(selectedBranch.size() + goals.size() - nextGoalIndex);
+            for (const auto& g : selectedBranch) combined.push_back(g);
+            appendRemainingGoals(combined);
+
+            if (conditionSolutions.empty()) {
+                EnvFrame branchEnv = envFramePool_.acquireCopy(env);
+                solveRecursiveFrame(combined, 0, branchEnv.get(), out, maxSolutions, depth + 1);
+            } else {
+                EnvFrame branchEnv = envFramePool_.acquireMove(std::move(conditionSolutions.front().env));
+                solveRecursiveFrame(combined, 0, branchEnv.get(), out, maxSolutions, depth + 1);
+            }
+            return;
+        }
+        case GoalKind::Assign: {
+            auto assign = std::static_pointer_cast<AssignGoal>(first);
+            EnvFrame nextEnv = envFramePool_.acquireCopy(env);
+            if (solveAssignGoal(*assign, nextEnv.get())) {
+                solveRecursiveFrame(goals, nextGoalIndex, nextEnv.get(), out, maxSolutions, depth + 1);
+            }
+            return;
+        }
+        case GoalKind::MultiAssign: {
+            auto multiAssign = std::static_pointer_cast<MultiAssignGoal>(first);
+            EnvFrame nextEnv = envFramePool_.acquireCopy(env);
+            if (solveMultiAssignGoal(*multiAssign, nextEnv.get())) {
+                solveRecursiveFrame(goals, nextGoalIndex, nextEnv.get(), out, maxSolutions, depth + 1);
+            }
+            return;
+        }
+        case GoalKind::Binary: {
+            auto bin = std::static_pointer_cast<BinaryGoal>(first);
+            EnvFrame nextEnv = envFramePool_.acquireCopy(env);
+            if (solveBinaryGoal(*bin, nextEnv.get())) {
+                solveRecursiveFrame(goals, nextGoalIndex, nextEnv.get(), out, maxSolutions, depth + 1);
+            }
+            return;
+        }
+        case GoalKind::Where: {
+            auto where = std::static_pointer_cast<WhereGoal>(first);
+            EnvFrame nextEnv = envFramePool_.acquireCopy(env);
+            if (solveWhereGoal(*where, nextEnv.get())) {
+                solveRecursiveFrame(goals, nextGoalIndex, nextEnv.get(), out, maxSolutions, depth + 1);
+            }
+            return;
+        }
+        case GoalKind::Return: {
+            auto ret = std::static_pointer_cast<ReturnGoal>(first);
+            EnvFrame nextEnv = envFramePool_.acquireCopy(env);
+            if (solveReturnGoal(*ret, nextEnv.get())) {
+                solveRecursiveFrame(goals, nextGoalIndex, nextEnv.get(), out, maxSolutions, depth + 1);
+            }
+            return;
+        }
+        case GoalKind::Call:
+            break;
     }
 
-    if (auto assign = std::dynamic_pointer_cast<AssignGoal>(first)) {
-        EnvFrame nextEnv = envFramePool_.acquireCopy(env);
-        if (solveAssignGoal(*assign, nextEnv.get())) {
-            solveRecursiveFrame(rest, nextEnv.get(), out, maxSolutions, depth + 1);
-        }
-        return;
-    }
-
-    if (auto multiAssign = std::dynamic_pointer_cast<MultiAssignGoal>(first)) {
-        EnvFrame nextEnv = envFramePool_.acquireCopy(env);
-        if (solveMultiAssignGoal(*multiAssign, nextEnv.get())) {
-            solveRecursiveFrame(rest, nextEnv.get(), out, maxSolutions, depth + 1);
-        }
-        return;
-    }
-
-    if (auto bin = std::dynamic_pointer_cast<BinaryGoal>(first)) {
-        EnvFrame nextEnv = envFramePool_.acquireCopy(env);
-        if (solveBinaryGoal(*bin, nextEnv.get())) {
-            solveRecursiveFrame(rest, nextEnv.get(), out, maxSolutions, depth + 1);
-        }
-        return;
-    }
-
-    if (auto where = std::dynamic_pointer_cast<WhereGoal>(first)) {
-        EnvFrame nextEnv = envFramePool_.acquireCopy(env);
-        if (solveWhereGoal(*where, nextEnv.get())) {
-            solveRecursiveFrame(rest, nextEnv.get(), out, maxSolutions, depth + 1);
-        }
-        return;
-    }
-
-    if (auto ret = std::dynamic_pointer_cast<ReturnGoal>(first)) {
-        EnvFrame nextEnv = envFramePool_.acquireCopy(env);
-        if (solveReturnGoal(*ret, nextEnv.get())) {
-            solveRecursiveFrame(rest, nextEnv.get(), out, maxSolutions, depth + 1);
-        }
-        return;
-    }
-
-    auto callGoal = std::dynamic_pointer_cast<CallGoal>(first);
-    if (!callGoal) throw InterpreterError("Unknown goal node");
+    auto callGoal = std::static_pointer_cast<CallGoal>(first);
 
     auto it = clauses_.find(callGoal->call.name);
     if (it == clauses_.end() && ensurePredicateLoaded(callGoal->call.name)) {
@@ -1044,7 +1091,7 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
     if (!preferLocalClause) {
         EnvFrame builtinEnv = envFramePool_.acquireCopy(env);
         if (solveBuiltin(callGoal->call, builtinEnv.get())) {
-            solveRecursiveFrame(rest, builtinEnv.get(), out, maxSolutions, depth + 1);
+            solveRecursiveFrame(goals, nextGoalIndex, builtinEnv.get(), out, maxSolutions, depth + 1);
             if (out.size() >= maxSolutions) return;
         }
     }
@@ -1057,7 +1104,7 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
             solveMethodCall(callGoal->call, originalClause, env, methodSolutions, maxSolutions, depth + 1);
             for (auto& solution : methodSolutions) {
                 EnvFrame methodEnv = envFramePool_.acquireMove(std::move(solution.env));
-                solveRecursiveFrame(rest, methodEnv.get(), out, maxSolutions, depth + 1);
+                solveRecursiveFrame(goals, nextGoalIndex, methodEnv.get(), out, maxSolutions, depth + 1);
                 if (out.size() >= maxSolutions) return;
             }
             if (out.size() >= maxSolutions) return;
@@ -1066,12 +1113,12 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
         auto clause = standardizeApart(*originalClause);
         for (auto& nextEnv : unifyCallAlternatives(callGoal->call, clause->head, env)) {
             std::vector<std::shared_ptr<Goal>> combined;
-            combined.reserve(clause->body.size() + rest.size());
+            combined.reserve(clause->body.size() + goals.size() - nextGoalIndex);
             for (const auto& g : clause->body) combined.push_back(g);
-            for (const auto& g : rest) combined.push_back(g);
+            appendRemainingGoals(combined);
 
             EnvFrame unifiedEnv = envFramePool_.acquireMove(std::move(nextEnv));
-            solveRecursiveFrame(combined, unifiedEnv.get(), out, maxSolutions, depth + 1);
+            solveRecursiveFrame(combined, 0, unifiedEnv.get(), out, maxSolutions, depth + 1);
             if (out.size() >= maxSolutions) return;
         }
     }
@@ -1081,7 +1128,7 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
         if (fact.type == callGoal->call.name) continue;
         Call factHead(fact.type, {});
         for (const auto& entry : fact.value->entries) {
-            if (entry.key != "__type" && entry.key != "__parent") {
+            if (entry.keyId != InternalSymbol::TypeId && entry.keyId != InternalSymbol::ParentId) {
                 std::vector<std::shared_ptr<Expr>> items;
                 if (exprAsArrayItems(entry.value, items)) {
                     for (const auto& item : items) factHead.args.push_back(Arg{entry.key, item->clone()});
@@ -1093,7 +1140,7 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
         factHead.name = callGoal->call.name;
         for (auto& nextEnv : unifyCallAlternatives(callGoal->call, factHead, env)) {
             EnvFrame factEnv = envFramePool_.acquireMove(std::move(nextEnv));
-            solveRecursiveFrame(rest, factEnv.get(), out, maxSolutions, depth + 1);
+            solveRecursiveFrame(goals, nextGoalIndex, factEnv.get(), out, maxSolutions, depth + 1);
             if (out.size() >= maxSolutions) return;
         }
     }
@@ -1135,7 +1182,7 @@ bool Interpreter::solveAssignGoal(const AssignGoal& goal, Env& env) {
             }
         }
         if (expressionReturningCall) {
-            TermExpr term(callGoal->call.name, {});
+            TermExpr term(callGoal->call.name, {}, callGoal->call.builtinId);
             for (const auto& arg : callGoal->call.args) {
                 term.args.push_back(Arg{arg.name, arg.value->clone()});
             }
@@ -1174,7 +1221,7 @@ bool Interpreter::solveAssignGoal(const AssignGoal& goal, Env& env) {
                 valueCallMode_ = previousValueCallMode;
                 if (!methodSolutions.empty()) {
                     Env attempt = std::move(methodSolutions.front().env);
-                    auto returned = attempt.find("__return");
+                    auto returned = attempt.find(std::string(InternalSymbol::Return));
                     auto assigned = attempt.find(goal.name);
                     std::shared_ptr<Expr> value = assigned != attempt.end()
                         ? assigned->second
@@ -1217,7 +1264,7 @@ bool Interpreter::solveMultiAssignGoal(const MultiAssignGoal& goal, Env& env) {
 
     std::vector<std::shared_ptr<Expr>> items;
     if (auto tuple = std::dynamic_pointer_cast<TermExpr>(value)) {
-        if (tuple->name == "fn:tuple") {
+        if (tuple->builtinId == BuiltinId::FnTuple) {
             for (const auto& arg : tuple->args) items.push_back(cloneExprOrNil(arg.value));
         }
     }
@@ -1250,23 +1297,26 @@ bool Interpreter::solveMultiAssignGoal(const MultiAssignGoal& goal, Env& env) {
 }
 
 bool Interpreter::solveBinaryGoal(const BinaryGoal& goal, Env& env) {
-    if (goal.op == "==") {
-        std::shared_ptr<Expr> leftValue;
-        std::shared_ptr<Expr> rightValue;
-        if (evalExprValue(goal.left, env, leftValue) && evalExprValue(goal.right, env, rightValue)) {
-            return unifyExpr(leftValue, rightValue, env);
+    switch (goal.op) {
+        case TokenType::EqEq: {
+            std::shared_ptr<Expr> leftValue;
+            std::shared_ptr<Expr> rightValue;
+            if (evalExprValue(goal.left, env, leftValue) && evalExprValue(goal.right, env, rightValue)) {
+                return unifyExpr(leftValue, rightValue, env);
+            }
+            return unifyExpr(goal.left, goal.right, env);
         }
-        return unifyExpr(goal.left, goal.right, env);
-    }
-
-    if (goal.op == "!=") {
-        Env copy = env;
-        std::shared_ptr<Expr> leftValue;
-        std::shared_ptr<Expr> rightValue;
-        if (evalExprValue(goal.left, copy, leftValue) && evalExprValue(goal.right, copy, rightValue)) {
-            return !unifyExpr(leftValue, rightValue, copy);
+        case TokenType::NotEq: {
+            Env copy = env;
+            std::shared_ptr<Expr> leftValue;
+            std::shared_ptr<Expr> rightValue;
+            if (evalExprValue(goal.left, copy, leftValue) && evalExprValue(goal.right, copy, rightValue)) {
+                return !unifyExpr(leftValue, rightValue, copy);
+            }
+            return !unifyExpr(goal.left, goal.right, copy);
         }
-        return !unifyExpr(goal.left, goal.right, copy);
+        default:
+            break;
     }
 
     auto left = resolveExpr(goal.left, env);
@@ -1291,7 +1341,7 @@ bool Interpreter::solveReturnGoal(const ReturnGoal& goal, Env& env) {
             }
             return false;
         }
-        env["__return"] = value;
+        env[std::string(InternalSymbol::Return)] = value;
         return true;
     }
 
@@ -1307,20 +1357,38 @@ bool Interpreter::solveReturnGoal(const ReturnGoal& goal, Env& env) {
         }
         entries.push_back(MapEntry{field.name, value});
     }
-    env["__return"] = std::make_shared<MapExpr>(std::move(entries));
+    env[std::string(InternalSymbol::Return)] = std::make_shared<MapExpr>(std::move(entries));
     return true;
 }
 
 bool Interpreter::bodyHasReturnGoal(const std::vector<std::shared_ptr<Goal>>& goals) const {
     for (const auto& goal : goals) {
-        if (std::dynamic_pointer_cast<ReturnGoal>(goal)) return true;
-        if (auto group = std::dynamic_pointer_cast<GroupGoal>(goal)) {
-            if (bodyHasReturnGoal(group->goals)) return true;
-        }
-        if (auto orGoal = std::dynamic_pointer_cast<OrGoal>(goal)) {
-            for (const auto& branch : orGoal->branches) {
-                if (bodyHasReturnGoal(branch)) return true;
+        switch (goal->kind()) {
+            case GoalKind::Return:
+                return true;
+            case GoalKind::Group: {
+                auto group = std::static_pointer_cast<GroupGoal>(goal);
+                if (bodyHasReturnGoal(group->goals)) return true;
+                break;
             }
+            case GoalKind::Or: {
+                auto orGoal = std::static_pointer_cast<OrGoal>(goal);
+                for (const auto& branch : orGoal->branches) {
+                    if (bodyHasReturnGoal(branch)) return true;
+                }
+                break;
+            }
+            case GoalKind::If: {
+                auto ifGoal = std::static_pointer_cast<IfGoal>(goal);
+                if (bodyHasReturnGoal(ifGoal->thenBranch) || bodyHasReturnGoal(ifGoal->elseBranch)) return true;
+                break;
+            }
+            case GoalKind::Call:
+            case GoalKind::Binary:
+            case GoalKind::Assign:
+            case GoalKind::MultiAssign:
+            case GoalKind::Where:
+                break;
         }
     }
     return false;
@@ -1353,7 +1421,7 @@ std::shared_ptr<Expr> Interpreter::evaluateGoalTruthTuple(const std::vector<std:
     if (values.empty()) {
         values.push_back(Arg{"value", std::make_shared<StringExpr>("true")});
     }
-    return std::make_shared<TermExpr>("fn:tuple", std::move(values));
+    return std::make_shared<TermExpr>("fn:tuple", std::move(values), BuiltinId::FnTuple);
 }
 
 std::shared_ptr<Expr> Interpreter::executeGoalTruthTuple(const std::vector<std::shared_ptr<Goal>>& goals, Env env, Env& outEnv) {
@@ -1368,7 +1436,7 @@ std::shared_ptr<Expr> Interpreter::executeGoalTruthTuple(const std::vector<std::
         values.push_back(Arg{"value", std::make_shared<StringExpr>("true")});
     }
     outEnv = std::move(env);
-    return std::make_shared<TermExpr>("fn:tuple", std::move(values));
+    return std::make_shared<TermExpr>("fn:tuple", std::move(values), BuiltinId::FnTuple);
 }
 
 bool Interpreter::solveMethodCall(const Call& call,
@@ -1380,43 +1448,42 @@ bool Interpreter::solveMethodCall(const Call& call,
     if (originalClause->emptyDeclaration) return false;
     Env callerEnv = std::move(env);
     std::vector<Env> candidates{Env{}};
+    const auto* hotParams = hotMethodParamPlan(originalClause);
+    std::vector<MethodParamPlan> coldParams;
+    if (!hotParams) coldParams = buildMethodParamPlan(*originalClause);
+    const auto& paramPlans = hotParams ? *hotParams : coldParams;
 
     for (size_t paramIndex = 0; paramIndex < originalClause->head.args.size(); ++paramIndex) {
         const auto& param = originalClause->head.args[paramIndex];
-        auto typeExpr = std::dynamic_pointer_cast<VarExpr>(param.value);
-        bool typedParam = typeExpr && isTypeAnnotationName(typeExpr->name);
-        std::string localName = param.name;
-        if (typeExpr && !typedParam && !typeExpr->name.empty() && typeExpr->name.rfind("__anon", 0) != 0) {
-            localName = typeExpr->name;
-        }
+        const auto& paramPlan = paramPlans[paramIndex];
         std::vector<Env> nextCandidates;
         const Arg* callArg = findArg(call, param, paramIndex);
         for (const auto& candidate : candidates) {
             if (!callArg) {
-                if (typedParam && bodyHasReturnGoal(originalClause->body)) continue;
+                if (paramPlan.typedParam && bodyHasReturnGoal(originalClause->body)) continue;
                 nextCandidates.push_back(candidate);
                 continue;
             }
             Env attempt = candidate;
             auto unresolvedCallVar = std::dynamic_pointer_cast<VarExpr>(resolveExpr(callArg->value, callerEnv));
             if (unresolvedCallVar) {
-                if (unresolvedCallVar->name == localName ||
-                    unifyExpr(std::make_shared<VarExpr>(localName), callArg->value, attempt)) {
+                if (unresolvedCallVar->name == paramPlan.localName ||
+                    unifyExpr(std::make_shared<VarExpr>(paramPlan.localName), callArg->value, attempt)) {
                     nextCandidates.push_back(std::move(attempt));
                 }
                 continue;
             }
             std::shared_ptr<Expr> value;
             if (!evalExprValue(callArg->value, callerEnv, value)) continue;
-            if (!typedParam) {
-                if (unifyExpr(std::make_shared<VarExpr>(localName), value, attempt)) {
+            if (!paramPlan.typedParam) {
+                if (unifyExpr(std::make_shared<VarExpr>(paramPlan.localName), value, attempt)) {
                     nextCandidates.push_back(std::move(attempt));
                 }
                 continue;
             }
-            if (isBuiltinTypeName(typeExpr->name)) {
-                if (!valueMatchesBuiltinType(value, typeExpr->name)) continue;
-                if (unifyExpr(std::make_shared<VarExpr>(localName), value, attempt)) {
+            if (paramPlan.builtinType) {
+                if (!valueMatchesBuiltinType(value, paramPlan.typeName)) continue;
+                if (unifyExpr(std::make_shared<VarExpr>(paramPlan.localName), value, attempt)) {
                     nextCandidates.push_back(std::move(attempt));
                 }
                 continue;
@@ -1424,12 +1491,12 @@ bool Interpreter::solveMethodCall(const Call& call,
             auto map = std::dynamic_pointer_cast<MapExpr>(value);
             std::string actualType;
             if (map) {
-                auto typeValue = findMapValue(value, "__type");
+                auto typeValue = findMapValue(value, std::string(InternalSymbol::Type));
                 auto typeString = std::dynamic_pointer_cast<StringExpr>(typeValue);
                 if (typeString) actualType = typeString->value;
             }
-            if (actualType.empty() || !memory_.isCompatibleType(actualType, typeExpr->name)) continue;
-            if (unifyExpr(std::make_shared<VarExpr>(localName), value, attempt)) {
+            if (actualType.empty() || !memory_.isCompatibleType(actualType, paramPlan.typeName)) continue;
+            if (unifyExpr(std::make_shared<VarExpr>(paramPlan.localName), value, attempt)) {
                 nextCandidates.push_back(std::move(attempt));
             }
         }
@@ -1439,16 +1506,7 @@ bool Interpreter::solveMethodCall(const Call& call,
 
     auto appendReturnedSolution = [&](const Env& solutionEnv, const std::shared_ptr<Expr>& returned) -> bool {
         Env attempt = callerEnv;
-        attempt["__return"] = returned;
-        auto localNameForParam = [](const Arg& param) {
-            auto typeExpr = std::dynamic_pointer_cast<VarExpr>(param.value);
-            bool typedParam = typeExpr && isTypeAnnotationName(typeExpr->name);
-            std::string localName = param.name;
-            if (typeExpr && !typedParam && !typeExpr->name.empty() && typeExpr->name.rfind("__anon", 0) != 0) {
-                localName = typeExpr->name;
-            }
-            return localName;
-        };
+        attempt[std::string(InternalSymbol::Return)] = returned;
         auto resolvedBinding = [&](const std::string& name) -> std::shared_ptr<Expr> {
             auto bound = solutionEnv.find(name);
             if (bound == solutionEnv.end()) return nullptr;
@@ -1476,9 +1534,10 @@ bool Interpreter::solveMethodCall(const Call& call,
                 if (!returnedField) returnedField = findMapValue(returned, "output");
                 if (!returnedField) returnedField = findMapValue(returned, "");
                 if (!returnedField) {
-                    for (const auto& param : originalClause->head.args) {
+                    for (size_t paramIndex = 0; paramIndex < originalClause->head.args.size(); ++paramIndex) {
+                        const auto& param = originalClause->head.args[paramIndex];
                         if (param.name != arg.name) continue;
-                        returnedField = resolvedBinding(localNameForParam(param));
+                        returnedField = resolvedBinding(paramPlans[paramIndex].localName);
                         break;
                     }
                 }
@@ -1488,11 +1547,11 @@ bool Interpreter::solveMethodCall(const Call& call,
                 }
                 positionalOutputIndex++;
                 if (!returnedField && argIndex < originalClause->head.args.size()) {
-                    returnedField = resolvedBinding(localNameForParam(originalClause->head.args[argIndex]));
+                    returnedField = resolvedBinding(paramPlans[argIndex].localName);
                 }
             } else {
                 if (argIndex < originalClause->head.args.size()) {
-                    returnedField = resolvedBinding(localNameForParam(originalClause->head.args[argIndex]));
+                    returnedField = resolvedBinding(paramPlans[argIndex].localName);
                 }
             }
             if (!returnedField || !unifyExpr(arg.value, returnedField, attempt)) {
@@ -1519,7 +1578,7 @@ bool Interpreter::solveMethodCall(const Call& call,
                     solveRecursive(branch, prelude.env, branchSolutions, 1, depth + 1);
                     bool branchReturned = false;
                     for (auto& solution : branchSolutions) {
-                        auto returnedIt = solution.env.find("__return");
+                        auto returnedIt = solution.env.find(std::string(InternalSymbol::Return));
                         if (returnedIt == solution.env.end()) continue;
                         branchReturned = true;
                         auto returnedValue = returnedIt->second;
@@ -1537,7 +1596,7 @@ bool Interpreter::solveMethodCall(const Call& call,
         if (valueCallMode_ && originalClause->head.name != "main" && !bodyHasReturnGoal(originalClause->body)) {
             Env truthEnv;
             auto truthTuple = executeGoalTruthTuple(originalClause->body, candidate, truthEnv);
-            truthEnv["__return"] = truthTuple;
+            truthEnv[std::string(InternalSymbol::Return)] = truthTuple;
             if (appendReturnedSolution(truthEnv, truthTuple)) return true;
             continue;
         }
@@ -1547,18 +1606,18 @@ bool Interpreter::solveMethodCall(const Call& call,
         solveRecursive(originalClause->body, std::move(candidate), nested, 1, depth + 1);
         if (nested.empty() && valueCallMode_ && originalClause->head.name != "main") {
             Env failedValueEnv = startingCandidate;
-            failedValueEnv["__return"] = evaluateGoalTruthTuple(originalClause->body, startingCandidate);
+            failedValueEnv[std::string(InternalSymbol::Return)] = evaluateGoalTruthTuple(originalClause->body, startingCandidate);
             nested.push_back(Solution{std::move(failedValueEnv)});
         }
         for (auto& solution : nested) {
-            auto returnedIt = solution.env.find("__return");
+            auto returnedIt = solution.env.find(std::string(InternalSymbol::Return));
             if (returnedIt == solution.env.end()) {
                 if (originalClause->head.name == "main") {
-                    solution.env["__return"] = std::make_shared<MapExpr>(std::vector<MapEntry>{});
+                    solution.env[std::string(InternalSymbol::Return)] = std::make_shared<MapExpr>(std::vector<MapEntry>{});
                 } else {
-                    solution.env["__return"] = evaluateGoalTruthTuple(originalClause->body, startingCandidate);
+                    solution.env[std::string(InternalSymbol::Return)] = evaluateGoalTruthTuple(originalClause->body, startingCandidate);
                 }
-                returnedIt = solution.env.find("__return");
+                returnedIt = solution.env.find(std::string(InternalSymbol::Return));
             }
             auto returnedValue = returnedIt->second;
             if (appendReturnedSolution(solution.env, returnedValue)) return true;
@@ -1602,7 +1661,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
     std::shared_ptr<Expr> result;
 
     auto callNativeValueBuiltin = [&]() -> bool {
-        TermExpr term(call.name, {});
+        TermExpr term(call.name, {}, call.builtinId);
         for (const auto& arg : call.args) {
             if (arg.name == "result" || arg.name == "out" || arg.name == "access") {
                 continue;
@@ -1619,11 +1678,18 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         return unifyExpr(out->value, value, env);
     };
 
-    if (isBuiltinFunctionName(call.name) &&
-        call.name != "throw" &&
-        !(call.name == "math:add" || call.name == "math:sub" ||
-          call.name == "math:mul" || call.name == "math:div" ||
-          call.name == "math:mod") &&
+    const bool mathPredicateBuiltin =
+        call.builtinId == BuiltinId::MathAdd ||
+        call.builtinId == BuiltinId::MathSub ||
+        call.builtinId == BuiltinId::MathMul ||
+        call.builtinId == BuiltinId::MathDiv ||
+        call.builtinId == BuiltinId::MathMod;
+
+    if (call.builtinId != BuiltinId::Unknown &&
+        call.builtinId != BuiltinId::Throw &&
+        call.builtinId != BuiltinId::Type &&
+        call.builtinId != BuiltinId::Instanceof &&
+        !mathPredicateBuiltin &&
         call.name.rfind("str:", 0) != 0 &&
         call.name.rfind("array:", 0) != 0 &&
         call.name.rfind("pair:", 0) != 0 &&
@@ -1692,7 +1758,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
 
     if (call.name == "type") {
         if (!valueArg({"value", "data", "input"}, 0, a)) return false;
-        auto typeValue = findMapValue(a, "__type");
+        auto typeValue = findMapValue(a, std::string(InternalSymbol::Type));
         auto typeString = std::dynamic_pointer_cast<StringExpr>(typeValue);
         if (!typeString) return false;
         const Arg* out = namedArg("name");
@@ -1709,7 +1775,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         if (!typeArg) typeArg = namedArg("of");
         if (!typeArg && call.args.size() > 1) typeArg = &call.args[1];
         if (!typeArg) return false;
-        auto typeValue = findMapValue(a, "__type");
+        auto typeValue = findMapValue(a, std::string(InternalSymbol::Type));
         auto typeString = std::dynamic_pointer_cast<StringExpr>(typeValue);
         if (!typeString) return false;
         std::string expected;
@@ -1723,23 +1789,31 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         return memory_.isCompatibleType(typeString->value, expected);
     }
 
-    if (call.name == "math:add" || call.name == "math:sub" ||
-        call.name == "math:mul" || call.name == "math:div" ||
-        call.name == "math:mod") {
+    if (mathPredicateBuiltin) {
         if (!valueArg({"lhs", "left"}, 0, a) || !valueArg({"rhs", "right"}, 1, b)) return false;
         double left = 0.0;
         double right = 0.0;
         if (!argAsNumber(a, left) || !argAsNumber(b, right)) return false;
-        if (call.name == "math:add") result = std::make_shared<NumberExpr>(left + right);
-        if (call.name == "math:sub") result = std::make_shared<NumberExpr>(left - right);
-        if (call.name == "math:mul") result = std::make_shared<NumberExpr>(left * right);
-        if (call.name == "math:div") {
-            if (std::fabs(right) < 1e-12) throw InterpreterError("DivisionByZero");
-            result = std::make_shared<NumberExpr>(left / right);
-        }
-        if (call.name == "math:mod") {
-            if (std::fabs(right) < 1e-12) throw InterpreterError("DivisionByZero");
-            result = std::make_shared<NumberExpr>(std::fmod(left, right));
+        switch (call.builtinId) {
+            case BuiltinId::MathAdd:
+                result = std::make_shared<NumberExpr>(left + right);
+                break;
+            case BuiltinId::MathSub:
+                result = std::make_shared<NumberExpr>(left - right);
+                break;
+            case BuiltinId::MathMul:
+                result = std::make_shared<NumberExpr>(left * right);
+                break;
+            case BuiltinId::MathDiv:
+                if (std::fabs(right) < 1e-12) throw InterpreterError("DivisionByZero");
+                result = std::make_shared<NumberExpr>(left / right);
+                break;
+            case BuiltinId::MathMod:
+                if (std::fabs(right) < 1e-12) throw InterpreterError("DivisionByZero");
+                result = std::make_shared<NumberExpr>(std::fmod(left, right));
+                break;
+            default:
+                return false;
         }
         const Arg* out = namedArg("result");
         if (!out) out = outArg("out", 2);
@@ -1857,20 +1931,23 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         return out && unifyExpr(out->value, result, env);
     }
 
-    if (call.name == "array:get" || call.name == "array:len" || call.name == "array:push") {
+    if (call.builtinId == BuiltinId::ArrayGet ||
+        call.builtinId == BuiltinId::ArrayLen ||
+        call.builtinId == BuiltinId::ArrayPush) {
         if (!valueArg({"data", "array"}, 0, a)) return false;
-        auto args = termArgs(a, "fn:array");
-        if (args.empty() && !(std::dynamic_pointer_cast<TermExpr>(a) &&
-                              std::dynamic_pointer_cast<TermExpr>(a)->name == "fn:array") &&
+        auto args = termArgs(a, BuiltinId::FnArray);
+        auto arrayTerm = std::dynamic_pointer_cast<TermExpr>(a);
+        if (args.empty() &&
+            !(arrayTerm && arrayTerm->builtinId == BuiltinId::FnArray) &&
             !std::dynamic_pointer_cast<ArrayExpr>(a)) {
             return false;
         }
-        if (call.name == "array:len") {
+        if (call.builtinId == BuiltinId::ArrayLen) {
             const Arg* out = namedArg("access");
             if (!out) out = outArg("out", 1);
             return out && unifyExpr(out->value, std::make_shared<NumberExpr>(static_cast<double>(args.size())), env);
         }
-        if (call.name == "array:get") {
+        if (call.builtinId == BuiltinId::ArrayGet) {
             if (!valueArg({"position", "index"}, 1, b)) return false;
             double index = 0.0;
             if (!argAsNumber(b, index) || index < 0 || std::floor(index) != index) return false;
@@ -1880,7 +1957,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
             if (!out) out = outArg("out", 2);
             return out && unifyExpr(out->value, args[i], env);
         }
-        if (call.name == "array:push") {
+        if (call.builtinId == BuiltinId::ArrayPush) {
             if (!valueArg({"value"}, 1, b)) return false;
             args.push_back(b);
             const Arg* out = namedArg("result");
@@ -1889,13 +1966,13 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         }
     }
 
-    if (call.name == "pair:first" || call.name == "pair:second") {
+    if (call.builtinId == BuiltinId::PairFirst || call.builtinId == BuiltinId::PairSecond) {
         if (!valueArg({"data", "pair"}, 0, a)) return false;
-        auto args = termArgs(a, "fn:pair");
+        auto args = termArgs(a, BuiltinId::FnPair);
         if (args.size() != 2) return false;
         const Arg* out = namedArg("access");
         if (!out) out = outArg("out", 1);
-        return out && unifyExpr(out->value, call.name == "pair:first" ? args[0] : args[1], env);
+        return out && unifyExpr(out->value, call.builtinId == BuiltinId::PairFirst ? args[0] : args[1], env);
     }
 
     if (call.name == "json:parse") {
@@ -2089,14 +2166,14 @@ void Interpreter::validateNativeCallTypes(const Call& call,
         const Arg* provided = findArg(call, declared, i);
         auto typeName = std::dynamic_pointer_cast<VarExpr>(declared.value);
         if (!provided) {
-            if (requireDeclaredInputs && typeName && isBuiltinTypeName(typeName->name) && !isOutputName(declared.name)) {
+            if (requireDeclaredInputs && typeName && isFelidaeBuiltinTypeName(typeName->name) && !isOutputName(declared.name)) {
                 throw InterpreterError(call.name + " expects argument '" +
                                        (declared.name.empty() ? std::to_string(i) : declared.name) +
                                        "' before calling native library");
             }
             continue;
         }
-        if (!typeName || !isBuiltinTypeName(typeName->name)) continue;
+        if (!typeName || !isFelidaeBuiltinTypeName(typeName->name)) continue;
 
         std::shared_ptr<Expr> value;
         if (!evalExprValue(provided->value, env, value)) {
@@ -2117,7 +2194,7 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
     const ClauseStmt* declaration = nativeDeclarationFor(call.name);
     if (!declaration) return false;
     const bool systemLibraryCall = call.name.rfind("system:flibrary:", 0) == 0;
-    if (!systemLibraryCall && isBuiltinFunctionName(call.name)) return false;
+    if (!systemLibraryCall && call.builtinId != BuiltinId::Unknown) return false;
     const bool genericLibraryLoader = call.name == "system:flibrary:call";
 
     std::string moduleName = call.name;
@@ -2398,7 +2475,7 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
         }
     }
 
-    env["__return"] = parsed->clone();
+    env[std::string(InternalSymbol::Return)] = parsed->clone();
     if (outputArgs.empty()) return true;
 
     auto returnedMap = std::dynamic_pointer_cast<MapExpr>(parsed);
@@ -2442,19 +2519,19 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         args.push_back(value);
     }
 
-    if (term.name == "fn:pair") {
+    if (term.builtinId == BuiltinId::FnPair) {
         if (args.size() != 2) return false;
-        out = std::make_shared<TermExpr>("fn:pair", std::vector<Arg>{{"first", args[0]}, {"last", args[1]}});
+        out = std::make_shared<TermExpr>("fn:pair", std::vector<Arg>{{"first", args[0]}, {"last", args[1]}}, BuiltinId::FnPair);
         return true;
     }
-    if (term.name == "fn:tuple") {
+    if (term.builtinId == BuiltinId::FnTuple) {
         std::vector<Arg> termArgs;
         termArgs.reserve(args.size());
         for (auto& arg : args) termArgs.push_back(Arg{"value", arg});
-        out = std::make_shared<TermExpr>("fn:tuple", std::move(termArgs));
+        out = std::make_shared<TermExpr>("fn:tuple", std::move(termArgs), BuiltinId::FnTuple);
         return true;
     }
-    if (term.name == "fn:array") {
+    if (term.builtinId == BuiltinId::FnArray) {
         if (args.size() == 1) {
             if (auto array = std::dynamic_pointer_cast<ArrayExpr>(args[0])) {
                 out = array->clone();
@@ -2464,14 +2541,14 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         std::vector<Arg> termArgs;
         termArgs.reserve(args.size());
         for (auto& arg : args) termArgs.push_back(Arg{"data", arg});
-        out = std::make_shared<TermExpr>("fn:array", std::move(termArgs));
+        out = std::make_shared<TermExpr>("fn:array", std::move(termArgs), BuiltinId::FnArray);
         return true;
     }
-    if (term.name == "json:object") {
+    if (term.builtinId == BuiltinId::JsonObject) {
         std::vector<Arg> termArgs;
         termArgs.reserve(args.size());
         for (auto& arg : args) termArgs.push_back(Arg{"field", arg});
-        out = std::make_shared<TermExpr>("json:object", std::move(termArgs));
+        out = std::make_shared<TermExpr>("json:object", std::move(termArgs), BuiltinId::JsonObject);
         return true;
     }
     auto hasCallableBody = [&]() {
@@ -2484,14 +2561,14 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         return false;
     };
     if (hasMethod(term.name) || hasCallableBody()) return evalCallAsValue(term, env, out);
-    if (isBuiltinFunctionName(term.name)) return evalCallAsValue(term, env, out);
+    if (term.builtinId != BuiltinId::Unknown) return evalCallAsValue(term, env, out);
     if (term.name.find(':') != std::string::npos && !term.args.empty()) {
         if (evalCallAsValue(term, env, out)) return true;
     }
 
     if (term.name.find(':') == std::string::npos && !term.args.empty()) {
         std::vector<MapEntry> entries;
-        entries.push_back(MapEntry{"__type", std::make_shared<StringExpr>(term.name)});
+        entries.push_back(MapEntry{std::string(InternalSymbol::Type), std::make_shared<StringExpr>(term.name)});
         for (size_t i = 0; i < term.args.size(); ++i) {
             const auto& arg = term.args[i];
             if (arg.name.empty()) {
@@ -2507,7 +2584,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
     std::vector<Arg> termArgs;
     termArgs.reserve(args.size());
     for (auto& arg : args) termArgs.push_back(Arg{"value", arg});
-    out = std::make_shared<TermExpr>(term.name, std::move(termArgs));
+    out = std::make_shared<TermExpr>(term.name, std::move(termArgs), term.builtinId);
     return true;
 }
 
@@ -2516,11 +2593,11 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         ensurePredicateLoaded(term.name);
     }
     if (nativeDeclarationFor(term.name)) {
-        Call nativeCall(term.name, {});
+        Call nativeCall(term.name, {}, term.builtinId);
         for (const auto& arg : term.args) nativeCall.args.push_back(Arg{arg.name, arg.value->clone()});
         Env nativeEnv = env;
         if (solveNativeCall(nativeCall, nativeEnv)) {
-            auto returned = nativeEnv.find("__return");
+            auto returned = nativeEnv.find(std::string(InternalSymbol::Return));
             if (returned != nativeEnv.end()) {
                 if (auto returnedMap = std::dynamic_pointer_cast<MapExpr>(returned->second)) {
                     if (returnedMap->entries.size() == 1) {
@@ -2566,7 +2643,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         }
     }
     if (callableBody && !nativeDeclarationFor(term.name)) {
-        Call call(term.name, {});
+        Call call(term.name, {}, term.builtinId);
         for (size_t i = 0; i < args.size(); ++i) {
             call.args.push_back(Arg{term.args[i].name, args[i]});
         }
@@ -2588,7 +2665,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
                 valueCallMode_ = previousValueCallMode;
             }
             if (!solutions.empty()) {
-                auto returned = solutions.front().env.find("__return");
+                auto returned = solutions.front().env.find(std::string(InternalSymbol::Return));
                 if (returned != solutions.front().env.end()) {
                     if (auto returnedMap = std::dynamic_pointer_cast<MapExpr>(returned->second)) {
                         if (returnedMap->entries.size() == 1 && returnedMap->entries.front().key.empty()) {
@@ -3199,7 +3276,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
                 std::vector<MapEntry> entries;
                 if (!exprAsMapEntries(row, entries)) continue;
                 for (const auto& entry : entries) {
-                    if (entry.key != "__type" && entry.key != "__parent") fields.insert(entry.key);
+                    if (entry.keyId != InternalSymbol::TypeId && entry.keyId != InternalSymbol::ParentId) fields.insert(entry.key);
                 }
             }
             std::vector<std::shared_ptr<Expr>> items;
@@ -3232,17 +3309,14 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         throw InterpreterError("Unknown db builtin: " + term.name);
     }
 
-    if (term.name.rfind("math:", 0) == 0) {
-        const std::string op = term.name.substr(5);
-        if (op == "pi") {
+    switch (term.builtinId) {
+        case BuiltinId::MathPi:
             out = std::make_shared<NumberExpr>(3.14159265358979323846);
             return true;
-        }
-        if (op == "e") {
+        case BuiltinId::MathE:
             out = std::make_shared<NumberExpr>(2.71828182845904523536);
             return true;
-        }
-        if (op == "random") {
+        case BuiltinId::MathRandom: {
             double min = term.args.empty() ? 0.0 : requireNamedNumber({"min"}, 0, "min");
             double max = term.args.size() < 2 ? 1.0 : requireNamedNumber({"max"}, 1, "max");
             if (max < min) throw InterpreterError("math.random expects max >= min");
@@ -3251,29 +3325,80 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
             out = std::make_shared<NumberExpr>(dist(rng));
             return true;
         }
-        if (op == "pow" || op == "atan2") {
+        case BuiltinId::MathPow:
+        case BuiltinId::MathAtan2:
+        case BuiltinId::MathAdd:
+        case BuiltinId::MathSub:
+        case BuiltinId::MathMul:
+        case BuiltinId::MathDiv:
+        case BuiltinId::MathMod: {
             double left = requireNamedNumber({"lhs", "left", "base", "y"}, 0, "lhs");
             double right = requireNamedNumber({"rhs", "right", "exponent", "x"}, 1, "rhs");
-            out = std::make_shared<NumberExpr>(op == "pow" ? std::pow(left, right) : std::atan2(left, right));
+            switch (term.builtinId) {
+                case BuiltinId::MathPow:
+                    out = std::make_shared<NumberExpr>(std::pow(left, right));
+                    break;
+                case BuiltinId::MathAtan2:
+                    out = std::make_shared<NumberExpr>(std::atan2(left, right));
+                    break;
+                case BuiltinId::MathAdd:
+                    out = std::make_shared<NumberExpr>(left + right);
+                    break;
+                case BuiltinId::MathSub:
+                    out = std::make_shared<NumberExpr>(left - right);
+                    break;
+                case BuiltinId::MathMul:
+                    out = std::make_shared<NumberExpr>(left * right);
+                    break;
+                case BuiltinId::MathDiv:
+                    if (std::fabs(right) < 1e-12) throw InterpreterError("DivisionByZero");
+                    out = std::make_shared<NumberExpr>(left / right);
+                    break;
+                case BuiltinId::MathMod:
+                    if (std::fabs(right) < 1e-12) throw InterpreterError("DivisionByZero");
+                    out = std::make_shared<NumberExpr>(std::fmod(left, right));
+                    break;
+                default:
+                    return false;
+            }
             return true;
         }
-        double value = requireNamedNumber({"value", "data", "x"}, 0, "value");
-        if (op == "sqrt") out = std::make_shared<NumberExpr>(std::sqrt(value));
-        else if (op == "sin") out = std::make_shared<NumberExpr>(std::sin(value));
-        else if (op == "cos") out = std::make_shared<NumberExpr>(std::cos(value));
-        else if (op == "tan") out = std::make_shared<NumberExpr>(std::tan(value));
-        else if (op == "asin") out = std::make_shared<NumberExpr>(std::asin(value));
-        else if (op == "acos") out = std::make_shared<NumberExpr>(std::acos(value));
-        else if (op == "atan") out = std::make_shared<NumberExpr>(std::atan(value));
-        else if (op == "log") out = std::make_shared<NumberExpr>(std::log(value));
-        else if (op == "log10") out = std::make_shared<NumberExpr>(std::log10(value));
-        else if (op == "exp") out = std::make_shared<NumberExpr>(std::exp(value));
-        else if (op == "abs") out = std::make_shared<NumberExpr>(std::fabs(value));
-        else if (op == "floor") out = std::make_shared<NumberExpr>(std::floor(value));
-        else if (op == "ceil") out = std::make_shared<NumberExpr>(std::ceil(value));
-        else if (op == "round") out = std::make_shared<NumberExpr>(std::round(value));
-        else throw InterpreterError("Unknown math builtin: " + term.name);
-        return true;
+        case BuiltinId::MathSqrt:
+        case BuiltinId::MathSin:
+        case BuiltinId::MathCos:
+        case BuiltinId::MathTan:
+        case BuiltinId::MathAsin:
+        case BuiltinId::MathAcos:
+        case BuiltinId::MathAtan:
+        case BuiltinId::MathLog:
+        case BuiltinId::MathLog10:
+        case BuiltinId::MathExp:
+        case BuiltinId::MathAbs:
+        case BuiltinId::MathFloor:
+        case BuiltinId::MathCeil:
+        case BuiltinId::MathRound: {
+            double value = requireNamedNumber({"value", "data", "x"}, 0, "value");
+            switch (term.builtinId) {
+                case BuiltinId::MathSqrt: out = std::make_shared<NumberExpr>(std::sqrt(value)); break;
+                case BuiltinId::MathSin: out = std::make_shared<NumberExpr>(std::sin(value)); break;
+                case BuiltinId::MathCos: out = std::make_shared<NumberExpr>(std::cos(value)); break;
+                case BuiltinId::MathTan: out = std::make_shared<NumberExpr>(std::tan(value)); break;
+                case BuiltinId::MathAsin: out = std::make_shared<NumberExpr>(std::asin(value)); break;
+                case BuiltinId::MathAcos: out = std::make_shared<NumberExpr>(std::acos(value)); break;
+                case BuiltinId::MathAtan: out = std::make_shared<NumberExpr>(std::atan(value)); break;
+                case BuiltinId::MathLog: out = std::make_shared<NumberExpr>(std::log(value)); break;
+                case BuiltinId::MathLog10: out = std::make_shared<NumberExpr>(std::log10(value)); break;
+                case BuiltinId::MathExp: out = std::make_shared<NumberExpr>(std::exp(value)); break;
+                case BuiltinId::MathAbs: out = std::make_shared<NumberExpr>(std::fabs(value)); break;
+                case BuiltinId::MathFloor: out = std::make_shared<NumberExpr>(std::floor(value)); break;
+                case BuiltinId::MathCeil: out = std::make_shared<NumberExpr>(std::ceil(value)); break;
+                case BuiltinId::MathRound: out = std::make_shared<NumberExpr>(std::round(value)); break;
+                default: break;
+            }
+            return true;
+        }
+        default:
+            break;
     }
 
     if (term.name.rfind("probability:", 0) == 0) {
@@ -3638,15 +3763,15 @@ bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& en
             Env lambdaEnv = env;
             lambdaEnv[lambda->variable] = item;
             PipelineResultClearScope clearPipelineResults(pipelineResults_);
-            if (!lambda->op.empty()) {
+            if (lambda->op != TokenType::End) {
                 std::shared_ptr<Expr> left;
                 std::shared_ptr<Expr> right;
                 if (!evalExprValue(lambda->body, lambdaEnv, left) ||
                     !evalExprValue(lambda->right, lambdaEnv, right)) {
                     continue;
                 }
-                bool ok = lambda->op == "==" ? unifyExpr(left, right, lambdaEnv) :
-                          lambda->op == "!=" ? !unifyExpr(left, right, lambdaEnv) :
+                bool ok = lambda->op == TokenType::EqEq ? unifyExpr(left, right, lambdaEnv) :
+                          lambda->op == TokenType::NotEq ? !unifyExpr(left, right, lambdaEnv) :
                           compareResolved(left, lambda->op, right);
                 if (ok) results.push_back(item->clone());
                 continue;
@@ -3671,27 +3796,27 @@ bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& en
         auto leftNumber = std::dynamic_pointer_cast<NumberExpr>(left);
         auto rightNumber = std::dynamic_pointer_cast<NumberExpr>(right);
         if (leftNumber && rightNumber) {
-            if (binary->op == "+") {
-                out = std::make_shared<NumberExpr>(leftNumber->value + rightNumber->value);
-                return true;
-            }
-            if (binary->op == "-") {
-                out = std::make_shared<NumberExpr>(leftNumber->value - rightNumber->value);
-                return true;
-            }
-            if (binary->op == "*") {
-                out = std::make_shared<NumberExpr>(leftNumber->value * rightNumber->value);
-                return true;
-            }
-            if (binary->op == "/") {
-                if (std::fabs(rightNumber->value) < 1e-12) {
-                    throw InterpreterError("DivisionByZero");
-                }
-                out = std::make_shared<NumberExpr>(leftNumber->value / rightNumber->value);
-                return true;
+            switch (binary->op) {
+                case TokenType::Plus:
+                    out = std::make_shared<NumberExpr>(leftNumber->value + rightNumber->value);
+                    return true;
+                case TokenType::Minus:
+                    out = std::make_shared<NumberExpr>(leftNumber->value - rightNumber->value);
+                    return true;
+                case TokenType::Star:
+                    out = std::make_shared<NumberExpr>(leftNumber->value * rightNumber->value);
+                    return true;
+                case TokenType::Slash:
+                    if (std::fabs(rightNumber->value) < 1e-12) {
+                        throw InterpreterError("DivisionByZero");
+                    }
+                    out = std::make_shared<NumberExpr>(leftNumber->value / rightNumber->value);
+                    return true;
+                default:
+                    break;
             }
         }
-        throw InterpreterError("Operator '" + binary->op + "' expects numeric operands");
+        throw InterpreterError("Operator '" + tokenTypeName(binary->op) + "' expects numeric operands");
     }
     if (auto array = std::dynamic_pointer_cast<ArrayExpr>(resolved)) {
         std::vector<std::shared_ptr<Expr>> items;
@@ -3750,26 +3875,30 @@ bool Interpreter::evalPipelineExpr(const PipelineExpr& pipeline, const Env& env,
 }
 
 bool Interpreter::compareResolved(const std::shared_ptr<Expr>& left,
-                                  const std::string& op,
+                                  TokenType op,
                                   const std::shared_ptr<Expr>& right) const {
     auto ln = std::dynamic_pointer_cast<NumberExpr>(left);
     auto rn = std::dynamic_pointer_cast<NumberExpr>(right);
     if (ln && rn) {
-        if (op == "<") return ln->value < rn->value;
-        if (op == "<=") return ln->value <= rn->value;
-        if (op == ">") return ln->value > rn->value;
-        if (op == ">=") return ln->value >= rn->value;
-        return false;
+        switch (op) {
+            case TokenType::LT: return ln->value < rn->value;
+            case TokenType::LTE: return ln->value <= rn->value;
+            case TokenType::GT: return ln->value > rn->value;
+            case TokenType::GTE: return ln->value >= rn->value;
+            default: return false;
+        }
     }
 
     auto ls = std::dynamic_pointer_cast<StringExpr>(left);
     auto rs = std::dynamic_pointer_cast<StringExpr>(right);
     if (ls && rs) {
-        if (op == "<") return ls->value < rs->value;
-        if (op == "<=") return ls->value <= rs->value;
-        if (op == ">") return ls->value > rs->value;
-        if (op == ">=") return ls->value >= rs->value;
-        return false;
+        switch (op) {
+            case TokenType::LT: return ls->value < rs->value;
+            case TokenType::LTE: return ls->value <= rs->value;
+            case TokenType::GT: return ls->value > rs->value;
+            case TokenType::GTE: return ls->value >= rs->value;
+            default: return false;
+        }
     }
 
     return false;
@@ -3863,10 +3992,10 @@ bool Interpreter::unifyExpr(const std::shared_ptr<Expr>& a,
     if (isSameVariable(ra, rb)) return true;
 
     if (auto va = std::dynamic_pointer_cast<VarExpr>(ra)) {
-        if (va->name.rfind("__anon", 0) == 0) return true;
+        if (isAnonymousSymbolName(va->name)) return true;
     }
     if (auto vb = std::dynamic_pointer_cast<VarExpr>(rb)) {
-        if (vb->name.rfind("__anon", 0) == 0) return true;
+        if (isAnonymousSymbolName(vb->name)) return true;
     }
 
     if (auto va = std::dynamic_pointer_cast<VarExpr>(ra)) {
@@ -3887,6 +4016,16 @@ bool Interpreter::unifyExpr(const std::shared_ptr<Expr>& a,
     if (auto na = std::dynamic_pointer_cast<NumberExpr>(ra)) {
         auto nb = std::dynamic_pointer_cast<NumberExpr>(rb);
         return nb && std::fabs(na->value - nb->value) < 1e-12;
+    }
+    if (auto ba = std::dynamic_pointer_cast<BoolExpr>(ra)) {
+        auto bb = std::dynamic_pointer_cast<BoolExpr>(rb);
+        if (bb) return ba->value == bb->value;
+        auto sb = std::dynamic_pointer_cast<StringExpr>(rb);
+        return sb && sb->value == (ba->value ? "true" : "false");
+    }
+    if (auto bb = std::dynamic_pointer_cast<BoolExpr>(rb)) {
+        auto sa = std::dynamic_pointer_cast<StringExpr>(ra);
+        return sa && sa->value == (bb->value ? "true" : "false");
     }
     if (std::dynamic_pointer_cast<NilExpr>(ra) || std::dynamic_pointer_cast<NilExpr>(rb)) {
         return static_cast<bool>(std::dynamic_pointer_cast<NilExpr>(ra)) &&
@@ -3923,7 +4062,7 @@ bool Interpreter::unifyExpr(const std::shared_ptr<Expr>& a,
 
 std::shared_ptr<Expr> Interpreter::resolveExpr(const std::shared_ptr<Expr>& expr, const Env& env) const {
     auto var = std::dynamic_pointer_cast<VarExpr>(expr);
-    if (var && var->name == "system:result") {
+    if (var && var->nameId == InternalSymbol::SystemResultId) {
         if (pipelineResults_.empty()) {
             throw InterpreterError("system.result is only available inside a then pipeline");
         }
@@ -3931,9 +4070,9 @@ std::shared_ptr<Expr> Interpreter::resolveExpr(const std::shared_ptr<Expr>& expr
     }
     if (!var) {
         if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
-            if (access->key == "result") {
+            if (access->keyId == InternalSymbol::ResultId) {
                 auto targetVar = std::dynamic_pointer_cast<VarExpr>(access->target);
-                if (targetVar && targetVar->name == "system") {
+                if (targetVar && targetVar->nameId == InternalSymbol::SystemId) {
                     if (pipelineResults_.empty()) {
                         throw InterpreterError("system.result is only available inside a then pipeline");
                     }
@@ -3970,13 +4109,15 @@ std::string Interpreter::exprToString(const std::shared_ptr<Expr>& expr, const E
 }
 
 std::shared_ptr<ClauseStmt> Interpreter::standardizeApart(const ClauseStmt& clause) {
-    std::string prefix = "__r" + std::to_string(++renameCounter_) + "_";
+    std::string prefix = makeRenameSymbolPrefix(++renameCounter_);
     Call head;
     head.name = clause.head.name;
+    head.nameId = clause.head.nameId;
+    head.builtinId = clause.head.builtinId;
     bool methodHead = isMethodClause(clause);
     for (const auto& arg : clause.head.args) {
         auto typeExpr = std::dynamic_pointer_cast<VarExpr>(arg.value);
-        if (methodHead && typeExpr && isTypeAnnotationName(typeExpr->name)) {
+        if (methodHead && typeExpr && isFelidaeTypeAnnotationName(typeExpr->name)) {
             head.args.push_back(Arg{arg.name, arg.value->clone()});
         } else {
             head.args.push_back(Arg{arg.name, renameExpr(arg.value, prefix)});
@@ -3999,6 +4140,8 @@ std::shared_ptr<ClauseStmt> Interpreter::standardizeApart(const ClauseStmt& clau
 Call Interpreter::renameCall(const Call& call, const std::string& prefix) {
     Call out;
     out.name = call.name;
+    out.nameId = call.nameId;
+    out.builtinId = call.builtinId;
     for (const auto& a : call.args) {
         if ((call.name == "throw" && a.name == "target") ||
             (call.name == "instanceof" && (a.name == "type" || a.name == "parent" || a.name == "of"))) {
@@ -4011,56 +4154,79 @@ Call Interpreter::renameCall(const Call& call, const std::string& prefix) {
 }
 
 std::shared_ptr<Goal> Interpreter::renameGoal(const std::shared_ptr<Goal>& goal, const std::string& prefix) {
-    if (auto cg = std::dynamic_pointer_cast<CallGoal>(goal)) {
-        return std::make_shared<CallGoal>(renameCall(cg->call, prefix));
-    }
-    if (auto ag = std::dynamic_pointer_cast<AssignGoal>(goal)) {
-        if (ag->goal) return std::make_shared<AssignGoal>(prefix + ag->name, renameGoal(ag->goal, prefix));
-        return std::make_shared<AssignGoal>(prefix + ag->name, renameExpr(ag->expr, prefix));
-    }
-    if (auto mag = std::dynamic_pointer_cast<MultiAssignGoal>(goal)) {
-        std::vector<AssignmentTarget> targets;
-        targets.reserve(mag->targets.size());
-        for (const auto& target : mag->targets) {
-            targets.push_back(AssignmentTarget{prefix + target.name, target.type});
+    switch (goal->kind()) {
+        case GoalKind::Call: {
+            auto cg = std::static_pointer_cast<CallGoal>(goal);
+            return std::make_shared<CallGoal>(renameCall(cg->call, prefix));
         }
-        return std::make_shared<MultiAssignGoal>(std::move(targets), renameExpr(mag->expr, prefix));
-    }
-    if (auto bg = std::dynamic_pointer_cast<BinaryGoal>(goal)) {
-        return std::make_shared<BinaryGoal>(renameExpr(bg->left, prefix), bg->op, renameExpr(bg->right, prefix));
-    }
-    if (auto wg = std::dynamic_pointer_cast<WhereGoal>(goal)) {
-        return std::make_shared<WhereGoal>(renameGoal(wg->condition, prefix));
-    }
-    if (auto rg = std::dynamic_pointer_cast<ReturnGoal>(goal)) {
-        std::vector<Arg> fields;
-        fields.reserve(rg->fields.size());
-        for (const auto& field : rg->fields) fields.push_back(Arg{field.name, renameExpr(field.value, prefix)});
-        return std::make_shared<ReturnGoal>(std::move(fields));
-    }
-    if (auto gg = std::dynamic_pointer_cast<GroupGoal>(goal)) {
-        std::vector<std::shared_ptr<Goal>> goals;
-        goals.reserve(gg->goals.size());
-        for (const auto& groupedGoal : gg->goals) goals.push_back(renameGoal(groupedGoal, prefix));
-        return std::make_shared<GroupGoal>(std::move(goals));
-    }
-    if (auto og = std::dynamic_pointer_cast<OrGoal>(goal)) {
-        std::vector<std::vector<std::shared_ptr<Goal>>> branches;
-        branches.reserve(og->branches.size());
-        for (const auto& branch : og->branches) {
-            std::vector<std::shared_ptr<Goal>> renamedBranch;
-            renamedBranch.reserve(branch.size());
-            for (const auto& branchGoal : branch) renamedBranch.push_back(renameGoal(branchGoal, prefix));
-            branches.push_back(std::move(renamedBranch));
+        case GoalKind::Assign: {
+            auto ag = std::static_pointer_cast<AssignGoal>(goal);
+            if (ag->goal) return std::make_shared<AssignGoal>(prefix + ag->name, renameGoal(ag->goal, prefix));
+            return std::make_shared<AssignGoal>(prefix + ag->name, renameExpr(ag->expr, prefix));
         }
-        return std::make_shared<OrGoal>(std::move(branches));
+        case GoalKind::MultiAssign: {
+            auto mag = std::static_pointer_cast<MultiAssignGoal>(goal);
+            std::vector<AssignmentTarget> targets;
+            targets.reserve(mag->targets.size());
+            for (const auto& target : mag->targets) {
+                targets.push_back(AssignmentTarget{prefix + target.name, target.type});
+            }
+            return std::make_shared<MultiAssignGoal>(std::move(targets), renameExpr(mag->expr, prefix));
+        }
+        case GoalKind::Binary: {
+            auto bg = std::static_pointer_cast<BinaryGoal>(goal);
+            return std::make_shared<BinaryGoal>(renameExpr(bg->left, prefix), bg->op, renameExpr(bg->right, prefix));
+        }
+        case GoalKind::Where: {
+            auto wg = std::static_pointer_cast<WhereGoal>(goal);
+            return std::make_shared<WhereGoal>(renameGoal(wg->condition, prefix));
+        }
+        case GoalKind::If: {
+            auto ifGoal = std::static_pointer_cast<IfGoal>(goal);
+            std::vector<std::shared_ptr<Goal>> thenBranch;
+            thenBranch.reserve(ifGoal->thenBranch.size());
+            for (const auto& branchGoal : ifGoal->thenBranch) thenBranch.push_back(renameGoal(branchGoal, prefix));
+            std::vector<std::shared_ptr<Goal>> elseBranch;
+            elseBranch.reserve(ifGoal->elseBranch.size());
+            for (const auto& branchGoal : ifGoal->elseBranch) elseBranch.push_back(renameGoal(branchGoal, prefix));
+            return std::make_shared<IfGoal>(
+                renameGoal(ifGoal->condition, prefix),
+                std::move(thenBranch),
+                std::move(elseBranch));
+        }
+        case GoalKind::Return: {
+            auto rg = std::static_pointer_cast<ReturnGoal>(goal);
+            std::vector<Arg> fields;
+            fields.reserve(rg->fields.size());
+            for (const auto& field : rg->fields) fields.push_back(Arg{field.name, renameExpr(field.value, prefix)});
+            return std::make_shared<ReturnGoal>(std::move(fields));
+        }
+        case GoalKind::Group: {
+            auto gg = std::static_pointer_cast<GroupGoal>(goal);
+            std::vector<std::shared_ptr<Goal>> goals;
+            goals.reserve(gg->goals.size());
+            for (const auto& groupedGoal : gg->goals) goals.push_back(renameGoal(groupedGoal, prefix));
+            return std::make_shared<GroupGoal>(std::move(goals));
+        }
+        case GoalKind::Or: {
+            auto og = std::static_pointer_cast<OrGoal>(goal);
+            std::vector<std::vector<std::shared_ptr<Goal>>> branches;
+            branches.reserve(og->branches.size());
+            for (const auto& branch : og->branches) {
+                std::vector<std::shared_ptr<Goal>> renamedBranch;
+                renamedBranch.reserve(branch.size());
+                for (const auto& branchGoal : branch) renamedBranch.push_back(renameGoal(branchGoal, prefix));
+                branches.push_back(std::move(renamedBranch));
+            }
+            return std::make_shared<OrGoal>(std::move(branches));
+        }
     }
     throw InterpreterError("Unknown goal while renaming");
 }
 
 std::shared_ptr<Expr> Interpreter::renameExpr(const std::shared_ptr<Expr>& expr, const std::string& prefix) {
     if (auto v = std::dynamic_pointer_cast<VarExpr>(expr)) {
-        if (v->name == "system:result") return v->clone();
+        if (v->nameId == InternalSymbol::SystemResultId) return v->clone();
         if (globals_.count(v->name) > 0) return v->clone();
         return std::make_shared<VarExpr>(prefix + v->name);
     }
@@ -4068,7 +4234,7 @@ std::shared_ptr<Expr> Interpreter::renameExpr(const std::shared_ptr<Expr>& expr,
         std::vector<Arg> args;
         args.reserve(term->args.size());
         for (const auto& arg : term->args) args.push_back(Arg{arg.name, renameExpr(arg.value, prefix)});
-        return std::make_shared<TermExpr>(term->name, std::move(args));
+        return std::make_shared<TermExpr>(term->name, std::move(args), term->builtinId);
     }
     if (auto array = std::dynamic_pointer_cast<ArrayExpr>(expr)) {
         std::vector<std::shared_ptr<Expr>> items;
@@ -4086,7 +4252,7 @@ std::shared_ptr<Expr> Interpreter::renameExpr(const std::shared_ptr<Expr>& expr,
     }
     if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
         auto targetVar = std::dynamic_pointer_cast<VarExpr>(access->target);
-        if (access->key == "result" && targetVar && targetVar->name == "system") {
+        if (access->keyId == InternalSymbol::ResultId && targetVar && targetVar->nameId == InternalSymbol::SystemId) {
             return access->clone();
         }
         return std::make_shared<AccessExpr>(renameExpr(access->target, prefix), access->key);
@@ -4116,11 +4282,12 @@ std::shared_ptr<Expr> Interpreter::renameExpr(const std::shared_ptr<Expr>& expr,
 bool Interpreter::isSameVariable(const std::shared_ptr<Expr>& a, const std::shared_ptr<Expr>& b) const {
     auto va = std::dynamic_pointer_cast<VarExpr>(a);
     auto vb = std::dynamic_pointer_cast<VarExpr>(b);
-    return va && vb && va->name == vb->name;
+    return va && vb && va->nameId == vb->nameId && va->name == vb->name;
 }
 
 bool Interpreter::isGroundLiteral(const std::shared_ptr<Expr>& expr) const {
     return static_cast<bool>(std::dynamic_pointer_cast<StringExpr>(expr)) ||
+           static_cast<bool>(std::dynamic_pointer_cast<BoolExpr>(expr)) ||
            static_cast<bool>(std::dynamic_pointer_cast<NumberExpr>(expr)) ||
            static_cast<bool>(std::dynamic_pointer_cast<NilExpr>(expr));
 }
@@ -4136,7 +4303,7 @@ bool Interpreter::goalMayHaveSideEffects(const std::shared_ptr<Goal>& goal) cons
     if (!goal) return false;
     if (auto call = std::dynamic_pointer_cast<CallGoal>(goal)) {
         if (nativeDeclarationFor(call->call.name)) return true;
-        if (isBuiltinFunctionName(call->call.name) && !isBuiltinPure(call->call.name)) return true;
+        if (call->call.builtinId != BuiltinId::Unknown && !isBuiltinPure(call->call.builtinId)) return true;
         for (const auto& arg : call->call.args) {
             if (exprMayHaveSideEffects(arg.value)) return true;
         }
@@ -4153,6 +4320,16 @@ bool Interpreter::goalMayHaveSideEffects(const std::shared_ptr<Goal>& goal) cons
     }
     if (auto where = std::dynamic_pointer_cast<WhereGoal>(goal)) {
         return goalMayHaveSideEffects(where->condition);
+    }
+    if (auto ifGoal = std::dynamic_pointer_cast<IfGoal>(goal)) {
+        if (goalMayHaveSideEffects(ifGoal->condition)) return true;
+        for (const auto& nested : ifGoal->thenBranch) {
+            if (goalMayHaveSideEffects(nested)) return true;
+        }
+        for (const auto& nested : ifGoal->elseBranch) {
+            if (goalMayHaveSideEffects(nested)) return true;
+        }
+        return false;
     }
     if (auto ret = std::dynamic_pointer_cast<ReturnGoal>(goal)) {
         for (const auto& field : ret->fields) {
@@ -4180,7 +4357,7 @@ bool Interpreter::exprMayHaveSideEffects(const std::shared_ptr<Expr>& expr) cons
     if (!expr) return false;
     if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
         if (nativeDeclarationFor(term->name)) return true;
-        if (isBuiltinFunctionName(term->name) && !isBuiltinPure(term->name)) return true;
+        if (term->builtinId != BuiltinId::Unknown && !isBuiltinPure(term->builtinId)) return true;
         for (const auto& arg : term->args) {
             if (exprMayHaveSideEffects(arg.value)) return true;
         }
@@ -4216,10 +4393,26 @@ bool Interpreter::exprMayHaveSideEffects(const std::shared_ptr<Expr>& expr) cons
 }
 
 bool Interpreter::isMethodClause(const ClauseStmt& clause) const {
-    if (clause.emptyDeclaration) return true;
-    if (!clause.fallbackBranches.empty()) return true;
-    if (clause.body.empty()) return false;
-    if (clause.head.name == "main") return true;
+    if (clause.isFact()) return false;
+
+    auto cached = methodRuntimeCache_.find(&clause);
+    if (cached != methodRuntimeCache_.end() && cached->second.methodKnown) {
+        return cached->second.isMethod;
+    }
+
+    auto remember = [&](bool result) {
+        if (!methodMetadataCacheEligible(clause)) return result;
+        auto& info = methodRuntimeCache_[&clause];
+        info.methodKnown = true;
+        info.isMethod = result;
+        info.cacheEligible = true;
+        return result;
+    };
+
+    if (clause.emptyDeclaration) return remember(true);
+    if (!clause.fallbackBranches.empty()) return remember(true);
+    if (clause.body.empty()) return remember(false);
+    if (clause.head.name == "main") return remember(true);
     bool hasReturn = false;
     for (const auto& goal : clause.body) {
         if (std::dynamic_pointer_cast<ReturnGoal>(goal)) {
@@ -4230,20 +4423,62 @@ bool Interpreter::isMethodClause(const ClauseStmt& clause) const {
     for (const auto& arg : clause.head.args) {
         if (!arg.name.empty()) {
             auto typeExpr = std::dynamic_pointer_cast<VarExpr>(arg.value);
-            if (typeExpr && (isTypeAnnotationName(typeExpr->name) || typeExpr->name != arg.name)) {
-                return true;
+            if (typeExpr && (isFelidaeTypeAnnotationName(typeExpr->name) || typeExpr->name != arg.name)) {
+                return remember(true);
             }
         }
     }
-    if (!hasReturn) return false;
-    if (clause.head.args.empty()) return true;
+    if (!hasReturn) return remember(false);
+    if (clause.head.args.empty()) return remember(true);
     for (const auto& arg : clause.head.args) {
         auto typeExpr = std::dynamic_pointer_cast<VarExpr>(arg.value);
-        if (!typeExpr || !isTypeAnnotationName(typeExpr->name)) {
-            return false;
+        if (!typeExpr || !isFelidaeTypeAnnotationName(typeExpr->name)) {
+            return remember(false);
         }
     }
-    return true;
+    return remember(true);
+}
+
+bool Interpreter::methodMetadataCacheEligible(const ClauseStmt& clause) const {
+    if (clause.isFact()) return false;
+    if (clause.head.name == "main") return true;
+    if (!clause.body.empty() || !clause.fallbackBranches.empty()) return true;
+    return false;
+}
+
+Interpreter::MethodParamPlan Interpreter::makeMethodParamPlan(const Arg& param) const {
+    MethodParamPlan plan;
+    plan.localName = param.name;
+    auto typeExpr = std::dynamic_pointer_cast<VarExpr>(param.value);
+    plan.typedParam = typeExpr && isFelidaeTypeAnnotationName(typeExpr->name);
+    if (typeExpr && !plan.typedParam && !typeExpr->name.empty() && !isAnonymousSymbolName(typeExpr->name)) {
+        plan.localName = typeExpr->name;
+    }
+    if (plan.typedParam) {
+        plan.typeName = typeExpr->name;
+        plan.builtinType = isFelidaeBuiltinTypeName(typeExpr->name);
+    }
+    return plan;
+}
+
+std::vector<Interpreter::MethodParamPlan> Interpreter::buildMethodParamPlan(const ClauseStmt& clause) const {
+    std::vector<MethodParamPlan> params;
+    params.reserve(clause.head.args.size());
+    for (const auto& param : clause.head.args) params.push_back(makeMethodParamPlan(param));
+    return params;
+}
+
+const std::vector<Interpreter::MethodParamPlan>* Interpreter::hotMethodParamPlan(
+    const std::shared_ptr<ClauseStmt>& clause) {
+    if (!methodMetadataCacheEligible(*clause)) return nullptr;
+    auto& info = methodRuntimeCache_[clause.get()];
+    info.cacheEligible = true;
+    ++info.callCount;
+    if (info.paramsPrepared) return &info.params;
+    if (info.callCount < kHotMethodPrepareThreshold) return nullptr;
+    info.params = buildMethodParamPlan(*clause);
+    info.paramsPrepared = true;
+    return &info.params;
 }
 
 std::shared_ptr<MapExpr> Interpreter::factToMap(const ClauseStmt& clause, const std::string& parentType) {
@@ -4267,8 +4502,8 @@ std::shared_ptr<MapExpr> Interpreter::factToMap(const ClauseStmt& clause, const 
             current.clear();
         }
     }
-    upsertEntry(entries, "__type", std::make_shared<StringExpr>(clause.head.name));
-    if (!parentType.empty()) upsertEntry(entries, "__parent", std::make_shared<StringExpr>(parentType));
+    upsertEntry(entries, std::string(InternalSymbol::Type), std::make_shared<StringExpr>(clause.head.name));
+    if (!parentType.empty()) upsertEntry(entries, std::string(InternalSymbol::Parent), std::make_shared<StringExpr>(parentType));
     Env env;
     std::set<std::string> childFields;
     for (const auto& arg : clause.head.args) {
@@ -4333,8 +4568,30 @@ std::string Interpreter::solveCacheKey(const std::vector<std::shared_ptr<Goal>>&
 }
 
 void Interpreter::invalidateCaches() {
+    if (cacheInvalidationDepth_ > 0) {
+        pendingCacheInvalidation_ = true;
+        return;
+    }
+    clearCachesNow();
+}
+
+void Interpreter::beginCacheInvalidationBatch() {
+    ++cacheInvalidationDepth_;
+}
+
+void Interpreter::endCacheInvalidationBatch() {
+    if (cacheInvalidationDepth_ == 0) return;
+    --cacheInvalidationDepth_;
+    if (cacheInvalidationDepth_ == 0 && pendingCacheInvalidation_) {
+        pendingCacheInvalidation_ = false;
+        clearCachesNow();
+    }
+}
+
+void Interpreter::clearCachesNow() {
     memory_.invalidateCaches();
     solveCache_.clear();
+    methodRuntimeCache_.clear();
 }
 
 bool Interpreter::ensurePredicateLoaded(const std::string& predicate) {
@@ -4370,10 +4627,39 @@ void Interpreter::touchClauses(const std::vector<std::shared_ptr<ClauseStmt>>& c
 }
 
 void Interpreter::evictColdModules() {
-    // Facts, globals, and type hierarchy entries loaded from modules are currently
-    // shared runtime state. Evicting only clauses would leave stale facts/globals
-    // behind and reloading the file could duplicate them. Keep modules resident
-    // until fact/global origin tracking is added for whole-module eviction.
+    for (auto& module : lazyModules_) {
+        if (!module.loaded || module.files.empty()) continue;
+        if (module.useCount > 1) continue;
+        unloadModule(module);
+    }
+}
+
+void Interpreter::unloadModule(LazyModule& module) {
+    invalidateCaches();
+    for (const auto& file : module.files) {
+        for (auto clauseIt = clauses_.begin(); clauseIt != clauses_.end();) {
+            auto& list = clauseIt->second;
+            list.erase(
+                std::remove_if(list.begin(), list.end(), [&](const std::shared_ptr<ClauseStmt>& clause) {
+                    auto origin = clauseOrigins_.find(clause.get());
+                    const bool remove = origin != clauseOrigins_.end() && origin->second == file;
+                    if (remove) clauseOrigins_.erase(origin);
+                    return remove;
+                }),
+                list.end());
+            if (list.empty()) {
+                clauseIt = clauses_.erase(clauseIt);
+            } else {
+                ++clauseIt;
+            }
+        }
+        globals_.eraseOrigin(file);
+        memory_.removeOrigin(file);
+        loadedFiles_.erase(file);
+    }
+    module.loaded = false;
+    module.useCount = 0;
+    module.lastUsed = 0;
 }
 
 void Interpreter::loadLazyModule(LazyModule& module) {
@@ -4396,10 +4682,8 @@ void Interpreter::loadProgramFile(const std::filesystem::path& file) {
     Program program = parseProgramFile(normalized);
     fs::path baseDir = normalized.parent_path();
 
-    for (const auto& stmt : program.statements) {
-        if (auto imp = std::dynamic_pointer_cast<ImportStmt>(stmt)) {
-            for (const auto& path : imp->paths) addLazyImport(baseDir, path);
-        }
+    for (const auto& imp : program.imports) {
+        for (const auto& path : imp->paths) addLazyImport(baseDir, path);
     }
     fs::path previous = currentLoadingFile_;
     currentLoadingFile_ = normalized;
@@ -4616,6 +4900,12 @@ std::string Interpreter::runtimeGraphJson() const {
             collectGoalCalls(where->condition);
             return;
         }
+        if (auto ifGoal = std::dynamic_pointer_cast<IfGoal>(goal)) {
+            collectGoalCalls(ifGoal->condition);
+            for (const auto& child : ifGoal->thenBranch) collectGoalCalls(child);
+            for (const auto& child : ifGoal->elseBranch) collectGoalCalls(child);
+            return;
+        }
         if (auto ret = std::dynamic_pointer_cast<ReturnGoal>(goal)) {
             for (const auto& field : ret->fields) collectExprCalls(field.value);
             return;
@@ -4820,6 +5110,12 @@ std::string Interpreter::runtimeGraphJson() const {
             }
             if (auto where = std::dynamic_pointer_cast<WhereGoal>(goal)) {
                 writeGoalEdges(where->condition, "where");
+                return;
+            }
+            if (auto ifGoal = std::dynamic_pointer_cast<IfGoal>(goal)) {
+                writeGoalEdges(ifGoal->condition, "if");
+                for (const auto& child : ifGoal->thenBranch) writeGoalEdges(child, "then");
+                for (const auto& child : ifGoal->elseBranch) writeGoalEdges(child, "else");
                 return;
             }
             if (auto ret = std::dynamic_pointer_cast<ReturnGoal>(goal)) {

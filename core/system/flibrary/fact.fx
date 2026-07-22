@@ -5,7 +5,7 @@
 
 system.flibrary.fact.extract_semantics(input: any) => ().
 system.flibrary.fact.check_similarity(fact1: any, fact2: any, algorithm: string) => ().
-system.flibrary.fact.check_similarity(fact1: any, fact2: any, algorithm: string, lexical_algorithm: string, field_alignment: string, collection_mode: string, missing_field_policy: string, threshold: number, maximum_depth: number, maximum_fields: number, explain: string) => ().
+system.flibrary.fact.check_similarity(fact1: any, fact2: any, algorithm: string, lexical_algorithm: string, field_alignment: string, collection_mode: string, missing_field_policy: string, threshold: number, maximum_depth: number, maximum_fields: number, explain: bool) => ().
 system.flibrary.fact.similarity_score(fact1: any, fact2: any) => ().
 system.flibrary.fact.check_difference(fact1: any, fact2: any) => ().
 system.flibrary.fact.check_difference(fact1: any, fact2: any, algorithm: string, explain: string) => ().

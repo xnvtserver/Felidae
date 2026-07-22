@@ -1,4 +1,5 @@
 #include "Env.h"
+#include "Symbol.h"
 
 namespace Felidae {
 
@@ -24,13 +25,81 @@ std::shared_ptr<Expr> findEnvValue(const Env& env, const std::string& name) {
 }
 
 std::shared_ptr<Expr> findReturnValue(const Env& env) {
-    return findEnvValue(env, "__return");
+    return findEnvValue(env, std::string(InternalSymbol::Return));
 }
 
 bool bindEnvValue(Env& env, const std::string& name, const std::shared_ptr<Expr>& value) {
     if (!value) return false;
     env[name] = value->clone();
     return true;
+}
+
+size_t GlobalEnv::count(const std::string& name) const {
+    return values_.count(name);
+}
+
+GlobalEnv::iterator GlobalEnv::find(const std::string& name) {
+    return values_.find(name);
+}
+
+GlobalEnv::const_iterator GlobalEnv::find(const std::string& name) const {
+    return values_.find(name);
+}
+
+GlobalEnv::iterator GlobalEnv::end() {
+    return values_.end();
+}
+
+GlobalEnv::const_iterator GlobalEnv::end() const {
+    return values_.end();
+}
+
+GlobalEnv::iterator GlobalEnv::begin() {
+    return values_.begin();
+}
+
+GlobalEnv::const_iterator GlobalEnv::begin() const {
+    return values_.begin();
+}
+
+std::shared_ptr<Expr>& GlobalEnv::operator[](const std::string& name) {
+    return values_[name];
+}
+
+void GlobalEnv::bind(std::string name, std::shared_ptr<Expr> value, std::filesystem::path origin) {
+    values_[name] = value ? value->clone() : nullptr;
+    if (!origin.empty()) origins_[name] = std::move(origin);
+}
+
+void GlobalEnv::setOrigin(const std::string& name, std::filesystem::path origin) {
+    if (origin.empty()) return;
+    origins_[name] = std::move(origin);
+}
+
+void GlobalEnv::erase(const std::string& name) {
+    values_.erase(name);
+    origins_.erase(name);
+}
+
+void GlobalEnv::eraseOrigin(const std::filesystem::path& origin) {
+    if (origin.empty()) return;
+    for (auto it = origins_.begin(); it != origins_.end();) {
+        if (it->second == origin) {
+            values_.erase(it->first);
+            it = origins_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void GlobalEnv::replaceValues(Env values) {
+    values_ = std::move(values);
+    origins_.clear();
+}
+
+const GlobalEnv::Map& GlobalEnv::values() const {
+    return values_;
 }
 
 EnvFrame::EnvFrame(EnvFramePool* pool, Env* env) : pool_(pool), env_(env) {}

@@ -2,6 +2,7 @@
 
 #include "AST.h"
 #include <cstddef>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -10,6 +11,32 @@
 namespace Felidae {
 
 using Env = std::unordered_map<std::string, std::shared_ptr<Expr>>;
+
+class GlobalEnv {
+public:
+    using Map = Env;
+    using iterator = Map::iterator;
+    using const_iterator = Map::const_iterator;
+
+    size_t count(const std::string& name) const;
+    iterator find(const std::string& name);
+    const_iterator find(const std::string& name) const;
+    iterator end();
+    const_iterator end() const;
+    iterator begin();
+    const_iterator begin() const;
+    std::shared_ptr<Expr>& operator[](const std::string& name);
+    void bind(std::string name, std::shared_ptr<Expr> value, std::filesystem::path origin = {});
+    void setOrigin(const std::string& name, std::filesystem::path origin);
+    void erase(const std::string& name);
+    void eraseOrigin(const std::filesystem::path& origin);
+    void replaceValues(Env values);
+    const Map& values() const;
+
+private:
+    Map values_;
+    std::unordered_map<std::string, std::filesystem::path> origins_;
+};
 
 struct Solution {
     Env env;

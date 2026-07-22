@@ -1,22 +1,12 @@
 #include "Parser.h"
+#include "BuiltinRegistry.h"
 #include <cctype>
+#include <cmath>
 #include <sstream>
 
 namespace Felidae {
 
 namespace {
-bool isBuiltinTypeName(const std::string& name) {
-    static const std::set<std::string> names = {
-        "any", "array", "bool", "boolean", "decimal", "double", "float", "int", "number", "string"
-    };
-    return names.count(name) > 0;
-}
-
-bool isTypeAnnotationName(const std::string& name) {
-    return !name.empty() &&
-           (std::isupper(static_cast<unsigned char>(name.front())) || isBuiltinTypeName(name));
-}
-
 struct TokenChain {
     std::vector<std::string> parts;
     size_t end = 0;
@@ -24,6 +14,11 @@ struct TokenChain {
 
 TokenChain parseTokenChain(const std::vector<Token>& tokens, size_t pos) {
     TokenChain chain{{}, pos};
+    if (pos < tokens.size() && tokens[pos].type == TokenType::BuiltinFunction) {
+        chain.parts.push_back(tokens[pos].text);
+        chain.end = pos + 1;
+        return chain;
+    }
     if (pos >= tokens.size() || tokens[pos].type != TokenType::Ident) return chain;
 
     chain.parts.push_back(tokens[pos].text);
@@ -56,14 +51,18 @@ bool isAssignmentToChain(const std::vector<Token>& tokens, size_t pos, std::init
            tokens[chain.end].type == TokenType::Bind;
 }
 
+bool isNameStartToken(TokenType type) {
+    return type == TokenType::Ident || type == TokenType::BuiltinFunction;
+}
+
 bool isSystemResultExpr(const std::shared_ptr<Expr>& expr) {
     if (auto var = std::dynamic_pointer_cast<VarExpr>(expr)) {
-        return var->name == "system:result";
+        return var->nameId == InternalSymbol::SystemResultId;
     }
     auto access = std::dynamic_pointer_cast<AccessExpr>(expr);
-    if (!access || access->key != "result") return false;
+    if (!access || access->keyId != InternalSymbol::ResultId) return false;
     auto target = std::dynamic_pointer_cast<VarExpr>(access->target);
-    return target && target->name == "system";
+    return target && target->nameId == InternalSymbol::SystemId;
 }
 }
 
@@ -83,8 +82,32 @@ bool Parser::match(TokenType type) {
     return true;
 }
 
+void Parser::consumeLogicalNewline() {
+    match(TokenType::Newline);
+}
+
+bool Parser::matchGoalSeparator() {
+    if (match(TokenType::Comma)) {
+        consumeLogicalNewline();
+        return true;
+    }
+    if (match(TokenType::Newline)) {
+        consumeLogicalNewline();
+        return true;
+    }
+    return false;
+}
+
+bool Parser::isGoalListTerminator() const {
+    return check(TokenType::End) ||
+           check(TokenType::Dot) ||
+           check(TokenType::Pipe) ||
+           check(TokenType::RParen) ||
+           checkElse();
+}
+
 bool Parser::checkElse() const {
-    return check(TokenType::Ident) && peek().text == "else";
+    return check(TokenType::Else);
 }
 
 const Token& Parser::consume(TokenType type, const std::string& message) {
@@ -109,8 +132,10 @@ void Parser::rejectUnsupportedTokens() const {
 Program Parser::parseProgram() {
     rejectUnsupportedTokens();
     Program program;
+    consumeLogicalNewline();
     while (!isAtEnd()) {
-        program.statements.push_back(parseStatement());
+        program.addStatement(parseStatement());
+        consumeLogicalNewline();
     }
     return program;
 }
@@ -120,22 +145,28 @@ std::vector<std::shared_ptr<Goal>> Parser::parseQuery() {
     if (match(TokenType::Question)) {
         // optional query marker
     }
+    consumeLogicalNewline();
     auto goals = parseGoalList();
     for (const auto& goal : goals) validateGoalSystemResultUsage(goal);
+    consumeLogicalNewline();
     if (match(TokenType::Dot)) {
         // optional ending dot
     }
+    consumeLogicalNewline();
     consume(TokenType::End, "Expected end of query");
     return goals;
 }
 
 std::shared_ptr<Expr> Parser::parseExpressionText() {
     rejectUnsupportedTokens();
+    consumeLogicalNewline();
     auto expr = parseExpr();
     validateSystemResultUsage(expr, false);
+    consumeLogicalNewline();
     if (match(TokenType::Dot)) {
         // optional expression terminator for REPL convenience
     }
+    consumeLogicalNewline();
     consume(TokenType::End, "Expected end of expression");
     return expr;
 }
@@ -145,10 +176,10 @@ std::shared_ptr<Statement> Parser::parseStatement() {
         throw ParserError("system.result is read-only and can only be read inside a then pipeline");
     }
     if (checkElse()) throw ParserError("'else' is only valid inside method fallback branches");
-    if (check(TokenType::Ident) && peek().text == "return") {
+    if (check(TokenType::Return)) {
         throw ParserError("'return' is only valid inside a method body. If this follows another goal, separate the previous goal with ',' instead of ending it with '.'.");
     }
-    if (check(TokenType::Ident) && peek().text == "where") {
+    if (check(TokenType::Where)) {
         throw ParserError("'where' is only valid inside a method body.");
     }
     if (check(TokenType::Import)) return parseImport();
@@ -181,6 +212,7 @@ std::shared_ptr<ImportStmt> Parser::parseImport() {
     } else {
         paths.push_back(consume(TokenType::String, "Expected string path after import").text);
     }
+    consumeLogicalNewline();
     consume(TokenType::Dot, "Expected '.' after import");
     return std::make_shared<ImportStmt>(std::move(paths));
 }
@@ -188,7 +220,7 @@ std::shared_ptr<ImportStmt> Parser::parseImport() {
 std::shared_ptr<ClauseStmt> Parser::parseClause() {
     std::string name = parseQualifiedName();
     std::string parentName;
-    if (check(TokenType::Ident) && peek().text == "extend") {
+    if (check(TokenType::Extend)) {
         advance();
         parentName = consume(TokenType::Ident, "Expected parent fact/type name after extend").text;
     }
@@ -202,55 +234,76 @@ std::shared_ptr<ClauseStmt> Parser::parseClause() {
     std::vector<std::vector<std::shared_ptr<Goal>>> fallbackBranches;
     bool emptyDeclaration = false;
     if (match(TokenType::Arrow)) {
-        if (check(TokenType::LParen) &&
-            pos_ + 1 < tokens_.size() &&
-            tokens_[pos_ + 1].type == TokenType::RParen) {
-            advance();
-            consume(TokenType::RParen, "Expected ')' after empty native declaration body");
-            emptyDeclaration = true;
-        } else if (check(TokenType::LBrace) &&
-                   pos_ + 1 < tokens_.size() &&
-                   tokens_[pos_ + 1].type == TokenType::RBrace) {
-            advance();
-            consume(TokenType::RBrace, "Expected '}' after empty declaration body");
-            emptyDeclaration = true;
-        } else {
-            body = parseGoalList();
-            while (checkElse()) {
-                advance();
-                if (check(TokenType::Dot) || isAtEnd()) {
-                    throw ParserError("'else' must be followed by a fallback branch");
-                }
-                fallbackBranches.push_back(parseGoalList());
-            }
-            if (!fallbackBranches.empty()) {
-                if (!isMethodStyleHead(head) && head.name != "main") {
-                    throw ParserError("'else' fallback branches are only supported in method-style rules");
-                }
-                splitFallbackPrelude(body, fallbackBranches);
-            }
-        }
+        consumeLogicalNewline();
+        emptyDeclaration = parseEmptyDeclarationBody();
+        if (!emptyDeclaration) parseRuleBody(head, body, fallbackBranches);
     }
     if (emptyDeclaration || (!body.empty() && (head.name == "main" || isMethodStyleHead(head)))) {
         methodPredicates_.insert(head.name);
     }
-    if (!body.empty() || !fallbackBranches.empty()) {
-        for (const auto& arg : head.args) {
-            if (head.name != "main" && containsAccessExpr(arg.value)) {
-                throw ParserError("Rule head fields cannot use member access. Bind a head variable in the body, e.g. Name == e.name");
-            }
-        }
-        validateRuleVars(head, body, fallbackBranches);
-        for (const auto& goal : body) validateGoalSystemResultUsage(goal);
-        for (const auto& branch : fallbackBranches) {
-            for (const auto& goal : branch) validateGoalSystemResultUsage(goal);
-        }
-    }
+    validateClauseBody(head, body, fallbackBranches);
+    consumeLogicalNewline();
     const Token& terminator = consume(TokenType::Dot, "Expected '.' after fact/rule");
-    if (!isAtEnd() && peek().line == terminator.line) {
+    if (!isAtEnd() && !check(TokenType::Newline) && peek().line == terminator.line) {
         throw ParserError("Unexpected token after statement terminator '.' on the same line");
     }
     return std::make_shared<ClauseStmt>(std::move(head), std::move(parentName), std::move(body), std::move(fallbackBranches), emptyDeclaration);
+}
+
+bool Parser::parseEmptyDeclarationBody() {
+    if (check(TokenType::LParen) &&
+        pos_ + 1 < tokens_.size() &&
+        tokens_[pos_ + 1].type == TokenType::RParen) {
+        advance();
+        consume(TokenType::RParen, "Expected ')' after empty native declaration body");
+        return true;
+    }
+    if (check(TokenType::LBrace) &&
+        pos_ + 1 < tokens_.size() &&
+        tokens_[pos_ + 1].type == TokenType::RBrace) {
+        advance();
+        consume(TokenType::RBrace, "Expected '}' after empty declaration body");
+        return true;
+    }
+    return false;
+}
+
+void Parser::parseRuleBody(const Call& head,
+                           std::vector<std::shared_ptr<Goal>>& body,
+                           std::vector<std::vector<std::shared_ptr<Goal>>>& fallbackBranches) {
+    body = parseGoalList();
+    consumeLogicalNewline();
+    while (checkElse()) {
+        advance();
+        consumeLogicalNewline();
+        if (check(TokenType::Dot) || isAtEnd()) {
+            throw ParserError("'else' must be followed by a fallback branch");
+        }
+        fallbackBranches.push_back(parseGoalList());
+        consumeLogicalNewline();
+    }
+    if (!fallbackBranches.empty()) {
+        if (!isMethodStyleHead(head) && head.name != "main") {
+            throw ParserError("'else' fallback branches are only supported in method-style rules");
+        }
+        splitFallbackPrelude(body, fallbackBranches);
+    }
+}
+
+void Parser::validateClauseBody(const Call& head,
+                                const std::vector<std::shared_ptr<Goal>>& body,
+                                const std::vector<std::vector<std::shared_ptr<Goal>>>& fallbackBranches) const {
+    if (body.empty() && fallbackBranches.empty()) return;
+    for (const auto& arg : head.args) {
+        if (head.name != "main" && containsAccessExpr(arg.value)) {
+            throw ParserError("Rule head fields cannot use member access. Bind a head variable in the body, e.g. Name == e.name");
+        }
+    }
+    validateRuleVars(head, body, fallbackBranches);
+    for (const auto& goal : body) validateGoalSystemResultUsage(goal);
+    for (const auto& branch : fallbackBranches) {
+        for (const auto& goal : branch) validateGoalSystemResultUsage(goal);
+    }
 }
 
 Call Parser::parseCall() {
@@ -268,10 +321,11 @@ Call Parser::parseCallFromName(std::string name, bool /*allowPositional*/) {
         args = parseArgList();
     }
     consume(TokenType::RParen, "Expected ')' after arguments");
-    if (name == "system:print" && args.size() == 1 && args.front().name.empty()) {
+    BuiltinId builtinId = builtinIdForName(name);
+    if (builtinId == BuiltinId::SystemPrint && args.size() == 1 && args.front().name.empty()) {
         args.front().name = "value";
     }
-    return Call{name, std::move(args)};
+    return Call{name, std::move(args), builtinId};
 }
 
 std::shared_ptr<GlobalBindingStmt> Parser::parseGlobalBinding() {
@@ -279,8 +333,9 @@ std::shared_ptr<GlobalBindingStmt> Parser::parseGlobalBinding() {
     consume(TokenType::Bind, "Expected ':=' after binding name");
     auto expr = parseExpr();
     validateSystemResultUsage(expr, false);
+    consumeLogicalNewline();
     const Token& terminator = consume(TokenType::Dot, "Expected '.' after global binding");
-    if (!isAtEnd() && peek().line == terminator.line) {
+    if (!isAtEnd() && !check(TokenType::Newline) && peek().line == terminator.line) {
         throw ParserError("Unexpected token after statement terminator '.' on the same line");
     }
     globals_.insert(name);
@@ -305,7 +360,7 @@ std::vector<Arg> Parser::parseArgList() {
 }
 
 Arg Parser::parseArg() {
-    if (check(TokenType::Ident)) {
+    if (isNameStartToken(peek().type)) {
         // named argument: name: expr
         if (pos_ + 1 < tokens_.size() &&
             tokens_[pos_ + 1].type == TokenType::Colon) {
@@ -317,9 +372,38 @@ Arg Parser::parseArg() {
     return Arg{"", parseExpr()};
 }
 
+std::shared_ptr<Goal> Parser::parseIfGoal() {
+    consume(TokenType::If, "Expected if");
+    auto left = parseExpr();
+    if (!isComparison(peek().type)) {
+        throw ParserError("Expected comparison operator after if expression");
+    }
+    TokenType op = advance().type;
+    auto right = parseExpr();
+    matchGoalSeparator();
+    std::vector<std::shared_ptr<Goal>> thenBranch = parseGoalList();
+    std::vector<std::shared_ptr<Goal>> elseBranch;
+    consumeLogicalNewline();
+    if (checkElse()) {
+        advance();
+        consumeLogicalNewline();
+        if (check(TokenType::Dot) || isAtEnd()) {
+            throw ParserError("if else must be followed by a branch");
+        }
+        elseBranch = parseGoalList();
+    }
+    return std::make_shared<IfGoal>(
+        std::make_shared<BinaryGoal>(std::move(left), std::move(op), std::move(right)),
+        std::move(thenBranch),
+        std::move(elseBranch));
+}
+
 std::shared_ptr<Goal> Parser::parseGoal() {
     if (isAssignmentToChain(tokens_, pos_, {"system", "result"})) {
         throw ParserError("system.result is read-only and can only be read inside a then pipeline");
+    }
+    if (check(TokenType::If)) {
+        return parseIfGoal();
     }
     if (match(TokenType::LParen)) {
         auto grouped = parseGoalList();
@@ -328,19 +412,19 @@ std::shared_ptr<Goal> Parser::parseGoal() {
         return std::make_shared<GroupGoal>(std::move(grouped));
     }
 
-    if (check(TokenType::Ident) && peek().text == "where") {
+    if (check(TokenType::Where)) {
         advance();
         auto left = parseExpr();
         if (!isComparison(peek().type)) {
             throw ParserError("Expected comparison operator after where expression");
         }
-        std::string op = comparisonText(advance().type);
+        TokenType op = advance().type;
         auto right = parseExpr();
         return std::make_shared<WhereGoal>(
             std::make_shared<BinaryGoal>(std::move(left), std::move(op), std::move(right)));
     }
 
-    if (check(TokenType::Ident) && peek().text == "return") {
+    if (check(TokenType::Return)) {
         advance();
         std::vector<Arg> fields;
         if (match(TokenType::LParen)) {
@@ -364,16 +448,8 @@ std::shared_ptr<Goal> Parser::parseGoal() {
         std::string name = advance().text;
         consume(TokenType::Bind, "Expected ':=' after assignment variable");
         size_t lookahead = pos_;
-        if (lookahead < tokens_.size() && tokens_[lookahead].type == TokenType::Ident) {
-            lookahead++;
-            while (lookahead + 1 < tokens_.size() &&
-                   (tokens_[lookahead].type == TokenType::Colon ||
-                    tokens_[lookahead].type == TokenType::Dot) &&
-                   tokens_[lookahead + 1].type == TokenType::Ident &&
-                   (tokens_[lookahead].type != TokenType::Dot ||
-                    tokens_[lookahead].line == tokens_[lookahead + 1].line)) {
-                lookahead += 2;
-            }
+        if (lookahead < tokens_.size() && isNameStartToken(tokens_[lookahead].type)) {
+            lookahead = parseTokenChain(tokens_, lookahead).end;
         }
         if (lookahead < tokens_.size() && tokens_[lookahead].type == TokenType::LParen &&
             (pos_ + 1 < tokens_.size() && tokens_[pos_ + 1].type == TokenType::Dot)) {
@@ -384,22 +460,14 @@ std::shared_ptr<Goal> Parser::parseGoal() {
 
     // A goal can be a predicate call or an expression comparison.
     size_t lookahead = pos_;
-    if (lookahead < tokens_.size() && tokens_[lookahead].type == TokenType::Ident) {
-        lookahead++;
-        while (lookahead + 1 < tokens_.size() &&
-               (tokens_[lookahead].type == TokenType::Colon ||
-                tokens_[lookahead].type == TokenType::Dot) &&
-               tokens_[lookahead + 1].type == TokenType::Ident &&
-               (tokens_[lookahead].type != TokenType::Dot ||
-                tokens_[lookahead].line == tokens_[lookahead + 1].line)) {
-            lookahead += 2;
-        }
+    if (lookahead < tokens_.size() && isNameStartToken(tokens_[lookahead].type)) {
+        lookahead = parseTokenChain(tokens_, lookahead).end;
     }
     if (lookahead < tokens_.size() && tokens_[lookahead].type == TokenType::LParen) {
         size_t saved = pos_;
         auto expr = parseExpr();
         if (isComparison(peek().type)) {
-            std::string op = comparisonText(advance().type);
+            TokenType op = advance().type;
             auto right = parseExpr();
             return std::make_shared<BinaryGoal>(std::move(expr), std::move(op), std::move(right));
         }
@@ -411,7 +479,7 @@ std::shared_ptr<Goal> Parser::parseGoal() {
     if (!isComparison(peek().type)) {
         throw ParserError("Expected comparison operator in goal");
     }
-    std::string op = comparisonText(advance().type);
+    TokenType op = advance().type;
     auto right = parseExpr();
     return std::make_shared<BinaryGoal>(std::move(left), std::move(op), std::move(right));
 }
@@ -456,20 +524,31 @@ std::vector<AssignmentTarget> Parser::parseAssignmentTargets() {
 
 std::vector<std::shared_ptr<Goal>> Parser::parseGoalConjunction() {
     std::vector<std::shared_ptr<Goal>> goals;
-    do {
+    consumeLogicalNewline();
+    while (!isGoalListTerminator()) {
         if (checkElse()) throw ParserError("Dangling 'else' without a preceding method branch");
         goals.push_back(parseGoal());
-    } while (match(TokenType::Comma) && !check(TokenType::Pipe) && !checkElse());
+        if (!matchGoalSeparator()) break;
+    }
+    if (goals.empty()) {
+        std::ostringstream oss;
+        oss << "Expected goal at " << peek().line << ":" << peek().column;
+        throw ParserError(oss.str());
+    }
     return goals;
 }
 
 std::vector<std::shared_ptr<Goal>> Parser::parseGoalList() {
     std::vector<std::vector<std::shared_ptr<Goal>>> branches;
+    consumeLogicalNewline();
     branches.push_back(parseGoalConjunction());
+    consumeLogicalNewline();
 
     while (match(TokenType::Pipe)) {
+        consumeLogicalNewline();
         if (checkElse()) throw ParserError("Dangling 'else' without a preceding method branch");
         branches.push_back(parseGoalConjunction());
+        consumeLogicalNewline();
     }
 
     if (branches.size() == 1) return std::move(branches.front());
@@ -506,7 +585,13 @@ void Parser::splitFallbackPrelude(std::vector<std::shared_ptr<Goal>>& primary,
 
 std::shared_ptr<Expr> Parser::parseExpr() {
     auto expr = parseAccessExpr();
-    while (match(TokenType::Then)) {
+    while (true) {
+        size_t beforeThen = pos_;
+        consumeLogicalNewline();
+        if (!match(TokenType::Then)) {
+            pos_ = beforeThen;
+            break;
+        }
         expr = std::make_shared<PipelineExpr>(std::move(expr), parseAccessExpr());
     }
     return expr;
@@ -516,12 +601,15 @@ std::shared_ptr<Expr> Parser::parseAccessExpr() {
     auto expr = parseAdditiveExpr();
     while ((check(TokenType::Colon) || check(TokenType::Dot)) &&
            pos_ + 1 < tokens_.size() &&
-           tokens_[pos_ + 1].type == TokenType::Ident &&
+           isNameStartToken(tokens_[pos_ + 1].type) &&
            (!check(TokenType::Dot) || tokens_[pos_].line == tokens_[pos_ + 1].line) &&
            !(pos_ + 2 < tokens_.size() && tokens_[pos_ + 2].type == TokenType::LParen)) {
         bool dotAccess = check(TokenType::Dot);
         advance(); // ':' or '.'
-        std::string key = consume(TokenType::Ident, dotAccess ? "Expected field name after '.'" : "Expected map field name after ':'").text;
+        if (!isNameStartToken(peek().type)) {
+            consume(TokenType::Ident, dotAccess ? "Expected field name after '.'" : "Expected map field name after ':'");
+        }
+        std::string key = advance().text;
         expr = std::make_shared<AccessExpr>(std::move(expr), std::move(key));
     }
     return expr;
@@ -530,8 +618,8 @@ std::shared_ptr<Expr> Parser::parseAccessExpr() {
 std::shared_ptr<Expr> Parser::parseAdditiveExpr() {
     auto expr = parseMultiplicativeExpr();
     while (check(TokenType::Plus) || check(TokenType::Minus)) {
-        std::string op = advance().text;
-        expr = std::make_shared<BinaryExpr>(std::move(expr), op, parseMultiplicativeExpr());
+        TokenType op = advance().type;
+        expr = foldConstantBinary(std::move(expr), op, parseMultiplicativeExpr());
     }
     return expr;
 }
@@ -539,8 +627,8 @@ std::shared_ptr<Expr> Parser::parseAdditiveExpr() {
 std::shared_ptr<Expr> Parser::parseMultiplicativeExpr() {
     auto expr = parseUnaryExpr();
     while (check(TokenType::Star) || check(TokenType::Slash)) {
-        std::string op = advance().text;
-        expr = std::make_shared<BinaryExpr>(std::move(expr), op, parseUnaryExpr());
+        TokenType op = advance().type;
+        expr = foldConstantBinary(std::move(expr), op, parseUnaryExpr());
     }
     return expr;
 }
@@ -551,7 +639,7 @@ std::shared_ptr<Expr> Parser::parseUnaryExpr() {
         if (auto number = std::dynamic_pointer_cast<NumberExpr>(operand)) {
             return std::make_shared<NumberExpr>(-number->value);
         }
-        return std::make_shared<BinaryExpr>(std::make_shared<NumberExpr>(0.0), "-", std::move(operand));
+        return std::make_shared<BinaryExpr>(std::make_shared<NumberExpr>(0.0), TokenType::Minus, std::move(operand));
     }
     if (match(TokenType::Plus)) {
         return parseUnaryExpr();
@@ -562,6 +650,9 @@ std::shared_ptr<Expr> Parser::parseUnaryExpr() {
 std::shared_ptr<Expr> Parser::parsePrimaryExpr() {
     if (match(TokenType::String)) return std::make_shared<StringExpr>(previous().text);
     if (match(TokenType::Number)) return std::make_shared<NumberExpr>(std::stod(previous().text));
+    if (match(TokenType::True)) return std::make_shared<BoolExpr>(true);
+    if (match(TokenType::False)) return std::make_shared<BoolExpr>(false);
+    if (match(TokenType::Nil)) return std::make_shared<NilExpr>();
     if (match(TokenType::LParen)) {
         auto expr = parseExpr();
         consume(TokenType::RParen, "Expected ')' after grouped expression");
@@ -569,11 +660,20 @@ std::shared_ptr<Expr> Parser::parsePrimaryExpr() {
     }
     if (check(TokenType::LBrace)) return parseMapExpr();
     if (check(TokenType::LBracket)) return parseArrayExpr();
-    if (check(TokenType::Ident)) {
-        std::string name = consume(TokenType::Ident, "Expected name").text;
-        if (name == "lambda" && check(TokenType::LParen)) {
+    if (check(TokenType::Lambda)) {
+        advance();
+        if (check(TokenType::LParen)) {
             return parseLambdaExpr();
         }
+        return std::make_shared<VarExpr>("lambda");
+    }
+    if (isNameStartToken(peek().type)) {
+        const Token firstNameToken = advance();
+        std::string name = firstNameToken.text;
+        LanguageTypeId languageTypeId = firstNameToken.languageTypeId;
+        if (previous().type == TokenType::BuiltinFunction) {
+            languageTypeId = LanguageTypeId::Unknown;
+        } else {
         size_t nameEnd = pos_;
         while (nameEnd + 1 < tokens_.size() &&
                (tokens_[nameEnd].type == TokenType::Colon || tokens_[nameEnd].type == TokenType::Dot) &&
@@ -587,6 +687,8 @@ std::shared_ptr<Expr> Parser::parsePrimaryExpr() {
                 advance(); // ':' or '.'
                 name += ":" + advance().text;
             }
+            languageTypeId = LanguageTypeId::Unknown;
+        }
         }
         if (match(TokenType::LParen)) {
             std::vector<Arg> args;
@@ -596,21 +698,16 @@ std::shared_ptr<Expr> Parser::parsePrimaryExpr() {
                 } while (match(TokenType::Comma));
             }
             consume(TokenType::RParen, "Expected ')' after term arguments");
-            if (name == "system:print" && args.size() == 1 && args.front().name.empty()) {
+            BuiltinId builtinId = builtinIdForName(name);
+            if (builtinId == BuiltinId::SystemPrint && args.size() == 1 && args.front().name.empty()) {
                 args.front().name = "value";
             }
-            return std::make_shared<TermExpr>(std::move(name), std::move(args));
+            return std::make_shared<TermExpr>(std::move(name), std::move(args), builtinId);
         }
         if (name == "_") {
-            return std::make_shared<VarExpr>("__anon" + std::to_string(++anonymousCounter_));
+            return std::make_shared<VarExpr>(makeAnonymousSymbolName(++anonymousCounter_));
         }
-        if (name == "nil") {
-            return std::make_shared<NilExpr>();
-        }
-        if (name == "true" || name == "false") {
-            return std::make_shared<StringExpr>(name);
-        }
-        return std::make_shared<VarExpr>(std::move(name));
+        return std::make_shared<VarExpr>(std::move(name), languageTypeId);
     }
 
     std::ostringstream oss;
@@ -626,7 +723,7 @@ std::shared_ptr<Expr> Parser::parseLambdaExpr() {
     consume(TokenType::Arrow, "Expected '=>' after lambda variable");
     auto body = parseExpr();
     if (isComparison(peek().type)) {
-        std::string op = comparisonText(advance().type);
+        TokenType op = advance().type;
         auto right = parseExpr();
         consume(TokenType::RParen, "Expected ')' after lambda");
         return std::make_shared<LambdaExpr>(std::move(source), std::move(variable), std::move(body), std::move(op), std::move(right));
@@ -640,7 +737,10 @@ std::shared_ptr<Expr> Parser::parseMapExpr() {
     std::vector<MapEntry> entries;
     if (!check(TokenType::RBrace)) {
         do {
-            std::string key = consume(TokenType::Ident, "Expected map key").text;
+            if (!isNameStartToken(peek().type)) {
+                consume(TokenType::Ident, "Expected map key");
+            }
+            std::string key = advance().text;
             consume(TokenType::Colon, "Expected ':' after map key");
             entries.push_back(MapEntry{std::move(key), parseExpr()});
         } while (match(TokenType::Comma));
@@ -659,6 +759,32 @@ std::shared_ptr<Expr> Parser::parseArrayExpr() {
     }
     consume(TokenType::RBracket, "Expected ']' after array");
     return std::make_shared<ArrayExpr>(std::move(items));
+}
+
+std::shared_ptr<Expr> Parser::foldConstantBinary(std::shared_ptr<Expr> left,
+                                                 TokenType op,
+                                                 std::shared_ptr<Expr> right) const {
+    auto leftNumber = std::dynamic_pointer_cast<NumberExpr>(left);
+    auto rightNumber = std::dynamic_pointer_cast<NumberExpr>(right);
+    if (!leftNumber || !rightNumber) {
+        return std::make_shared<BinaryExpr>(std::move(left), op, std::move(right));
+    }
+    switch (op) {
+        case TokenType::Plus:
+            return std::make_shared<NumberExpr>(leftNumber->value + rightNumber->value);
+        case TokenType::Minus:
+            return std::make_shared<NumberExpr>(leftNumber->value - rightNumber->value);
+        case TokenType::Star:
+            return std::make_shared<NumberExpr>(leftNumber->value * rightNumber->value);
+        case TokenType::Slash:
+            if (std::fabs(rightNumber->value) < 1e-12) {
+                throw ParserError("Division by zero in constant expression");
+            }
+            return std::make_shared<NumberExpr>(leftNumber->value / rightNumber->value);
+        default:
+            break;
+    }
+    return std::make_shared<BinaryExpr>(std::move(left), op, std::move(right));
 }
 
 bool Parser::containsAccessExpr(const std::shared_ptr<Expr>& expr) const {
@@ -746,6 +872,10 @@ void Parser::validateGoalSystemResultUsage(const std::shared_ptr<Goal>& goal) co
         validateSystemResultUsage(binary->right, false);
     } else if (auto where = std::dynamic_pointer_cast<WhereGoal>(goal)) {
         validateGoalSystemResultUsage(where->condition);
+    } else if (auto ifGoal = std::dynamic_pointer_cast<IfGoal>(goal)) {
+        validateGoalSystemResultUsage(ifGoal->condition);
+        for (const auto& nested : ifGoal->thenBranch) validateGoalSystemResultUsage(nested);
+        for (const auto& nested : ifGoal->elseBranch) validateGoalSystemResultUsage(nested);
     } else if (auto ret = std::dynamic_pointer_cast<ReturnGoal>(goal)) {
         for (const auto& field : ret->fields) validateSystemResultUsage(field.value, false);
     } else if (auto group = std::dynamic_pointer_cast<GroupGoal>(goal)) {
@@ -760,7 +890,7 @@ void Parser::validateGoalSystemResultUsage(const std::shared_ptr<Goal>& goal) co
 void Parser::collectExprVars(const std::shared_ptr<Expr>& expr, std::set<std::string>& vars) const {
     if (isSystemResultExpr(expr)) return;
     if (auto var = std::dynamic_pointer_cast<VarExpr>(expr)) {
-        if (var->name != "nil" && var->name.rfind("__anon", 0) != 0) vars.insert(var->name);
+        if (!isAnonymousSymbolName(var->name)) vars.insert(var->name);
         return;
     }
     if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
@@ -769,13 +899,9 @@ void Parser::collectExprVars(const std::shared_ptr<Expr>& expr, std::set<std::st
         return;
     }
     if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
-        static const std::set<std::string> builtinExprs = {
-            "count", "sum", "average", "min", "max", "sort", "search", "contains",
-            "lower", "upper", "length", "ParseDoc"
-        };
         for (const auto& arg : term->args) {
             auto var = std::dynamic_pointer_cast<VarExpr>(arg.value);
-            if (builtinExprs.count(term->name) && var && !var->name.empty() &&
+            if (term->builtinId != BuiltinId::Unknown && var && !var->name.empty() &&
                 std::isupper(static_cast<unsigned char>(var->name.front()))) {
                 continue;
             }
@@ -840,7 +966,7 @@ void Parser::validateGoalVars(const std::shared_ptr<Goal>& goal, std::set<std::s
                 }
             }
             if (auto var = std::dynamic_pointer_cast<VarExpr>(arg.value)) {
-                if (var->name != "nil" && var->name.rfind("__anon", 0) != 0) {
+                if (!isAnonymousSymbolName(var->name)) {
                     directVars.insert(var->name);
                 }
             } else {
@@ -852,7 +978,7 @@ void Parser::validateGoalVars(const std::shared_ptr<Goal>& goal, std::set<std::s
                 throw ParserError("Variable '" + name + "' is used before declaration. Declare it in the rule head or assign it before use");
             }
         }
-        if (isBuiltinCallName(call->call.name)) {
+        if (call->call.builtinId != BuiltinId::Unknown) {
             for (const auto& name : directVars) {
                 if (!isDeclaredName(name, declared)) {
                     throw ParserError("Variable '" + name + "' is used before declaration. Declare it in the rule head or assign it before use");
@@ -867,6 +993,13 @@ void Parser::validateGoalVars(const std::shared_ptr<Goal>& goal, std::set<std::s
         collectExprVars(binary->right, used);
     } else if (auto where = std::dynamic_pointer_cast<WhereGoal>(goal)) {
         validateGoalVars(where->condition, declared);
+        return;
+    } else if (auto ifGoal = std::dynamic_pointer_cast<IfGoal>(goal)) {
+        validateGoalVars(ifGoal->condition, declared);
+        std::set<std::string> thenDeclared = declared;
+        for (const auto& nested : ifGoal->thenBranch) validateGoalVars(nested, thenDeclared);
+        std::set<std::string> elseDeclared = declared;
+        for (const auto& nested : ifGoal->elseBranch) validateGoalVars(nested, elseDeclared);
         return;
     } else if (auto ret = std::dynamic_pointer_cast<ReturnGoal>(goal)) {
         for (const auto& field : ret->fields) collectExprVars(field.value, used);
@@ -888,7 +1021,7 @@ void Parser::validateGoalVars(const std::shared_ptr<Goal>& goal, std::set<std::s
             }
         }
         for (const auto& target : multi->targets) {
-            if (!target.type.empty() && !isBuiltinTypeName(target.type)) {
+            if (!target.type.empty() && !isFelidaeBuiltinTypeName(target.type)) {
                 throw ParserError("Tuple assignment target '" + target.name + "' uses unsupported type annotation '" + target.type + "'");
             }
             declared.insert(target.name);
@@ -924,9 +1057,8 @@ void Parser::validateRuleVars(const Call& head,
     for (const auto& arg : head.args) {
         if (methodStyle && !arg.name.empty()) declared.insert(arg.name);
         auto var = std::dynamic_pointer_cast<VarExpr>(arg.value);
-        if (var && !var->name.empty() && var->name.rfind("__anon", 0) != 0) {
-            if (isBuiltinTypeName(var->name) ||
-                std::isupper(static_cast<unsigned char>(var->name.front()))) {
+        if (var && !var->name.empty() && !isAnonymousSymbolName(var->name)) {
+            if (isFelidaeLikelyTypeName(var->name)) {
                 if (!isTypeNameKnown(var->name)) {
                     throw ParserError("Unknown type annotation '" + var->name + "' in rule head");
                 }
@@ -948,57 +1080,23 @@ bool Parser::isMethodStyleHead(const Call& head) const {
     if (head.args.empty()) return false;
     for (const auto& arg : head.args) {
         auto var = std::dynamic_pointer_cast<VarExpr>(arg.value);
-        if (!arg.name.empty() && var && (isTypeAnnotationName(var->name) || var->name != arg.name)) {
+        if (!arg.name.empty() && var && (isFelidaeTypeAnnotationName(var->name) || var->name != arg.name)) {
             return true;
         }
     }
     for (const auto& arg : head.args) {
         auto var = std::dynamic_pointer_cast<VarExpr>(arg.value);
-        if (!var || !isTypeAnnotationName(var->name)) return false;
+        if (!var || !isFelidaeTypeAnnotationName(var->name)) return false;
     }
     return true;
 }
 
 bool Parser::isTypeNameKnown(const std::string& name) const {
-    return isBuiltinTypeName(name) || knownTypes_.count(name) > 0;
-}
-
-bool Parser::isBuiltinCallName(const std::string& name) const {
-    static const std::set<std::string> names = {
-        "throw", "type", "instanceof", "count", "sum", "average", "min", "max", "sort",
-        "search", "contains", "lower", "upper", "length", "ParseDoc",
-        "math:add", "math:sub", "math:mul", "math:div", "math:mod",
-        "str:len", "str:contains", "str:concat", "str:lower", "str:upper",
-        "str:trim", "str:split", "str:replace", "str:startsWith", "str:endsWith",
-        "array:get", "array:len", "array:push",
-        "fn:array", "fn:pair", "fn:tuple",
-        "pair:first", "pair:second",
-        "json:parse", "json:get", "json:has", "json:keys", "json:set", "json:remove", "json:toText",
-        "visualize:dataJson", "visualize:dataHtml", "visualize:graphJson",
-        "console:readLine", "console:writeLine", "console:write", "system:print",
-        "file:readFile", "file:readLines", "file:readLine", "file:writeFile", "file:writeLines", "file:appendFile", "file:exists", "file:deleteFile",
-        "csv:parse", "csv:toFacts", "csv:toText", "csv:toFelidaeFacts",
-        "csv:addRow", "csv:findRows", "csv:updateRows", "csv:deleteRows",
-        "db:all", "db:find", "db:count", "db:first", "db:types", "db:fields",
-        "thread:createThread", "thread:start", "thread:pause", "thread:stop", "thread:status", "thread:result",
-        "http:get", "http:post", "http:put", "http:delete", "http:serveStatic",
-        "process:platform", "process:exec", "process:sleep",
-        "math:pi", "math:e", "math:random", "math:pow", "math:atan2",
-        "math:sqrt", "math:sin", "math:cos", "math:tan", "math:asin", "math:acos", "math:atan",
-        "math:log", "math:log10", "math:exp", "math:abs", "math:floor", "math:ceil", "math:round",
-        "probability:mean", "probability:variance", "probability:stddev", "probability:normalize",
-        "probability:entropy", "probability:covariance", "probability:correlation",
-        "probability:bernoulli", "probability:binomialPmf", "probability:binomialCdf",
-        "probability:poissonPmf", "probability:poissonCdf", "probability:normalPdf",
-        "probability:normalCdf", "probability:uniformPdf", "probability:uniformCdf",
-        "probability:sample", "probability:weightedChoice",
-        "ml:sigmoid", "ml:relu", "ml:dot", "ml:meanSquaredError"
-    };
-    return names.count(name) > 0;
+    return isFelidaeBuiltinTypeName(name) || knownTypes_.count(name) > 0;
 }
 
 void Parser::validateCallFields(const Call& call) const {
-    if (isBuiltinCallName(call.name)) return;
+    if (call.builtinId != BuiltinId::Unknown) return;
     if (methodPredicates_.count(call.name) > 0) return;
     auto it = predicateFields_.find(call.name);
     if (it == predicateFields_.end()) return;
@@ -1013,18 +1111,6 @@ bool Parser::isComparison(TokenType type) const {
     return type == TokenType::EqEq || type == TokenType::NotEq ||
            type == TokenType::LT || type == TokenType::LTE ||
            type == TokenType::GT || type == TokenType::GTE;
-}
-
-std::string Parser::comparisonText(TokenType type) const {
-    switch (type) {
-        case TokenType::EqEq: return "==";
-        case TokenType::NotEq: return "!=";
-        case TokenType::LT: return "<";
-        case TokenType::LTE: return "<=";
-        case TokenType::GT: return ">";
-        case TokenType::GTE: return ">=";
-        default: throw ParserError("Not a comparison operator");
-    }
 }
 
 } // namespace Felidae

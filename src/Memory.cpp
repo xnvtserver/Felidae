@@ -1,5 +1,6 @@
 #include "Memory.h"
 
+#include <algorithm>
 #include <set>
 #include <utility>
 
@@ -54,6 +55,24 @@ bool FactMemory::hasOrigin(const std::filesystem::path& origin) const {
     return factsByOrigin_.count(origin) > 0;
 }
 
+void FactMemory::removeOrigin(const std::filesystem::path& origin) {
+    if (origin.empty()) return;
+    facts_.erase(
+        std::remove_if(facts_.begin(), facts_.end(), [&](const FactRecord& fact) {
+            return fact.origin == origin;
+        }),
+        facts_.end());
+    for (auto it = parentOrigin_.begin(); it != parentOrigin_.end();) {
+        if (it->second == origin) {
+            parentOf_.erase(it->first);
+            it = parentOrigin_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    rebuildIndexes();
+}
+
 bool FactMemory::isCompatibleType(const std::string& actual, const std::string& expected) const {
     if (actual == expected) return true;
     std::set<std::string> seen;
@@ -88,6 +107,16 @@ const std::vector<size_t>& FactMemory::compatibleFactIndexes(const std::string& 
 }
 
 void FactMemory::invalidateCaches() {
+    compatibleFactCache_.clear();
+}
+
+void FactMemory::rebuildIndexes() {
+    factsByType_.clear();
+    factsByOrigin_.clear();
+    for (size_t index = 0; index < facts_.size(); ++index) {
+        factsByType_[facts_[index].type].push_back(index);
+        if (!facts_[index].origin.empty()) factsByOrigin_[facts_[index].origin].push_back(index);
+    }
     compatibleFactCache_.clear();
 }
 
