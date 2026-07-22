@@ -170,7 +170,7 @@ $directTests = @(
     @{ Name = "then pipeline command line query"; Args = @("examples\then_pipeline.fx", "? Increment(value: 1) then Double(value: system.result) == 4"); Expect = @("true") },
     @{ Name = "auto system print"; Args = @("examples\system_print.fx"); Expect = @("Felidae system running!", "{}") },
     @{ Name = "main returns status value"; Args = @("examples\main_comment_return.fx"); Expect = @("Felidae system running!", '"true"') },
-    @{ Name = "direct no main"; Args = @("examples\family.fx"); Expect = @("Program loaded successfully. No main() method found.", "Use a query argument or run with --repl.") },
+    @{ Name = "direct no main"; Args = @("examples\family.fx"); Expect = @("Program loaded successfully. No main() method found.", "Use a query argument, add a zero-argument entry call, or run with --repl.") },
     @{ Name = "help"; Args = @("--help"); Expect = @("Felidae Logic Programming Language v0.1.0", ".fx", "Total commands supported: 7", "felidae --repl examples/main.fx", "functional logic language", "______") },
     @{ Name = "debug flag"; Args = @("examples\system_print.fx", "--debug"); Expect = @("Felidae debug mode enabled", "Felidae system running!", "{}") },
     @{ Name = "version"; Args = @("--version"); Expect = @("Felidae Logic Programming Language v0.1.0") }

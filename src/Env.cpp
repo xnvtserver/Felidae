@@ -25,7 +25,7 @@ std::shared_ptr<Expr> findEnvValue(const Env& env, const std::string& name) {
 }
 
 std::shared_ptr<Expr> findReturnValue(const Env& env) {
-    return findEnvValue(env, std::string(InternalSymbol::Return));
+    return findEnvValue(env, internalSymbolString(InternalSymbolKind::Return));
 }
 
 bool bindEnvValue(Env& env, const std::string& name, const std::shared_ptr<Expr>& value) {

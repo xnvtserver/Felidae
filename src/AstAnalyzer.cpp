@@ -12,7 +12,7 @@ namespace {
 
 bool isIgnoredName(const std::string& name) {
     return name.empty() || name == "_" ||
-           name == InternalSymbol::SystemResult ||
+           name == internalSymbolName(InternalSymbolKind::SystemResult) ||
            isInternalGeneratedSymbolName(name);
 }
 

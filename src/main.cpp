@@ -229,9 +229,12 @@ int main(int argc, char** argv) {
         if (interpreter.hasMethod("main")) {
             auto result = interpreter.callMain(makeSystemInput(options.remainingArgs));
             std::cout << interpreter.valueToString(result) << "\n";
+        } else if (interpreter.hasAutoEntryCall()) {
+            auto result = interpreter.callAutoEntry();
+            std::cout << interpreter.valueToString(result) << "\n";
         } else {
             std::cout << "Program loaded successfully. No main() method found.\n"
-                      << "Use a query argument or run with --repl.\n";
+                      << "Use a query argument, add a zero-argument entry call, or run with --repl.\n";
         }
 
         return 0;

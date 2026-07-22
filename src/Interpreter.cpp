@@ -628,13 +628,13 @@ void Interpreter::joinThreads() {
 
 std::shared_ptr<Expr> Interpreter::makeThreadHandle(const std::string& id) const {
     return std::make_shared<MapExpr>(std::vector<MapEntry>{
-        {std::string(InternalSymbol::Type), std::make_shared<StringExpr>("Thread")},
+        {internalSymbolString(InternalSymbolKind::Type), std::make_shared<StringExpr>("Thread")},
         {"id", std::make_shared<StringExpr>(id)}
     });
 }
 
 std::shared_ptr<Interpreter::ThreadTask> Interpreter::threadTaskFromHandle(const std::shared_ptr<Expr>& handle) {
-    auto typeValue = findMapValue(handle, std::string(InternalSymbol::Type));
+    auto typeValue = findMapValue(handle, internalSymbolString(InternalSymbolKind::Type));
     auto idValue = findMapValue(handle, "id");
     auto type = std::dynamic_pointer_cast<StringExpr>(typeValue);
     auto id = std::dynamic_pointer_cast<StringExpr>(idValue);
@@ -703,10 +703,10 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
             }
 
             Call call(functionName, {});
-            auto it = child.clauses_.find(functionName);
             std::vector<Solution> solutions;
-            if (it != child.clauses_.end()) {
-                for (const auto& clause : it->second) {
+            auto* clauses = child.findClauses(functionName, symbolIdForName(functionName));
+            if (clauses) {
+                for (const auto& clause : *clauses) {
                     if (!child.isMethodClause(*clause)) continue;
                     child.solveMethodCall(call, clause, Env{}, solutions, 1, 0);
                     if (!solutions.empty()) break;
@@ -778,12 +778,30 @@ void Interpreter::addProgram(const Program& program) {
             switch (statement->kind()) {
                 case StatementKind::Import:
                     break;
-                case StatementKind::Clause:
-                    addClause(std::static_pointer_cast<ClauseStmt>(statement));
+                case StatementKind::Clause: {
+                    auto clause = std::static_pointer_cast<ClauseStmt>(statement);
+                    if (clause->isFact() && clause->head.args.empty()) {
+                        auto existing = findClauses(clause->head.name, clause->head.nameId);
+                        bool callsDeclaredMethod = false;
+                        if (existing) {
+                            for (const auto& existingClause : *existing) {
+                                if (existingClause && isMethodClause(*existingClause)) {
+                                    callsDeclaredMethod = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (callsDeclaredMethod) {
+                            autoEntryCalls_.push_back(clause->head);
+                            break;
+                        }
+                    }
+                    addClause(clause);
                     break;
+                }
                 case StatementKind::GlobalBinding: {
                     auto binding = std::static_pointer_cast<GlobalBindingStmt>(statement);
-                    if (globals_.count(binding->name) || clauses_.count(binding->name)) {
+                    if (globals_.count(binding->name) || findClauses(binding->name, symbolIdForName(binding->name))) {
                         throw InterpreterError("Global '" + binding->name + "' is already defined and immutable");
                     }
                     Env env;
@@ -807,6 +825,7 @@ void Interpreter::addProgram(const Program& program) {
 
 void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
     invalidateCaches();
+    const std::string clauseName = clause->head.name;
     if (clause->isFact() && globals_.count(clause->head.name) == 0) {
         auto factMap = factToMap(*clause, clause->parentName);
         Call mergedHead(clause->head.name, {});
@@ -829,7 +848,7 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
     if (!currentLoadingFile_.empty()) {
         clauseOrigins_[clause.get()] = currentLoadingFile_;
     }
-    clauses_[clause->head.name].push_back(std::move(clause));
+    getOrCreateClauseList(clauseName, clause->head.nameId).push_back(std::move(clause));
 }
 
 void Interpreter::addLazyImport(const std::filesystem::path& baseDir, const std::string& pattern) {
@@ -869,15 +888,19 @@ std::vector<Solution> Interpreter::solve(const std::vector<std::shared_ptr<Goal>
 }
 
 bool Interpreter::hasMethod(const std::string& name) {
-    auto it = clauses_.find(name);
-    if (it == clauses_.end() && ensurePredicateLoaded(name)) {
-        it = clauses_.find(name);
+    auto clauses = findClauses(name, symbolIdForName(name));
+    if (!clauses && ensurePredicateLoaded(name)) {
+        clauses = findClauses(name, symbolIdForName(name));
     }
-    if (it == clauses_.end()) return false;
-    for (const auto& clause : it->second) {
+    if (!clauses) return false;
+    for (const auto& clause : *clauses) {
         if (isMethodClause(*clause)) return true;
     }
     return false;
+}
+
+bool Interpreter::hasAutoEntryCall() const {
+    return !autoEntryCalls_.empty();
 }
 
 bool Interpreter::hasGlobal(const std::string& name) const {
@@ -906,7 +929,9 @@ std::shared_ptr<Expr> Interpreter::callMain(const std::shared_ptr<Expr>& systemI
     if (!hasMethod("main")) throw InterpreterError("No main() method found");
     std::vector<Solution> out;
     std::shared_ptr<ClauseStmt> mainClause;
-    for (const auto& clause : clauses_.at("main")) {
+    auto* mainClauses = findClauses("main", symbolIdForName("main"));
+    if (!mainClauses) throw InterpreterError("No main() method found");
+    for (const auto& clause : *mainClauses) {
         if (isMethodClause(*clause)) {
             mainClause = clause;
             break;
@@ -934,6 +959,24 @@ std::shared_ptr<Expr> Interpreter::callMain(const std::shared_ptr<Expr>& systemI
         throw InterpreterError("main() completed without a return value");
     }
     return returned->clone();
+}
+
+std::shared_ptr<Expr> Interpreter::callAutoEntry() {
+    if (autoEntryCalls_.empty()) throw InterpreterError("No auto entry call found");
+    const Call& entryCall = autoEntryCalls_.front();
+    auto clauses = findClauses(entryCall.name, entryCall.nameId);
+    if (!clauses) throw InterpreterError("Auto entry method '" + entryCall.name + "' not found");
+
+    for (const auto& clause : *clauses) {
+        if (!isMethodClause(*clause)) continue;
+        std::vector<Solution> out;
+        solveMethodCall(entryCall, clause, Env{}, out, 1, 0);
+        if (out.empty()) continue;
+        auto returned = findReturnValue(out.front().env);
+        if (returned) return returned->clone();
+        return std::make_shared<StringExpr>("true");
+    }
+    throw InterpreterError("Auto entry method '" + entryCall.name + "' produced no result");
 }
 
 std::string Interpreter::valueToString(const std::shared_ptr<Expr>& value) const {
@@ -1083,11 +1126,11 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
 
     auto callGoal = std::static_pointer_cast<CallGoal>(first);
 
-    auto it = clauses_.find(callGoal->call.name);
-    if (it == clauses_.end() && ensurePredicateLoaded(callGoal->call.name)) {
-        it = clauses_.find(callGoal->call.name);
+    auto clauses = findClauses(callGoal->call.name, callGoal->call.nameId);
+    if (!clauses && ensurePredicateLoaded(callGoal->call.name)) {
+        clauses = findClauses(callGoal->call.name, callGoal->call.nameId);
     }
-    const bool preferLocalClause = it != clauses_.end() && !nativeDeclarationFor(callGoal->call.name);
+    const bool preferLocalClause = clauses && !nativeDeclarationFor(callGoal->call.name);
     if (!preferLocalClause) {
         EnvFrame builtinEnv = envFramePool_.acquireCopy(env);
         if (solveBuiltin(callGoal->call, builtinEnv.get())) {
@@ -1095,10 +1138,10 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
             if (out.size() >= maxSolutions) return;
         }
     }
-    if (it == clauses_.end()) return;
-    touchClauses(it->second);
+    if (!clauses) return;
+    touchClauses(*clauses);
 
-    for (const auto& originalClause : it->second) {
+    for (const auto& originalClause : *clauses) {
         if (isMethodClause(*originalClause)) {
             std::vector<Solution> methodSolutions;
             solveMethodCall(callGoal->call, originalClause, env, methodSolutions, maxSolutions, depth + 1);
@@ -1169,12 +1212,12 @@ bool Interpreter::solveAssignGoal(const AssignGoal& goal, Env& env) {
 
     if (auto callGoal = std::dynamic_pointer_cast<CallGoal>(goal.goal)) {
         bool expressionReturningCall = nativeDeclarationFor(callGoal->call.name) != nullptr;
-        auto valueIt = clauses_.find(callGoal->call.name);
-        if (valueIt == clauses_.end() && ensurePredicateLoaded(callGoal->call.name)) {
-            valueIt = clauses_.find(callGoal->call.name);
+        auto* valueClauses = findClauses(callGoal->call.name, callGoal->call.nameId);
+        if (!valueClauses && ensurePredicateLoaded(callGoal->call.name)) {
+            valueClauses = findClauses(callGoal->call.name, callGoal->call.nameId);
         }
-        if (valueIt != clauses_.end()) {
-            for (const auto& clause : valueIt->second) {
+        if (valueClauses) {
+            for (const auto& clause : *valueClauses) {
                 if (clause && bodyHasReturnGoal(clause->body)) {
                     expressionReturningCall = true;
                     break;
@@ -1202,13 +1245,13 @@ bool Interpreter::solveAssignGoal(const AssignGoal& goal, Env& env) {
         }
 
         const Call& call = builtinCall;
-        auto it = clauses_.find(call.name);
-        if (it == clauses_.end() && ensurePredicateLoaded(call.name)) {
-            it = clauses_.find(call.name);
+        auto* clauses = findClauses(call.name, call.nameId);
+        if (!clauses && ensurePredicateLoaded(call.name)) {
+            clauses = findClauses(call.name, call.nameId);
         }
-        if (it != clauses_.end()) {
-            touchClauses(it->second);
-            for (const auto& originalClause : it->second) {
+        if (clauses) {
+            touchClauses(*clauses);
+            for (const auto& originalClause : *clauses) {
                 std::vector<Solution> methodSolutions;
                 const bool previousValueCallMode = valueCallMode_;
                 valueCallMode_ = true;
@@ -1221,7 +1264,7 @@ bool Interpreter::solveAssignGoal(const AssignGoal& goal, Env& env) {
                 valueCallMode_ = previousValueCallMode;
                 if (!methodSolutions.empty()) {
                     Env attempt = std::move(methodSolutions.front().env);
-                    auto returned = attempt.find(std::string(InternalSymbol::Return));
+                    auto returned = attempt.find(internalSymbolString(InternalSymbolKind::Return));
                     auto assigned = attempt.find(goal.name);
                     std::shared_ptr<Expr> value = assigned != attempt.end()
                         ? assigned->second
@@ -1341,7 +1384,7 @@ bool Interpreter::solveReturnGoal(const ReturnGoal& goal, Env& env) {
             }
             return false;
         }
-        env[std::string(InternalSymbol::Return)] = value;
+        env[internalSymbolString(InternalSymbolKind::Return)] = value;
         return true;
     }
 
@@ -1357,7 +1400,7 @@ bool Interpreter::solveReturnGoal(const ReturnGoal& goal, Env& env) {
         }
         entries.push_back(MapEntry{field.name, value});
     }
-    env[std::string(InternalSymbol::Return)] = std::make_shared<MapExpr>(std::move(entries));
+    env[internalSymbolString(InternalSymbolKind::Return)] = std::make_shared<MapExpr>(std::move(entries));
     return true;
 }
 
@@ -1491,7 +1534,7 @@ bool Interpreter::solveMethodCall(const Call& call,
             auto map = std::dynamic_pointer_cast<MapExpr>(value);
             std::string actualType;
             if (map) {
-                auto typeValue = findMapValue(value, std::string(InternalSymbol::Type));
+                auto typeValue = findMapValue(value, internalSymbolString(InternalSymbolKind::Type));
                 auto typeString = std::dynamic_pointer_cast<StringExpr>(typeValue);
                 if (typeString) actualType = typeString->value;
             }
@@ -1506,7 +1549,7 @@ bool Interpreter::solveMethodCall(const Call& call,
 
     auto appendReturnedSolution = [&](const Env& solutionEnv, const std::shared_ptr<Expr>& returned) -> bool {
         Env attempt = callerEnv;
-        attempt[std::string(InternalSymbol::Return)] = returned;
+        attempt[internalSymbolString(InternalSymbolKind::Return)] = returned;
         auto resolvedBinding = [&](const std::string& name) -> std::shared_ptr<Expr> {
             auto bound = solutionEnv.find(name);
             if (bound == solutionEnv.end()) return nullptr;
@@ -1578,7 +1621,7 @@ bool Interpreter::solveMethodCall(const Call& call,
                     solveRecursive(branch, prelude.env, branchSolutions, 1, depth + 1);
                     bool branchReturned = false;
                     for (auto& solution : branchSolutions) {
-                        auto returnedIt = solution.env.find(std::string(InternalSymbol::Return));
+                        auto returnedIt = solution.env.find(internalSymbolString(InternalSymbolKind::Return));
                         if (returnedIt == solution.env.end()) continue;
                         branchReturned = true;
                         auto returnedValue = returnedIt->second;
@@ -1596,7 +1639,7 @@ bool Interpreter::solveMethodCall(const Call& call,
         if (valueCallMode_ && originalClause->head.name != "main" && !bodyHasReturnGoal(originalClause->body)) {
             Env truthEnv;
             auto truthTuple = executeGoalTruthTuple(originalClause->body, candidate, truthEnv);
-            truthEnv[std::string(InternalSymbol::Return)] = truthTuple;
+            truthEnv[internalSymbolString(InternalSymbolKind::Return)] = truthTuple;
             if (appendReturnedSolution(truthEnv, truthTuple)) return true;
             continue;
         }
@@ -1606,18 +1649,18 @@ bool Interpreter::solveMethodCall(const Call& call,
         solveRecursive(originalClause->body, std::move(candidate), nested, 1, depth + 1);
         if (nested.empty() && valueCallMode_ && originalClause->head.name != "main") {
             Env failedValueEnv = startingCandidate;
-            failedValueEnv[std::string(InternalSymbol::Return)] = evaluateGoalTruthTuple(originalClause->body, startingCandidate);
+            failedValueEnv[internalSymbolString(InternalSymbolKind::Return)] = evaluateGoalTruthTuple(originalClause->body, startingCandidate);
             nested.push_back(Solution{std::move(failedValueEnv)});
         }
         for (auto& solution : nested) {
-            auto returnedIt = solution.env.find(std::string(InternalSymbol::Return));
+            auto returnedIt = solution.env.find(internalSymbolString(InternalSymbolKind::Return));
             if (returnedIt == solution.env.end()) {
                 if (originalClause->head.name == "main") {
-                    solution.env[std::string(InternalSymbol::Return)] = std::make_shared<MapExpr>(std::vector<MapEntry>{});
+                    solution.env[internalSymbolString(InternalSymbolKind::Return)] = std::make_shared<MapExpr>(std::vector<MapEntry>{});
                 } else {
-                    solution.env[std::string(InternalSymbol::Return)] = evaluateGoalTruthTuple(originalClause->body, startingCandidate);
+                    solution.env[internalSymbolString(InternalSymbolKind::Return)] = evaluateGoalTruthTuple(originalClause->body, startingCandidate);
                 }
-                returnedIt = solution.env.find(std::string(InternalSymbol::Return));
+                returnedIt = solution.env.find(internalSymbolString(InternalSymbolKind::Return));
             }
             auto returnedValue = returnedIt->second;
             if (appendReturnedSolution(solution.env, returnedValue)) return true;
@@ -1716,19 +1759,18 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
                 }
             }
 
-            Call handler;
-            handler.name = targetName;
+            Call handler(targetName, {});
             handler.args.push_back(Arg{"msg", a});
 
-            auto it = clauses_.find(handler.name);
-            if (it == clauses_.end() && ensurePredicateLoaded(handler.name)) {
-                it = clauses_.find(handler.name);
+            auto* clauses = findClauses(handler.name, handler.nameId);
+            if (!clauses && ensurePredicateLoaded(handler.name)) {
+                clauses = findClauses(handler.name, handler.nameId);
             }
-            if (it == clauses_.end()) return false;
-            touchClauses(it->second);
+            if (!clauses) return false;
+            touchClauses(*clauses);
 
             bool handled = false;
-            for (const auto& originalClause : it->second) {
+            for (const auto& originalClause : *clauses) {
                 Env attempt = env;
                 auto clause = standardizeApart(*originalClause);
                 if (!unifyCall(handler, clause->head, attempt)) continue;
@@ -1758,7 +1800,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
 
     if (call.name == "type") {
         if (!valueArg({"value", "data", "input"}, 0, a)) return false;
-        auto typeValue = findMapValue(a, std::string(InternalSymbol::Type));
+        auto typeValue = findMapValue(a, internalSymbolString(InternalSymbolKind::Type));
         auto typeString = std::dynamic_pointer_cast<StringExpr>(typeValue);
         if (!typeString) return false;
         const Arg* out = namedArg("name");
@@ -1775,7 +1817,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         if (!typeArg) typeArg = namedArg("of");
         if (!typeArg && call.args.size() > 1) typeArg = &call.args[1];
         if (!typeArg) return false;
-        auto typeValue = findMapValue(a, std::string(InternalSymbol::Type));
+        auto typeValue = findMapValue(a, internalSymbolString(InternalSymbolKind::Type));
         auto typeString = std::dynamic_pointer_cast<StringExpr>(typeValue);
         if (!typeString) return false;
         std::string expected;
@@ -2129,9 +2171,9 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
 }
 
 const ClauseStmt* Interpreter::nativeDeclarationFor(const std::string& name) const {
-    auto it = clauses_.find(name);
-    if (it == clauses_.end()) return nullptr;
-    for (const auto& clause : it->second) {
+    auto clauses = findClauses(name, symbolIdForName(name));
+    if (!clauses) return nullptr;
+    for (const auto& clause : *clauses) {
         if (clause && clause->emptyDeclaration) return clause.get();
     }
     return nullptr;
@@ -2238,11 +2280,11 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
         for (const auto& entry : loaderArgs->entries) {
             targetCall.args.push_back(Arg{entry.key, entry.value->clone()});
         }
-        auto targetIt = clauses_.find(nativeFunctionName);
-        if (targetIt != clauses_.end()) {
+        auto* targetClauses = findClauses(targetCall.name, targetCall.nameId);
+        if (targetClauses) {
             bool matchedDeclaration = false;
             std::string firstMismatch;
-            for (const auto& targetDeclaration : targetIt->second) {
+            for (const auto& targetDeclaration : *targetClauses) {
                 if (!targetDeclaration || !targetDeclaration->emptyDeclaration) continue;
                 try {
                     validateNativeCallTypes(targetCall, *targetDeclaration, env, true);
@@ -2475,7 +2517,7 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
         }
     }
 
-    env[std::string(InternalSymbol::Return)] = parsed->clone();
+    env[internalSymbolString(InternalSymbolKind::Return)] = parsed->clone();
     if (outputArgs.empty()) return true;
 
     auto returnedMap = std::dynamic_pointer_cast<MapExpr>(parsed);
@@ -2552,10 +2594,10 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         return true;
     }
     auto hasCallableBody = [&]() {
-        auto it = clauses_.find(term.name);
-        if (it == clauses_.end() && ensurePredicateLoaded(term.name)) it = clauses_.find(term.name);
-        if (it == clauses_.end()) return false;
-        for (const auto& clause : it->second) {
+        auto* clauses = findClauses(term.name, term.nameId);
+        if (!clauses && ensurePredicateLoaded(term.name)) clauses = findClauses(term.name, term.nameId);
+        if (!clauses) return false;
+        for (const auto& clause : *clauses) {
             if (!clause->body.empty() || isMethodClause(*clause)) return true;
         }
         return false;
@@ -2568,7 +2610,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
 
     if (term.name.find(':') == std::string::npos && !term.args.empty()) {
         std::vector<MapEntry> entries;
-        entries.push_back(MapEntry{std::string(InternalSymbol::Type), std::make_shared<StringExpr>(term.name)});
+        entries.push_back(MapEntry{std::string(internalSymbolName(InternalSymbolKind::Type)), std::make_shared<StringExpr>(term.name)});
         for (size_t i = 0; i < term.args.size(); ++i) {
             const auto& arg = term.args[i];
             if (arg.name.empty()) {
@@ -2597,7 +2639,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         for (const auto& arg : term.args) nativeCall.args.push_back(Arg{arg.name, arg.value->clone()});
         Env nativeEnv = env;
         if (solveNativeCall(nativeCall, nativeEnv)) {
-            auto returned = nativeEnv.find(std::string(InternalSymbol::Return));
+            auto returned = nativeEnv.find(internalSymbolString(InternalSymbolKind::Return));
             if (returned != nativeEnv.end()) {
                 if (auto returnedMap = std::dynamic_pointer_cast<MapExpr>(returned->second)) {
                     if (returnedMap->entries.size() == 1) {
@@ -2629,13 +2671,13 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         args.push_back(value);
     }
 
-    auto callableIt = clauses_.find(term.name);
-    if (callableIt == clauses_.end() && ensurePredicateLoaded(term.name)) {
-        callableIt = clauses_.find(term.name);
+    auto* callableClauses = findClauses(term.name, term.nameId);
+    if (!callableClauses && ensurePredicateLoaded(term.name)) {
+        callableClauses = findClauses(term.name, term.nameId);
     }
     bool callableBody = false;
-    if (callableIt != clauses_.end()) {
-        for (const auto& clause : callableIt->second) {
+    if (callableClauses) {
+        for (const auto& clause : *callableClauses) {
             if (!clause->body.empty() || isMethodClause(*clause)) {
                 callableBody = true;
                 break;
@@ -2647,9 +2689,8 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         for (size_t i = 0; i < args.size(); ++i) {
             call.args.push_back(Arg{term.args[i].name, args[i]});
         }
-        auto it = callableIt;
-        if (it == clauses_.end()) return false;
-        for (const auto& clause : it->second) {
+        if (!callableClauses) return false;
+        for (const auto& clause : *callableClauses) {
             if (clause->body.empty() && !isMethodClause(*clause)) continue;
             std::vector<Solution> solutions;
             const bool previousValueCallMode = valueCallMode_;
@@ -2665,7 +2706,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
                 valueCallMode_ = previousValueCallMode;
             }
             if (!solutions.empty()) {
-                auto returned = solutions.front().env.find(std::string(InternalSymbol::Return));
+                auto returned = solutions.front().env.find(internalSymbolString(InternalSymbolKind::Return));
                 if (returned != solutions.front().env.end()) {
                     if (auto returnedMap = std::dynamic_pointer_cast<MapExpr>(returned->second)) {
                         if (returnedMap->entries.size() == 1 && returnedMap->entries.front().key.empty()) {
@@ -4502,8 +4543,8 @@ std::shared_ptr<MapExpr> Interpreter::factToMap(const ClauseStmt& clause, const 
             current.clear();
         }
     }
-    upsertEntry(entries, std::string(InternalSymbol::Type), std::make_shared<StringExpr>(clause.head.name));
-    if (!parentType.empty()) upsertEntry(entries, std::string(InternalSymbol::Parent), std::make_shared<StringExpr>(parentType));
+    upsertEntry(entries, internalSymbolString(InternalSymbolKind::Type), std::make_shared<StringExpr>(clause.head.name));
+    if (!parentType.empty()) upsertEntry(entries, internalSymbolString(InternalSymbolKind::Parent), std::make_shared<StringExpr>(parentType));
     Env env;
     std::set<std::string> childFields;
     for (const auto& arg : clause.head.args) {
@@ -4557,6 +4598,49 @@ const Arg* Interpreter::findArgByNameOrIndex(const Call& call, const std::string
     return nullptr;
 }
 
+Interpreter::ClauseList* Interpreter::findClauses(const std::string& name, SymbolId nameId) {
+    if (nameId == 0) nameId = symbolIdForName(name);
+    auto found = clauses_.find(nameId);
+    if (found == clauses_.end()) return nullptr;
+    for (auto& bucket : found->second) {
+        if (bucket.name == name) return &bucket.clauses;
+    }
+    return nullptr;
+}
+
+const Interpreter::ClauseList* Interpreter::findClauses(const std::string& name, SymbolId nameId) const {
+    if (nameId == 0) nameId = symbolIdForName(name);
+    auto found = clauses_.find(nameId);
+    if (found == clauses_.end()) return nullptr;
+    for (const auto& bucket : found->second) {
+        if (bucket.name == name) return &bucket.clauses;
+    }
+    return nullptr;
+}
+
+Interpreter::ClauseList& Interpreter::getOrCreateClauseList(const std::string& name, SymbolId nameId) {
+    if (nameId == 0) nameId = symbolIdForName(name);
+    auto& buckets = clauses_[nameId];
+    for (auto& bucket : buckets) {
+        if (bucket.name == name) return bucket.clauses;
+    }
+    buckets.push_back(ClauseBucket{name, {}});
+    return buckets.back().clauses;
+}
+
+void Interpreter::removeClauseBucket(const std::string& name, SymbolId nameId) {
+    if (nameId == 0) nameId = symbolIdForName(name);
+    auto found = clauses_.find(nameId);
+    if (found == clauses_.end()) return;
+    auto& buckets = found->second;
+    buckets.erase(
+        std::remove_if(buckets.begin(), buckets.end(), [&](const ClauseBucket& bucket) {
+            return bucket.name == name;
+        }),
+        buckets.end());
+    if (buckets.empty()) clauses_.erase(found);
+}
+
 std::string Interpreter::solveCacheKey(const std::vector<std::shared_ptr<Goal>>& goals,
                                        size_t maxSolutions) const {
     std::ostringstream out;
@@ -4596,13 +4680,14 @@ void Interpreter::clearCachesNow() {
 
 bool Interpreter::ensurePredicateLoaded(const std::string& predicate) {
     bool loadedAny = false;
+    const SymbolId predicateId = symbolIdForName(predicate);
     for (size_t index = 0; index < lazyModules_.size(); ++index) {
         if (lazyModules_[index].loaded) continue;
         loadLazyModule(lazyModules_[index]);
         loadedAny = true;
-        if (clauses_.find(predicate) != clauses_.end()) return true;
+        if (findClauses(predicate, predicateId)) return true;
     }
-    return loadedAny && clauses_.find(predicate) != clauses_.end();
+    return loadedAny && findClauses(predicate, predicateId);
 }
 
 void Interpreter::loadAllImports() {
@@ -4637,20 +4722,28 @@ void Interpreter::evictColdModules() {
 void Interpreter::unloadModule(LazyModule& module) {
     invalidateCaches();
     for (const auto& file : module.files) {
-        for (auto clauseIt = clauses_.begin(); clauseIt != clauses_.end();) {
-            auto& list = clauseIt->second;
-            list.erase(
-                std::remove_if(list.begin(), list.end(), [&](const std::shared_ptr<ClauseStmt>& clause) {
-                    auto origin = clauseOrigins_.find(clause.get());
-                    const bool remove = origin != clauseOrigins_.end() && origin->second == file;
-                    if (remove) clauseOrigins_.erase(origin);
-                    return remove;
-                }),
-                list.end());
-            if (list.empty()) {
-                clauseIt = clauses_.erase(clauseIt);
+        for (auto idIt = clauses_.begin(); idIt != clauses_.end();) {
+            auto& buckets = idIt->second;
+            for (auto bucketIt = buckets.begin(); bucketIt != buckets.end();) {
+                auto& list = bucketIt->clauses;
+                list.erase(
+                    std::remove_if(list.begin(), list.end(), [&](const std::shared_ptr<ClauseStmt>& clause) {
+                        auto origin = clauseOrigins_.find(clause.get());
+                        const bool remove = origin != clauseOrigins_.end() && origin->second == file;
+                        if (remove) clauseOrigins_.erase(origin);
+                        return remove;
+                    }),
+                    list.end());
+                if (list.empty()) {
+                    bucketIt = buckets.erase(bucketIt);
+                } else {
+                    ++bucketIt;
+                }
+            }
+            if (buckets.empty()) {
+                idIt = clauses_.erase(idIt);
             } else {
-                ++clauseIt;
+                ++idIt;
             }
         }
         globals_.eraseOrigin(file);
@@ -4824,8 +4917,8 @@ std::string Interpreter::runtimeGraphJson() const {
     };
 
     auto isMethodName = [&](const std::string& name) {
-        auto found = clauses_.find(name);
-        return found != clauses_.end() && hasNonFactClause(found->second);
+        auto found = findClauses(name, symbolIdForName(name));
+        return found && hasNonFactClause(*found);
     };
 
     auto classifyCall = [&](const std::string& name) {
@@ -4921,11 +5014,13 @@ std::string Interpreter::runtimeGraphJson() const {
         }
     };
 
-    for (const auto& item : clauses_) {
-        for (const auto& clause : item.second) {
-            for (const auto& goal : clause->body) collectGoalCalls(goal);
-            for (const auto& branch : clause->fallbackBranches) {
-                for (const auto& goal : branch) collectGoalCalls(goal);
+    for (const auto& idEntry : clauses_) {
+        for (const auto& bucket : idEntry.second) {
+            for (const auto& clause : bucket.clauses) {
+                for (const auto& goal : clause->body) collectGoalCalls(goal);
+                for (const auto& branch : clause->fallbackBranches) {
+                    for (const auto& goal : branch) collectGoalCalls(goal);
+                }
             }
         }
     }
@@ -5005,9 +5100,11 @@ std::string Interpreter::runtimeGraphJson() const {
         if (!factTypes.count(name)) writeNode(nodeId("fact", name), name, "fact", "referenced fact/type with no loaded records");
     }
 
-    for (const auto& item : clauses_) {
-        if (hasNonFactClause(item.second)) {
-            writeNode(nodeId("method", item.first), item.first, "method");
+    for (const auto& idEntry : clauses_) {
+        for (const auto& bucket : idEntry.second) {
+            if (hasNonFactClause(bucket.clauses)) {
+                writeNode(nodeId("method", bucket.name), bucket.name, "method");
+            }
         }
     }
     for (const auto& name : methodCallNodes) {
@@ -5048,9 +5145,10 @@ std::string Interpreter::runtimeGraphJson() const {
         }
     }
 
-    for (const auto& item : clauses_) {
-        if (!hasNonFactClause(item.second)) continue;
-        auto from = nodeId("method", item.first);
+    for (const auto& idEntry : clauses_) {
+        for (const auto& bucket : idEntry.second) {
+        if (!hasNonFactClause(bucket.clauses)) continue;
+        auto from = nodeId("method", bucket.name);
         std::function<void(const std::shared_ptr<Goal>&, const std::string&)> writeGoalEdges;
         writeGoalEdges = [&](const std::shared_ptr<Goal>& goal, const std::string& label) {
             std::function<void(const std::shared_ptr<Expr>&)> writeExprEdges;
@@ -5133,13 +5231,14 @@ std::string Interpreter::runtimeGraphJson() const {
             }
         };
 
-        for (const auto& clause : item.second) {
+        for (const auto& clause : bucket.clauses) {
             for (const auto& goal : clause->body) {
                 writeGoalEdges(goal, "calls");
             }
             for (const auto& branch : clause->fallbackBranches) {
                 for (const auto& goal : branch) writeGoalEdges(goal, "else");
             }
+        }
         }
     }
 

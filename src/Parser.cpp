@@ -64,6 +64,30 @@ bool isSystemResultExpr(const std::shared_ptr<Expr>& expr) {
     auto target = std::dynamic_pointer_cast<VarExpr>(access->target);
     return target && target->nameId == InternalSymbol::SystemId;
 }
+
+bool containsReturnGoal(const std::shared_ptr<Goal>& goal) {
+    if (!goal) return false;
+    if (std::dynamic_pointer_cast<ReturnGoal>(goal)) return true;
+    if (auto conditional = std::dynamic_pointer_cast<IfGoal>(goal)) {
+        for (const auto& nested : conditional->thenBranch) {
+            if (containsReturnGoal(nested)) return true;
+        }
+        for (const auto& nested : conditional->elseBranch) {
+            if (containsReturnGoal(nested)) return true;
+        }
+    } else if (auto group = std::dynamic_pointer_cast<GroupGoal>(goal)) {
+        for (const auto& nested : group->goals) {
+            if (containsReturnGoal(nested)) return true;
+        }
+    } else if (auto alternatives = std::dynamic_pointer_cast<OrGoal>(goal)) {
+        for (const auto& branch : alternatives->branches) {
+            for (const auto& nested : branch) {
+                if (containsReturnGoal(nested)) return true;
+            }
+        }
+    }
+    return false;
+}
 }
 
 const Token& Parser::peek() const { return tokens_[pos_]; }
@@ -100,7 +124,6 @@ bool Parser::matchGoalSeparator() {
 
 bool Parser::isGoalListTerminator() const {
     return check(TokenType::End) ||
-           check(TokenType::Dot) ||
            check(TokenType::Pipe) ||
            check(TokenType::RParen) ||
            checkElse();
@@ -149,10 +172,6 @@ std::vector<std::shared_ptr<Goal>> Parser::parseQuery() {
     auto goals = parseGoalList();
     for (const auto& goal : goals) validateGoalSystemResultUsage(goal);
     consumeLogicalNewline();
-    if (match(TokenType::Dot)) {
-        // optional ending dot
-    }
-    consumeLogicalNewline();
     consume(TokenType::End, "Expected end of query");
     return goals;
 }
@@ -162,10 +181,6 @@ std::shared_ptr<Expr> Parser::parseExpressionText() {
     consumeLogicalNewline();
     auto expr = parseExpr();
     validateSystemResultUsage(expr, false);
-    consumeLogicalNewline();
-    if (match(TokenType::Dot)) {
-        // optional expression terminator for REPL convenience
-    }
     consumeLogicalNewline();
     consume(TokenType::End, "Expected end of expression");
     return expr;
@@ -177,7 +192,7 @@ std::shared_ptr<Statement> Parser::parseStatement() {
     }
     if (checkElse()) throw ParserError("'else' is only valid inside method fallback branches");
     if (check(TokenType::Return)) {
-        throw ParserError("'return' is only valid inside a method body. If this follows another goal, separate the previous goal with ',' instead of ending it with '.'.");
+        throw ParserError("'return' is only valid inside a method body");
     }
     if (check(TokenType::Where)) {
         throw ParserError("'where' is only valid inside a method body.");
@@ -212,8 +227,9 @@ std::shared_ptr<ImportStmt> Parser::parseImport() {
     } else {
         paths.push_back(consume(TokenType::String, "Expected string path after import").text);
     }
-    consumeLogicalNewline();
-    consume(TokenType::Dot, "Expected '.' after import");
+    if (!match(TokenType::Newline) && !isAtEnd()) {
+        consume(TokenType::Newline, "Expected a newline after import");
+    }
     return std::make_shared<ImportStmt>(std::move(paths));
 }
 
@@ -242,10 +258,13 @@ std::shared_ptr<ClauseStmt> Parser::parseClause() {
         methodPredicates_.insert(head.name);
     }
     validateClauseBody(head, body, fallbackBranches);
-    consumeLogicalNewline();
-    const Token& terminator = consume(TokenType::Dot, "Expected '.' after fact/rule");
-    if (!isAtEnd() && !check(TokenType::Newline) && peek().line == terminator.line) {
-        throw ParserError("Unexpected token after statement terminator '.' on the same line");
+    bool endedByNewline = pos_ > 0 && previous().type == TokenType::Newline;
+    if (!endedByNewline) endedByNewline = match(TokenType::Newline);
+    if (!endedByNewline && !isAtEnd()) {
+        std::ostringstream oss;
+        oss << "Expected a newline after fact/rule at " << peek().line << ":" << peek().column
+            << ", found " << tokenTypeName(peek().type);
+        throw ParserError(oss.str());
     }
     return std::make_shared<ClauseStmt>(std::move(head), std::move(parentName), std::move(body), std::move(fallbackBranches), emptyDeclaration);
 }
@@ -276,7 +295,7 @@ void Parser::parseRuleBody(const Call& head,
     while (checkElse()) {
         advance();
         consumeLogicalNewline();
-        if (check(TokenType::Dot) || isAtEnd()) {
+        if (isAtEnd()) {
             throw ParserError("'else' must be followed by a fallback branch");
         }
         fallbackBranches.push_back(parseGoalList());
@@ -294,6 +313,16 @@ void Parser::validateClauseBody(const Call& head,
                                 const std::vector<std::shared_ptr<Goal>>& body,
                                 const std::vector<std::vector<std::shared_ptr<Goal>>>& fallbackBranches) const {
     if (body.empty() && fallbackBranches.empty()) return;
+    if (head.name == "main" || isMethodStyleHead(head)) {
+        bool hasReturn = false;
+        for (const auto& goal : body) hasReturn = hasReturn || containsReturnGoal(goal);
+        for (const auto& branch : fallbackBranches) {
+            for (const auto& goal : branch) hasReturn = hasReturn || containsReturnGoal(goal);
+        }
+        if (!hasReturn) {
+            throw ParserError("Method '" + head.name + "' must contain at least one return");
+        }
+    }
     for (const auto& arg : head.args) {
         if (head.name != "main" && containsAccessExpr(arg.value)) {
             throw ParserError("Rule head fields cannot use member access. Bind a head variable in the body, e.g. Name == e.name");
@@ -333,10 +362,8 @@ std::shared_ptr<GlobalBindingStmt> Parser::parseGlobalBinding() {
     consume(TokenType::Bind, "Expected ':=' after binding name");
     auto expr = parseExpr();
     validateSystemResultUsage(expr, false);
-    consumeLogicalNewline();
-    const Token& terminator = consume(TokenType::Dot, "Expected '.' after global binding");
-    if (!isAtEnd() && !check(TokenType::Newline) && peek().line == terminator.line) {
-        throw ParserError("Unexpected token after statement terminator '.' on the same line");
+    if (!match(TokenType::Newline) && !isAtEnd()) {
+        consume(TokenType::Newline, "Expected a newline after global binding");
     }
     globals_.insert(name);
     return std::make_shared<GlobalBindingStmt>(std::move(name), std::move(expr));
@@ -430,7 +457,7 @@ std::shared_ptr<Goal> Parser::parseGoal() {
         if (match(TokenType::LParen)) {
             if (!check(TokenType::RParen)) fields = parseArgList();
             consume(TokenType::RParen, "Expected ')' after return fields");
-        } else {
+        } else if (!check(TokenType::Newline) && !isAtEnd() && !checkElse()) {
             fields.push_back(Arg{"", parseExpr()});
         }
         return std::make_shared<ReturnGoal>(std::move(fields));
@@ -527,7 +554,10 @@ std::vector<std::shared_ptr<Goal>> Parser::parseGoalConjunction() {
     consumeLogicalNewline();
     while (!isGoalListTerminator()) {
         if (checkElse()) throw ParserError("Dangling 'else' without a preceding method branch");
-        goals.push_back(parseGoal());
+        auto goal = parseGoal();
+        const bool endsMethod = std::dynamic_pointer_cast<ReturnGoal>(goal) != nullptr;
+        goals.push_back(std::move(goal));
+        if (endsMethod) break;
         if (!matchGoalSeparator()) break;
     }
     if (goals.empty()) {

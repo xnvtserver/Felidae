@@ -24,15 +24,6 @@ inline SymbolId hashSymbol(const char* text) {
 }
 
 namespace InternalSymbol {
-inline constexpr std::string_view Type = "__type";
-inline constexpr std::string_view Parent = "__parent";
-inline constexpr std::string_view Return = "__return";
-inline constexpr std::string_view AnonymousPrefix = "__anon";
-inline constexpr std::string_view RenamePrefix = "__r";
-inline constexpr std::string_view System = "system";
-inline constexpr std::string_view Result = "result";
-inline constexpr std::string_view SystemResult = "system:result";
-
 inline constexpr SymbolId TypeId = 1;
 inline constexpr SymbolId ParentId = 2;
 inline constexpr SymbolId ReturnId = 3;
@@ -41,13 +32,38 @@ inline constexpr SymbolId ResultId = 5;
 inline constexpr SymbolId SystemResultId = 6;
 }
 
+enum class InternalSymbolKind : SymbolId {
+    Type = InternalSymbol::TypeId,
+    Parent = InternalSymbol::ParentId,
+    Return = InternalSymbol::ReturnId,
+    System = InternalSymbol::SystemId,
+    Result = InternalSymbol::ResultId,
+    SystemResult = InternalSymbol::SystemResultId
+};
+
+inline std::string_view internalSymbolName(InternalSymbolKind kind) {
+    switch (kind) {
+        case InternalSymbolKind::Type: return "__type";
+        case InternalSymbolKind::Parent: return "__parent";
+        case InternalSymbolKind::Return: return "__return";
+        case InternalSymbolKind::System: return "system";
+        case InternalSymbolKind::Result: return "result";
+        case InternalSymbolKind::SystemResult: return "system:result";
+    }
+    return "";
+}
+
+inline std::string internalSymbolString(InternalSymbolKind kind) {
+    return std::string(internalSymbolName(kind));
+}
+
 inline SymbolId symbolIdForName(std::string_view name) {
-    if (name == InternalSymbol::Type) return InternalSymbol::TypeId;
-    if (name == InternalSymbol::Parent) return InternalSymbol::ParentId;
-    if (name == InternalSymbol::Return) return InternalSymbol::ReturnId;
-    if (name == InternalSymbol::System) return InternalSymbol::SystemId;
-    if (name == InternalSymbol::Result) return InternalSymbol::ResultId;
-    if (name == InternalSymbol::SystemResult) return InternalSymbol::SystemResultId;
+    if (name == internalSymbolName(InternalSymbolKind::Type)) return InternalSymbol::TypeId;
+    if (name == internalSymbolName(InternalSymbolKind::Parent)) return InternalSymbol::ParentId;
+    if (name == internalSymbolName(InternalSymbolKind::Return)) return InternalSymbol::ReturnId;
+    if (name == internalSymbolName(InternalSymbolKind::System)) return InternalSymbol::SystemId;
+    if (name == internalSymbolName(InternalSymbolKind::Result)) return InternalSymbol::ResultId;
+    if (name == internalSymbolName(InternalSymbolKind::SystemResult)) return InternalSymbol::SystemResultId;
     return hashSymbol(name);
 }
 
@@ -55,12 +71,16 @@ inline SymbolId symbolIdForName(const std::string& name) {
     return symbolIdForName(std::string_view(name));
 }
 
+inline SymbolId symbolIdForName(const char* name) {
+    return symbolIdForName(std::string_view(name ? name : ""));
+}
+
 inline std::string makeAnonymousSymbolName(std::size_t id) {
-    return std::string(InternalSymbol::AnonymousPrefix) + std::to_string(id);
+    return "__anon" + std::to_string(id);
 }
 
 inline std::string makeRenameSymbolPrefix(std::size_t id) {
-    return std::string(InternalSymbol::RenamePrefix) + std::to_string(id) + "_";
+    return "__r" + std::to_string(id) + "_";
 }
 
 inline bool hasInternalPrefix(const std::string& name, std::string_view prefix) {
@@ -69,11 +89,11 @@ inline bool hasInternalPrefix(const std::string& name, std::string_view prefix) 
 }
 
 inline bool isAnonymousSymbolName(const std::string& name) {
-    return hasInternalPrefix(name, InternalSymbol::AnonymousPrefix);
+    return hasInternalPrefix(name, "__anon");
 }
 
 inline bool isRenamedSymbolName(const std::string& name) {
-    return hasInternalPrefix(name, InternalSymbol::RenamePrefix);
+    return hasInternalPrefix(name, "__r");
 }
 
 inline bool isInternalGeneratedSymbolName(const std::string& name) {

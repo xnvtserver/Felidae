@@ -23,6 +23,8 @@ public:
 
 class Interpreter {
 public:
+    using ClauseList = std::vector<std::shared_ptr<ClauseStmt>>;
+
     ~Interpreter();
 
     void addProgram(const Program& program);
@@ -35,10 +37,12 @@ public:
     std::shared_ptr<Expr> resolveExpr(const std::shared_ptr<Expr>& expr, const Env& env) const;
     std::string exprToString(const std::shared_ptr<Expr>& expr, const Env& env) const;
     bool hasMethod(const std::string& name);
+    bool hasAutoEntryCall() const;
     bool hasGlobal(const std::string& name) const;
     std::shared_ptr<Expr> evaluateGlobal(const std::string& name) const;
     std::shared_ptr<Expr> evaluateExpressionText(const std::string& text);
     std::shared_ptr<Expr> callMain(const std::shared_ptr<Expr>& systemInput);
+    std::shared_ptr<Expr> callAutoEntry();
     std::string valueToString(const std::shared_ptr<Expr>& value) const;
     std::string runtimeGraphJson() const;
     std::string visualizeDataJson(bool loadImports = false);
@@ -78,8 +82,13 @@ private:
         bool cacheEligible = false;
         std::vector<MethodParamPlan> params;
     };
+    struct ClauseBucket {
+        std::string name;
+        ClauseList clauses;
+    };
 
-    std::unordered_map<std::string, std::vector<std::shared_ptr<ClauseStmt>>> clauses_;
+    std::unordered_map<SymbolId, std::vector<ClauseBucket>> clauses_;
+    std::vector<Call> autoEntryCalls_;
     FactMemory memory_;
     GlobalEnv globals_;
     std::unordered_map<std::string, std::vector<Solution>> solveCache_;
@@ -147,6 +156,10 @@ private:
 
     const Arg* findArg(const Call& call, const Arg& wanted, size_t index) const;
     const Arg* findArgByNameOrIndex(const Call& call, const std::string& name, size_t index) const;
+    ClauseList* findClauses(const std::string& name, SymbolId nameId);
+    const ClauseList* findClauses(const std::string& name, SymbolId nameId) const;
+    ClauseList& getOrCreateClauseList(const std::string& name, SymbolId nameId);
+    void removeClauseBucket(const std::string& name, SymbolId nameId);
     std::string solveCacheKey(const std::vector<std::shared_ptr<Goal>>& goals, size_t maxSolutions) const;
     void invalidateCaches();
     void beginCacheInvalidationBatch();
