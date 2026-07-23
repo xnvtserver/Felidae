@@ -1,2 +1,2 @@
 Inc(value: number) =>
-    return value + 1.
+    return value + 1
