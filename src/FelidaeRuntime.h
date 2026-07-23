@@ -19,6 +19,7 @@ void readSourceLines(const std::filesystem::path& path,
                      const std::function<void(const std::string&)>& onLine);
 void setProgramAstCacheEnabled(bool enabled);
 void clearProgramAstCache();
+std::filesystem::path resolveProgramEntryPath(const std::filesystem::path& path);
 void loadProgramRoot(const std::filesystem::path& file, Interpreter& interpreter);
 void loadProgramRoot(const std::filesystem::path& file,
                      const Program& program,
