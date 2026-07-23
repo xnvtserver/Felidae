@@ -1,4 +1,5 @@
 #include "AstAnalyzer.h"
+#include "Symbol.h"
 
 #include <algorithm>
 #include <map>
@@ -10,19 +11,13 @@ namespace Felidae {
 namespace {
 
 bool isIgnoredName(const std::string& name) {
-    return name.empty() || name == "_" || name == "system:result" ||
-           name.rfind("__anon", 0) == 0 || name.rfind("__r", 0) == 0;
-}
-
-bool isBuiltinTypeName(const std::string& name) {
-    return name == "string" || name == "number" || name == "int" || name == "float" ||
-           name == "double" || name == "decimal" || name == "bool" || name == "array" ||
-           name == "map" || name == "any";
+    return name.empty() || name == "_" ||
+           name == internalSymbolName(InternalSymbolKind::SystemResult) ||
+           isInternalGeneratedSymbolName(name);
 }
 
 bool isLikelyTypeName(const std::string& name) {
-    return isBuiltinTypeName(name) ||
-           (!name.empty() && std::isupper(static_cast<unsigned char>(name.front())));
+    return isFelidaeLikelyTypeName(name) || name == "map";
 }
 
 void addVarUse(const std::string& name, std::set<std::string>& uses) {
@@ -91,6 +86,10 @@ void collectGoalUses(const std::shared_ptr<Goal>& goal,
         collectExprUses(binary->right, vars, calls);
     } else if (auto where = std::dynamic_pointer_cast<WhereGoal>(goal)) {
         collectGoalUses(where->condition, vars, calls);
+    } else if (auto ifGoal = std::dynamic_pointer_cast<IfGoal>(goal)) {
+        collectGoalUses(ifGoal->condition, vars, calls);
+        for (const auto& item : ifGoal->thenBranch) collectGoalUses(item, vars, calls);
+        for (const auto& item : ifGoal->elseBranch) collectGoalUses(item, vars, calls);
     } else if (auto ret = std::dynamic_pointer_cast<ReturnGoal>(goal)) {
         for (const auto& field : ret->fields) collectExprUses(field.value, vars, calls);
     } else if (auto group = std::dynamic_pointer_cast<GroupGoal>(goal)) {
@@ -118,6 +117,10 @@ void collectAssignedNames(const std::vector<std::shared_ptr<Goal>>& goals,
             for (const auto& branch : orGoal->branches) collectAssignedNames(branch, assigned);
         } else if (auto where = std::dynamic_pointer_cast<WhereGoal>(goal)) {
             collectAssignedNames({where->condition}, assigned);
+        } else if (auto ifGoal = std::dynamic_pointer_cast<IfGoal>(goal)) {
+            collectAssignedNames({ifGoal->condition}, assigned);
+            collectAssignedNames(ifGoal->thenBranch, assigned);
+            collectAssignedNames(ifGoal->elseBranch, assigned);
         }
     }
 }
@@ -153,6 +156,10 @@ void collectGlobalAssignmentCollisions(const std::vector<std::shared_ptr<Goal>>&
             }
         } else if (auto where = std::dynamic_pointer_cast<WhereGoal>(goal)) {
             collectGlobalAssignmentCollisions({where->condition}, globals, diagnostics);
+        } else if (auto ifGoal = std::dynamic_pointer_cast<IfGoal>(goal)) {
+            collectGlobalAssignmentCollisions({ifGoal->condition}, globals, diagnostics);
+            collectGlobalAssignmentCollisions(ifGoal->thenBranch, globals, diagnostics);
+            collectGlobalAssignmentCollisions(ifGoal->elseBranch, globals, diagnostics);
         }
     }
 }

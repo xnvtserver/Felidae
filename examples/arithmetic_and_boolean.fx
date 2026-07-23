@@ -39,7 +39,10 @@ ArithmeticResult() =>
         mul: 6 * 7,
         div: 20 / 5,
         precedence: 2 + 3 * 4,
-        grouped: (2 + 3) * 4
+        grouped: (2 + 3) * 4,
+        negativeLiteral: -2.5,
+        negativeProduct: 3 * -2,
+        negativeGrouped: -(2 + 3)
     ).
 
 ArithmeticReturnOnly() =>
