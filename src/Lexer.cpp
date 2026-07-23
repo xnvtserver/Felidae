@@ -1,4 +1,5 @@
 #include "Lexer.h"
+#include "BuiltinRegistry.h"
 #include <cctype>
 #include <sstream>
 
@@ -40,7 +41,7 @@ void Lexer::add(TokenType type, std::string text, std::vector<Token>& out, int l
 void Lexer::skipWhitespaceAndComments() {
     while (!isAtEnd()) {
         char c = peek();
-        if (std::isspace(static_cast<unsigned char>(c))) {
+        if (c == ' ' || c == '\t' || c == '\f' || c == '\v') {
             advance();
             continue;
         }
@@ -50,6 +51,15 @@ void Lexer::skipWhitespaceAndComments() {
         }
         break;
     }
+}
+
+void Lexer::consumePhysicalNewline() {
+    if (peek() == '\r') {
+        advance();
+        if (!isAtEnd() && peek() == '\n') advance();
+        return;
+    }
+    if (peek() == '\n') advance();
 }
 
 Token Lexer::readIdentifier() {
@@ -64,9 +74,42 @@ Token Lexer::readIdentifier() {
             break;
         }
     }
+    size_t scan = pos_;
+    std::string qualified = text;
+    while (scan + 1 < source_.size() && (source_[scan] == '.' || source_[scan] == ':') &&
+           (std::isalpha(static_cast<unsigned char>(source_[scan + 1])) || source_[scan + 1] == '_')) {
+        size_t partStart = scan + 1;
+        size_t partEnd = partStart;
+        while (partEnd < source_.size() &&
+               (std::isalnum(static_cast<unsigned char>(source_[partEnd])) || source_[partEnd] == '_')) {
+            partEnd++;
+        }
+        qualified += ":" + source_.substr(partStart, partEnd - partStart);
+        scan = partEnd;
+    }
+    if (qualified != text) {
+        const BuiltinId builtinId = builtinIdForName(qualified);
+        if (builtinId != BuiltinId::Unknown) {
+            while (pos_ < scan) advance();
+            return Token{TokenType::BuiltinFunction, qualified, startLine, startCol, builtinId};
+        }
+    }
+    const BuiltinId simpleBuiltinId = builtinIdForName(text);
+    if (simpleBuiltinId != BuiltinId::Unknown) {
+        return Token{TokenType::BuiltinFunction, text, startLine, startCol, simpleBuiltinId};
+    }
     if (text == "import") return Token{TokenType::Import, text, startLine, startCol};
     if (text == "then") return Token{TokenType::Then, text, startLine, startCol};
-    return Token{TokenType::Ident, text, startLine, startCol};
+    if (text == "if") return Token{TokenType::If, text, startLine, startCol};
+    if (text == "else") return Token{TokenType::Else, text, startLine, startCol};
+    if (text == "return") return Token{TokenType::Return, text, startLine, startCol};
+    if (text == "where") return Token{TokenType::Where, text, startLine, startCol};
+    if (text == "extend") return Token{TokenType::Extend, text, startLine, startCol};
+    if (text == "lambda") return Token{TokenType::Lambda, text, startLine, startCol};
+    if (text == "true") return Token{TokenType::True, text, startLine, startCol};
+    if (text == "false") return Token{TokenType::False, text, startLine, startCol};
+    if (text == "nil") return Token{TokenType::Nil, text, startLine, startCol};
+    return Token{TokenType::Ident, text, startLine, startCol, BuiltinId::Unknown, languageTypeIdForName(text)};
 }
 
 Token Lexer::readNumber() {
@@ -120,6 +163,8 @@ Token Lexer::readString() {
 
 std::vector<Token> Lexer::tokenize() {
     std::vector<Token> out;
+    int nestingDepth = 0;
+    bool emittedLogicalNewline = false;
     while (!isAtEnd()) {
         skipWhitespaceAndComments();
         if (isAtEnd()) break;
@@ -128,27 +173,62 @@ std::vector<Token> Lexer::tokenize() {
         int startCol = col_;
         char c = peek();
 
+        if (c == '\\' && (peekNext() == '\n' || peekNext() == '\r')) {
+            advance();
+            consumePhysicalNewline();
+            continue;
+        }
+        if (c == '\n' || c == '\r') {
+            consumePhysicalNewline();
+            if (nestingDepth == 0 && !emittedLogicalNewline) {
+                add(TokenType::Newline, "\n", out, startLine, startCol);
+                emittedLogicalNewline = true;
+            }
+            continue;
+        }
+
         if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
             out.push_back(readIdentifier());
+            emittedLogicalNewline = false;
             continue;
         }
         if (std::isdigit(static_cast<unsigned char>(c))) {
             out.push_back(readNumber());
+            emittedLogicalNewline = false;
             continue;
         }
         if (c == '"') {
             out.push_back(readString());
+            emittedLogicalNewline = false;
             continue;
         }
 
         advance();
         switch (c) {
-            case '(': add(TokenType::LParen, "(", out, startLine, startCol); break;
-            case ')': add(TokenType::RParen, ")", out, startLine, startCol); break;
-            case '{': add(TokenType::LBrace, "{", out, startLine, startCol); break;
-            case '}': add(TokenType::RBrace, "}", out, startLine, startCol); break;
-            case '[': add(TokenType::LBracket, "[", out, startLine, startCol); break;
-            case ']': add(TokenType::RBracket, "]", out, startLine, startCol); break;
+            case '(':
+                add(TokenType::LParen, "(", out, startLine, startCol);
+                nestingDepth++;
+                break;
+            case ')':
+                add(TokenType::RParen, ")", out, startLine, startCol);
+                if (nestingDepth > 0) nestingDepth--;
+                break;
+            case '{':
+                add(TokenType::LBrace, "{", out, startLine, startCol);
+                nestingDepth++;
+                break;
+            case '}':
+                add(TokenType::RBrace, "}", out, startLine, startCol);
+                if (nestingDepth > 0) nestingDepth--;
+                break;
+            case '[':
+                add(TokenType::LBracket, "[", out, startLine, startCol);
+                nestingDepth++;
+                break;
+            case ']':
+                add(TokenType::RBracket, "]", out, startLine, startCol);
+                if (nestingDepth > 0) nestingDepth--;
+                break;
             case ',': add(TokenType::Comma, ",", out, startLine, startCol); break;
             case ':':
                 if (match('=')) add(TokenType::Bind, ":=", out, startLine, startCol);
@@ -185,6 +265,7 @@ std::vector<Token> Lexer::tokenize() {
                 throw LexerError(oss.str());
             }
         }
+        if (c != '\n' && c != '\r') emittedLogicalNewline = false;
     }
     out.push_back(Token{TokenType::End, "", line_, col_});
     return out;

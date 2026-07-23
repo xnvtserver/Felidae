@@ -195,12 +195,13 @@ int main(int argc, char** argv) {
         }
 
         Interpreter interpreter;
-        if (options.programFile->extension() != FILE_EXTENSION) {
+        fs::path entryFile = resolveProgramEntryPath(*options.programFile);
+        if (entryFile.extension() != FILE_EXTENSION) {
             throw std::runtime_error("Felidae source files must use .fx extension");
         }
-        loadProgramRoot(*options.programFile, interpreter);
+        loadProgramRoot(entryFile, interpreter);
         if (options.debug) {
-            std::cerr << "Felidae debug mode enabled for " << options.programFile->string() << "\n";
+            std::cerr << "Felidae debug mode enabled for " << entryFile.string() << "\n";
         }
 
         if (options.visualizeDataHtml) {
@@ -228,9 +229,12 @@ int main(int argc, char** argv) {
         if (interpreter.hasMethod("main")) {
             auto result = interpreter.callMain(makeSystemInput(options.remainingArgs));
             std::cout << interpreter.valueToString(result) << "\n";
+        } else if (interpreter.hasAutoEntryCall()) {
+            auto result = interpreter.callAutoEntry();
+            std::cout << interpreter.valueToString(result) << "\n";
         } else {
             std::cout << "Program loaded successfully. No main() method found.\n"
-                      << "Use a query argument or run with --repl.\n";
+                      << "Use a query argument, add a zero-argument entry call, or run with --repl.\n";
         }
 
         return 0;

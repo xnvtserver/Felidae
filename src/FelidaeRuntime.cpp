@@ -2,6 +2,7 @@
 
 #include "Lexer.h"
 #include "Parser.h"
+#include "Symbol.h"
 
 #include <algorithm>
 #include <cctype>
@@ -122,9 +123,22 @@ void clearProgramAstCache() {
     programCacheClock() = 0;
 }
 
+std::filesystem::path resolveProgramEntryPath(const fs::path& path) {
+    fs::path normalized = fs::absolute(path).lexically_normal();
+    std::error_code ec;
+    if (fs::is_directory(normalized, ec)) {
+        fs::path mainFile = normalized / "main.fx";
+        if (fs::exists(mainFile, ec) && fs::is_regular_file(mainFile, ec)) {
+            return mainFile.lexically_normal();
+        }
+        throw std::runtime_error("Project directory does not contain main.fx: " + normalized.string());
+    }
+    return normalized;
+}
+
 Program parseProgramFile(const fs::path& path) {
     std::error_code ec;
-    const auto normalized = fs::absolute(path).lexically_normal();
+    const auto normalized = resolveProgramEntryPath(path);
     const auto key = normalizedCacheKey(normalized);
     const auto size = fs::file_size(normalized, ec);
     if (ec) throw std::runtime_error("Cannot inspect file: " + normalized.string() + ": " + ec.message());
@@ -164,7 +178,7 @@ Program parseProgramText(const std::string& text) {
 }
 
 void loadProgramRoot(const fs::path& file, Interpreter& interpreter) {
-    fs::path normalized = fs::absolute(file).lexically_normal();
+    fs::path normalized = resolveProgramEntryPath(file);
     Program program = parseProgramFile(normalized);
     loadProgramRoot(normalized, program, interpreter);
 }
@@ -175,11 +189,9 @@ void loadProgramRoot(const fs::path& file,
     fs::path normalized = fs::absolute(file).lexically_normal();
     fs::path baseDir = normalized.parent_path();
 
-    for (const auto& stmt : program.statements) {
-        if (auto imp = std::dynamic_pointer_cast<ImportStmt>(stmt)) {
-            for (const auto& path : imp->paths) {
-                interpreter.addLazyImport(baseDir, path);
-            }
+    for (const auto& imp : program.imports) {
+        for (const auto& path : imp->paths) {
+            interpreter.addLazyImport(baseDir, path);
         }
     }
     interpreter.addProgram(program);
@@ -194,8 +206,8 @@ std::vector<std::shared_ptr<Goal>> parseQueryText(const std::string& query) {
 
 static void collectVarsExpr(const std::shared_ptr<Expr>& expr, std::vector<std::string>& vars) {
     if (auto v = std::dynamic_pointer_cast<VarExpr>(expr)) {
-        if (v->name != "system:result" &&
-            v->name.rfind("__r", 0) != 0 && v->name.rfind("__anon", 0) != 0) {
+        if (v->nameId != InternalSymbol::SystemResultId &&
+            !isInternalGeneratedSymbolName(v->name)) {
             for (const auto& existing : vars) {
                 if (existing == v->name) return;
             }
@@ -213,7 +225,7 @@ static void collectVarsExpr(const std::shared_ptr<Expr>& expr, std::vector<std::
         for (const auto& entry : map->entries) collectVarsExpr(entry.value, vars);
     } else if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
         auto targetVar = std::dynamic_pointer_cast<VarExpr>(access->target);
-        if (access->key == "result" && targetVar && targetVar->name == "system") return;
+        if (access->keyId == InternalSymbol::ResultId && targetVar && targetVar->nameId == InternalSymbol::SystemId) return;
         collectVarsExpr(access->target, vars);
     } else if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
         collectVarsExpr(binary->left, vars);
@@ -243,6 +255,10 @@ static void collectVarsGoal(const std::shared_ptr<Goal>& goal, std::vector<std::
         collectVarsExpr(bg->right, vars);
     } else if (auto wg = std::dynamic_pointer_cast<WhereGoal>(goal)) {
         collectVarsGoal(wg->condition, vars);
+    } else if (auto ifGoal = std::dynamic_pointer_cast<IfGoal>(goal)) {
+        collectVarsGoal(ifGoal->condition, vars);
+        for (const auto& branchGoal : ifGoal->thenBranch) collectVarsGoal(branchGoal, vars);
+        for (const auto& branchGoal : ifGoal->elseBranch) collectVarsGoal(branchGoal, vars);
     } else if (auto rg = std::dynamic_pointer_cast<ReturnGoal>(goal)) {
         for (const auto& field : rg->fields) collectVarsExpr(field.value, vars);
     } else if (auto gg = std::dynamic_pointer_cast<GroupGoal>(goal)) {

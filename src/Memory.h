@@ -31,6 +31,7 @@ public:
     const std::unordered_map<std::string, std::filesystem::path>& parentOrigins() const;
     std::vector<size_t> factIndexesFromOrigin(const std::filesystem::path& origin) const;
     bool hasOrigin(const std::filesystem::path& origin) const;
+    void removeOrigin(const std::filesystem::path& origin);
     bool isCompatibleType(const std::string& actual, const std::string& expected) const;
     const std::vector<size_t>& compatibleFactIndexes(const std::string& type);
     void invalidateCaches();
@@ -42,6 +43,8 @@ private:
     std::unordered_map<std::string, std::vector<size_t>> compatibleFactCache_;
     std::unordered_map<std::string, std::string> parentOf_;
     std::unordered_map<std::string, std::filesystem::path> parentOrigin_;
+
+    void rebuildIndexes();
 };
 
 } // namespace Felidae

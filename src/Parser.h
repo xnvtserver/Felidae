@@ -39,12 +39,22 @@ private:
     const Token& advance();
     bool match(TokenType type);
     const Token& consume(TokenType type, const std::string& message);
+    void consumeLogicalNewline();
+    bool matchGoalSeparator();
+    bool isGoalListTerminator() const;
     void rejectUnsupportedTokens() const;
     bool checkElse() const;
 
     std::shared_ptr<Statement> parseStatement();
     std::shared_ptr<ImportStmt> parseImport();
     std::shared_ptr<ClauseStmt> parseClause();
+    bool parseEmptyDeclarationBody();
+    void parseRuleBody(const Call& head,
+                       std::vector<std::shared_ptr<Goal>>& body,
+                       std::vector<std::vector<std::shared_ptr<Goal>>>& fallbackBranches);
+    void validateClauseBody(const Call& head,
+                            const std::vector<std::shared_ptr<Goal>>& body,
+                            const std::vector<std::vector<std::shared_ptr<Goal>>>& fallbackBranches) const;
     std::shared_ptr<GlobalBindingStmt> parseGlobalBinding();
 
     Call parseCall();
@@ -55,6 +65,7 @@ private:
     Arg parseArg();
 
     std::shared_ptr<Goal> parseGoal();
+    std::shared_ptr<Goal> parseIfGoal();
     bool isMultiAssignmentStart() const;
     std::vector<AssignmentTarget> parseAssignmentTargets();
     std::vector<std::shared_ptr<Goal>> parseGoalConjunction();
@@ -65,14 +76,17 @@ private:
     std::shared_ptr<Expr> parseAccessExpr();
     std::shared_ptr<Expr> parseAdditiveExpr();
     std::shared_ptr<Expr> parseMultiplicativeExpr();
+    std::shared_ptr<Expr> parseUnaryExpr();
     std::shared_ptr<Expr> parsePrimaryExpr();
     std::shared_ptr<Expr> parseLambdaExpr();
     std::shared_ptr<Expr> parseMapExpr();
     std::shared_ptr<Expr> parseArrayExpr();
+    std::shared_ptr<Expr> foldConstantBinary(std::shared_ptr<Expr> left,
+                                             TokenType op,
+                                             std::shared_ptr<Expr> right) const;
 
     bool isMethodStyleHead(const Call& head) const;
     bool isTypeNameKnown(const std::string& name) const;
-    bool isBuiltinCallName(const std::string& name) const;
     void validateCallFields(const Call& call) const;
     bool containsAccessExpr(const std::shared_ptr<Expr>& expr) const;
     void validateSystemResultUsage(const std::shared_ptr<Expr>& expr, bool allowed) const;
@@ -84,7 +98,6 @@ private:
                           const std::vector<std::shared_ptr<Goal>>& body,
                           const std::vector<std::vector<std::shared_ptr<Goal>>>& fallbackBranches = {}) const;
     bool isComparison(TokenType type) const;
-    std::string comparisonText(TokenType type) const;
 };
 
 } // namespace Felidae

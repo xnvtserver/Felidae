@@ -10,7 +10,7 @@ fact.extract_semantics(input: any) =>
 fact.check_similarity(fact1: any, fact2: any, algorithm: string) =>
     return (system_library_loader(module: "fact", function: "check_similarity", args: {fact1: fact1, fact2: fact2, algorithm: algorithm})).
 
-fact.check_similarity(fact1: any, fact2: any, algorithm: string, lexical_algorithm: string, field_alignment: string, collection_mode: string, missing_field_policy: string, threshold: number, maximum_depth: number, maximum_fields: number, explain: string) =>
+fact.check_similarity(fact1: any, fact2: any, algorithm: string, lexical_algorithm: string, field_alignment: string, collection_mode: string, missing_field_policy: string, threshold: number, maximum_depth: number, maximum_fields: number, explain: bool) =>
     return (system_library_loader(module: "fact", function: "check_similarity", args: {fact1: fact1, fact2: fact2, algorithm: algorithm, lexical_algorithm: lexical_algorithm, field_alignment: field_alignment, collection_mode: collection_mode, missing_field_policy: missing_field_policy, threshold: threshold, maximum_depth: maximum_depth, maximum_fields: maximum_fields, explain: explain})).
 
 fact.areSimilar(fact1: any, fact2: any, algorithm: string) =>
