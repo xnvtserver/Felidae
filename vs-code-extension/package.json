@@ -207,6 +207,8 @@
     }
   },
   "scripts": {
+    "generate:libraries": "node scripts/generate-libraries.js",
+    "precompile": "npm run generate:libraries",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "node --check out/extension.js"
