@@ -2,35 +2,35 @@
   "Import": {
     "prefix": "import",
     "body": [
-      "import \"${1:file.fx}\"."
+      "import \"${1:file.fx}\""
     ],
     "description": "Import another Felidae file"
   },
   "Multi Import": {
     "prefix": "imports",
     "body": [
-      "import (\"${1:file-one.fx}\" \"${2:file-two.fx}\")."
+      "import (\"${1:file-one.fx}\", \"${2:file-two.fx}\")"
     ],
     "description": "Import multiple Felidae files or module paths"
   },
   "Core Import": {
     "prefix": "coreimport",
     "body": [
-      "import \"${1|system,console,file,http,math,ml|}\"."
+      "import \"${1|system,console,file,http,math,ml|}\""
     ],
     "description": "Import a builtin Felidae core library"
   },
   "Core Imports": {
     "prefix": "coreimports",
     "body": [
-      "import (\"${1|file,math,ml,system,console,http|}\" \"${2|math,ml,system,file,console,http|}\")."
+      "import (\"${1|file,math,ml,system,console,http|}\", \"${2|math,ml,system,file,console,http|}\")"
     ],
     "description": "Import multiple builtin Felidae core libraries"
   },
   "Fact": {
     "prefix": "fact",
     "body": [
-      "${1:Predicate}(${2:name}: ${3:\"value\"})."
+      "${1:Predicate}(${2:name}: ${3:\"value\"})"
     ],
     "description": "Create a Felidae fact"
   },
@@ -38,7 +38,7 @@
     "prefix": "rule",
     "body": [
       "${1:RuleName}(${2:input}: ${3:value}) =>",
-      "    ${4:Predicate}(${2}: ${3:value})."
+      "    ${4:Predicate}(${2}: ${3:value})"
     ],
     "description": "Create a Felidae rule"
   },
@@ -46,11 +46,11 @@
     "prefix": "method",
     "body": [
       "${1:isAdult}(${2:input}: ${3:Person}) =>",
-      "    ${4:p} := ${2:input},",
-      "    where ${4:p}.${5:age} >= ${6:18},",
+      "    ${4:p} := ${2:input}",
+      "    where ${4:p}.${5:age} >= ${6:18}",
       "    return (",
       "        ${7:name}: ${4:p}.${8:name}",
-      "    )."
+      "    )"
     ],
     "description": "Create a method-style typed rule"
   },
@@ -58,8 +58,8 @@
     "prefix": "fallback",
     "body": [
       "${1:RoleAccess}(${2:input}: ${3:Employee}) =>",
-      "    ${4:e} := ${2:input},",
-      "    ${4:e}.${5:role} == \"${6:Engineer}\",",
+      "    ${4:e} := ${2:input}",
+      "    ${4:e}.${5:role} == \"${6:Engineer}\"",
       "    return (",
       "        ${7:name}: ${4:e}.${8:name},",
       "        ${9:status}: \"${10:engineering}\"",
@@ -68,18 +68,28 @@
       "    return (",
       "        ${7:name}: ${4:e}.${8:name},",
       "        ${9:status}: \"${11:default}\"",
-      "    )."
+      "    )"
     ],
     "description": "Create an ordered fallback method-style rule"
+  },
+  "If Else": {
+    "prefix": "if",
+    "body": [
+      "if ${1:x} == ${2:value}",
+      "    return (${3:ok}: true)",
+      "else",
+      "    return (${3:ok}: false)"
+    ],
+    "description": "Create an inline if/else conditional goal"
   },
   "Main Method": {
     "prefix": "main",
     "body": [
       "main(arguments: system.stdin) =>",
-      "    status := system.print(value: \"Felidae system running!\"),",
+      "    status := system.print(value: \"Felidae system running!\")",
       "    return (",
       "        status: status",
-      "    )."
+      "    )"
     ],
     "description": "Create a direct-execution entry point"
   },
@@ -88,7 +98,7 @@
     "body": [
       "${1:Employee} extend ${2:Person}(",
       "    ${3:name}: ${4:\"Ravi\"}",
-      ")."
+      ")"
     ],
     "description": "Create a fact that extends a parent fact/type"
   },
@@ -157,10 +167,17 @@
     ],
     "description": "Capture the output of a goal with :="
   },
+  "Output Binding Call": {
+    "prefix": "outbind",
+    "body": [
+      "${1:Method}(${2:input}: ${3:value}, ${4:result}: ${5:out})"
+    ],
+    "description": "Call a predicate and capture one of its return fields into a fresh variable"
+  },
   "Throw Exception": {
     "prefix": "throw",
     "body": [
-      "throw(msg: \"${1:DivisionByZero}\"),",
+      "throw(msg: \"${1:DivisionByZero}\")",
       "error_reason == \"${1:DivisionByZero}\""
     ],
     "description": "Signal and check a Felidae exception reason"
@@ -240,7 +257,7 @@
   "CSV Facts File": {
     "prefix": "csvfactsfile",
     "body": [
-      "${1:factText} := csv.toFelidaeFacts(data: ${2:rows}, type: \"${3:School}\"),",
+      "${1:factText} := csv.toFelidaeFacts(data: ${2:rows}, type: \"${3:School}\")",
       "${4:status} := file.writeFile(path: \"${5:converted_csv_school.fx}\", data: ${1:factText}, mode: \"write\")"
     ],
     "description": "Convert selected row maps to Felidae fact text and write it with the file library"
@@ -259,6 +276,14 @@
       "${3:status} := thread.start(thread: ${1:t1})"
     ],
     "description": "Declare the future cooperative thread-handle flow"
+  },
+  "List Declaration": {
+    "prefix": "listdecl",
+    "body": [
+      "List(name: \"${1:items}\")",
+      "ListItem(list: \"${1:items}\", pos: 0, label: \"${2:first}\", value: ${3:\"first\"})"
+    ],
+    "description": "Declare a linked-list-style fact structure from core/list.fx"
   },
   "System Print": {
     "prefix": "print",

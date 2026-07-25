@@ -1,7 +1,53 @@
 # Felidae Logic Programming Language Notes
 
 Felidae is a functional logic language for typed facts, explicit dataflow, and
-native stdlib calls.
+native stdlib calls. This document describes the current ("v2") grammar and
+runtime behavior, verified against the interpreter in `src/`. The reference
+programs for this grammar live in `v2_examples/`. The `examples/` directory
+still contains legacy programs written for the older dot-terminated grammar
+and is being migrated separately; don't copy syntax from it.
+
+## Statement Termination
+
+Statements end at a newline, not at a trailing `.`:
+
+```Felidae
+import "math"
+
+Person(name: "Alice", role: "Engineer")
+Person(name: "Bob", role: "Manager")
+
+Greeting(name: string) =>
+    return (message: name)
+```
+
+`.` still means two things, both scoped to a single line:
+
+```Felidae
+pi := 3.01                 # decimal point
+result := a.b.c            # member access, only valid when target and field share a line
+```
+
+A trailing `.` at the end of a fact, rule, import, or global binding is no
+longer valid syntax and raises a parse error (`Expected a newline after
+fact/rule ..., found .`). Blank lines between statements are fine.
+
+## Goal Separators
+
+Inside a rule or method body, goals can be separated by a comma, a newline,
+or both — they're interchangeable:
+
+```Felidae
+HotAdd(value: int) =>
+    doubled := value + value,
+    return (result: doubled)
+
+HotAddNoCommas(value: int) =>
+    doubled := value + value
+    return (result: doubled)
+```
+
+Existing comma-separated code keeps working; commas are simply optional now.
 
 ## Memory Model
 
@@ -16,41 +62,39 @@ The runtime also keeps hash maps for predicate-to-clause lookup, compatible fact
 indexes, and repeated query results. These caches are invalidated whenever new
 program state is loaded.
 
-Variables bound with `:=` are immutable. Arrays are intended for bounded,
-in-memory collections; use a linked-list style structure for larger logical data
-sets so the C++ runtime can back storage with vector chunks without growing one
-large mutable array.
-
-Tuple-returning methods can be destructured into immutable locals:
-
-```Felidae
-a, b, c := someMethod().
-a: string, b: bool, c: float := someMethod().
-```
-
-The right-hand side is evaluated once and must return a tuple or array with the
-same number of values as the target list. Optional target types support builtin
-types such as `string`, `bool`, `number`, `int`, `float`, and `array`. A type
-mismatch raises a `ProgrammingError` instead of silently binding the wrong value.
+Variables bound with `:=` are immutable and single-assignment: a name already
+declared as a rule-head field or a prior `:=` cannot be rebound in the same
+scope. Arrays are intended for bounded, in-memory collections; use a
+linked-list style structure (see `core/list.fx` and the List/ListItem facts it
+declares) for larger logical data sets so the C++ runtime can back storage with
+vector chunks without growing one large mutable array.
 
 ## Imports
 
 ```felidae
-import "file.fx".
-import "directory".
-import "directory/*".
-import ("one.fx", "two.fx").
-import "math".
-import ("file", "math", "ml", "db", "probability").
-import "system". # optional; system is available automatically
+import "file.fx"
+import "directory"
+import "directory/*"
+import ("one.fx", "two.fx")
+import "math"
+import ("file", "math", "ml", "db", "probability")
+import "system" # optional; system is available automatically
 ```
 
 The VS Code extension provides document links for import strings.
 Bare library imports resolve to declaration files under `core/`. These files
-contain only native method heads such as `math.abs(value: number) => ().`; the
-actual body is the matching C++ builtin implementation.
+contain only native method heads such as `math.abs(value: number) => ()`; the
+actual body is the matching C++ builtin implementation. Imports are resolved
+lazily: the declaration file is only parsed and loaded the first time
+something in it is actually needed, so an unused `import` never pays the cost
+(or surfaces a parse error in) of the module it names.
 `system` is auto-imported by the interpreter, so `system.print(value: data)` can
-be called even without an explicit `import "system".`.
+be called even without an explicit `import "system"`. A handful of pure
+expression builtins (`count`, `sum`, `average`, `sort`, `search`, `contains`,
+`lower`, `upper`, `length`, `type`, `instanceof`, and basic `math.*` arithmetic)
+are always available without any import, because they're dispatched through a
+fixed builtin table rather than a declared `core/*.fx` signature. Import the
+owning module explicitly anyway for clarity and portability.
 
 ## Running Programs
 
@@ -62,10 +106,17 @@ build\felidae.exe program.fx '? Query(name: x)'
 build\felidae.exe --repl program.fx
 ```
 
-Direct execution calls `main(arguments: system.stdin)` when present. The
-`system.stdin` object currently contains `args` and deterministic empty `text`.
-If no `main` method exists, the program loads successfully and prints a helpful
-message.
+Direct execution calls `main(...)` when present. `main` may declare zero
+arguments (`main() =>`) or accept `arguments: system.stdin` to read CLI args:
+
+```Felidae
+main(arguments: system.stdin) =>
+    return (args: arguments.args)
+```
+
+The `system.stdin` object currently contains `args` and deterministic empty
+`text`. If no `main` method exists, the program loads successfully and prints
+a helpful message.
 
 ## Module And Field Syntax
 
@@ -77,7 +128,7 @@ Person(
     name: "Default",
     age: 0,
     country: "India"
-).
+)
 ```
 
 Rule and method heads may use named fields, typed fields, or positional
@@ -85,17 +136,17 @@ parameters depending on the contract:
 
 ```Felidae
 ArrayLiteralTest(input: value) =>
-    array:get(data: [1, 2, 3, 4], position: 2, access: value).
+    array:get(data: [1, 2, 3, 4], position: 2, access: value)
 ```
 
 Inline fact values are also valid and evaluate to typed map values:
 
 ```Felidae
 Artists() =>
-    return (result: Person(name: "Ramesh", age: 20)).
+    return (result: Person(name: "Ramesh", age: 20))
 ```
 
-Direct fact declarations such as `Employee(name: "Alice").` are supported.
+Direct fact declarations such as `Employee(name: "Alice")` are supported.
 Named fact goals such as `Employee(name: name)` are also supported. A single
 positional fact goal inside a method body, such as `Employee(e)`, is not an
 iterator and is rejected because Felidae does not implicitly scan a fact type
@@ -107,34 +158,35 @@ field is materialized as an array for method-body access, and direct fact
 queries enumerate each repeated value:
 
 ```Felidae
-Cat1(name: "kitten", name: "tiger", name: "lilly").
+Cat1(name: "kitten", name: "tiger", name: "lilly")
 ```
 
 Use `.` for top-level package/module calls:
 
 ```Felidae
-proofs := provenance.BuildFromRecording(rec: rec, store: store, goal: goal, options: {}).
+proofs := provenance.BuildFromRecording(rec: rec, store: store, goal: goal, options: {})
 ```
 
 Use `.` for map/object field access. Use `:` for named arguments and local namespaces:
 
 ```Felidae
-Employee(name: "Alice").
-x == a.z.w.
-array:get(data: [1, 2, 3], position: 0, access: value).
+Employee(name: "Alice")
+x == a.z.w
+array:get(data: [1, 2, 3], position: 0, access: value)
 ```
 
 `::` is not supported. Use `.` for top-level package/module calls.
 
 ## Logic Operators
 
-`,` is conjunction. It means AND and every goal in the sequence must hold:
+`,` is conjunction, same as a plain newline between goals. It means AND and
+every goal in the sequence must hold:
 
 ```Felidae
 EngineerInSEA(employee: e, name: Name) =>
-    Name == e.name,
-    e.role == "Engineer",
-    e.office == "SEA".
+    Name == e.name
+    e.role == "Engineer"
+    e.office == "SEA"
 ```
 
 `|` is disjunction. It means OR between goal branches:
@@ -142,7 +194,7 @@ EngineerInSEA(employee: e, name: Name) =>
 ```Felidae
 TechnicalOrManager(name: name) =>
     Employee(name: name, role: "Engineer") |
-    Employee(name: name, role: "Manager").
+    Employee(name: name, role: "Manager")
 ```
 
 Parentheses isolate complex goal expressions:
@@ -151,7 +203,7 @@ Parentheses isolate complex goal expressions:
 TechnicalArchitectManager(name: name) =>
     (Employee(name: name, role: "Engineer") |
     Employee(name: name, role: "Architect")),
-    Employee(name: name, role: "Manager").
+    Employee(name: name, role: "Manager")
 ```
 
 ## Method-Style Rules
@@ -161,30 +213,40 @@ and the field value as the accepted fact/type:
 
 ```Felidae
 isAdult(input: Person) =>
-    p := input,
-    where p.age >= 18,
+    p := input
+    where p.age >= 18
     return (
         name: p.name
-    ).
+    )
 ```
 
 Facts can extend a base fact/type. Child fields override parent fields:
 
 ```Felidae
-Person(name: "Default", age: 0, country: "India").
-Employee extend Person(name: "Ravi", age: 30, role: "Engineer").
+Person(name: "Default", age: 0, country: "India")
+Employee extend Person(name: "Ravi", age: 30, role: "Engineer")
 ```
 
 Use `type(value: item, name: TypeName)` to read a value's concrete type, and
 `instanceof(value: item, type: Person)` to check whether a value is an instance
-of a fact/type or one of its parents through `extend`.
+of a fact/type or one of its parents through `extend`. Both are goal-style
+builtins meant to be used as a guard/condition in a rule body, not assigned
+directly with `:=`:
+
+```Felidae
+CheckPerson(input: any) =>
+    instanceof(value: input, type: Person)
+    return (ok: true)
+else
+    return (ok: false)
+```
 
 `lambda(Type, item => condition)` filters facts of a type, and
 `lambda(sourceArray, item => expression)` maps arrays:
 
 ```Felidae
-Adults := lambda(Person, p => isAdult(input: p)).
-Names := lambda(Person, p => p.name).
+Adults := lambda(Person, p => isAdult(input: p))
+Names := lambda(Person, p => p.name)
 ```
 
 Method calls do not implicitly iterate over compatible facts. A method processes
@@ -193,10 +255,10 @@ run/debug execution:
 
 ```Felidae
 isAdult(input: Person) =>
-    where input.age >= 18,
+    where input.age >= 18
     return (
         name: input.name
-    ).
+    )
 ```
 
 `isAdult(name: name)` does not scan all `Person` facts. Likewise,
@@ -204,8 +266,30 @@ isAdult(input: Person) =>
 when you want iteration:
 
 ```Felidae
-Adults := lambda(Person, p => isAdult(input: p)).
+Adults := lambda(Person, p => isAdult(input: p))
 ```
+
+### Returning A Value
+
+A method's `return` goal accepts a tuple of named fields, a single bare
+expression, `nil`, or nothing at all:
+
+```Felidae
+WithFields(x: number) =>
+    return (x: x, doubled: x * 2)
+
+WithExpression(x: number) =>
+    return x + 1
+
+WithNil() =>
+    return nil
+
+WithNoValue() =>
+    system.print(value: "done")
+    return
+```
+
+### Ordered Fallback Branches
 
 Method-style rules may use ordered fallback `else` branches. This is not
 procedural `if/else`; each branch is tried in order, and the first branch that
@@ -214,14 +298,14 @@ plain comparison goal can also act as the branch guard:
 
 ```Felidae
 RoleAccess(input: Employee) =>
-    e := input,
-    e.role == "Engineer",
+    e := input
+    e.role == "Engineer"
     return (
         name: e.name,
         access: "engineering"
     )
 else
-    e.role == "Manager",
+    e.role == "Manager"
     return (
         name: e.name,
         access: "management"
@@ -230,16 +314,72 @@ else
     return (
         name: e.name,
         access: "default"
-    ).
+    )
 ```
+
+### if/else
+
+`if` also works as an inline conditional goal, comparing an expression directly
+and branching without a separate `where`:
+
+```Felidae
+main() =>
+    x := 10
+    if x == 10
+        return (ok: true)
+    else
+        return (ok: false)
+```
+
+### Calling Conventions
+
+A method or native module call can be used two ways. The safest and most
+uniform is direct assignment, capturing the whole return tuple (or the single
+returned value, for a bare `return expr`):
+
+```Felidae
+s := math.sin(value: 0)
+result := HotAdd(value: 1)
+```
+
+User-defined predicates (and native module calls resolved by name rather than
+by a fixed builtin token) also accept an output-binding convenience: add a
+named argument whose name matches a field of the callee's `return` tuple and
+whose value is a fresh, not-yet-declared variable. That variable is bound to
+the matching field after the call:
+
+```Felidae
+HotAdd(value: int) =>
+    doubled := value + value
+    return (result: doubled)
+
+main() =>
+    HotAdd(value: 1, result: a)
+    return (result: a)
+```
+
+Note that this only works when the return-field name is *not* also declared as
+a head parameter of the callee — a head parameter and a same-named `:=` target
+inside the body would collide, since head parameters are already bound at call
+time. Keep output-only fields out of the head parameter list, as `HotAdd`
+does above.
+
+A small set of builtins with a fixed dispatch token (`array:get`, `str:*`,
+`json:*`, and similar fast-path natives — see `src/BuiltinRegistry.cpp` for the
+full list) require the output variable to already be declared (typically as a
+head parameter of the enclosing rule) before it's used this way. The most
+portable pattern for these is to wrap the call in a small predicate and invoke
+it through a query, or to prefer the plain `:=` assignment form documented
+above wherever the native also supports it (most of `math.*`, `str.*`, `csv.*`,
+`json.*`, `ml.*`, `http.*`, and `process.*` do).
 
 ## Anonymous Variables
 
 `_` is anonymous and is not printed:
 
 ```Felidae
-Employee(name: "Alice", role: "Engineer", office: "SEA").
-Employee(name: "Bob", role: "Manager", office: "LAX").
+Employee(name: "Alice", role: "Engineer", office: "SEA")
+Employee(name: "Bob", role: "Manager", office: "LAX")
 
 # Query:
 ? Employee(name: Name, role: _, office: "SEA")
@@ -247,14 +387,36 @@ Employee(name: "Bob", role: "Manager", office: "LAX").
 
 prints only `Name`.
 
+## Tuple Destructuring
+
+Tuple-returning methods can be destructured into immutable locals:
+
+```Felidae
+a, b, c := someMethod()
+a: string, b: bool, c: float := someMethod()
+```
+
+The right-hand side is evaluated once and must return a genuine tuple/array
+value with the same number of values as the target list — an array literal
+(`return [x, y]`), or `fn:tuple(...)` / `fn:pair(...)`. A method's named-field
+`return (a: 1, b: 2)` produces a map, not a positional tuple, and is not a
+valid right-hand side for this form; use `array1 := someMethod()` and access
+fields with `.` instead. Optional target types support builtin types such as
+`string`, `bool`, `number`, `int`, `float`, and `array`. A type mismatch raises
+a `ProgrammingError` instead of silently binding the wrong value.
+
 ## Arrays
 
 Both forms are accepted:
 
 ```Felidae
-array:get(data: [1, 2, 3, 4], position: 2, access: value).
-array1 := fn:array(data: [1, 2, 3, 4]).
+array:get(data: [1, 2, 3, 4], position: 2, access: value)
+array1 := fn:array(data: [1, 2, 3, 4])
 ```
+
+`array:get`'s `access:` output binding follows the fixed-builtin rule above:
+`value` must already be declared (for example as a rule-head field) before
+this goal runs. `fn:array` is a plain `:=` assignment and always works.
 
 ## Exceptions
 
@@ -263,19 +425,19 @@ Rules can then check the reason with normal comparisons:
 
 ```Felidae
 DivideFailure(error_reason: error_reason) =>
-    throw(msg: "DivisionByZero"),
-    error_reason == "DivisionByZero".
+    throw(msg: "DivisionByZero")
+    error_reason == "DivisionByZero"
 ```
 
 `throw` can also route directly to a handler rule by name:
 
 ```Felidae
 DivideFailureHandler(msg: msg) =>
-    HandledFailure(type: "division", msg: msg).
+    HandledFailure(type: "division", msg: msg)
 
 RoutedFailure(msg: msg) =>
-    throw(msg: "thrown from module a", target: DivideFailureHandler),
-    HandledFailure(type: "division", msg: msg).
+    throw(msg: "thrown from module a", target: DivideFailureHandler)
+    HandledFailure(type: "division", msg: msg)
 ```
 
 ## Built-In Expression Functions
@@ -303,7 +465,7 @@ Native standard-library calls are dispatched to C++ implementations, keeping
 heavy work out of the interpreter loop:
 
 ```felidae
-import ("file", "math", "ml").
+import ("file", "math", "ml")
 
 file.readFile(path: "data.txt")
 file.readLines(path: "data.txt")
@@ -346,7 +508,7 @@ rapidcsv parser/writer. `csv.toFacts` adds a `__type` field so rows can behave
 like typed fact values during explicit lambda processing. Use Felidae code to
 filter/project rows, `csv.toFelidaeFacts` to create declaration text, and
 `file.writeFile` to persist declarations such as
-`School(student: "John", class: "10c").` for later import or querying.
+`School(student: "John", class: "10c")` for later import or querying.
 `db.all`, `db.find`, `db.count`, `db.first`, `db.types`, and `db.fields` expose
 the loaded no-SQL fact store as method-body values. Command-line `? Fact(...)`
 queries still use the parallel external solver path for ad hoc inspection.
@@ -361,6 +523,11 @@ with a portable C++ fallback for MVP builds.
 `thread.start`, `thread.status`, and `thread.result` run methods on immutable
 interpreter snapshots. `thread.pause` and `thread.stop` intentionally report an
 unsupported-operation error until cancellation semantics are implemented safely.
+
+`list.fx` declares a linked-list-style structure over facts (`List`,
+`ListItem`) with `list.get`, `list.first`, and `list.pop` helpers, for
+bounded, explicit iteration over ordered data without growing one large
+mutable array.
 
 Native libraries and runtime support should stay behind module boundaries
 instead of growing `Interpreter.cpp`. `Memory.cpp` owns fact/type storage and
@@ -419,8 +586,8 @@ Felidae programs can create the same visualization artifacts programmatically
 through interpreter built-ins:
 
 ```felidae
-graphJson := visualize.dataJson(loadImports: "true"),
-html := visualize.dataHtml(loadImports: "true"),
+graphJson := visualize.dataJson(loadImports: "true")
+html := visualize.dataHtml(loadImports: "true")
 file.writeFile(path: "build/report.html", data: html, mode: "write")
 ```
 

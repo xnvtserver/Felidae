@@ -16,20 +16,27 @@ The repository contains two C++ products:
 Facts are stored data:
 
 ```felidae
-Person(name: "Alice", role: "Engineer").
-Person(name: "Bob", role: "Manager").
+Person(name: "Alice", role: "Engineer")
+Person(name: "Bob", role: "Manager")
 ```
 
 Methods use explicit named inputs and immutable bindings:
 
 ```felidae
 main(arguments: system.stdin) =>
-    engineers := lambda(Person, p => p.role == "Engineer"),
+    engineers := lambda(Person, p => p.role == "Engineer")
     return (
         count: count(engineers),
         args: arguments.args
-    ).
+    )
 ```
+
+Statements end at a newline, not a trailing `.` — `.` is reserved for decimals
+and same-line member access (`a.b.c`). Commas between goals in a body are
+still accepted but are optional; a bare newline separates goals just as well.
+See [docs_language.md](docs_language.md) for the full grammar, and
+[v2_examples](v2_examples) for reference programs. `examples/` still holds
+programs written for the older dot-terminated grammar.
 
 Felidae does not implicitly scan all facts from a method call. Use
 `lambda(FactType, item => expression)` or an explicit list/array when iteration

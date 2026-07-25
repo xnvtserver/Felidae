@@ -33,4 +33,11 @@ std::shared_ptr<Expr> makeSystemInput(const std::vector<std::string>& args);
 std::string trim(const std::string& text);
 bool isBareIdentifier(const std::string& text);
 
+// Bare-import library names resolvable from `startDir` (the directory a
+// program is loaded from), i.e. the set of valid `import "name"` values that
+// resolve to a declaration file under `core/`. Editor/tooling integrations
+// should call this (via `celidae --list-libraries`) instead of hand-maintaining
+// a copy of the core module list.
+std::vector<std::string> listCoreLibraries(const std::filesystem::path& startDir);
+
 } // namespace Felidae

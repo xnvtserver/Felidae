@@ -1,4 +1,5 @@
 #include "AstAnalyzer.h"
+#include "BuiltinRegistry.h"
 #include "FelidaeRuntime.h"
 #include "Version.h"
 #include "Visualization.h"
@@ -27,6 +28,8 @@ struct DebugOptions {
     bool checkOnly = false;
     bool checkJson = false;
     bool lspMode = false;
+    bool listLibraries = false;
+    bool listBuiltins = false;
     bool help = false;
     std::optional<fs::path> programFile;
     std::optional<std::string> query;
@@ -69,6 +72,14 @@ static DebugOptions parseDebugCli(int argc, char** argv) {
             options.lspMode = true;
             continue;
         }
+        if (arg == "--list-libraries") {
+            options.listLibraries = true;
+            continue;
+        }
+        if (arg == "--list-builtins") {
+            options.listBuiltins = true;
+            continue;
+        }
         if (arg == "--help" || arg == "-h") {
             options.help = true;
             continue;
@@ -103,7 +114,12 @@ static void printDebugUsage(std::ostream& out) {
         << "  --visualize-data-html  Print a standalone HTML data visualization document.\n"
         << "  --query <query>  Execute a query against the loaded program.\n"
         << "  --stop-on-entry  Wait for a debugger command before running.\n"
-        << "  --lsp            Start the Celidae JSON-RPC language server over stdio.\n";
+        << "  --lsp            Start the Celidae JSON-RPC language server over stdio.\n"
+        << "  --list-libraries Print a JSON array of importable core library names.\n"
+        << "                   Resolved relative to <file.fx> when given, otherwise the\n"
+        << "                   current directory. Editor integrations should call this\n"
+        << "                   instead of hand-maintaining a copy of the module list.\n"
+        << "  --list-builtins  Print a JSON array of {name, effect} builtin functions.\n";
 }
 
 static void waitForContinue() {
@@ -154,6 +170,39 @@ static std::string jsonEscape(const std::string& value) {
                 }
         }
     }
+    return out.str();
+}
+
+static const char* builtinEffectName(BuiltinEffect effect) {
+    switch (effect) {
+        case BuiltinEffect::Pure: return "pure";
+        case BuiltinEffect::ReadsExternalState: return "reads";
+        case BuiltinEffect::WritesExternalState: return "writes";
+        case BuiltinEffect::Volatile: return "volatile";
+    }
+    return "volatile";
+}
+
+static std::string librariesJson(const std::vector<std::string>& names) {
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < names.size(); ++i) {
+        if (i) out << ",";
+        out << "\"" << jsonEscape(names[i]) << "\"";
+    }
+    out << "]";
+    return out.str();
+}
+
+static std::string builtinsJson(const std::vector<BuiltinInfo>& infos) {
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < infos.size(); ++i) {
+        if (i) out << ",";
+        out << "{\"name\":\"" << jsonEscape(infos[i].name)
+            << "\",\"effect\":\"" << builtinEffectName(infos[i].effect) << "\"}";
+    }
+    out << "]";
     return out.str();
 }
 
@@ -434,6 +483,17 @@ int main(int argc, char** argv) {
         }
         if (options.lspMode) {
             return runLspServer();
+        }
+        if (options.listLibraries) {
+            fs::path startDir = options.programFile
+                ? resolveProgramEntryPath(*options.programFile).parent_path()
+                : fs::current_path();
+            std::cout << librariesJson(listCoreLibraries(startDir)) << "\n" << std::flush;
+            return 0;
+        }
+        if (options.listBuiltins) {
+            std::cout << builtinsJson(allBuiltins()) << "\n" << std::flush;
+            return 0;
         }
         if (!options.programFile) {
             std::cerr << "error: Celidae requires a .fx program file\n";

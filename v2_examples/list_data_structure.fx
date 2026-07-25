@@ -1,5 +1,4 @@
 import "list"
-
 List(name: "fruits")
 ListItem(list: "fruits", pos: 0, label: "apple", value: "apple")
 ListItem(list: "fruits", pos: 1, label: "banana", value: "banana")
@@ -21,7 +20,6 @@ TestMethod1() =>
 
 main(arguments: system.stdin) =>
     system.print(value:":print Run()")
-    system.print(value: lambda(List, p => p))
     system.print(value: Run())
     TestMethod1()
     return nil

@@ -91,7 +91,7 @@
       "patterns": [
         {
           "name": "keyword.control.felidae",
-          "match": "\\b(?:extend|where|else|return|lambda|then)\\b"
+          "match": "\\b(?:extend|where|if|else|return|lambda|then)\\b"
         }
       ]
     },
@@ -134,7 +134,7 @@
           "match": "\\|"
         },
         {
-          "name": "punctuation.terminator.statement.Felidae",
+          "name": "punctuation.accessor.felidae",
           "match": "\\."
         }
       ]
@@ -167,7 +167,7 @@
       "patterns": [
         {
           "name": "support.class.library.felidae",
-          "match": "\\b(?:array|console|csv|file|fn|http|json|math|ml|pair|process|str|system|thread)(?=\\s*[:.])"
+          "match": "\\b(?:array|console|csv|db|fact|fact_analysis|file|flibrary|gtk|http|json|list|math|ml|plot|prelude|probability|process|qt|smoke|str|system|thread|wordnet)(?=\\s*[:.])"
         },
         {
           "name": "punctuation.accessor.library.felidae",

@@ -1,55 +1,44 @@
-import "thread"
-import "list"
-List(name: "datas")
+import "thread".
 
 HotAdd(value: int) =>
-    if value != 0
-        system.print(value:list.get(list: "datas", pos: (value - 1)))
-    else
-        system.print(value:list.get(list: "datas", pos:0))
-    doubled := value + value
-    return (result: doubled)
+    doubled := value + value,
+    return (result: doubled).
 
 WorkerOne() =>
-    system.print(value:list.get(list: "datas", pos: 0))
-    HotAdd(value: 1, result: a)
-    HotAdd(value: a, result: b)
-    HotAdd(value: b, result: c)
-    ListItem(list: "datas", pos: 0, label: "apple", value:"<fil>")
-    return (result: c)
+    HotAdd(value: 1, result: a),
+    HotAdd(value: a, result: b),
+    HotAdd(value: b, result: c),
+    return (result: c).
 
 WorkerTwo() =>
-    ListItem(list: "datas", pos: 0, label: "orange", value: "<fil>")
-    HotAdd(value: 2, result: a)
-    HotAdd(value: a, result: b)
-    HotAdd(value: b, result: c)
-    return (result: c)
+    HotAdd(value: 2, result: a),
+    HotAdd(value: a, result: b),
+    HotAdd(value: b, result: c),
+    return (result: c).
 
 WorkerThree() =>
-    ListItem(list: "datas", pos: 0, label: "mango", value: "<fil>")
-    HotAdd(value: 3, result: a)
-    HotAdd(value: a, result: b)
-    HotAdd(value: b, result: c)
-    return (result: c)
+    HotAdd(value: 3, result: a),
+    HotAdd(value: a, result: b),
+    HotAdd(value: b, result: c),
+    return (result: c).
 
 WorkerFour() =>
-    ListItem(list: "datas", pos: 0, label: "pappaya", value: "<fil>")
-    HotAdd(value: 4, result: a)
-    HotAdd(value: a, result: b)
-    HotAdd(value: b, result: c)
-    return (result: c)
+    HotAdd(value: 4, result: a),
+    HotAdd(value: a, result: b),
+    HotAdd(value: b, result: c),
+    return (result: c).
 
 main() =>
-    t1 := thread.createThread(function: "WorkerOne")
-    t2 := thread.createThread(function: "WorkerTwo")
-    t3 := thread.createThread(function: "WorkerThree")
-    t4 := thread.createThread(function: "WorkerFour")
-    s1 := thread.start(thread: t1)
-    s2 := thread.start(thread: t2)
-    s3 := thread.start(thread: t3)
-    s4 := thread.start(thread: t4)
-    r1 := thread.result(thread: t1)
-    r2 := thread.result(thread: t2)
-    r3 := thread.result(thread: t3)
-    r4 := thread.result(thread: t4)
-    return (started1: s1, started2: s2, started3: s3, started4: s4, result1: r1, result2: r2, result3: r3, result4: r4)
+    t1 := thread.createThread(function: "WorkerOne"),
+    t2 := thread.createThread(function: "WorkerTwo"),
+    t3 := thread.createThread(function: "WorkerThree"),
+    t4 := thread.createThread(function: "WorkerFour"),
+    s1 := thread.start(thread: t1),
+    s2 := thread.start(thread: t2),
+    s3 := thread.start(thread: t3),
+    s4 := thread.start(thread: t4),
+    r1 := thread.result(thread: t1),
+    r2 := thread.result(thread: t2),
+    r3 := thread.result(thread: t3),
+    r4 := thread.result(thread: t4),
+    return (started1: s1, started2: s2, started3: s3, started4: s4, result1: r1, result2: r2, result3: r3, result4: r4).

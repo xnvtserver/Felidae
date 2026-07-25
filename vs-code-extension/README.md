@@ -83,7 +83,7 @@ The normal run command uses:
 ```
 
 Before execution, the extension checks the file through `celidae --check-json`.
-Direct fact declarations such as `Employee(name: "Alice").` are valid. The
+Direct fact declarations such as `Employee(name: "Alice")` are valid. The
 debugger reports an error only when a method body tries to use a fact type as an
 implicit iterator, for example `Employee(e)`; use `lambda(Employee, e => ...)`
 or an explicit array/list for iteration.
