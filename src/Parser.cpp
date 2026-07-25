@@ -587,6 +587,35 @@ std::vector<std::shared_ptr<Goal>> Parser::parseGoalConjunction() {
         const bool endsMethod = std::dynamic_pointer_cast<ReturnGoal>(goal) != nullptr;
         goals.push_back(std::move(goal));
         if (endsMethod) break;
+        if (check(TokenType::Newline)) {
+            size_t next = pos_;
+            while (next < tokens_.size() && tokens_[next].type == TokenType::Newline) ++next;
+            size_t cursor = next;
+            if (cursor < tokens_.size() && isNameStartToken(tokens_[cursor].type)) {
+                ++cursor;
+                while (cursor + 1 < tokens_.size() &&
+                       (tokens_[cursor].type == TokenType::Dot ||
+                        tokens_[cursor].type == TokenType::Colon) &&
+                       isNameStartToken(tokens_[cursor + 1].type)) {
+                    cursor += 2;
+                }
+                if (cursor < tokens_.size() && tokens_[cursor].type == TokenType::Extend) {
+                    cursor += 2;
+                }
+                if (cursor < tokens_.size() && tokens_[cursor].type == TokenType::LParen) {
+                    int depth = 0;
+                    do {
+                        if (tokens_[cursor].type == TokenType::LParen) ++depth;
+                        if (tokens_[cursor].type == TokenType::RParen) --depth;
+                        ++cursor;
+                    } while (cursor < tokens_.size() && depth > 0);
+                    if (depth == 0 && cursor < tokens_.size() &&
+                        tokens_[cursor].type == TokenType::Arrow) {
+                        break;
+                    }
+                }
+            }
+        }
         if (!matchGoalSeparator()) break;
     }
     if (goals.empty()) {

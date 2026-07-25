@@ -47,7 +47,10 @@ bool hasNativeLibraryExtension(const std::filesystem::path& path) {
 }
 
 void* openSharedLibrary(const std::filesystem::path& path) {
-#if defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+    (void)path;
+    return nullptr;
+#elif defined(_WIN32)
     HMODULE handle = LoadLibraryW(path.wstring().c_str());
     return reinterpret_cast<void*>(handle);
 #else
@@ -56,7 +59,9 @@ void* openSharedLibrary(const std::filesystem::path& path) {
 }
 
 std::string sharedLibraryError() {
-#if defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+    return "native packages are unsupported in the Felidae WASM runtime";
+#elif defined(_WIN32)
     DWORD code = GetLastError();
     if (code == 0) return "unknown loader error";
     LPSTR buffer = nullptr;

@@ -1,3 +1,3 @@
 main() =>
-    value := "left".then system.print(value: "no"),
-    return value.
+    value := "left".then system.print(value: "no")
+    return value

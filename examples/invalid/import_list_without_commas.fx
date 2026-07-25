@@ -1,4 +1,4 @@
-import ("file" "math").
+import ("file" "math")
 
 main() =>
-    return (status: "invalid").
+    return (status: "invalid")

@@ -15,7 +15,7 @@ LinearSearchFrom(data: array, target: target, index: int, size: int) =>
         )
 
 LinearSearchAt(data: array, target: target, index: int, size: int) =>
-    array:get(data: data, position: index, access: current)
+    current := array:get(data: data, position: index)
     current == target
         return index
     else
@@ -47,7 +47,7 @@ BinarySearchBetween(data: array, target: target, low: int, high: int) =>
 
 BinarySearchAt(data: array, target: target, low: int, high: int) =>
     middle := math.floor(value: (low + high) / 2)
-    array:get(data: data, position: middle, access: current)
+    current := array:get(data: data, position: middle)
     current == target
         return middle
     else

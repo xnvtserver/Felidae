@@ -1,162 +1,212 @@
 #include "NativeCsv.h"
+#include "../common/NativeJson.h"
 
 #include <set>
 #include <sstream>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
-#if __has_include("../../third_party/rapidcsv/rapidcsv.h")
-#include "../../third_party/rapidcsv/rapidcsv.h"
-#define FELIDAE_HAS_RAPIDCSV 1
-#endif
+namespace {
 
-namespace Felidae::NativeCsv {
+using Felidae::NativeJson::Value;
 
-static bool asString(const std::shared_ptr<Expr>& expr, std::string& out) {
-    if (auto str = std::dynamic_pointer_cast<StringExpr>(expr)) {
-        out = str->value;
-        return true;
-    }
-    return false;
+std::string operationName(const std::string& name) {
+    const size_t separator = name.rfind(':');
+    return separator == std::string::npos ? name : name.substr(separator + 1);
 }
 
-static std::shared_ptr<ArrayExpr> rowsToMaps(const std::vector<std::string>& headers,
-                                             const std::vector<std::vector<std::string>>& rows,
-                                             const std::string& typeName) {
-    std::vector<std::shared_ptr<Expr>> items;
-    items.reserve(rows.size());
-    for (const auto& row : rows) {
-        std::vector<MapEntry> entries;
-        if (!typeName.empty()) entries.push_back(MapEntry{"__type", std::make_shared<StringExpr>(typeName)});
-        for (size_t i = 0; i < headers.size(); ++i) {
-            entries.push_back(MapEntry{headers[i], std::make_shared<StringExpr>(row[i])});
-        }
-        items.push_back(std::make_shared<MapExpr>(std::move(entries)));
-    }
-    return std::make_shared<ArrayExpr>(std::move(items));
-}
-
-static std::vector<std::shared_ptr<Expr>> requireArrayItems(const std::shared_ptr<Expr>& value,
-                                                            const std::string& builtinName,
-                                                            const std::string& label) {
-    if (auto array = std::dynamic_pointer_cast<ArrayExpr>(value)) return array->items;
-    throw Error(builtinName + " expects array argument '" + label + "'");
-}
-
-static std::vector<MapEntry> requireMapEntries(const std::shared_ptr<Expr>& value,
-                                               const std::string& builtinName,
-                                               const std::string& label) {
-    if (auto map = std::dynamic_pointer_cast<MapExpr>(value)) return map->entries;
-    throw Error(builtinName + " expects map row in '" + label + "'");
-}
-
-static std::vector<std::string> headersFromRows(const std::vector<std::shared_ptr<Expr>>& rows,
-                                                const std::string& builtinName) {
-    if (rows.empty()) return {};
-    std::vector<std::string> headers;
-    std::set<std::string> seen;
-    for (const auto& entry : requireMapEntries(rows.front(), builtinName, "data")) {
-        if (entry.key == "__type" || entry.key == "__parent") continue;
-        headers.push_back(entry.key);
-        seen.insert(entry.key);
-    }
-    for (const auto& row : rows) {
-        for (const auto& entry : requireMapEntries(row, builtinName, "data")) {
-            if (entry.key == "__type" || entry.key == "__parent") continue;
-            if (seen.insert(entry.key).second) headers.push_back(entry.key);
-        }
-    }
-    return headers;
-}
-
-static std::string mapFieldAsText(const std::vector<MapEntry>& entries, const std::string& key) {
-    for (const auto& entry : entries) {
-        if (entry.key == key) {
-            std::string text;
-            if (asString(entry.value, text)) return text;
-            return entry.value->debug();
-        }
-    }
-    return {};
-}
-
-std::shared_ptr<ArrayExpr> parse(const std::string& csvText,
-                                 const std::string& typeName,
-                                 const std::string& builtinName) {
-#ifdef FELIDAE_HAS_RAPIDCSV
-    std::stringstream stream(csvText);
-    try {
-        rapidcsv::Document doc(stream, rapidcsv::LabelParams(0, -1));
-        std::vector<std::string> headers = doc.GetColumnNames();
-        if (headers.empty()) throw Error(builtinName + " failed: CSV header row is empty");
-        std::set<std::string> seen;
-        for (const auto& header : headers) {
-            if (header.empty()) throw Error(builtinName + " failed: CSV header names cannot be empty");
-            if (!seen.insert(header).second) throw Error(builtinName + " failed: Duplicate CSV header: " + header);
-        }
-        std::vector<std::vector<std::string>> rows;
-        const size_t rowCount = doc.GetRowCount();
-        rows.reserve(rowCount);
-        for (size_t i = 0; i < rowCount; ++i) {
-            rows.push_back(doc.GetRow<std::string>(i));
-            if (rows.back().size() != headers.size()) {
-                throw Error(builtinName + " failed: CSV row " + std::to_string(i + 2) +
-                            " has " + std::to_string(rows.back().size()) +
-                            " fields, expected " + std::to_string(headers.size()));
+std::vector<std::string> parseLine(const std::string& line) {
+    std::vector<std::string> fields;
+    std::string field;
+    bool quoted = false;
+    for (size_t i = 0; i < line.size(); ++i) {
+        const char current = line[i];
+        if (current == '"') {
+            if (quoted && i + 1 < line.size() && line[i + 1] == '"') {
+                field.push_back('"');
+                ++i;
+            } else {
+                quoted = !quoted;
             }
+        } else if (current == ',' && !quoted) {
+            fields.push_back(field);
+            field.clear();
+        } else {
+            field.push_back(current);
         }
-        return rowsToMaps(headers, rows, typeName);
-    } catch (const Error&) {
-        throw;
-    } catch (const std::exception& ex) {
-        throw Error(builtinName + " failed: " + std::string(ex.what()));
     }
-#else
-    (void)csvText;
-    (void)typeName;
-    throw Error(builtinName + " requires rapidcsv. Add third_party/rapidcsv/rapidcsv.h or build with the CSV dependency available.");
-#endif
+    if (quoted) throw std::runtime_error("csv.parse found an unterminated quoted field");
+    fields.push_back(field);
+    return fields;
 }
 
-std::string toText(const std::shared_ptr<Expr>& value, const std::string& builtinName) {
-    const auto rows = requireArrayItems(value, builtinName, "data");
-    const auto headers = headersFromRows(rows, builtinName);
-#ifdef FELIDAE_HAS_RAPIDCSV
-    rapidcsv::Document doc("", rapidcsv::LabelParams(0, -1));
-    for (size_t col = 0; col < headers.size(); ++col) doc.SetColumnName(col, headers[col]);
-    for (size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
-        const auto entries = requireMapEntries(rows[rowIndex], builtinName, "data");
-        for (size_t col = 0; col < headers.size(); ++col) {
-            doc.SetCell<std::string>(col, rowIndex, mapFieldAsText(entries, headers[col]));
+Value parseCsv(const std::string& text, const std::string& typeName) {
+    std::istringstream input(text);
+    std::string line;
+    if (!std::getline(input, line)) {
+        Value empty;
+        empty.kind = Value::Kind::Array;
+        return empty;
+    }
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    const auto headers = parseLine(line);
+    Value result;
+    result.kind = Value::Kind::Array;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+        const auto fields = parseLine(line);
+        if (fields.size() != headers.size()) {
+            throw std::runtime_error("csv.parse row has a different field count than the header");
+        }
+        Value row;
+        row.kind = Value::Kind::Object;
+        if (!typeName.empty()) {
+            row.fieldOrder.push_back("__type");
+            row.fields.emplace("__type", Felidae::NativeJson::string(typeName));
+        }
+        for (size_t i = 0; i < headers.size(); ++i) {
+            row.fieldOrder.push_back(headers[i]);
+            row.fields.emplace(headers[i], Felidae::NativeJson::string(fields[i]));
+        }
+        result.items.push_back(std::move(row));
+    }
+    return result;
+}
+
+std::string scalarText(const Value& value) {
+    return value.kind == Value::Kind::String ? value.text : Felidae::NativeJson::stringify(value);
+}
+
+std::string quoteCsv(const std::string& text) {
+    if (text.find_first_of(",\"\r\n") == std::string::npos) return text;
+    std::string result = "\"";
+    for (char current : text) result += current == '"' ? "\"\"" : std::string(1, current);
+    return result + "\"";
+}
+
+const Value& requireRows(const Value& args) {
+    return Felidae::NativeJson::requireField(args, "data", Value::Kind::Array, "csv native call");
+}
+
+std::string rowsToCsv(const Value& rows) {
+    if (rows.items.empty()) return "";
+    if (rows.items.front().kind != Value::Kind::Object) {
+        throw std::runtime_error("csv.toText expects object rows");
+    }
+    std::vector<std::string> headers;
+    if (!rows.items.front().fieldOrder.empty()) {
+        for (const auto& field : rows.items.front().fieldOrder) {
+            if (field != "__type") headers.push_back(field);
+        }
+    } else {
+        for (const auto& field : rows.items.front().fields) {
+            if (field.first != "__type") headers.push_back(field.first);
         }
     }
     std::ostringstream out;
-    doc.Save(out);
-    return out.str();
-#else
-    (void)headers;
-    throw Error(builtinName + " requires rapidcsv. Add third_party/rapidcsv/rapidcsv.h or build with the CSV dependency available.");
-#endif
-}
-
-std::string toFelidaeFacts(const std::shared_ptr<Expr>& value,
-                           const std::string& typeName,
-                           const std::string& builtinName) {
-    if (typeName.empty()) throw Error(builtinName + " expects non-empty string argument 'type'");
-    const auto rows = requireArrayItems(value, builtinName, "data");
-    std::ostringstream out;
-    for (const auto& row : rows) {
-        const auto entries = requireMapEntries(row, builtinName, "data");
-        out << typeName << "(";
-        bool first = true;
-        for (const auto& entry : entries) {
-            if (entry.key == "__type" || entry.key == "__parent") continue;
-            if (!first) out << ", ";
-            out << entry.key << ": " << (entry.value ? entry.value->debug() : "nil");
-            first = false;
+    for (size_t i = 0; i < headers.size(); ++i) {
+        if (i) out << ',';
+        out << quoteCsv(headers[i]);
+    }
+    out << '\n';
+    for (const auto& row : rows.items) {
+        if (row.kind != Value::Kind::Object) throw std::runtime_error("csv.toText expects object rows");
+        for (size_t i = 0; i < headers.size(); ++i) {
+            if (i) out << ',';
+            const auto found = row.fields.find(headers[i]);
+            if (found != row.fields.end()) out << quoteCsv(scalarText(found->second));
         }
-        out << ").\n";
+        out << '\n';
     }
     return out.str();
 }
 
-} // namespace Felidae::NativeCsv
+Value dispatch(const std::string& functionName, const Value& args) {
+    const std::string operation = operationName(functionName);
+    if (operation == "parse" || operation == "toFacts") {
+        const auto& data = Felidae::NativeJson::requireField(args, "data", Value::Kind::String, "csv." + operation);
+        std::string typeName;
+        if (operation == "toFacts") {
+            typeName = Felidae::NativeJson::requireField(args, "type", Value::Kind::String, "csv.toFacts").text;
+        }
+        return parseCsv(data.text, typeName);
+    }
+    if (operation == "toText") return Felidae::NativeJson::string(rowsToCsv(requireRows(args)));
+    if (operation == "toFelidaeFacts") {
+        const auto& rows = requireRows(args);
+        const std::string typeName =
+            Felidae::NativeJson::requireField(args, "type", Value::Kind::String, "csv.toFelidaeFacts").text;
+        std::ostringstream out;
+        for (const auto& row : rows.items) {
+            if (row.kind != Value::Kind::Object) throw std::runtime_error("csv.toFelidaeFacts expects object rows");
+            out << typeName << "(";
+            bool first = true;
+            const auto& order = row.fieldOrder;
+            for (const auto& fieldName : order) {
+                if (fieldName == "__type") continue;
+                const auto field = row.fields.find(fieldName);
+                if (field == row.fields.end()) continue;
+                if (!first) out << ", ";
+                first = false;
+                out << field->first << ": " << Felidae::NativeJson::stringify(field->second);
+            }
+            out << ")\n";
+        }
+        return Felidae::NativeJson::string(out.str());
+    }
+    const auto& rows = requireRows(args);
+    Value result = rows;
+    if (operation == "addRow") {
+        const Value* row = Felidae::NativeJson::field(args, "row");
+        if (!row || row->kind != Value::Kind::Object) throw std::runtime_error("csv.addRow expects object argument 'row'");
+        result.items.push_back(*row);
+        return result;
+    }
+    const std::string key =
+        Felidae::NativeJson::requireField(args, "key", Value::Kind::String, "csv." + operation).text;
+    const Value* expectedValue = Felidae::NativeJson::field(args, "value");
+    if (!expectedValue) throw std::runtime_error("csv." + operation + " expects argument 'value'");
+    const std::string expected = scalarText(*expectedValue);
+    result.items.clear();
+    for (Value row : rows.items) {
+        if (row.kind != Value::Kind::Object) throw std::runtime_error("csv operation expects object rows");
+        const auto found = row.fields.find(key);
+        const bool match = found != row.fields.end() && scalarText(found->second) == expected;
+        if (operation == "findRows" && match) result.items.push_back(std::move(row));
+        else if (operation == "deleteRows" && !match) result.items.push_back(std::move(row));
+        else if (operation == "updateRows") {
+            if (match) {
+                const Value* patch = Felidae::NativeJson::field(args, "patch");
+                if (!patch || patch->kind != Value::Kind::Object) {
+                    throw std::runtime_error("csv.updateRows expects object argument 'patch'");
+                }
+                for (const auto& entry : patch->fields) row.fields[entry.first] = entry.second;
+            }
+            result.items.push_back(std::move(row));
+        }
+    }
+    if (operation == "findRows" || operation == "deleteRows" || operation == "updateRows") return result;
+    throw std::runtime_error("Unsupported CSV native function '" + functionName + "'");
+}
+
+} // namespace
+
+extern "C" FELIDAE_CSV_EXPORT char* felidae_native_call(const char* functionName,
+                                                         const char* argsJson) {
+    try {
+        const auto args = Felidae::NativeJson::parse(argsJson, "CSV native module");
+        return Felidae::NativeJson::copyResponse(
+            Felidae::NativeJson::stringify(dispatch(functionName ? functionName : "", args)));
+    } catch (const std::exception& error) {
+        return Felidae::NativeJson::copyResponse(
+            Felidae::NativeJson::stringify(Felidae::NativeJson::error(error.what())));
+    } catch (...) {
+        return Felidae::NativeJson::copyResponse("{\"error\":\"Unknown CSV native module failure\"}");
+    }
+}
+
+extern "C" FELIDAE_CSV_EXPORT void felidae_native_free(char* value) {
+    std::free(value);
+}

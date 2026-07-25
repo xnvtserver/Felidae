@@ -29,7 +29,6 @@ namespace {
 
 constexpr size_t kMaxCachedEnvFrames = 4096;
 constexpr size_t kHotMethodPrepareThreshold = 2;
-constexpr size_t kMaxRetainedLazyModules = 64;
 
 class PipelineResultClearScope {
 public:
@@ -244,20 +243,6 @@ static bool removeEntry(std::vector<MapEntry>& entries, const std::string& key) 
 static std::string exprTextValue(const std::shared_ptr<Expr>& expr) {
     if (auto str = std::dynamic_pointer_cast<StringExpr>(expr)) return str->value;
     return expr ? expr->debug() : "nil";
-}
-
-static bool mapFieldMatches(const std::shared_ptr<Expr>& row, const std::string& key, const std::string& expected) {
-    auto value = findMapValue(row, key);
-    return value && exprTextValue(value) == expected;
-}
-
-static std::shared_ptr<Expr> patchMapValue(const std::shared_ptr<Expr>& row, const std::shared_ptr<Expr>& patch) {
-    std::vector<MapEntry> entries;
-    if (!exprAsMapEntries(row, entries)) return nullptr;
-    std::vector<MapEntry> patchEntries;
-    if (!exprAsMapEntries(patch, patchEntries)) return nullptr;
-    for (const auto& entry : patchEntries) upsertEntry(entries, entry.key, cloneExprOrNil(entry.value));
-    return std::make_shared<MapExpr>(std::move(entries));
 }
 
 static bool exprEqualsLiteral(const std::shared_ptr<Expr>& a, const std::shared_ptr<Expr>& b) {
@@ -667,8 +652,8 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
     auto clausesSnapshot = clauses_;
     auto memorySnapshot = memory_;
     auto globalsSnapshot = cloneEnv(globals_.values());
-    auto lazySnapshot = lazyModules_;
     auto loadedFilesSnapshot = loadedFiles_;
+    auto packageDiscoveryAttemptsSnapshot = packageDiscoveryAttempts_;
     auto currentLoadingFileSnapshot = currentLoadingFile_;
     auto nativeLibraryPathsSnapshot = nativeLibraryPaths_;
     auto functionName = task->functionName;
@@ -679,8 +664,9 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
                                 clausesSnapshot = std::move(clausesSnapshot),
                                 memorySnapshot = std::move(memorySnapshot),
                                 globalsSnapshot = std::move(globalsSnapshot),
-                                lazySnapshot = std::move(lazySnapshot),
                                 loadedFilesSnapshot = std::move(loadedFilesSnapshot),
+                                packageDiscoveryAttemptsSnapshot =
+                                    std::move(packageDiscoveryAttemptsSnapshot),
                                 currentLoadingFileSnapshot = std::move(currentLoadingFileSnapshot),
                                 nativeLibraryPathsSnapshot = std::move(nativeLibraryPathsSnapshot)]() mutable {
         try {
@@ -688,8 +674,8 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
             child.clauses_ = std::move(clausesSnapshot);
             child.memory_ = std::move(memorySnapshot);
             child.globals_.replaceValues(std::move(globalsSnapshot));
-            child.lazyModules_ = std::move(lazySnapshot);
             child.loadedFiles_ = std::move(loadedFilesSnapshot);
+            child.packageDiscoveryAttempts_ = std::move(packageDiscoveryAttemptsSnapshot);
             child.currentLoadingFile_ = std::move(currentLoadingFileSnapshot);
             for (const auto& nativePath : nativeLibraryPathsSnapshot) {
                 child.loadNativeLibrary(nativePath);
@@ -825,16 +811,9 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
     getOrCreateClauseList(clauseName, clause->head.nameId).push_back(std::move(clause));
 }
 
-void Interpreter::addLazyImport(const std::filesystem::path& baseDir, const std::string& pattern) {
-    invalidateCaches();
-    LazyModule module;
-    module.baseDir = baseDir;
-    module.pattern = pattern;
-
+void Interpreter::addImport(const std::filesystem::path& baseDir, const std::string& pattern) {
     auto files = expandImportPattern(baseDir, pattern);
-    module.files = std::move(files);
-    module.nativeLibrary = resolveNativeImport(baseDir, pattern);
-    lazyModules_.push_back(std::move(module));
+    for (const auto& file : files) loadProgramFile(file);
 }
 
 std::vector<Solution> Interpreter::solve(const std::vector<std::shared_ptr<Goal>>& queryGoals,
@@ -859,7 +838,6 @@ std::vector<Solution> Interpreter::solve(const std::vector<std::shared_ptr<Goal>
         collectExecutionGarbage();
         throw;
     }
-    evictColdModules();
     collectExecutionGarbage();
     if (cacheable) storeCachedSolutions(cacheKey, out);
     return out;
@@ -909,9 +887,9 @@ std::shared_ptr<Expr> Interpreter::callMain(const std::shared_ptr<Expr>& systemI
     std::shared_ptr<ClauseStmt> mainClause;
     auto* mainClauses = findClauses("main", symbolIdForName("main"));
     if (!mainClauses) throw InterpreterError("No main() method found");
-    for (const auto& clause : *mainClauses) {
-        if (isMethodClause(*clause)) {
-            mainClause = clause;
+    for (auto clause = mainClauses->rbegin(); clause != mainClauses->rend(); ++clause) {
+        if (isMethodClause(**clause)) {
+            mainClause = *clause;
             break;
         }
     }
@@ -1103,7 +1081,6 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
         }
     }
     if (clauses) {
-        touchClauses(*clauses);
 
         for (const auto& originalClause : *clauses) {
             ++clauseAttempts_;
@@ -1229,7 +1206,6 @@ bool Interpreter::solveAssignGoal(const AssignGoal& goal, Env& env) {
             clauses = findClauses(call.name, call.nameId);
         }
         if (clauses) {
-            touchClauses(*clauses);
             for (const auto& originalClause : *clauses) {
                 std::vector<Solution> methodSolutions;
                 const bool previousValueCallMode = valueCallMode_;
@@ -1652,13 +1628,17 @@ bool Interpreter::solveMethodCall(const Call& call,
 }
 
 bool Interpreter::solveBuiltin(const Call& call, Env& env) {
-    if (!nativeDeclarationFor(call.name)) {
+    const ClauseStmt* nativeDeclaration = nativeDeclarationFor(call.name);
+    if (!nativeDeclaration) {
         ensurePredicateLoaded(call.name);
+        nativeDeclaration = nativeDeclarationFor(call.name);
     }
-    Env nativeEnv = env;
-    if (solveNativeCall(call, nativeEnv)) {
-        env = std::move(nativeEnv);
-        return true;
+    if (nativeDeclaration) {
+        Env nativeEnv = env;
+        if (solveNativeCall(call, nativeEnv)) {
+            env = std::move(nativeEnv);
+            return true;
+        }
     }
 
     auto outArg = [&](const std::string& name, size_t index) -> const Arg* {
@@ -1777,7 +1757,6 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
                 clauses = findClauses(handler.name, handler.nameId);
             }
             if (!clauses) return false;
-            touchClauses(*clauses);
 
             bool handled = false;
             for (const auto& originalClause : *clauses) {
@@ -2089,101 +2068,6 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         const Arg* out = namedArg("access");
         if (!out) out = outArg("out", 1);
         return out && unifyExpr(out->value, std::make_shared<StringExpr>(exprToJson(a)), env);
-    }
-
-    if (call.builtinId == BuiltinId::CsvParse ||
-        call.builtinId == BuiltinId::CsvToFacts) {
-        if (!valueArg({"data", "text", "csv"}, 0, a)) return false;
-        std::string csvText;
-        if (!argAsString(a, csvText)) return false;
-        std::string typeName;
-        if (call.builtinId == BuiltinId::CsvToFacts) {
-            if (!valueArg({"type", "fact"}, 1, b) || !argAsString(b, typeName) || typeName.empty()) {
-                throw InterpreterError("csv.toFacts expects non-empty string argument 'type'");
-            }
-        }
-        const Arg* out = namedArg("access");
-        if (!out) out = outArg("out", call.builtinId == BuiltinId::CsvToFacts ? 2 : 1);
-        try {
-            return out && unifyExpr(out->value, NativeCsv::parse(csvText, typeName, call.name), env);
-        } catch (const NativeCsv::Error& ex) {
-            throw InterpreterError(ex.what());
-        }
-    }
-
-    if (call.builtinId == BuiltinId::CsvToText ||
-        call.builtinId == BuiltinId::CsvToFelidaeFacts) {
-        if (!valueArg({"data", "rows"}, 0, a)) return false;
-        std::shared_ptr<Expr> csvResult;
-        try {
-            if (call.builtinId == BuiltinId::CsvToText) {
-                csvResult = std::make_shared<StringExpr>(NativeCsv::toText(a, call.name));
-            } else {
-                if (!valueArg({"type", "fact"}, 1, b)) return false;
-                std::string typeName;
-                if (!argAsString(b, typeName)) return false;
-                csvResult = std::make_shared<StringExpr>(NativeCsv::toFelidaeFacts(a, typeName, call.name));
-            }
-        } catch (const NativeCsv::Error& ex) {
-            throw InterpreterError(ex.what());
-        }
-        const Arg* out = namedArg("access");
-        if (!out) {
-            out = outArg("out", call.builtinId == BuiltinId::CsvToFelidaeFacts ? 2 : 1);
-        }
-        return out && unifyExpr(out->value, csvResult, env);
-    }
-
-    if (call.builtinId == BuiltinId::CsvAddRow ||
-        call.builtinId == BuiltinId::CsvFindRows ||
-        call.builtinId == BuiltinId::CsvUpdateRows ||
-        call.builtinId == BuiltinId::CsvDeleteRows) {
-        if (!valueArg({"data", "rows"}, 0, a)) return false;
-        std::vector<std::shared_ptr<Expr>> rows;
-        if (!exprAsArrayItems(a, rows)) return false;
-        std::vector<std::shared_ptr<Expr>> resultRows;
-        if (call.builtinId == BuiltinId::CsvAddRow) {
-            if (!valueArg({"row", "value"}, 1, b)) return false;
-            std::vector<MapEntry> rowEntries;
-            if (!exprAsMapEntries(b, rowEntries)) return false;
-            resultRows = std::move(rows);
-            resultRows.push_back(std::make_shared<MapExpr>(std::move(rowEntries)));
-        } else {
-            if (!valueArg({"key", "field"}, 1, b)) return false;
-            std::string key;
-            if (!argAsString(b, key)) return false;
-            std::shared_ptr<Expr> valueExpr;
-            const Arg* valueArgPtr = namedArg("value");
-            if (!valueArgPtr || !evalExprValue(valueArgPtr->value, env, valueExpr)) return false;
-            std::string expected = exprTextValue(valueExpr);
-            std::shared_ptr<Expr> patch;
-            if (call.builtinId == BuiltinId::CsvUpdateRows) {
-                const Arg* patchArg = namedArg("patch");
-                if (!patchArg || !evalExprValue(patchArg->value, env, patch)) return false;
-                std::vector<MapEntry> patchEntries;
-                if (!exprAsMapEntries(patch, patchEntries)) return false;
-            }
-            for (const auto& row : rows) {
-                bool match = mapFieldMatches(row, key, expected);
-                if (call.builtinId == BuiltinId::CsvFindRows) {
-                    if (match) resultRows.push_back(cloneExprOrNil(row));
-                } else if (call.builtinId == BuiltinId::CsvDeleteRows) {
-                    if (!match) resultRows.push_back(cloneExprOrNil(row));
-                } else {
-                    auto patched = match ? patchMapValue(row, patch) : cloneExprOrNil(row);
-                    if (!patched) throw InterpreterError("csv.updateRows expects map rows in 'data'");
-                    resultRows.push_back(patched);
-                }
-            }
-        }
-        const Arg* out = namedArg("access");
-        if (!out) {
-            const size_t outputIndex = call.builtinId == BuiltinId::CsvAddRow
-                ? 2
-                : (call.builtinId == BuiltinId::CsvUpdateRows ? 4 : 3);
-            out = outArg("out", outputIndex);
-        }
-        return out && unifyExpr(out->value, std::make_shared<ArrayExpr>(std::move(resultRows)), env);
     }
 
     return false;
@@ -2793,6 +2677,26 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return {};
     };
 
+    if (builtin == BuiltinId::ArrayGet) {
+        std::shared_ptr<Expr> dataValue;
+        std::shared_ptr<Expr> indexValue;
+        if (!evalNamed("data", 0, dataValue) ||
+            (!evalNamed("position", 1, indexValue) && !evalNamed("index", 1, indexValue))) {
+            throw InterpreterError("array:get expects array argument 'data' and numeric argument 'position'");
+        }
+        auto data = std::dynamic_pointer_cast<ArrayExpr>(dataValue);
+        double index = 0.0;
+        if (!data || !argAsNumber(indexValue, index) || index < 0 || std::floor(index) != index) {
+            throw InterpreterError("array:get expects an array and a non-negative integer position");
+        }
+        const size_t resolvedIndex = static_cast<size_t>(index);
+        if (resolvedIndex >= data->items.size()) {
+            throw InterpreterError("array:get position is outside the array");
+        }
+        out = data->items[resolvedIndex]->clone();
+        return true;
+    }
+
     if (builtin == BuiltinId::ConsoleReadLine ||
         builtin == BuiltinId::ConsoleInput ||
         builtin == BuiltinId::ConsoleInputNumber) {
@@ -3033,41 +2937,6 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "csv:parse" || term.name == "csv:toFacts") {
-        std::string csvText = requireNamedString({"data", "text", "csv"}, 0, "data");
-        std::string typeName;
-        if (term.name == "csv:toFacts") {
-            typeName = requireNamedString({"type", "fact"}, 1, "type");
-            if (typeName.empty()) throw InterpreterError("csv.toFacts expects non-empty string argument 'type'");
-        }
-        try {
-            out = NativeCsv::parse(csvText, typeName, term.name);
-        } catch (const NativeCsv::Error& ex) {
-            throw InterpreterError(ex.what());
-        }
-        return true;
-    }
-
-    if (term.name == "csv:toText" || term.name == "csv:toFelidaeFacts") {
-        std::shared_ptr<Expr> dataValue;
-        if (!evalNamed("data", 0, dataValue) && !evalNamed("rows", 0, dataValue)) {
-            throw InterpreterError(term.name + " expects array argument 'data'");
-        }
-        std::string text;
-        try {
-            if (term.name == "csv:toText") {
-                text = NativeCsv::toText(dataValue, term.name);
-            } else {
-                std::string typeName = requireNamedString({"type", "fact"}, 1, "type");
-                text = NativeCsv::toFelidaeFacts(dataValue, typeName, term.name);
-            }
-        } catch (const NativeCsv::Error& ex) {
-            throw InterpreterError(ex.what());
-        }
-        out = std::make_shared<StringExpr>(text);
-        return true;
-    }
-
     if (term.name == "json:parse") {
         std::string jsonText = requireNamedString({"data", "value"}, 0, "data");
         std::shared_ptr<Expr> parsed;
@@ -3130,50 +2999,6 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "csv:addRow" || term.name == "csv:findRows" ||
-        term.name == "csv:updateRows" || term.name == "csv:deleteRows") {
-        std::shared_ptr<Expr> dataValue;
-        if (!evalNamed("data", 0, dataValue) && !evalNamed("rows", 0, dataValue)) {
-            throw InterpreterError(term.name + " expects array argument 'data'");
-        }
-        std::vector<std::shared_ptr<Expr>> rows;
-        if (!exprAsArrayItems(dataValue, rows)) throw InterpreterError(term.name + " expects array argument 'data'");
-        std::vector<std::shared_ptr<Expr>> resultRows;
-        if (term.name == "csv:addRow") {
-            std::shared_ptr<Expr> rowValue;
-            if (!evalNamed("row", 1, rowValue) && !evalNamed("value", 1, rowValue)) {
-                throw InterpreterError("csv.addRow expects map argument 'row'");
-            }
-            std::vector<MapEntry> rowEntries;
-            if (!exprAsMapEntries(rowValue, rowEntries)) throw InterpreterError("csv.addRow expects map argument 'row'");
-            resultRows = std::move(rows);
-            resultRows.push_back(std::make_shared<MapExpr>(std::move(rowEntries)));
-        } else {
-            std::string key = requireNamedString({"key", "field"}, 1, "key");
-            std::string expected = requireNamedString({"value"}, 2, "value");
-            std::shared_ptr<Expr> patch;
-            if (term.name == "csv:updateRows") {
-                if (!evalNamed("patch", 3, patch)) throw InterpreterError("csv.updateRows expects map argument 'patch'");
-                std::vector<MapEntry> patchEntries;
-                if (!exprAsMapEntries(patch, patchEntries)) throw InterpreterError("csv.updateRows expects map argument 'patch'");
-            }
-            for (const auto& row : rows) {
-                const bool match = mapFieldMatches(row, key, expected);
-                if (term.name == "csv:findRows") {
-                    if (match) resultRows.push_back(cloneExprOrNil(row));
-                } else if (term.name == "csv:deleteRows") {
-                    if (!match) resultRows.push_back(cloneExprOrNil(row));
-                } else {
-                    auto patched = match ? patchMapValue(row, patch) : cloneExprOrNil(row);
-                    if (!patched) throw InterpreterError("csv.updateRows expects map rows in 'data'");
-                    resultRows.push_back(patched);
-                }
-            }
-        }
-        out = std::make_shared<ArrayExpr>(std::move(resultRows));
-        return true;
-    }
-
     if (term.name == "thread:createThread") {
         std::string functionName = requireNamedString({"function", "name"}, 0, "function");
         out = makeThreadHandle(createThreadTask(functionName));
@@ -3195,78 +3020,6 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
 
     if (term.name == "thread:pause" || term.name == "thread:stop") {
         throw InterpreterError(term.name + " is not supported; Felidae threads run immutable snapshots to completion");
-    }
-
-    if (term.name == "http:get" || term.name == "http:post" ||
-        term.name == "http:put" || term.name == "http:delete") {
-        std::string url = requireNamedString({"url"}, 0, "url");
-        std::string body;
-        std::string contentType = "text/plain";
-        if (term.name == "http:post" || term.name == "http:put") {
-            body = requireNamedString({"body", "data"}, 1, "body");
-            if (const Arg* contentTypeArg = findTermArgByNameOrIndex(term, "contentType", 2)) {
-                std::shared_ptr<Expr> contentTypeValue;
-                if (!evalExprValue(contentTypeArg->value, env, contentTypeValue) ||
-                    !argAsString(contentTypeValue, contentType)) {
-                    throw InterpreterError(term.name + " expects string argument 'contentType'");
-                }
-            }
-        }
-        try {
-            out = std::make_shared<StringExpr>(
-                NativeHttp::request(term.name.substr(5), url, body, contentType));
-        } catch (const NativeHttp::Error& ex) {
-            throw InterpreterError(ex.what());
-        }
-        return true;
-    }
-
-    if (term.name == "http:serveStatic") {
-        std::string host = requireNamedString({"host"}, 0, "host");
-        double portNumber = requireNamedNumber({"port"}, 1, "port");
-        if (std::floor(portNumber) != portNumber) throw InterpreterError("http.serveStatic expects integer port");
-        std::string response = requireNamedString({"response", "body"}, 2, "response");
-        std::string contentType = "text/plain";
-        if (const Arg* contentTypeArg = findTermArgByNameOrIndex(term, "contentType", 3)) {
-            std::shared_ptr<Expr> contentTypeValue;
-            if (!evalExprValue(contentTypeArg->value, env, contentTypeValue) ||
-                !argAsString(contentTypeValue, contentType)) {
-                throw InterpreterError(term.name + " expects string argument 'contentType'");
-            }
-        }
-        try {
-            out = std::make_shared<StringExpr>(
-                NativeHttp::serveStatic(host, static_cast<int>(portNumber), response, contentType));
-        } catch (const NativeHttp::Error& ex) {
-            throw InterpreterError(ex.what());
-        }
-        return true;
-    }
-
-    if (term.name == "process:platform") {
-        out = std::make_shared<StringExpr>(NativeProcess::platform());
-        return true;
-    }
-
-    if (term.name == "process:exec") {
-        std::string command = requireNamedString({"command"}, 0, "command");
-        try {
-            out = std::make_shared<StringExpr>(NativeProcess::exec(command));
-        } catch (const NativeProcess::Error& ex) {
-            throw InterpreterError(ex.what());
-        }
-        return true;
-    }
-
-    if (term.name == "process:sleep") {
-        double ms = requireNamedNumber({"milliseconds", "ms"}, 0, "milliseconds");
-        if (std::floor(ms) != ms) throw InterpreterError("process.sleep expects integer milliseconds");
-        try {
-            out = std::make_shared<StringExpr>(NativeProcess::sleepMs(static_cast<int>(ms)));
-        } catch (const NativeProcess::Error& ex) {
-            throw InterpreterError(ex.what());
-        }
-        return true;
     }
 
     if (term.name.rfind("db:", 0) == 0) {
@@ -4733,109 +4486,28 @@ void Interpreter::clearCachesNow() {
 }
 
 bool Interpreter::ensurePredicateLoaded(const std::string& predicate) {
-    bool loadedAny = false;
     const SymbolId predicateId = symbolIdForName(predicate);
-    for (size_t index = 0; index < lazyModules_.size(); ++index) {
-        if (lazyModules_[index].loaded) continue;
-        loadLazyModule(lazyModules_[index]);
-        loadedAny = true;
-        if (findClauses(predicate, predicateId)) return true;
-    }
-    return loadedAny && findClauses(predicate, predicateId);
-}
-
-void Interpreter::loadAllImports() {
-    for (size_t index = 0; index < lazyModules_.size(); ++index) {
-        if (!lazyModules_[index].loaded) loadLazyModule(lazyModules_[index]);
-    }
-}
-
-void Interpreter::touchClauses(const std::vector<std::shared_ptr<ClauseStmt>>& clauses) {
-    if (clauses.empty()) return;
-    auto originIt = clauseOrigins_.find(clauses.front().get());
-    if (originIt == clauseOrigins_.end()) return;
-    for (auto& module : lazyModules_) {
-        for (const auto& file : module.files) {
-            if (file == originIt->second) {
-                module.useCount++;
-                module.lastUsed = solveEpoch_;
-                return;
-            }
+    if (findClauses(predicate, predicateId)) return true;
+    const size_t namespaceEnd = predicate.find(':');
+    if (namespaceEnd != std::string::npos && namespaceEnd != 0) {
+        const std::string moduleName = predicate.substr(0, namespaceEnd);
+        if (packageDiscoveryAttempts_.insert(moduleName).second) {
+            const fs::path baseDir = currentLoadingFile_.empty()
+                ? fs::current_path()
+                : currentLoadingFile_.parent_path();
+            const fs::path packageFile =
+                sourceRootFromBase(baseDir) / "core" / (moduleName + ".fx");
+            if (fs::is_regular_file(packageFile)) loadProgramFile(packageFile);
         }
     }
-}
-
-void Interpreter::evictColdModules() {
-    size_t loadedCount = 0;
-    for (const auto& module : lazyModules_) {
-        if (module.loaded && !module.files.empty()) ++loadedCount;
-    }
-    while (loadedCount > kMaxRetainedLazyModules) {
-        auto oldest = lazyModules_.end();
-        for (auto it = lazyModules_.begin(); it != lazyModules_.end(); ++it) {
-            if (!it->loaded || it->files.empty() || it->lastUsed == solveEpoch_) continue;
-            if (oldest == lazyModules_.end() || it->lastUsed < oldest->lastUsed) oldest = it;
-        }
-        if (oldest == lazyModules_.end()) break;
-        unloadModule(*oldest);
-        --loadedCount;
-    }
-}
-
-void Interpreter::unloadModule(LazyModule& module) {
-    invalidateCaches();
-    ensureClauseTableUnique();
-    for (const auto& file : module.files) {
-        for (auto idIt = clauses_->begin(); idIt != clauses_->end();) {
-            auto& buckets = idIt->second;
-            for (auto bucketIt = buckets.begin(); bucketIt != buckets.end();) {
-                auto& list = bucketIt->clauses;
-                list.erase(
-                    std::remove_if(list.begin(), list.end(), [&](const std::shared_ptr<ClauseStmt>& clause) {
-                        auto origin = clauseOrigins_.find(clause.get());
-                        const bool remove = origin != clauseOrigins_.end() && origin->second == file;
-                        if (remove) clauseOrigins_.erase(origin);
-                        return remove;
-                    }),
-                    list.end());
-                if (list.empty()) {
-                    bucketIt = buckets.erase(bucketIt);
-                } else {
-                    ++bucketIt;
-                }
-            }
-            if (buckets.empty()) {
-                idIt = clauses_->erase(idIt);
-            } else {
-                ++idIt;
-            }
-        }
-        globals_.eraseOrigin(file);
-        memory_.removeOrigin(file);
-        loadedFiles_.erase(file);
-    }
-    module.loaded = false;
-    module.useCount = 0;
-    module.lastUsed = 0;
-}
-
-void Interpreter::loadLazyModule(LazyModule& module) {
-    ++moduleLoads_;
-    std::vector<fs::path> files = module.files;
-    fs::path nativeLibrary = module.nativeLibrary;
-    module.loaded = true;
-    for (const auto& file : files) {
-        loadProgramFile(file);
-    }
-    if (!nativeLibrary.empty() && files.empty()) {
-        loadNativeLibrary(nativeLibrary);
-    }
+    return findClauses(predicate, predicateId) != nullptr;
 }
 
 void Interpreter::loadProgramFile(const std::filesystem::path& file) {
     fs::path normalized = fs::absolute(file).lexically_normal();
     if (loadedFiles_.count(normalized)) return;
     loadedFiles_.insert(normalized);
+    ++moduleLoads_;
 
     fs::path baseDir = normalized.parent_path();
     fs::path previous = currentLoadingFile_;
@@ -4843,7 +4515,7 @@ void Interpreter::loadProgramFile(const std::filesystem::path& file) {
     try {
         parseProgramFileChunks(normalized, [&](Program&& program) {
             for (const auto& imp : program.imports) {
-                for (const auto& path : imp->paths) addLazyImport(baseDir, path);
+                for (const auto& path : imp->paths) addImport(baseDir, path);
             }
             addProgram(program);
         });

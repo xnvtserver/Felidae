@@ -1,4 +1,4 @@
-import "fact.fx".
+import "fact.fx"
 
 main() =>
     return fact.check_similarity(
@@ -13,4 +13,4 @@ main() =>
         maximum_depth: 16,
         maximum_fields: 128,
         explain: true
-    ).
+    )

@@ -19,6 +19,7 @@ struct Value {
     std::string text;
     std::vector<Value> items;
     std::map<std::string, Value> fields;
+    std::vector<std::string> fieldOrder;
 };
 
 inline void skipWhitespace(const std::string& source, size_t& position) {
@@ -102,6 +103,7 @@ inline bool parseObject(const std::string& source, size_t& position, Value& valu
         ++position;
         Value fieldValue;
         if (!parseValue(source, position, fieldValue)) return false;
+        value.fieldOrder.push_back(key);
         value.fields.emplace(std::move(key), std::move(fieldValue));
         skipWhitespace(source, position);
         if (position < source.size() && source[position] == ',') {
@@ -265,10 +267,18 @@ inline std::string stringify(const Value& value) {
         case Value::Kind::Object: {
             std::string out = "{";
             bool first = true;
-            for (const auto& entry : value.fields) {
+            auto appendEntry = [&](const std::string& key, const Value& fieldValue) {
                 if (!first) out += ",";
                 first = false;
-                out += "\"" + escape(entry.first) + "\":" + stringify(entry.second);
+                out += "\"" + escape(key) + "\":" + stringify(fieldValue);
+            };
+            if (!value.fieldOrder.empty()) {
+                for (const auto& key : value.fieldOrder) {
+                    const auto found = value.fields.find(key);
+                    if (found != value.fields.end()) appendEntry(found->first, found->second);
+                }
+            } else {
+                for (const auto& entry : value.fields) appendEntry(entry.first, entry.second);
             }
             return out + "}";
         }

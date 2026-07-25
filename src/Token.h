@@ -66,15 +66,6 @@ enum class BuiltinId {
     FileExists,
     FileDeleteFile,
 
-    CsvParse,
-    CsvToFacts,
-    CsvToText,
-    CsvToFelidaeFacts,
-    CsvAddRow,
-    CsvFindRows,
-    CsvUpdateRows,
-    CsvDeleteRows,
-
     DbAll,
     DbFind,
     DbCount,
@@ -99,16 +90,6 @@ enum class BuiltinId {
     ThreadStop,
     ThreadStatus,
     ThreadResult,
-
-    HttpGet,
-    HttpPost,
-    HttpPut,
-    HttpDelete,
-    HttpServeStatic,
-
-    ProcessPlatform,
-    ProcessExec,
-    ProcessSleep,
 
     MathPi,
     MathE,

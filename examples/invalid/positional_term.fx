@@ -1,2 +1,2 @@
 Bad(value: value) =>
-    value == fn:array([1, 2, 3]).
+    value == fn:array([1, 2, 3])

@@ -1,26 +1,12 @@
 #pragma once
 
-#include "../../src/AST.h"
-#include <memory>
-#include <stdexcept>
-#include <string>
+#if defined(_WIN32)
+#define FELIDAE_CSV_EXPORT __declspec(dllexport)
+#else
+#define FELIDAE_CSV_EXPORT __attribute__((visibility("default")))
+#endif
 
-namespace Felidae::NativeCsv {
-
-class Error : public std::runtime_error {
-public:
-    explicit Error(const std::string& message) : std::runtime_error(message) {}
-};
-
-std::shared_ptr<ArrayExpr> parse(const std::string& csvText,
-                                 const std::string& typeName,
-                                 const std::string& builtinName);
-
-std::string toText(const std::shared_ptr<Expr>& value,
-                   const std::string& builtinName);
-
-std::string toFelidaeFacts(const std::shared_ptr<Expr>& value,
-                           const std::string& typeName,
-                           const std::string& builtinName);
-
-} // namespace Felidae::NativeCsv
+extern "C" {
+FELIDAE_CSV_EXPORT char* felidae_native_call(const char* functionName, const char* argsJson);
+FELIDAE_CSV_EXPORT void felidae_native_free(char* value);
+}

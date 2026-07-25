@@ -1,3 +1,3 @@
 main() =>
-    system.result := "no",
-    return "unreachable".
+    system.result := "no"
+    return "unreachable"
