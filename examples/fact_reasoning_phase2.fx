@@ -1,8 +1,8 @@
-import ("fact.fx", "fact_analysis.fx").
+import ("fact.fx", "fact_analysis.fx")
 
-Person(name: "Default", role: "person").
-Employee extend Person(name: "Default", role: "employee").
-Student extend Person(name: "Default", role: "student").
+Person(name: "Default", role: "person")
+Employee extend Person(name: "Default", role: "employee")
+Student extend Person(name: "Default", role: "student")
 
 main() =>
     employee := {__type: "Employee", __parent: "Person", name: "Ravi", role: "Engineer", score: 82},
@@ -50,4 +50,4 @@ main() =>
         applied: applied,
         evaluated: evaluated,
         savedModel: savedModel
-    ).
+    )

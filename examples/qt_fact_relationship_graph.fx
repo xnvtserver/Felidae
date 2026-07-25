@@ -1,10 +1,10 @@
-import ("qt").
+import ("qt")
 
-Relation(from: "Felidae", to: "Facts", label: "stores").
-Relation(from: "Facts", to: "Rules", label: "query").
-Relation(from: "Rules", to: "NativeDll", label: "invoke").
-Relation(from: "NativeDll", to: "QtRenderer", label: "render").
-Relation(from: "QtRenderer", to: "Felidae", label: "result").
+Relation(from: "Felidae", to: "Facts", label: "stores")
+Relation(from: "Facts", to: "Rules", label: "query")
+Relation(from: "Rules", to: "NativeDll", label: "invoke")
+Relation(from: "NativeDll", to: "QtRenderer", label: "render")
+Relation(from: "QtRenderer", to: "Felidae", label: "result")
 
 main() =>
     relations := lambda(Relation, relation => {
@@ -24,4 +24,4 @@ main() =>
         graph: graph,
         render: render,
         saved: saved
-    ).
+    )

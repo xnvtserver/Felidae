@@ -5,7 +5,7 @@ Worker() =>
     echoed := smoke.echo(value: "thread native ok"),
     return (
         status: echoed
-    ).
+    )
 
 main() =>
     worker := thread.createThread(function: "Worker"),
@@ -14,4 +14,4 @@ main() =>
     return (
         started: started,
         result: result
-    ).
+    )

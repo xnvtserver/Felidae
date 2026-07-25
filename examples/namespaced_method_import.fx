@@ -1,2 +1,2 @@
 foo.bar(value: string) =>
-    return (value).
+    return (value)

@@ -1,12 +1,12 @@
-import ("fact.fx").
+import ("fact.fx")
 
-LivingThing(domain: "being").
-MortalBeing extend LivingThing(mortality: true, lifeCycle: "finite", canDie: true).
-Human extend MortalBeing(species: "homo sapiens", mortality: true, reasoning: "high").
-Man extend Human(species: "homo sapiens", mortality: true, adult: true).
-Socrates extend Man(name: "Socrates", philosopher: true, city: "Athens").
-Ram extend Man(name: "Ram", philosopher: false, city: "Ayodhya").
-Statue(name: "StoneStatue", species: "none", mortality: false, adult: false).
+LivingThing(domain: "being")
+MortalBeing extend LivingThing(mortality: true, lifeCycle: "finite", canDie: true)
+Human extend MortalBeing(species: "homo sapiens", mortality: true, reasoning: "high")
+Man extend Human(species: "homo sapiens", mortality: true, adult: true)
+Socrates extend Man(name: "Socrates", philosopher: true, city: "Athens")
+Ram extend Man(name: "Ram", philosopher: false, city: "Ayodhya")
+Statue(name: "StoneStatue", species: "none", mortality: false, adult: false)
 
 ProveMortalByAncestry(entity: any, mortalKind: any, corpus: array) =>
     path := fact.shortestPath(fact1: entity, fact2: mortalKind, facts: corpus),
@@ -26,7 +26,7 @@ else
         subject: entity.name,
         mortal: false,
         rule: "no_mortal_ancestor_path"
-    ).
+    )
 
 ProveMortalByFactComparison(entity: any, exemplar: any, mortalKind: any, corpus: array) =>
     exemplarProof := ProveMortalByAncestry(entity: exemplar, mortalKind: mortalKind, corpus: corpus),
@@ -52,7 +52,7 @@ else
         subject: entity.name,
         mortal: false,
         rule: "insufficient_fact_similarity_to_proven_mortal"
-    ).
+    )
 
 main() =>
     livingThing := db:first(type: "LivingThing", field: "domain", equals: "being"),
@@ -93,4 +93,4 @@ main() =>
         socratesRamComparison: socratesRamComparison,
         socratesRamLowestCommonAncestor: socratesRamLca,
         socratesRamPath: socratesRamPath
-    ).
+    )

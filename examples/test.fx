@@ -1,4 +1,4 @@
-FirstStructure := StructureTest(a: {x: 1, y: 2, z: {w: "hello", v: "world"}}).
+FirstStructure := StructureTest(a: {x: 1, y: 2, z: {w: "hello", v: "world"}})
 
 Structures := [
     FirstStructure,
@@ -15,4 +15,4 @@ main() =>
     system.print(value: "Hello, World!"),
     return (
       StructureExtractionTest(x: 1, w: "hello")
-    ).
+    )

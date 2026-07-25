@@ -6,7 +6,7 @@ SampleAccess(
             }
         }
     }
-).
+)
 
 ReadAccess(input: any, value: int) =>
     dotValue := input.nested.left.right.value,
@@ -19,10 +19,10 @@ ReadAccess(input: any, value: int) =>
         dot: dotValue,
         colon: colonValue,
         mixed: mixedValue
-    ).
+    )
 
 ReturnInt(value: int) =>
-    return (value).
+    return (value)
 
 main() =>
     item := SampleAccess(
@@ -42,4 +42,4 @@ main() =>
         mixed: item.nested:left.right:value,
         direct: direct,
         checked: access
-    ).
+    )

@@ -4,30 +4,30 @@ import "str".
 AssertContains(name: string, output: string, expected: string) =>
     ok := str.contains(data: output, needle: expected),
     where ok == "true",
-    return (name).
+    return (name)
 
 RunCase(name: string, command: string, expected: string) =>
     output := process.exec(command: command),
     AssertContains(name: name, output: output, expected: expected),
-    return (name).
+    return (name)
 
 RunCase2(name: string, command: string, expectedA: string, expectedB: string) =>
     output := process.exec(command: command),
     AssertContains(name: name, output: output, expected: expectedA),
     AssertContains(name: name, output: output, expected: expectedB),
-    return (name).
+    return (name)
 
 RunCase3(name: string, command: string, expectedA: string, expectedB: string, expectedC: string) =>
     output := process.exec(command: command),
     AssertContains(name: name, output: output, expected: expectedA),
     AssertContains(name: name, output: output, expected: expectedB),
     AssertContains(name: name, output: output, expected: expectedC),
-    return (name).
+    return (name)
 
 RunNegative(name: string, command: string, expected: string) =>
     output := process.exec(command: command),
     AssertContains(name: name, output: output, expected: expected),
-    return (name).
+    return (name)
 
 main() =>
     exe := "build\\felidae.exe",
@@ -163,4 +163,4 @@ main() =>
             badGlobalAssign,
             badGlobalTupleAssign
         ]
-    ).
+    )

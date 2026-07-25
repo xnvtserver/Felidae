@@ -3,7 +3,7 @@ import "thread".
 Worker() =>
     return (
         status: "done"
-    ).
+    )
 
 main() =>
     t1 := thread.createThread(function: "Worker"),
@@ -14,4 +14,4 @@ main() =>
         started: started,
         status: status,
         result: result
-    ).
+    )

@@ -14,4 +14,4 @@ main() =>
     expression := NativeEchoExpression(value: "expression ok"),
     return (
         expression: expression
-    ).
+    )

@@ -1,4 +1,4 @@
-import ("db", "probability").
+import ("db", "probability")
 
 Rain(
     month: "August",
@@ -6,14 +6,14 @@ Rain(
     day: {id: "tuesday", chance: 0.3},
     day: {id: "wednesday", chance: 12.5},
     day: {id: "thursday", chance: 30.0}
-).
+)
 
 Rain(
     month: "September",
     day: {id: "monday", chance: 19.0},
     day: {id: "tuesday", chance: 24.0},
     day: {id: "wednesday", chance: 11.0}
-).
+)
 
 RainMonth(month: string) =>
     record := db.first(type: "Rain", field: "month", equals: month),
@@ -33,7 +33,7 @@ RainMonth(month: string) =>
         normalized_distribution: normalized,
         average_chance_percent: averageChance,
         at_most_one_rainy_day_probability: atMostOneRainyDay
-    ).
+    )
 
 main() =>
     august := RainMonth(month: "August"),
@@ -41,4 +41,4 @@ main() =>
     return (
         august: august,
         september: september
-    ).
+    )

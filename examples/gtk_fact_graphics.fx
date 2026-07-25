@@ -1,9 +1,9 @@
-import ("gtk").
+import ("gtk")
 
-FactConcentration(name: "North", concentration: 12).
-FactConcentration(name: "South", concentration: 8).
-FactConcentration(name: "East", concentration: 5).
-FactConcentration(name: "West", concentration: 3).
+FactConcentration(name: "North", concentration: 12)
+FactConcentration(name: "South", concentration: 8)
+FactConcentration(name: "East", concentration: 5)
+FactConcentration(name: "West", concentration: 3)
 
 main() =>
     concentrations := lambda(FactConcentration, fact => {
@@ -28,4 +28,4 @@ main() =>
         sectors: pie,
         render: render,
         saved: saved
-    ).
+    )

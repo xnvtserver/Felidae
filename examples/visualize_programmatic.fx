@@ -1,7 +1,8 @@
 import "data/converted_csv_country.fx".
 
 CountryByCode(alpha2: alpha2, name: name, code: code) =>
-    Country(name: name, alpha_2: alpha2, country_code: code).
+    Country(name: name, alpha_2: alpha2, country_code: code)
+    return
 
 main() =>
     graphJson := visualize.dataJson(loadImports: "true"),
@@ -15,4 +16,4 @@ main() =>
         json_has_records: jsonHasRecords,
         html_has_document: htmlHasDocument,
         wrote_html: wroteHtml
-    ).
+    )

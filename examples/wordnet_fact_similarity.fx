@@ -1,4 +1,4 @@
-import ("array", "db", "file", "http", "json", "probability").
+import ("array", "db", "file", "http", "json", "probability")
 
 # The Open English WordNet project publishes current English WordNet releases
 # in JSON form. This method downloads a JSON resource into the local workspace.
@@ -11,20 +11,20 @@ DownloadWordNetJson(url: string, path: string) =>
         path: path,
         write: writeStatus,
         top_level_keys: keys
-    ).
+    )
 
 # Mini WordNet-like facts used by the runnable comparison below. A full
 # downloaded WordNet JSON can be transformed into facts with the same shape.
-WordNetSense(word: "kitten", synset: "cat.n.01", semantic: "feline", related: "cat", related: "young").
-WordNetSense(word: "tiger", synset: "tiger.n.02", semantic: "feline", related: "cat", related: "wild").
-WordNetSense(word: "lilly", synset: "name.n.01", semantic: "given-name", related: "person").
-WordNetSense(word: "sony", synset: "brand.n.01", semantic: "brand", related: "company").
-WordNetSense(word: "joy", synset: "feeling.n.01", semantic: "emotion", related: "happy").
-WordNetSense(word: "teddy", synset: "toy.n.01", semantic: "toy", related: "bear").
-WordNetSense(word: "snowbell", synset: "cat.n.01", semantic: "feline", related: "cat", related: "pet").
+WordNetSense(word: "kitten", synset: "cat.n.01", semantic: "feline", related: "cat", related: "young")
+WordNetSense(word: "tiger", synset: "tiger.n.02", semantic: "feline", related: "cat", related: "wild")
+WordNetSense(word: "lilly", synset: "name.n.01", semantic: "given-name", related: "person")
+WordNetSense(word: "sony", synset: "brand.n.01", semantic: "brand", related: "company")
+WordNetSense(word: "joy", synset: "feeling.n.01", semantic: "emotion", related: "happy")
+WordNetSense(word: "teddy", synset: "toy.n.01", semantic: "toy", related: "bear")
+WordNetSense(word: "snowbell", synset: "cat.n.01", semantic: "feline", related: "cat", related: "pet")
 
-Cat1(name: "kitten", name: "tiger", name: "lilly", name: "sony").
-Cat2(name: "joy", name: "teddy", name: "snowbell").
+Cat1(name: "kitten", name: "tiger", name: "lilly", name: "sony")
+Cat2(name: "joy", name: "teddy", name: "snowbell")
 
 WordScore(left: string, right: string) =>
     leftSense := db.first(type: "WordNetSense", field: "word", equals: left),
@@ -42,13 +42,13 @@ else
         right: right,
         probability: 0,
         relation: "different"
-    ).
+    )
 
 ScoresAgainst(right: string) =>
     cat1Rows := db.all(type: "Cat1"),
     cat1 := array.get(data: cat1Rows, index: 0),
     scores := lambda(cat1.name, leftName => WordScore(left: leftName, right: right)),
-    return (right: right, scores: scores).
+    return (right: right, scores: scores)
 
 main() =>
     cat1Rows := db.all(type: "Cat1"),
@@ -75,4 +75,4 @@ main() =>
         ],
         matched_pairs: matches,
         compared_pairs: pairCount
-    ).
+    )

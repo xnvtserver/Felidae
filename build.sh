@@ -98,12 +98,12 @@ android_clangxx() {
 }
 
 TARGET="native"
-CONFIGURATION="debug"
+CONFIGURATION="release"
 WARNINGS_AS_ERRORS=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --target) TARGET="${2:-native}"; shift 2 ;;
-        --configuration) CONFIGURATION="${2:-debug}"; shift 2 ;;
+        --configuration) CONFIGURATION="${2:-release}"; shift 2 ;;
         --warnings-as-errors) WARNINGS_AS_ERRORS=1; shift ;;
         native|linux-x64|linux-arm64|macos-x64|macos-arm64|android|wasm)
             TARGET="$1"; shift ;;

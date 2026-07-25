@@ -1,15 +1,15 @@
-import ("file", "csv").
+import ("file", "csv")
 
 CountryRows := csv.toFacts(
     data: file.readFile(path: "data/countries.csv"),
     type: "Country"
-).
+)
 
 getCountry(name: string) =>
     return (
         # lambda(CountryRows, row => row.name == name)
         lambda(CountryRows, row => row)
-    ).
+    )
 
 
 main() =>
@@ -26,4 +26,4 @@ main() =>
     return (
         export: exportStatus,
         country: getCountry(name: "India")
-    ).
+    )

@@ -1,33 +1,39 @@
-Person(name: "Default", age: 0).
+Person(name: "Default", age: 0)
 
-radius_ := Radius(value: 5,unit:"cm").
-Employee(name: "Default", place: Place(name: "Default",address:"ABC location"),role: Role(name: "Default")).
+radius_ := Radius(value: 5,unit:"cm")
+Employee(name: "Default", place: Place(name: "Default",address:"ABC location"),role: Role(name: "Default"))
 
-Adress(name: "Default", street: "Default", city: "Default", state: "Default", zip: "00000",radius:radius_).
+Adress(name: "Default", street: "Default", city: "Default", state: "Default", zip: "00000",radius:radius_)
 
-Employee extend Person(name: "Ravi", age: 30, role: Role(name: "Engineer")).
+Employee extend Person(name: "Ravi", age: 30, role: Role(name: "Engineer"))
 
 SampleEmployee := {__type: "Employee", __parent: "Person", name: "Ravi"}.
 
 TypeName(employee: employee, name: string) =>
-    type(value: employee, name: name).
+    type(value: employee, name: name)
+    return
 
 EmployeeIsPerson(employee: employee, name: string) =>
     instanceof(value: employee, type: Person),
-    name == employee.name.
+    name == employee.name
+    return
 
 EmployeeIsEmployee(employee: employee, name: string) =>
     instanceof(value: employee, type: Employee),
-    name == employee.name.
+    name == employee.name
+    return
 
 SampleTypeName(name: string) =>
-    TypeName(employee: SampleEmployee, name: name).
+    TypeName(employee: SampleEmployee, name: name)
+    return
 
 SampleEmployeeIsPerson(name: string) =>
-    EmployeeIsPerson(employee: SampleEmployee, name: name).
+    EmployeeIsPerson(employee: SampleEmployee, name: name)
+    return
 
 SampleEmployeeIsEmployee(name: string) =>
-    EmployeeIsEmployee(employee: SampleEmployee, name: name).
+    EmployeeIsEmployee(employee: SampleEmployee, name: name)
+    return
 
 main(arguments: system.stdin) =>
     status := system.print(value: "Felidae system running!"),
@@ -40,4 +46,4 @@ main(arguments: system.stdin) =>
        
     return (
         status: status
-    ).
+    )

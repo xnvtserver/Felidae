@@ -19,4 +19,4 @@ main() =>
         correlation: correlation,
         stateModel: stateModel,
         newReading: newReading
-    ).
+    )

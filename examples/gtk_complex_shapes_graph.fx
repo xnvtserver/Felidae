@@ -1,17 +1,17 @@
-import ("gtk").
+import ("gtk")
 
-Node(name: "Interpreter", concentration: 18, x: 150, y: 135).
-Node(name: "FactMemory", concentration: 12, x: 390, y: 120).
-Node(name: "NativeDll", concentration: 9, x: 600, y: 240).
-Node(name: "Renderer", concentration: 15, x: 360, y: 360).
+Node(name: "Interpreter", concentration: 18, x: 150, y: 135)
+Node(name: "FactMemory", concentration: 12, x: 390, y: 120)
+Node(name: "NativeDll", concentration: 9, x: 600, y: 240)
+Node(name: "Renderer", concentration: 15, x: 360, y: 360)
 
-Edge(from: "Interpreter", to: "FactMemory", label: "indexes").
-Edge(from: "FactMemory", to: "NativeDll", label: "loads").
-Edge(from: "NativeDll", to: "Renderer", label: "draws").
-Edge(from: "Renderer", to: "Interpreter", label: "returns").
+Edge(from: "Interpreter", to: "FactMemory", label: "indexes")
+Edge(from: "FactMemory", to: "NativeDll", label: "loads")
+Edge(from: "NativeDll", to: "Renderer", label: "draws")
+Edge(from: "Renderer", to: "Interpreter", label: "returns")
 
 DrawNode(node: any) =>
-    return (gtk.circle(cx: node.x, cy: node.y, radius: node.concentration, name: node.name, fill: "#18f0d7")).
+    return (gtk.circle(cx: node.x, cy: node.y, radius: node.concentration, name: node.name, fill: "#18f0d7"))
 
 DrawEdge(edge: any) =>
     edge.from == "Interpreter",
@@ -23,7 +23,7 @@ else
     edge.from == "NativeDll",
     return (gtk.line(x1: 600, y1: 240, x2: 360, y2: 360, name: edge.label, stroke: "#08363a", width: 3))
 else
-    return (gtk.line(x1: 360, y1: 360, x2: 225, y2: 199, name: edge.label, stroke: "#08363a", width: 3)).
+    return (gtk.line(x1: 360, y1: 360, x2: 225, y2: 199, name: edge.label, stroke: "#08363a", width: 3))
 
 main() =>
     nodeShapes := lambda(Node, node => DrawNode(node: node)),
@@ -41,4 +41,4 @@ main() =>
         edges: edgeShapes,
         render: render,
         saved: saved
-    ).
+    )

@@ -1,16 +1,16 @@
-import ("plot", "gtk", "qt").
+import ("plot", "gtk", "qt")
 
-AnimalMetric(name: "Goat", month: "Jan", weight: 54, milk: 7, wool: 1, horns: 2).
-AnimalMetric(name: "BlackSheep", month: "Feb", weight: 65, milk: 4, wool: 8, horns: 0).
-AnimalMetric(name: "Wolf", month: "Mar", weight: 47, milk: 0, wool: 0, horns: 0).
+AnimalMetric(name: "Goat", month: "Jan", weight: 54, milk: 7, wool: 1, horns: 2)
+AnimalMetric(name: "BlackSheep", month: "Feb", weight: 65, milk: 4, wool: 8, horns: 0)
+AnimalMetric(name: "Wolf", month: "Mar", weight: 47, milk: 0, wool: 0, horns: 0)
 
-FactType(type: "Animal", parent: "LivingThing").
-FactType(type: "Mammal", parent: "Animal").
-FactType(type: "Ruminant", parent: "Mammal").
-FactType(type: "Canine", parent: "Mammal").
-FactType(type: "Goat", parent: "Ruminant").
-FactType(type: "BlackSheep", parent: "Ruminant").
-FactType(type: "Wolf", parent: "Canine").
+FactType(type: "Animal", parent: "LivingThing")
+FactType(type: "Mammal", parent: "Animal")
+FactType(type: "Ruminant", parent: "Mammal")
+FactType(type: "Canine", parent: "Mammal")
+FactType(type: "Goat", parent: "Ruminant")
+FactType(type: "BlackSheep", parent: "Ruminant")
+FactType(type: "Wolf", parent: "Canine")
 
 main() =>
     animalFacts := lambda(AnimalMetric, fact => {
@@ -87,4 +87,4 @@ main() =>
         dashboardSaved: dashboardSaved,
         gtkSaved: gtkSaved,
         qtSaved: qtSaved
-    ).
+    )

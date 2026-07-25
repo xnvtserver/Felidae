@@ -1,1 +1,1 @@
-School(student: "John", subject: "physics")
+School(student: "John", subject: "physics").

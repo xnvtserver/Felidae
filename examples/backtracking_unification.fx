@@ -1,31 +1,35 @@
-Color(value: "red").
-Color(value: "blue").
+Color(value: "red")
+Color(value: "blue")
 
-Shape(value: "circle").
-Shape(value: "square").
+Shape(value: "circle")
+Shape(value: "square")
 
-Pair(left: "red", right: "red").
-Pair(left: "red", right: "blue").
-Pair(left: "green", right: "green").
+Pair(left: "red", right: "red")
+Pair(left: "red", right: "blue")
+Pair(left: "green", right: "green")
 
-Employee(name: "Alice", role: "Engineer").
-Employee(name: "Bob", role: "Manager").
+Employee(name: "Alice", role: "Engineer")
+Employee(name: "Bob", role: "Manager")
 
-Wrapped(item: {name: "Alice", meta: {role: "Engineer", office: "SEA"}}).
-Wrapped(item: {name: "Bob", meta: {role: "Manager", office: "LAX"}}).
+Wrapped(item: {name: "Alice", meta: {role: "Engineer", office: "SEA"}})
+Wrapped(item: {name: "Bob", meta: {role: "Manager", office: "LAX"}})
 
 Choice(color: color, shape: shape) =>
-    Color(value: color),
-    Shape(value: shape).
+    Color(value: color)
+    Shape(value: shape)
+    return
 
 SamePair(value: value) =>
-    Pair(left: value, right: value).
+    Pair(left: value, right: value)
+    return
 
 AnyEmployee(name: name) =>
-    Employee(name: name, role: _).
+    Employee(name: name, role: _)
+    return
 
 NestedEmployee(name: name, role: role, office: office) =>
-    Wrapped(item: {name: name, meta: {role: role, office: office}}).
+    Wrapped(item: {name: name, meta: {role: role, office: office}})
+    return
 
 ExpectedChoices := [
     {color: "red", shape: "circle"},
@@ -54,4 +58,4 @@ main() =>
         same_pairs: samePairChecks,
         employees: employeeNames,
         nested: nestedEmployees
-    ).
+    )

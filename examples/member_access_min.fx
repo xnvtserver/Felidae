@@ -1,6 +1,6 @@
 import "system".
 
-Employee(name: "Alice", role: "Engineer", manager: "Bob", office: "SEA").
+Employee(name: "Alice", role: "Engineer", manager: "Bob", office: "SEA")
 
 HasManager(employee: e, name: string) =>
     system.print(value: "Checking if employee has a manager..."),
@@ -12,4 +12,4 @@ main(arguments: system.stdin) =>
     that_employee := lambda(Employee, e => e.office == "SEA"),
     return (
         has_manager: HasManager(employee: that_employee, name: "Alice")
-    ).
+    )

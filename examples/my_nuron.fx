@@ -1,4 +1,4 @@
-import ("array", "ml").
+import ("array", "ml")
 
 # This example intentionally includes negative numeric literals in facts and arrays.
 # It is a lightweight neural-network boundary test for Felidae numeric parsing,
@@ -24,7 +24,7 @@ InputSample(
         1.0, 2.0343, 200.0, 12.0, 0.0,
         0.82, 6.343, 0.0, 4.0, 9.0
     ]
-).
+)
 
 InputNeuron(
     name: "input-1",
@@ -39,7 +39,7 @@ InputNeuron(
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     ],
     bias: 3.2
-).
+)
 
 InputNeuron(
     name: "input-2",
@@ -54,22 +54,22 @@ InputNeuron(
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.30, 0.0, 0.0
     ],
     bias: -3.2
-).
+)
 
-HiddenNeuron(name: "hidden-1", weights: [2.0, 1.0], bias: 2.0).
-HiddenNeuron(name: "hidden-2", weights: [-1.0, 0.5], bias: 1.0).
+HiddenNeuron(name: "hidden-1", weights: [2.0, 1.0], bias: 2.0)
+HiddenNeuron(name: "hidden-2", weights: [-1.0, 0.5], bias: 1.0)
 
 NeuronOutput(neuron: any, input: any) =>
     dot := ml.dot(left: neuron.weights, right: input.values),
     bias := neuron.bias,
     raw := dot + bias,
-    return (name: neuron.name, raw: raw, activated: ml.relu(value: raw)).
+    return (name: neuron.name, raw: raw, activated: ml.relu(value: raw))
 
 HiddenOutput(neuron: any, values: array) =>
     dot := ml.dot(left: neuron.weights, right: values),
     bias := neuron.bias,
     raw := dot + bias,
-    return (name: neuron.name, raw: raw, activated: ml.relu(value: raw)).
+    return (name: neuron.name, raw: raw, activated: ml.relu(value: raw))
 
 Network(input: any) =>
     inputLayer := lambda(InputNeuron, neuron => NeuronOutput(neuron: neuron, input: input)),
@@ -83,8 +83,8 @@ Network(input: any) =>
         hiddenLayer: hiddenLayer,
         finalOutput: finalOutput,
         negativeLiteral: -200.0
-    ).
+    )
 
 main() =>
     results := lambda(InputSample, sample => Network(input: sample)),
-    return (results: results).
+    return (results: results)

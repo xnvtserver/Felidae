@@ -20,4 +20,4 @@ main() =>
         forecast: forecast,
         generated: generated,
         saved: saved
-    ).
+    )

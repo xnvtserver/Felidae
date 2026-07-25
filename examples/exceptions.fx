@@ -12,13 +12,15 @@ OtherFailure(error_reason: error_reason) =>
     error_reason != "ProgrammingError".
 
 DivideFailureHandler(msg: msg) =>
-    HandledFailure(type: "division", msg: msg).
+    HandledFailure(type: "division", msg: msg)
+    return
 
-HandledFailure(type: "division", msg: "thrown from module a").
+HandledFailure(type: "division", msg: "thrown from module a")
 
 RoutedFailure(msg: msg) =>
     throw(msg: "thrown from module a", target: DivideFailureHandler),
-    HandledFailure(type: "division", msg: msg).
+    HandledFailure(type: "division", msg: msg)
+    return
 
 
 main() =>
@@ -31,4 +33,4 @@ main() =>
         programming: programmingFailure,
         other: otherFailure,
         routed: routedFailure
-    ).
+    )
