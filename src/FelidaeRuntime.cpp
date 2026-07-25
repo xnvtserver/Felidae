@@ -172,8 +172,7 @@ Program parseProgramFile(const fs::path& path) {
 
 Program parseProgramText(std::string text) {
     Lexer lexer(std::move(text));
-    auto tokens = lexer.tokenize();
-    Parser parser(std::move(tokens));
+    Parser parser(lexer);
     return parser.parseProgram();
 }
 
@@ -182,8 +181,10 @@ void parseProgramFileChunks(const fs::path& path,
                             std::size_t statementsPerChunk) {
     if (statementsPerChunk == 0) statementsPerChunk = 1;
     const fs::path normalized = resolveProgramEntryPath(path);
-    Lexer lexer(readSourceFile(normalized));
-    Parser parser(lexer.tokenize());
+    std::ifstream input(normalized, std::ios::binary);
+    if (!input) throw std::runtime_error("Cannot open file: " + normalized.string());
+    Lexer lexer(input);
+    Parser parser(lexer);
     Program chunk;
     parser.parseProgram([&](std::shared_ptr<Statement> statement) {
         chunk.addStatement(std::move(statement));
@@ -196,6 +197,12 @@ void parseProgramFileChunks(const fs::path& path,
 }
 
 void loadProgramRoot(const fs::path& file, Interpreter& interpreter) {
+    loadProgramRoot(file, interpreter, {});
+}
+
+void loadProgramRoot(const fs::path& file,
+                     Interpreter& interpreter,
+                     const std::function<void(const Program&)>& afterChunk) {
     fs::path normalized = resolveProgramEntryPath(file);
     fs::path baseDir = normalized.parent_path();
     parseProgramFileChunks(normalized, [&](Program&& program) {
@@ -203,6 +210,7 @@ void loadProgramRoot(const fs::path& file, Interpreter& interpreter) {
             for (const auto& path : imp->paths) interpreter.addImport(baseDir, path);
         }
         interpreter.addProgram(program);
+        if (afterChunk) afterChunk(program);
     });
 }
 

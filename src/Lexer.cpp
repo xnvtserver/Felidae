@@ -5,20 +5,40 @@
 
 namespace Felidae {
 
-bool Lexer::isAtEnd() const {
-    return pos_ >= source_.size();
+Lexer::Lexer(std::string source)
+    : ownedInput_(std::make_unique<std::istringstream>(std::move(source))),
+      input_(ownedInput_.get()) {}
+
+bool Lexer::ensureChar(size_t offset) {
+    while (chars_.size() <= offset && !inputEnded_) {
+        input_->read(readBuffer_.data(), static_cast<std::streamsize>(readBuffer_.size()));
+        const std::streamsize count = input_->gcount();
+        if (count <= 0) {
+            inputEnded_ = true;
+            break;
+        }
+        chars_.insert(chars_.end(), readBuffer_.data(), readBuffer_.data() + count);
+        if (count < static_cast<std::streamsize>(readBuffer_.size())) inputEnded_ = true;
+    }
+    return chars_.size() > offset;
 }
 
-char Lexer::peek() const {
-    return isAtEnd() ? '\0' : source_[pos_];
+bool Lexer::isAtEnd() {
+    return !ensureChar(0);
 }
 
-char Lexer::peekNext() const {
-    return (pos_ + 1 >= source_.size()) ? '\0' : source_[pos_ + 1];
+char Lexer::peek(size_t offset) {
+    return ensureChar(offset) ? chars_[offset] : '\0';
+}
+
+char Lexer::peekNext() {
+    return peek(1);
 }
 
 char Lexer::advance() {
-    char c = source_[pos_++];
+    if (!ensureChar(0)) return '\0';
+    char c = chars_.front();
+    chars_.pop_front();
     if (c == '\n') {
         line_++;
         col_ = 1;
@@ -29,13 +49,9 @@ char Lexer::advance() {
 }
 
 bool Lexer::match(char expected) {
-    if (isAtEnd() || source_[pos_] != expected) return false;
+    if (isAtEnd() || peek() != expected) return false;
     advance();
     return true;
-}
-
-void Lexer::add(TokenType type, std::string text, std::vector<Token>& out, int line, int col) {
-    out.push_back(Token{type, std::move(text), line, col});
 }
 
 void Lexer::skipWhitespaceAndComments() {
@@ -72,26 +88,6 @@ Token Lexer::readIdentifier() {
             text.push_back(advance());
         } else {
             break;
-        }
-    }
-    size_t scan = pos_;
-    std::string qualified = text;
-    while (scan + 1 < source_.size() && (source_[scan] == '.' || source_[scan] == ':') &&
-           (std::isalpha(static_cast<unsigned char>(source_[scan + 1])) || source_[scan + 1] == '_')) {
-        size_t partStart = scan + 1;
-        size_t partEnd = partStart;
-        while (partEnd < source_.size() &&
-               (std::isalnum(static_cast<unsigned char>(source_[partEnd])) || source_[partEnd] == '_')) {
-            partEnd++;
-        }
-        qualified += ":" + source_.substr(partStart, partEnd - partStart);
-        scan = partEnd;
-    }
-    if (qualified != text) {
-        const BuiltinId builtinId = builtinIdForName(qualified);
-        if (builtinId != BuiltinId::Unknown) {
-            while (pos_ < scan) advance();
-            return Token{TokenType::BuiltinFunction, qualified, startLine, startCol, builtinId};
         }
     }
     const BuiltinId simpleBuiltinId = builtinIdForName(text);
@@ -161,11 +157,8 @@ Token Lexer::readString() {
     return Token{TokenType::String, text, startLine, startCol};
 }
 
-std::vector<Token> Lexer::tokenize() {
-    std::vector<Token> out;
-    out.reserve(source_.size() / 4 + 1);
-    int nestingDepth = 0;
-    bool emittedLogicalNewline = false;
+Token Lexer::nextToken() {
+    if (endEmitted_) return Token{TokenType::End, "", line_, col_};
     while (!isAtEnd()) {
         skipWhitespaceAndComments();
         if (isAtEnd()) break;
@@ -181,84 +174,83 @@ std::vector<Token> Lexer::tokenize() {
         }
         if (c == '\n' || c == '\r') {
             consumePhysicalNewline();
-            if (nestingDepth == 0 && !emittedLogicalNewline) {
-                add(TokenType::Newline, "\n", out, startLine, startCol);
-                emittedLogicalNewline = true;
+            if (nestingDepth_ == 0 && !emittedLogicalNewline_) {
+                emittedLogicalNewline_ = true;
+                return Token{TokenType::Newline, "\n", startLine, startCol};
             }
             continue;
         }
 
         if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
-            out.push_back(readIdentifier());
-            emittedLogicalNewline = false;
-            continue;
+            emittedLogicalNewline_ = false;
+            return readIdentifier();
         }
         if (std::isdigit(static_cast<unsigned char>(c))) {
-            out.push_back(readNumber());
-            emittedLogicalNewline = false;
-            continue;
+            emittedLogicalNewline_ = false;
+            return readNumber();
         }
         if (c == '"') {
-            out.push_back(readString());
-            emittedLogicalNewline = false;
-            continue;
+            emittedLogicalNewline_ = false;
+            return readString();
         }
 
         advance();
+        TokenType type = TokenType::End;
+        std::string text(1, c);
         switch (c) {
             case '(':
-                add(TokenType::LParen, "(", out, startLine, startCol);
-                nestingDepth++;
+                type = TokenType::LParen;
+                nestingDepth_++;
                 break;
             case ')':
-                add(TokenType::RParen, ")", out, startLine, startCol);
-                if (nestingDepth > 0) nestingDepth--;
+                type = TokenType::RParen;
+                if (nestingDepth_ > 0) nestingDepth_--;
                 break;
             case '{':
-                add(TokenType::LBrace, "{", out, startLine, startCol);
-                nestingDepth++;
+                type = TokenType::LBrace;
+                nestingDepth_++;
                 break;
             case '}':
-                add(TokenType::RBrace, "}", out, startLine, startCol);
-                if (nestingDepth > 0) nestingDepth--;
+                type = TokenType::RBrace;
+                if (nestingDepth_ > 0) nestingDepth_--;
                 break;
             case '[':
-                add(TokenType::LBracket, "[", out, startLine, startCol);
-                nestingDepth++;
+                type = TokenType::LBracket;
+                nestingDepth_++;
                 break;
             case ']':
-                add(TokenType::RBracket, "]", out, startLine, startCol);
-                if (nestingDepth > 0) nestingDepth--;
+                type = TokenType::RBracket;
+                if (nestingDepth_ > 0) nestingDepth_--;
                 break;
-            case ',': add(TokenType::Comma, ",", out, startLine, startCol); break;
+            case ',': type = TokenType::Comma; break;
             case ':':
-                if (match('=')) add(TokenType::Bind, ":=", out, startLine, startCol);
-                else if (match(':')) add(TokenType::DoubleColon, "::", out, startLine, startCol);
-                else add(TokenType::Colon, ":", out, startLine, startCol);
+                if (match('=')) { type = TokenType::Bind; text = ":="; }
+                else if (match(':')) { type = TokenType::DoubleColon; text = "::"; }
+                else type = TokenType::Colon;
                 break;
-            case '+': add(TokenType::Plus, "+", out, startLine, startCol); break;
-            case '-': add(TokenType::Minus, "-", out, startLine, startCol); break;
-            case '*': add(TokenType::Star, "*", out, startLine, startCol); break;
-            case '/': add(TokenType::Slash, "/", out, startLine, startCol); break;
-            case '.': add(TokenType::Dot, ".", out, startLine, startCol); break;
-            case '|': add(TokenType::Pipe, "|", out, startLine, startCol); break;
-            case '?': add(TokenType::Question, "?", out, startLine, startCol); break;
+            case '+': type = TokenType::Plus; break;
+            case '-': type = TokenType::Minus; break;
+            case '*': type = TokenType::Star; break;
+            case '/': type = TokenType::Slash; break;
+            case '.': type = TokenType::Dot; break;
+            case '|': type = TokenType::Pipe; break;
+            case '?': type = TokenType::Question; break;
             case '=':
-                if (match('>')) add(TokenType::Arrow, "=>", out, startLine, startCol);
-                else if (match('=')) add(TokenType::EqEq, "==", out, startLine, startCol);
+                if (match('>')) { type = TokenType::Arrow; text = "=>"; }
+                else if (match('=')) { type = TokenType::EqEq; text = "=="; }
                 else throw LexerError("Unexpected '='. Did you mean '=>' or '=='?");
                 break;
             case '!':
-                if (match('=')) add(TokenType::NotEq, "!=", out, startLine, startCol);
+                if (match('=')) { type = TokenType::NotEq; text = "!="; }
                 else throw LexerError("Unexpected '!'. Did you mean '!='?");
                 break;
             case '<':
-                if (match('=')) add(TokenType::LTE, "<=", out, startLine, startCol);
-                else add(TokenType::LT, "<", out, startLine, startCol);
+                if (match('=')) { type = TokenType::LTE; text = "<="; }
+                else type = TokenType::LT;
                 break;
             case '>':
-                if (match('=')) add(TokenType::GTE, ">=", out, startLine, startCol);
-                else add(TokenType::GT, ">", out, startLine, startCol);
+                if (match('=')) { type = TokenType::GTE; text = ">="; }
+                else type = TokenType::GT;
                 break;
             default: {
                 std::ostringstream oss;
@@ -266,9 +258,21 @@ std::vector<Token> Lexer::tokenize() {
                 throw LexerError(oss.str());
             }
         }
-        if (c != '\n' && c != '\r') emittedLogicalNewline = false;
+        emittedLogicalNewline_ = false;
+        return Token{type, std::move(text), startLine, startCol};
     }
-    out.push_back(Token{TokenType::End, "", line_, col_});
+    endEmitted_ = true;
+    return Token{TokenType::End, "", line_, col_};
+}
+
+std::vector<Token> Lexer::tokenize() {
+    std::vector<Token> out;
+    while (true) {
+        Token token = nextToken();
+        const bool end = token.type == TokenType::End;
+        out.push_back(std::move(token));
+        if (end) break;
+    }
     return out;
 }
 

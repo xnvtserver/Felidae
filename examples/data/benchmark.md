@@ -17,12 +17,12 @@ builtins.
 
 | Case | Total median | Total CV | Load median | Execute median | First query | Repeated query |
 |---|---:|---:|---:|---:|---:|---:|
-| direct main | 28.00 ms | 30.7% | 1.06 ms | 0.22 ms | 0.000 ms | 0.000 ms |
-| recursive backtracking | 20.46 ms | 20.1% | 0.71 ms | 1.48 ms | 0.436 ms | 0.011 ms |
-| indexed fact property | 24.28 ms | 24.1% | 3.00 ms | 0.44 ms | 0.100 ms | 0.003 ms |
-| full fact scan | 33.27 ms | 23.9% | 3.67 ms | 3.48 ms | 1.213 ms | 0.083 ms |
-| thread snapshot | 25.79 ms | 24.7% | 0.92 ms | 1.13 ms | 0.000 ms | 0.000 ms |
-| stdlib utilities | 35.31 ms | 24.8% | 0.94 ms | 11.35 ms | 0.000 ms | 0.000 ms |
-| fact reasoning | 50.99 ms | 42.2% | 4.12 ms | 29.76 ms | 0.000 ms | 0.000 ms |
-| linear search | 108.99 ms | 10.4% | 1.76 ms | 81.64 ms | 31.920 ms | 0.005 ms |
-| binary search | 76.61 ms | 13.4% | 1.58 ms | 50.29 ms | 3.260 ms | 0.005 ms |
+| direct main | 21.34 ms | 19.2% | 1.29 ms | 0.49 ms | 0.000 ms | 0.000 ms |
+| recursive backtracking | 22.27 ms | 23.5% | 0.72 ms | 1.07 ms | 0.295 ms | 0.007 ms |
+| indexed fact property | 21.72 ms | 3.6% | 3.10 ms | 0.46 ms | 0.103 ms | 0.003 ms |
+| full fact scan | 22.33 ms | 4.1% | 3.07 ms | 3.31 ms | 1.037 ms | 0.059 ms |
+| thread snapshot | 21.86 ms | 4.7% | 1.17 ms | 1.39 ms | 0.000 ms | 0.000 ms |
+| stdlib utilities | 21.80 ms | 21.3% | 1.03 ms | 7.95 ms | 0.000 ms | 0.000 ms |
+| fact reasoning | 40.43 ms | 14.7% | 5.31 ms | 22.05 ms | 0.000 ms | 0.000 ms |
+| linear search | 86.59 ms | 14.1% | 1.47 ms | 56.07 ms | 23.135 ms | 0.003 ms |
+| binary search | 53.71 ms | 10.9% | 1.43 ms | 37.15 ms | 3.620 ms | 0.003 ms |
