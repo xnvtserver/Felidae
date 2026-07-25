@@ -1,21 +1,42 @@
-# Felidae source files. GitHub Linguist must learn this language upstream
-# before GitHub can provide native "Felidae" stats/highlighting.
-*.fx linguist-language=Felidae
-examples/*.fx linguist-language=Felidae
-v2_examples/*.fx linguist-language=Felidae
+# Felidae source files.
 
-# Keep generated and packaged artifacts out of GitHub language statistics.
+# GitHub Linguist must recognize Felidae upstream before GitHub can provide
+
+# native Felidae language statistics and syntax highlighting.
+
+*.fx linguist-language=Felidae
+*.fx linguist-detectable=true
+
+# Generated build outputs should not count toward repository language statistics.
+
 build/** linguist-generated=true
 build-clang/** linguist-generated=true
+
+# Generated and packaged VS Code extension artifacts.
+
 vs-code-extension/out/** linguist-generated=true
 vs-code-extension/*.vsix linguist-generated=true
+
+# Generated Felidae example data.
+
 examples/data/converted_*.fx linguist-generated=true
 
-# Third-party source should not count as project-authored code.
+# Third-party dependencies should not count as project-authored source code.
+
 third_party/** linguist-vendored=true
 vs-code-extension/node_modules/** linguist-vendored=true
 
-# Binary/archive files should be treated as binary by Git.
+#configs
+*.fx linguist-detectable=true
+*.fx linguist-documentation=false
+*.fx linguist-generated=false
+*.fx linguist-vendored=false
+*.fx text eol=lf
+
+examples/data/converted_*.fx linguist-detectable=false
+
+# Compiled binaries and packaged archives.
+
 *.exe binary
 *.dll binary
 *.so binary
