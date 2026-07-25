@@ -2,7 +2,7 @@ import ("csv", "file", "data/customer_facts.fx")
 
 UpdateCustomer(input: row) =>
     c := row
- if c.total >= 200
+ if c.total >= 200 then
     return (
         name: c.name,
         city: c.city,

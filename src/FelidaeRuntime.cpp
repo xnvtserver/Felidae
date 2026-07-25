@@ -308,7 +308,6 @@ static void collectVarsGoal(const std::shared_ptr<Goal>& goal, std::vector<std::
             }
         }
         if (!seen) vars.push_back(ag->name);
-        if (ag->goal) collectVarsGoal(ag->goal, vars);
         if (ag->expr) collectVarsExpr(ag->expr, vars);
     } else if (auto bg = std::dynamic_pointer_cast<BinaryGoal>(goal)) {
         collectVarsExpr(bg->left, vars);

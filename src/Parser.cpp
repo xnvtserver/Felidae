@@ -24,7 +24,8 @@ TokenChain parseTokenChain(const std::vector<Token>& tokens, size_t pos) {
     chain.end = pos + 1;
     while (chain.end + 1 < tokens.size() &&
            (tokens[chain.end].type == TokenType::Colon ||
-            tokens[chain.end].type == TokenType::Dot) &&
+            tokens[chain.end].type == TokenType::Dot ||
+            tokens[chain.end].type == TokenType::DoubleColon) &&
            (tokens[chain.end + 1].type == TokenType::Ident ||
             tokens[chain.end + 1].type == TokenType::BuiltinFunction) &&
            (tokens[chain.end].type != TokenType::Dot ||
@@ -165,12 +166,7 @@ const Token& Parser::consume(TokenType type, const std::string& message) {
 }
 
 void Parser::rejectUnsupportedToken(const Token& token) const {
-    if (token.type == TokenType::DoubleColon) {
-        std::ostringstream oss;
-        oss << "'::' is not supported in Felidae. Use '.' for top-level package/module calls at "
-            << token.line << ":" << token.column;
-        throw ParserError(oss.str());
-    }
+    (void)token;
 }
 
 Program Parser::parseProgram() {
@@ -386,9 +382,35 @@ void Parser::validateClauseBody(const Call& head,
         }
     }
     validateRuleVars(head, body, fallbackBranches);
+    validateExceptionFlow(body);
     for (const auto& goal : body) validateGoalSystemResultUsage(goal);
     for (const auto& branch : fallbackBranches) {
+        validateExceptionFlow(branch);
         for (const auto& goal : branch) validateGoalSystemResultUsage(goal);
+    }
+}
+
+void Parser::validateExceptionFlow(const std::vector<std::shared_ptr<Goal>>& goals) const {
+    for (size_t i = 0; i < goals.size(); ++i) {
+        const auto& goal = goals[i];
+        bool isThrow = false;
+        if (auto call = std::dynamic_pointer_cast<CallGoal>(goal)) {
+            isThrow = call->call.builtinId == BuiltinId::Throw;
+        } else if (auto conditional = std::dynamic_pointer_cast<IfGoal>(goal)) {
+            validateExceptionFlow(conditional->thenBranch);
+            validateExceptionFlow(conditional->elseBranch);
+        } else if (auto group = std::dynamic_pointer_cast<GroupGoal>(goal)) {
+            validateExceptionFlow(group->goals);
+        } else if (auto alternatives = std::dynamic_pointer_cast<OrGoal>(goal)) {
+            for (const auto& branch : alternatives->branches) validateExceptionFlow(branch);
+        }
+        if (!isThrow) continue;
+        if (i + 1 < goals.size() && !std::dynamic_pointer_cast<ReturnGoal>(goals[i + 1])) {
+            throw ParserError(
+                "Unreachable goal after throw. Route with a callable 'target:' and "
+                "end the branch with return");
+        }
+        if (i + 2 < goals.size()) throw ParserError("Unreachable goals after throw");
     }
 }
 
@@ -430,7 +452,9 @@ std::shared_ptr<GlobalBindingStmt> Parser::parseGlobalBinding() {
 std::string Parser::parseQualifiedName() {
     size_t scan = pos_;
     while (hasToken(scan + 2) &&
-           (tokenAt(scan + 1).type == TokenType::Colon || tokenAt(scan + 1).type == TokenType::Dot) &&
+           (tokenAt(scan + 1).type == TokenType::Colon ||
+            tokenAt(scan + 1).type == TokenType::Dot ||
+            tokenAt(scan + 1).type == TokenType::DoubleColon) &&
            tokenAt(scan + 2).type == TokenType::Ident) {
         scan += 2;
     }
@@ -451,16 +475,24 @@ std::vector<Arg> Parser::parseArgList() {
 }
 
 Arg Parser::parseArg() {
+    auto parseValue = [&]() {
+        auto left = parseExpr();
+        if (!isComparison(peek().type)) return left;
+        const TokenType op = advance().type;
+        auto right = parseExpr();
+        return std::shared_ptr<Expr>(
+            std::make_shared<BinaryExpr>(std::move(left), op, std::move(right)));
+    };
     if (isNameStartToken(peek().type)) {
         // named argument: name: expr
         if (hasToken(pos_ + 1) &&
             tokenAt(pos_ + 1).type == TokenType::Colon) {
             std::string name = advance().text;
             consume(TokenType::Colon, "Expected ':' after argument name");
-            return Arg{name, parseExpr()};
+            return Arg{name, parseValue()};
         }
     }
-    return Arg{"", parseExpr()};
+    return Arg{"", parseValue()};
 }
 
 std::shared_ptr<Goal> Parser::parseIfGoal() {
@@ -470,8 +502,13 @@ std::shared_ptr<Goal> Parser::parseIfGoal() {
         throw ParserError("Expected comparison operator after if expression");
     }
     TokenType op = advance().type;
-    auto right = parseExpr();
-    matchGoalSeparator();
+    // Parse only the condition operand here. A following 'then' belongs to
+    // conditional syntax, while parseExpr() continues to own pipeline 'then'.
+    auto right = parseAccessExpr();
+    consume(TokenType::Then, "Expected 'then' after if condition");
+    if (!matchGoalSeparator()) {
+        throw ParserError("Expected a newline after 'then' in if condition");
+    }
     std::vector<std::shared_ptr<Goal>> thenBranch = parseGoalList();
     std::vector<std::shared_ptr<Goal>> elseBranch;
     consumeLogicalNewline();
@@ -539,15 +576,6 @@ std::shared_ptr<Goal> Parser::parseGoal() {
         tokenAt(pos_ + 1).type == TokenType::Bind) {
         std::string name = advance().text;
         consume(TokenType::Bind, "Expected ':=' after assignment variable");
-        size_t lookahead = pos_;
-    if (hasToken(lookahead) && isNameStartToken(tokenAt(lookahead).type)) {
-        ensureToken(lookahead + 16);
-        lookahead = parseTokenChain(tokens_, lookahead).end;
-    }
-    if (hasToken(lookahead) && tokenAt(lookahead).type == TokenType::LParen &&
-        (hasToken(pos_ + 1) && tokenAt(pos_ + 1).type == TokenType::Dot)) {
-            return std::make_shared<AssignGoal>(std::move(name), parseGoal());
-        }
         return std::make_shared<AssignGoal>(std::move(name), parseExpr());
     }
 
@@ -633,7 +661,8 @@ std::vector<std::shared_ptr<Goal>> Parser::parseGoalConjunction() {
                 ++cursor;
                 while (hasToken(cursor + 1) &&
                        (tokenAt(cursor).type == TokenType::Dot ||
-                        tokenAt(cursor).type == TokenType::Colon) &&
+                        tokenAt(cursor).type == TokenType::Colon ||
+                        tokenAt(cursor).type == TokenType::DoubleColon) &&
                        isNameStartToken(tokenAt(cursor + 1).type)) {
                     cursor += 2;
                 }
@@ -805,16 +834,28 @@ std::shared_ptr<Expr> Parser::parsePrimaryExpr() {
         LanguageTypeId languageTypeId = firstNameToken.languageTypeId;
         size_t nameEnd = pos_;
         while (hasToken(nameEnd + 1) &&
-               (tokenAt(nameEnd).type == TokenType::Colon || tokenAt(nameEnd).type == TokenType::Dot) &&
+               (tokenAt(nameEnd).type == TokenType::Colon ||
+                tokenAt(nameEnd).type == TokenType::Dot ||
+                tokenAt(nameEnd).type == TokenType::DoubleColon) &&
                isNameStartToken(tokenAt(nameEnd + 1).type) &&
                (tokenAt(nameEnd).type != TokenType::Dot ||
                 tokenAt(nameEnd).line == tokenAt(nameEnd + 1).line)) {
             nameEnd += 2;
         }
-        if (hasToken(nameEnd) && tokenAt(nameEnd).type == TokenType::LParen) {
+        const bool callableReference =
+            pos_ < nameEnd && tokenAt(pos_).type == TokenType::DoubleColon;
+        if (callableReference) {
+            if (nameEnd != pos_ + 2 || tokenAt(nameEnd).type == TokenType::LParen) {
+                throw ParserError(
+                    "'::' is only valid for a two-part callable reference such as someFunction::Function");
+            }
+        }
+        if ((hasToken(nameEnd) && tokenAt(nameEnd).type == TokenType::LParen) ||
+            callableReference) {
             while (pos_ < nameEnd) {
-                advance(); // ':' or '.'
-                name += ":" + advance().text;
+                const TokenType separator = advance().type;
+                name += separator == TokenType::DoubleColon ? "::" : ":";
+                name += advance().text;
             }
             languageTypeId = LanguageTypeId::Unknown;
         }
@@ -992,7 +1033,6 @@ void Parser::validateGoalSystemResultUsage(const std::shared_ptr<Goal>& goal) co
         for (const auto& arg : call->call.args) validateSystemResultUsage(arg.value, false);
     } else if (auto assign = std::dynamic_pointer_cast<AssignGoal>(goal)) {
         validateSystemResultUsage(assign->expr, false);
-        validateGoalSystemResultUsage(assign->goal);
     } else if (auto multi = std::dynamic_pointer_cast<MultiAssignGoal>(goal)) {
         validateSystemResultUsage(multi->expr, false);
     } else if (auto binary = std::dynamic_pointer_cast<BinaryGoal>(goal)) {
@@ -1133,7 +1173,6 @@ void Parser::validateGoalVars(const std::shared_ptr<Goal>& goal, std::set<std::s
         for (const auto& field : ret->fields) collectExprVars(field.value, used);
     } else if (auto assign = std::dynamic_pointer_cast<AssignGoal>(goal)) {
         if (assign->expr) collectExprVars(assign->expr, used);
-        if (assign->goal) validateGoalVars(assign->goal, declared);
         for (const auto& name : used) {
             if (!isDeclaredName(name, declared)) {
                 throw ParserError("Variable '" + name + "' is used before declaration. Declare it in the rule head or assign it before use");

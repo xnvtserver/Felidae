@@ -1,3 +1,5 @@
+import "db"
+
 main() =>
     raw := "  Alice,Engineer,SEA  "
     trimmed := str.trim(data: raw)
@@ -15,10 +17,10 @@ main() =>
     office := json.get(data: withoutRole, key: "office")
 
     rows := csv.parse(data: "name,role,office\nAlice,Engineer,SEA\nBob,Manager,LAX\n")
-    added := csv.addRow(data: rows, row: {name: "Carol", role: "Engineer", office: "SEA"})
-    seaRows := csv.findRows(data: added, key: "office", value: "SEA")
-    updated := csv.updateRows(data: added, key: "name", value: "Bob", patch: {office: "SEA"})
-    deleted := csv.deleteRows(data: updated, key: "role", value: "Manager")
+    added := db.add(rows: rows, row: {name: "Carol", role: "Engineer", office: "SEA"})
+    seaRows := db.select(rows: added, field: "office", equals: "SEA")
+    updated := db.update(rows: added, field: "name", equals: "Bob", patch: {office: "SEA"})
+    deleted := db.delete(rows: updated, field: "role", equals: "Manager")
     csvText := csv.toText(data: deleted)
 
     writeStatus := file.writeLines(path: "build/stdlib_utilities.tmp", data: parts, mode: "write")

@@ -9,6 +9,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -320,7 +321,15 @@ std::string graphFromFactsResponse(const std::string& module, const Json& args) 
     const double cy = numberField(args, "cy", 260);
     const double radius = numberField(args, "radius", 170);
     std::vector<std::string> nodes;
+    std::unordered_map<std::string, size_t> nodeIndices;
     std::vector<std::pair<std::string, std::string>> links;
+    nodes.reserve(edges->items.size() * 2);
+    nodeIndices.reserve(edges->items.size() * 2);
+    links.reserve(edges->items.size());
+    auto addNode = [&](const std::string& id) {
+        auto inserted = nodeIndices.emplace(id, nodes.size());
+        if (inserted.second) nodes.push_back(id);
+    };
     for (const auto& edge : edges->items) {
         const Json* from = field(edge, fromField);
         const Json* to = field(edge, toField);
@@ -328,14 +337,11 @@ std::string graphFromFactsResponse(const std::string& module, const Json& args) 
         const std::string a = scalarText(*from);
         const std::string b = scalarText(*to);
         if (a.empty() || b.empty()) continue;
-        if (std::find(nodes.begin(), nodes.end(), a) == nodes.end()) nodes.push_back(a);
-        if (std::find(nodes.begin(), nodes.end(), b) == nodes.end()) nodes.push_back(b);
+        addNode(a);
+        addNode(b);
         links.push_back({a, b});
     }
     if (nodes.empty()) throw std::runtime_error(module + ".graphFromFacts found no usable edges");
-    auto indexOf = [&](const std::string& id) {
-        return static_cast<size_t>(std::distance(nodes.begin(), std::find(nodes.begin(), nodes.end(), id)));
-    };
     auto nx = [&](size_t i) {
         const double angle = (static_cast<double>(i) / static_cast<double>(nodes.size())) * 6.283185307179586;
         return cx + std::cos(angle) * radius;
@@ -348,8 +354,8 @@ std::string graphFromFactsResponse(const std::string& module, const Json& args) 
     out << "[";
     size_t emitted = 0;
     for (const auto& link : links) {
-        const size_t a = indexOf(link.first);
-        const size_t b = indexOf(link.second);
+        const size_t a = nodeIndices.at(link.first);
+        const size_t b = nodeIndices.at(link.second);
         if (emitted) out << ",";
         out << "{\"__type\":\"" << module << ".line\",\"module\":" << q(module) << ",\"kind\":\"line\",\"x1\":" << nx(a)
             << ",\"y1\":" << ny(a) << ",\"x2\":" << nx(b) << ",\"y2\":" << ny(b)
@@ -370,11 +376,11 @@ std::string graphFromFactsResponse(const std::string& module, const Json& args) 
         if (!from || !to) continue;
         const std::string aText = scalarText(*from);
         const std::string bText = scalarText(*to);
-        auto aIt = std::find(nodes.begin(), nodes.end(), aText);
-        auto bIt = std::find(nodes.begin(), nodes.end(), bText);
-        if (aIt == nodes.end() || bIt == nodes.end()) continue;
-        const size_t a = static_cast<size_t>(std::distance(nodes.begin(), aIt));
-        const size_t b = static_cast<size_t>(std::distance(nodes.begin(), bIt));
+        auto aIt = nodeIndices.find(aText);
+        auto bIt = nodeIndices.find(bText);
+        if (aIt == nodeIndices.end() || bIt == nodeIndices.end()) continue;
+        const size_t a = aIt->second;
+        const size_t b = bIt->second;
         if (emitted) out << ",";
         out << "{\"__type\":\"" << module << ".text\",\"module\":" << q(module) << ",\"kind\":\"text\",\"x\":" << ((nx(a) + nx(b)) / 2.0)
             << ",\"y\":" << ((ny(a) + ny(b)) / 2.0) << ",\"content\":" << q(scalarText(*label)) << ",\"size\":12}";
@@ -466,6 +472,10 @@ std::string renderResponse(const std::string& module, const Json& args) {
 std::string dispatch(const std::string& function, const Json& args) {
     const std::string module = moduleName(function);
     const std::string op = operationName(function);
+    if (op == "backend") {
+        return "{\"__type\":\"" + module + ".backend\",\"module\":" + q(module) +
+               ",\"backend\":\"svg-html\",\"native_widget_toolkit\":false}";
+    }
     if (op == "button_at") return primitiveResponse(module, "button", args);
     if (op == "radio_at") return primitiveResponse(module, "radio", args);
     if (op == "checkbox_at") return primitiveResponse(module, "checkbox", args);

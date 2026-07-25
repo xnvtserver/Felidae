@@ -14,7 +14,7 @@ KeepCustomer(input: row) =>
 
 DeletedCustomer(input: row) =>
     c := row
-if c.status == "inactive"
+if c.status == "inactive" then
     return (
         name: c.name,
         reason: "inactive"

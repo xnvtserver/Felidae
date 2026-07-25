@@ -18,5 +18,5 @@ list.first(list: string) =>
 
 list.pop(list: string) =>
     ListItem(list: list, pos: pos, label: label, value: value)
-    if pos == 0
+    if pos == 0 then
     return (value: value, label: label)

@@ -94,6 +94,7 @@ private:
     std::unordered_map<const ClauseStmt*, std::filesystem::path> clauseOrigins_;
     std::filesystem::path currentLoadingFile_;
     std::vector<NativeLibrary> nativeLibraries_;
+    std::unordered_map<std::string, std::size_t> nativeLibraryByModule_;
     std::set<std::filesystem::path> nativeLibraryPaths_;
     std::unordered_map<std::string, std::shared_ptr<ThreadTask>> threadTasks_;
     mutable std::mutex threadMutex_;

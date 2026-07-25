@@ -30,6 +30,7 @@ intellij-idea-extension/build/
 *.log
 *.tmp
 *.temp
+*.fx.lock
 
 # Editor/OS noise
 .DS_Store

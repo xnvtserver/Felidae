@@ -10,6 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -372,38 +373,50 @@ std::string relationshipResponse(const Json& args) {
     struct Node { std::string id; double x; double y; };
     std::vector<Node> nodes;
     std::vector<std::pair<std::string, std::string>> edges;
-    std::set<std::string> seen;
+    std::unordered_map<std::string, size_t> nodeIndex;
+    nodeIndex.reserve(facts.items.size() * 2);
+    edges.reserve(facts.items.size());
+    auto addNode = [&](const std::string& id) {
+        if (id.empty()) return;
+        auto inserted = nodeIndex.emplace(id, nodes.size());
+        if (inserted.second) nodes.push_back(Node{id, 0, 0});
+    };
     for (const auto& fact : facts.items) {
         const std::string type = stringField(fact, "__type");
         const std::string parent = stringField(fact, "__parent");
-        if (!type.empty() && seen.insert(type).second) nodes.push_back(Node{type, 0, 0});
-        if (!parent.empty() && seen.insert(parent).second) nodes.push_back(Node{parent, 0, 0});
+        addNode(type);
+        addNode(parent);
         if (!type.empty() && !parent.empty()) edges.push_back({type, parent});
     }
     if (nodes.empty()) throw std::runtime_error("plot.relationships found no typed facts");
-    const double w = 760, h = 520, cx = 380, cy = 270;
+    const double w = 820;
+    const size_t columns = std::max<size_t>(1, static_cast<size_t>(std::ceil(std::sqrt(static_cast<double>(nodes.size())))));
+    const double h = std::max(360.0, 100.0 + std::ceil(static_cast<double>(nodes.size()) / columns) * 84.0);
     for (size_t i = 0; i < nodes.size(); ++i) {
-        double a = (static_cast<double>(i) / static_cast<double>(nodes.size())) * 6.283185307179586;
-        double r = 150 + static_cast<double>(i % 3) * 38;
-        nodes[i].x = cx + std::cos(a) * r;
-        nodes[i].y = cy + std::sin(a) * r;
+        nodes[i].x = 45.0 + static_cast<double>(i % columns) * (730.0 / columns);
+        nodes[i].y = 75.0 + static_cast<double>(i / columns) * 84.0;
     }
-    auto findNode = [&](const std::string& id) -> const Node* {
-        for (const auto& node : nodes) if (node.id == id) return &node;
-        return nullptr;
-    };
     std::ostringstream svg;
-    svg << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 " << w << " " << h << "\" role=\"img\">"
+    svg << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 " << w << " " << h << "\" role=\"img\" aria-labelledby=\"plot-title plot-desc\">"
+        << "<title id=\"plot-title\">" << esc(title) << "</title><desc id=\"plot-desc\">Fact types connected to their parent types. Arrows point from child to parent.</desc>"
+        << "<defs><marker id=\"parent-arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\" orient=\"auto\"><path d=\"M0 0L10 5L0 10z\" fill=\"#507079\"/></marker></defs>"
         << "<rect width=\"100%\" height=\"100%\" fill=\"#081114\"/><text x=\"32\" y=\"32\" font-size=\"19\" fill=\"#eafffb\" font-family=\"Segoe UI,Arial\">" << esc(title) << "</text>";
     for (const auto& e : edges) {
-        const Node* a = findNode(e.first);
-        const Node* b = findNode(e.second);
-        if (!a || !b) continue;
-        svg << "<line x1=\"" << a->x << "\" y1=\"" << a->y << "\" x2=\"" << b->x << "\" y2=\"" << b->y << "\" stroke=\"#507079\" stroke-width=\"1.4\"/>";
+        auto aIt = nodeIndex.find(e.first);
+        auto bIt = nodeIndex.find(e.second);
+        if (aIt == nodeIndex.end() || bIt == nodeIndex.end()) continue;
+        const Node& a = nodes[aIt->second];
+        const Node& b = nodes[bIt->second];
+        svg << "<line x1=\"" << (a.x + 150) << "\" y1=\"" << (a.y + 24) << "\" x2=\"" << b.x << "\" y2=\"" << (b.y + 24)
+            << "\" stroke=\"#507079\" stroke-width=\"1.4\" marker-end=\"url(#parent-arrow)\"/>"
+            << "<text x=\"" << ((a.x + b.x + 150) / 2.0) << "\" y=\"" << ((a.y + b.y + 48) / 2.0 - 4)
+            << "\" text-anchor=\"middle\" font-size=\"10\" fill=\"#8eb3ae\" font-family=\"Segoe UI,Arial\">extends</text>";
     }
     for (const auto& n : nodes) {
-        svg << "<circle cx=\"" << n.x << "\" cy=\"" << n.y << "\" r=\"17\" fill=\"#18f0d7\" stroke=\"#eafffb\"/>"
-            << "<text x=\"" << (n.x + 22) << "\" y=\"" << (n.y + 4) << "\" font-size=\"12\" fill=\"#eafffb\" font-family=\"Segoe UI,Arial\">" << esc(n.id) << "</text>";
+        svg << "<g><title>fact type: " << esc(n.id) << "</title><rect x=\"" << n.x << "\" y=\"" << n.y
+            << "\" width=\"150\" height=\"48\" rx=\"7\" fill=\"#123b3a\" stroke=\"#18f0d7\"/>"
+            << "<text x=\"" << (n.x + 12) << "\" y=\"" << (n.y + 29) << "\" font-size=\"12\" fill=\"#eafffb\" font-family=\"Segoe UI,Arial\">"
+            << esc(n.id) << "</text></g>";
     }
     svg << "</svg>";
     return plotEnvelope("relationships", title, svg.str(), nodes.size());

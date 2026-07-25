@@ -119,7 +119,7 @@ Invoke-FelidaeBuild -Output "build/felidae$suffix.exe" -Sources (@("src/main.cpp
 Invoke-FelidaeBuild -Output "build/celidae$suffix.exe" -Sources $celidaeSources
 Invoke-FelidaeBuild -Output "build/felidae_debug$suffix.exe" -Sources $debugSources
 
-foreach ($module in @("csv", "http", "process")) {
+foreach ($module in @("csv", "db", "http", "process", "set", "group")) {
     $className = (Get-Culture).TextInfo.ToTitleCase($module)
     $moduleOutput = "native_modules/$module/$module.dll"
     Write-Host "Building $moduleOutput"

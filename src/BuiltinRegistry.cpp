@@ -63,6 +63,7 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::DbFirst, "db:first", BuiltinEffect::ReadsExternalState},
         {BuiltinId::DbTypes, "db:types", BuiltinEffect::ReadsExternalState},
         {BuiltinId::DbFields, "db:fields", BuiltinEffect::ReadsExternalState},
+        {BuiltinId::DbExists, "db:exists", BuiltinEffect::ReadsExternalState},
         {BuiltinId::JsonObject, "json:object", BuiltinEffect::Pure},
         {BuiltinId::JsonParse, "json:parse", BuiltinEffect::Pure},
         {BuiltinId::JsonGet, "json:get", BuiltinEffect::Pure},
@@ -140,12 +141,14 @@ const BuiltinInfo& builtinInfo(BuiltinId id) {
     return info.id == id ? info : kBuiltinInfos[0];
 }
 
-const std::unordered_map<std::string, BuiltinInfo>& builtinsByName() {
-    static const std::unordered_map<std::string, BuiltinInfo> builtins = [] {
-        std::unordered_map<std::string, BuiltinInfo> map;
+const std::unordered_map<std::string_view, BuiltinId>& builtinsByName() {
+    static const std::unordered_map<std::string_view, BuiltinId> builtins = [] {
+        std::unordered_map<std::string_view, BuiltinId> map;
+        map.reserve(builtinInfoCount() - 1);
+        map.max_load_factor(0.7f);
         for (std::size_t i = 1; i < builtinInfoCount(); ++i) {
             const BuiltinInfo* info = kBuiltinInfos + i;
-            map.emplace(info->name, *info);
+            map.emplace(info->name, info->id);
         }
         return map;
     }();
@@ -155,12 +158,16 @@ const std::unordered_map<std::string, BuiltinInfo>& builtinsByName() {
 } // namespace
 
 BuiltinId builtinIdForName(const std::string& name) {
+    return builtinIdForName(std::string_view(name));
+}
+
+BuiltinId builtinIdForName(std::string_view name) {
     auto found = builtinsByName().find(name);
-    return found == builtinsByName().end() ? BuiltinId::Unknown : found->second.id;
+    return found == builtinsByName().end() ? BuiltinId::Unknown : found->second;
 }
 
 BuiltinId builtinIdForName(const char* name) {
-    return name ? builtinIdForName(std::string(name)) : BuiltinId::Unknown;
+    return name ? builtinIdForName(std::string_view(name)) : BuiltinId::Unknown;
 }
 
 bool isBuiltinFunctionName(const std::string& name) {
