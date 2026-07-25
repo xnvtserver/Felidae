@@ -1,5 +1,6 @@
 #include "Parser.h"
 #include "BuiltinRegistry.h"
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <sstream>
@@ -14,19 +15,18 @@ struct TokenChain {
 
 TokenChain parseTokenChain(const std::vector<Token>& tokens, size_t pos) {
     TokenChain chain{{}, pos};
-    if (pos < tokens.size() && tokens[pos].type == TokenType::BuiltinFunction) {
-        chain.parts.push_back(tokens[pos].text);
-        chain.end = pos + 1;
+    if (pos >= tokens.size() ||
+        (tokens[pos].type != TokenType::Ident && tokens[pos].type != TokenType::BuiltinFunction)) {
         return chain;
     }
-    if (pos >= tokens.size() || tokens[pos].type != TokenType::Ident) return chain;
 
     chain.parts.push_back(tokens[pos].text);
     chain.end = pos + 1;
     while (chain.end + 1 < tokens.size() &&
            (tokens[chain.end].type == TokenType::Colon ||
             tokens[chain.end].type == TokenType::Dot) &&
-           tokens[chain.end + 1].type == TokenType::Ident &&
+           (tokens[chain.end + 1].type == TokenType::Ident ||
+            tokens[chain.end + 1].type == TokenType::BuiltinFunction) &&
            (tokens[chain.end].type != TokenType::Dot ||
             tokens[chain.end].line == tokens[chain.end + 1].line)) {
         chain.parts.push_back(tokens[chain.end + 1].text);
@@ -92,7 +92,27 @@ bool containsValueReturnGoal(const std::shared_ptr<Goal>& goal) {
 }
 }
 
-const Token& Parser::peek() const { return tokens_[pos_]; }
+void Parser::ensureToken(size_t index) const {
+    while (tokens_.size() <= index && lexer_) {
+        Token token = lexer_->nextToken();
+        const bool end = token.type == TokenType::End;
+        rejectUnsupportedToken(token);
+        tokens_.push_back(std::move(token));
+        if (end) break;
+    }
+}
+
+const Token& Parser::tokenAt(size_t index) const {
+    ensureToken(index);
+    return tokens_[std::min(index, tokens_.size() - 1)];
+}
+
+bool Parser::hasToken(size_t index) const {
+    ensureToken(index);
+    return index < tokens_.size() && tokens_[index].type != TokenType::End;
+}
+
+const Token& Parser::peek() const { return tokenAt(pos_); }
 const Token& Parser::previous() const { return tokens_[pos_ - 1]; }
 bool Parser::check(TokenType type) const { return peek().type == type; }
 bool Parser::isAtEnd() const { return peek().type == TokenType::End; }
@@ -144,14 +164,12 @@ const Token& Parser::consume(TokenType type, const std::string& message) {
     throw ParserError(oss.str());
 }
 
-void Parser::rejectUnsupportedTokens() const {
-    for (const auto& token : tokens_) {
-        if (token.type == TokenType::DoubleColon) {
-            std::ostringstream oss;
-            oss << "'::' is not supported in Felidae. Use '.' for top-level package/module calls at "
-                << token.line << ":" << token.column;
-            throw ParserError(oss.str());
-        }
+void Parser::rejectUnsupportedToken(const Token& token) const {
+    if (token.type == TokenType::DoubleColon) {
+        std::ostringstream oss;
+        oss << "'::' is not supported in Felidae. Use '.' for top-level package/module calls at "
+            << token.line << ":" << token.column;
+        throw ParserError(oss.str());
     }
 }
 
@@ -164,16 +182,24 @@ Program Parser::parseProgram() {
 }
 
 void Parser::parseProgram(const std::function<void(std::shared_ptr<Statement>)>& consume) {
-    rejectUnsupportedTokens();
+    if (!lexer_) {
+        for (const auto& token : tokens_) rejectUnsupportedToken(token);
+    }
     consumeLogicalNewline();
     while (!isAtEnd()) {
         consume(parseStatement());
         consumeLogicalNewline();
+        if (lexer_ && pos_ > 0) {
+            tokens_.erase(tokens_.begin(), tokens_.begin() + static_cast<std::ptrdiff_t>(pos_));
+            pos_ = 0;
+        }
     }
 }
 
 std::vector<std::shared_ptr<Goal>> Parser::parseQuery() {
-    rejectUnsupportedTokens();
+    if (!lexer_) {
+        for (const auto& token : tokens_) rejectUnsupportedToken(token);
+    }
     if (match(TokenType::Question)) {
         // optional query marker
     }
@@ -186,7 +212,9 @@ std::vector<std::shared_ptr<Goal>> Parser::parseQuery() {
 }
 
 std::shared_ptr<Expr> Parser::parseExpressionText() {
-    rejectUnsupportedTokens();
+    if (!lexer_) {
+        for (const auto& token : tokens_) rejectUnsupportedToken(token);
+    }
     consumeLogicalNewline();
     auto expr = parseExpr();
     validateSystemResultUsage(expr, false);
@@ -196,6 +224,7 @@ std::shared_ptr<Expr> Parser::parseExpressionText() {
 }
 
 std::shared_ptr<Statement> Parser::parseStatement() {
+    ensureToken(pos_ + 3);
     if (isAssignmentToChain(tokens_, pos_, {"system", "result"})) {
         throw ParserError("system.result is read-only and can only be read inside a then pipeline");
     }
@@ -208,8 +237,8 @@ std::shared_ptr<Statement> Parser::parseStatement() {
     }
     if (check(TokenType::Import)) return parseImport();
     if (check(TokenType::Ident) &&
-        pos_ + 1 < tokens_.size() &&
-        tokens_[pos_ + 1].type == TokenType::Bind) {
+        hasToken(pos_ + 1) &&
+        tokenAt(pos_ + 1).type == TokenType::Bind) {
         return parseGlobalBinding();
     }
     return parseClause();
@@ -309,15 +338,15 @@ std::shared_ptr<ClauseStmt> Parser::parseClause() {
 
 bool Parser::parseEmptyDeclarationBody() {
     if (check(TokenType::LParen) &&
-        pos_ + 1 < tokens_.size() &&
-        tokens_[pos_ + 1].type == TokenType::RParen) {
+        hasToken(pos_ + 1) &&
+        tokenAt(pos_ + 1).type == TokenType::RParen) {
         advance();
         consume(TokenType::RParen, "Expected ')' after empty native declaration body");
         return true;
     }
     if (check(TokenType::LBrace) &&
-        pos_ + 1 < tokens_.size() &&
-        tokens_[pos_ + 1].type == TokenType::RBrace) {
+        hasToken(pos_ + 1) &&
+        tokenAt(pos_ + 1).type == TokenType::RBrace) {
         advance();
         consume(TokenType::RBrace, "Expected '}' after empty declaration body");
         return true;
@@ -399,6 +428,12 @@ std::shared_ptr<GlobalBindingStmt> Parser::parseGlobalBinding() {
 }
 
 std::string Parser::parseQualifiedName() {
+    size_t scan = pos_;
+    while (hasToken(scan + 2) &&
+           (tokenAt(scan + 1).type == TokenType::Colon || tokenAt(scan + 1).type == TokenType::Dot) &&
+           tokenAt(scan + 2).type == TokenType::Ident) {
+        scan += 2;
+    }
     const auto chain = parseTokenChain(tokens_, pos_);
     if (chain.parts.empty()) consume(TokenType::Ident, "Expected name");
     pos_ = chain.end;
@@ -418,8 +453,8 @@ std::vector<Arg> Parser::parseArgList() {
 Arg Parser::parseArg() {
     if (isNameStartToken(peek().type)) {
         // named argument: name: expr
-        if (pos_ + 1 < tokens_.size() &&
-            tokens_[pos_ + 1].type == TokenType::Colon) {
+        if (hasToken(pos_ + 1) &&
+            tokenAt(pos_ + 1).type == TokenType::Colon) {
             std::string name = advance().text;
             consume(TokenType::Colon, "Expected ':' after argument name");
             return Arg{name, parseExpr()};
@@ -455,6 +490,7 @@ std::shared_ptr<Goal> Parser::parseIfGoal() {
 }
 
 std::shared_ptr<Goal> Parser::parseGoal() {
+    ensureToken(pos_ + 8);
     if (isAssignmentToChain(tokens_, pos_, {"system", "result"})) {
         throw ParserError("system.result is read-only and can only be read inside a then pipeline");
     }
@@ -499,16 +535,17 @@ std::shared_ptr<Goal> Parser::parseGoal() {
     }
 
     if (check(TokenType::Ident) &&
-        pos_ + 1 < tokens_.size() &&
-        tokens_[pos_ + 1].type == TokenType::Bind) {
+        hasToken(pos_ + 1) &&
+        tokenAt(pos_ + 1).type == TokenType::Bind) {
         std::string name = advance().text;
         consume(TokenType::Bind, "Expected ':=' after assignment variable");
         size_t lookahead = pos_;
-        if (lookahead < tokens_.size() && isNameStartToken(tokens_[lookahead].type)) {
-            lookahead = parseTokenChain(tokens_, lookahead).end;
-        }
-        if (lookahead < tokens_.size() && tokens_[lookahead].type == TokenType::LParen &&
-            (pos_ + 1 < tokens_.size() && tokens_[pos_ + 1].type == TokenType::Dot)) {
+    if (hasToken(lookahead) && isNameStartToken(tokenAt(lookahead).type)) {
+        ensureToken(lookahead + 16);
+        lookahead = parseTokenChain(tokens_, lookahead).end;
+    }
+    if (hasToken(lookahead) && tokenAt(lookahead).type == TokenType::LParen &&
+        (hasToken(pos_ + 1) && tokenAt(pos_ + 1).type == TokenType::Dot)) {
             return std::make_shared<AssignGoal>(std::move(name), parseGoal());
         }
         return std::make_shared<AssignGoal>(std::move(name), parseExpr());
@@ -516,10 +553,11 @@ std::shared_ptr<Goal> Parser::parseGoal() {
 
     // A goal can be a predicate call or an expression comparison.
     size_t lookahead = pos_;
-    if (lookahead < tokens_.size() && isNameStartToken(tokens_[lookahead].type)) {
+    if (hasToken(lookahead) && isNameStartToken(tokenAt(lookahead).type)) {
+        ensureToken(lookahead + 16);
         lookahead = parseTokenChain(tokens_, lookahead).end;
     }
-    if (lookahead < tokens_.size() && tokens_[lookahead].type == TokenType::LParen) {
+    if (hasToken(lookahead) && tokenAt(lookahead).type == TokenType::LParen) {
         size_t saved = pos_;
         auto expr = parseExpr();
         if (isComparison(peek().type)) {
@@ -542,23 +580,23 @@ std::shared_ptr<Goal> Parser::parseGoal() {
 
 bool Parser::isMultiAssignmentStart() const {
     size_t lookahead = pos_;
-    if (lookahead >= tokens_.size() || tokens_[lookahead].type != TokenType::Ident) return false;
+    if (!hasToken(lookahead) || tokenAt(lookahead).type != TokenType::Ident) return false;
     size_t targetCount = 0;
-    while (lookahead < tokens_.size() && tokens_[lookahead].type == TokenType::Ident) {
+    while (hasToken(lookahead) && tokenAt(lookahead).type == TokenType::Ident) {
         targetCount++;
         lookahead++;
-        if (lookahead < tokens_.size() && tokens_[lookahead].type == TokenType::Colon) {
+        if (hasToken(lookahead) && tokenAt(lookahead).type == TokenType::Colon) {
             lookahead++;
-            if (lookahead >= tokens_.size() || tokens_[lookahead].type != TokenType::Ident) return false;
+            if (!hasToken(lookahead) || tokenAt(lookahead).type != TokenType::Ident) return false;
             lookahead++;
         }
-        if (lookahead < tokens_.size() && tokens_[lookahead].type == TokenType::Comma) {
+        if (hasToken(lookahead) && tokenAt(lookahead).type == TokenType::Comma) {
             lookahead++;
             continue;
         }
         break;
     }
-    return targetCount > 1 && lookahead < tokens_.size() && tokens_[lookahead].type == TokenType::Bind;
+    return targetCount > 1 && hasToken(lookahead) && tokenAt(lookahead).type == TokenType::Bind;
 }
 
 std::vector<AssignmentTarget> Parser::parseAssignmentTargets() {
@@ -589,28 +627,28 @@ std::vector<std::shared_ptr<Goal>> Parser::parseGoalConjunction() {
         if (endsMethod) break;
         if (check(TokenType::Newline)) {
             size_t next = pos_;
-            while (next < tokens_.size() && tokens_[next].type == TokenType::Newline) ++next;
+            while (hasToken(next) && tokenAt(next).type == TokenType::Newline) ++next;
             size_t cursor = next;
-            if (cursor < tokens_.size() && isNameStartToken(tokens_[cursor].type)) {
+            if (hasToken(cursor) && isNameStartToken(tokenAt(cursor).type)) {
                 ++cursor;
-                while (cursor + 1 < tokens_.size() &&
-                       (tokens_[cursor].type == TokenType::Dot ||
-                        tokens_[cursor].type == TokenType::Colon) &&
-                       isNameStartToken(tokens_[cursor + 1].type)) {
+                while (hasToken(cursor + 1) &&
+                       (tokenAt(cursor).type == TokenType::Dot ||
+                        tokenAt(cursor).type == TokenType::Colon) &&
+                       isNameStartToken(tokenAt(cursor + 1).type)) {
                     cursor += 2;
                 }
-                if (cursor < tokens_.size() && tokens_[cursor].type == TokenType::Extend) {
+                if (hasToken(cursor) && tokenAt(cursor).type == TokenType::Extend) {
                     cursor += 2;
                 }
-                if (cursor < tokens_.size() && tokens_[cursor].type == TokenType::LParen) {
+                if (hasToken(cursor) && tokenAt(cursor).type == TokenType::LParen) {
                     int depth = 0;
                     do {
-                        if (tokens_[cursor].type == TokenType::LParen) ++depth;
-                        if (tokens_[cursor].type == TokenType::RParen) --depth;
+                        if (tokenAt(cursor).type == TokenType::LParen) ++depth;
+                        if (tokenAt(cursor).type == TokenType::RParen) --depth;
                         ++cursor;
-                    } while (cursor < tokens_.size() && depth > 0);
-                    if (depth == 0 && cursor < tokens_.size() &&
-                        tokens_[cursor].type == TokenType::Arrow) {
+                    } while (hasToken(cursor) && depth > 0);
+                    if (depth == 0 && hasToken(cursor) &&
+                        tokenAt(cursor).type == TokenType::Arrow) {
                         break;
                     }
                 }
@@ -674,8 +712,8 @@ void Parser::splitFallbackPrelude(std::vector<std::shared_ptr<Goal>>& primary,
 std::shared_ptr<Expr> Parser::parseExpr() {
     auto expr = parseAccessExpr();
     if (check(TokenType::Dot) &&
-        pos_ + 1 < tokens_.size() &&
-        tokens_[pos_ + 1].type == TokenType::Then) {
+        hasToken(pos_ + 1) &&
+        tokenAt(pos_ + 1).type == TokenType::Then) {
         throw ParserError(
             "Unexpected token after statement terminator: use 'left then right', not 'left.then right'");
     }
@@ -694,10 +732,10 @@ std::shared_ptr<Expr> Parser::parseExpr() {
 std::shared_ptr<Expr> Parser::parseAccessExpr() {
     auto expr = parseAdditiveExpr();
     while ((check(TokenType::Colon) || check(TokenType::Dot)) &&
-           pos_ + 1 < tokens_.size() &&
-           isNameStartToken(tokens_[pos_ + 1].type) &&
-           (!check(TokenType::Dot) || tokens_[pos_].line == tokens_[pos_ + 1].line) &&
-           !(pos_ + 2 < tokens_.size() && tokens_[pos_ + 2].type == TokenType::LParen)) {
+        hasToken(pos_ + 1) &&
+        isNameStartToken(tokenAt(pos_ + 1).type) &&
+        (!check(TokenType::Dot) || tokenAt(pos_).line == tokenAt(pos_ + 1).line) &&
+        !(hasToken(pos_ + 2) && tokenAt(pos_ + 2).type == TokenType::LParen)) {
         bool dotAccess = check(TokenType::Dot);
         advance(); // ':' or '.'
         if (!isNameStartToken(peek().type)) {
@@ -765,24 +803,20 @@ std::shared_ptr<Expr> Parser::parsePrimaryExpr() {
         const Token firstNameToken = advance();
         std::string name = firstNameToken.text;
         LanguageTypeId languageTypeId = firstNameToken.languageTypeId;
-        if (previous().type == TokenType::BuiltinFunction) {
-            languageTypeId = LanguageTypeId::Unknown;
-        } else {
         size_t nameEnd = pos_;
-        while (nameEnd + 1 < tokens_.size() &&
-               (tokens_[nameEnd].type == TokenType::Colon || tokens_[nameEnd].type == TokenType::Dot) &&
-               tokens_[nameEnd + 1].type == TokenType::Ident &&
-               (tokens_[nameEnd].type != TokenType::Dot ||
-                tokens_[nameEnd].line == tokens_[nameEnd + 1].line)) {
+        while (hasToken(nameEnd + 1) &&
+               (tokenAt(nameEnd).type == TokenType::Colon || tokenAt(nameEnd).type == TokenType::Dot) &&
+               isNameStartToken(tokenAt(nameEnd + 1).type) &&
+               (tokenAt(nameEnd).type != TokenType::Dot ||
+                tokenAt(nameEnd).line == tokenAt(nameEnd + 1).line)) {
             nameEnd += 2;
         }
-        if (nameEnd < tokens_.size() && tokens_[nameEnd].type == TokenType::LParen) {
+        if (hasToken(nameEnd) && tokenAt(nameEnd).type == TokenType::LParen) {
             while (pos_ < nameEnd) {
                 advance(); // ':' or '.'
                 name += ":" + advance().text;
             }
             languageTypeId = LanguageTypeId::Unknown;
-        }
         }
         if (match(TokenType::LParen)) {
             std::vector<Arg> args;

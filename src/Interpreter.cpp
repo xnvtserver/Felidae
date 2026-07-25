@@ -2812,14 +2812,16 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "str:contains" || term.name == "str:startsWith" || term.name == "str:endsWith") {
+    if (builtin == BuiltinId::StrContains ||
+        builtin == BuiltinId::StrStartsWith ||
+        builtin == BuiltinId::StrEndsWith) {
         std::string text = requireNamedString({"data", "value"}, 0, "data");
-        std::string needle = term.name == "str:contains"
+        std::string needle = builtin == BuiltinId::StrContains
             ? requireNamedString({"needle", "search"}, 1, "needle")
-            : requireNamedString({term.name == "str:startsWith" ? "prefix" : "suffix"}, 1, "needle");
-        bool ok = term.name == "str:contains"
+            : requireNamedString({builtin == BuiltinId::StrStartsWith ? "prefix" : "suffix"}, 1, "needle");
+        bool ok = builtin == BuiltinId::StrContains
             ? text.find(needle) != std::string::npos
-            : (term.name == "str:startsWith"
+            : (builtin == BuiltinId::StrStartsWith
                 ? text.rfind(needle, 0) == 0
                 : (needle.size() <= text.size() && text.compare(text.size() - needle.size(), needle.size(), needle) == 0));
         out = std::make_shared<StringExpr>(ok ? "true" : "false");
@@ -2832,7 +2834,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "file:readFile") {
+    if (builtin == BuiltinId::FileReadFile) {
         std::string pathText = requireNamedString({"path", "file"}, 0, "path");
         fs::path target(pathText);
         if (fs::is_directory(target)) throw InterpreterError("file.readFile expected a file, got directory: " + pathText);
@@ -2844,7 +2846,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "file:readLines") {
+    if (builtin == BuiltinId::FileReadLines) {
         std::string pathText = requireNamedString({"path", "file"}, 0, "path");
         fs::path target(pathText);
         if (fs::is_directory(target)) throw InterpreterError("file.readLines expected a file, got directory: " + pathText);
@@ -2860,7 +2862,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "file:readLine") {
+    if (builtin == BuiltinId::FileReadLine) {
         std::string pathText = requireNamedString({"path", "file"}, 0, "path");
         double lineNumber = requireNamedNumber({"line", "index"}, 1, "line");
         if (lineNumber < 0 || std::floor(lineNumber) != lineNumber) {
@@ -2882,10 +2884,12 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return false;
     }
 
-    if (term.name == "file:writeFile" || term.name == "file:appendFile" || term.name == "file:writeLines") {
+    if (builtin == BuiltinId::FileWriteFile ||
+        builtin == BuiltinId::FileAppendFile ||
+        builtin == BuiltinId::FileWriteLines) {
         std::string pathText = requireNamedString({"path", "file"}, 0, "path");
         std::string data;
-        if (term.name == "file:writeLines") {
+        if (builtin == BuiltinId::FileWriteLines) {
             std::shared_ptr<Expr> linesValue;
             if (!evalNamed("data", 1, linesValue) && !evalNamed("lines", 1, linesValue)) {
                 throw InterpreterError("file.writeLines expects array argument 'data'");
@@ -2898,7 +2902,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         } else {
             data = requireNamedString({"data", "text", "content"}, 1, "data");
         }
-        std::string modeText = term.name == "file:appendFile" ? "append" : "write";
+        std::string modeText = builtin == BuiltinId::FileAppendFile ? "append" : "write";
         if (const Arg* modeArg = findTermArgByNameOrIndex(term, "mode", 2)) {
             std::shared_ptr<Expr> modeValue;
             if (!evalExprValue(modeArg->value, env, modeValue) || !argAsString(modeValue, modeText)) {
@@ -2917,13 +2921,13 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "file:exists") {
+    if (builtin == BuiltinId::FileExists) {
         std::string pathText = requireNamedString({"path", "file"}, 0, "path");
         out = std::make_shared<StringExpr>(fs::exists(fs::path(pathText)) ? "true" : "false");
         return true;
     }
 
-    if (term.name == "file:deleteFile") {
+    if (builtin == BuiltinId::FileDeleteFile) {
         std::string pathText = requireNamedString({"path", "file"}, 0, "path");
         std::error_code ec;
         fs::path target(pathText);
@@ -2937,7 +2941,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "json:parse") {
+    if (builtin == BuiltinId::JsonParse) {
         std::string jsonText = requireNamedString({"data", "value"}, 0, "data");
         std::shared_ptr<Expr> parsed;
         if (!parseFlatJsonObject(jsonText, parsed)) {
@@ -2947,7 +2951,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "json:get") {
+    if (builtin == BuiltinId::JsonGet) {
         std::shared_ptr<Expr> dataValue;
         if (!evalNamed("data", 0, dataValue) && !evalNamed("object", 0, dataValue)) {
             throw InterpreterError("json.get expects argument 'data'");
@@ -2959,15 +2963,15 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "json:has" || term.name == "json:keys" ||
-        term.name == "json:set" || term.name == "json:remove") {
+    if (builtin == BuiltinId::JsonHas || builtin == BuiltinId::JsonKeys ||
+        builtin == BuiltinId::JsonSet || builtin == BuiltinId::JsonRemove) {
         std::shared_ptr<Expr> dataValue;
         if (!evalNamed("data", 0, dataValue) && !evalNamed("object", 0, dataValue)) {
             throw InterpreterError(term.name + " expects argument 'data'");
         }
         std::vector<MapEntry> entries;
         if (!exprAsMapEntries(dataValue, entries)) throw InterpreterError(term.name + " expects map/object argument 'data'");
-        if (term.name == "json:keys") {
+        if (builtin == BuiltinId::JsonKeys) {
             std::vector<std::shared_ptr<Expr>> keys;
             keys.reserve(entries.size());
             for (const auto& entry : entries) keys.push_back(std::make_shared<StringExpr>(entry.key));
@@ -2975,11 +2979,11 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
             return true;
         }
         std::string key = requireNamedString({"key"}, 1, "key");
-        if (term.name == "json:has") {
+        if (builtin == BuiltinId::JsonHas) {
             out = std::make_shared<StringExpr>(findMapValue(dataValue, key) ? "true" : "false");
             return true;
         }
-        if (term.name == "json:set") {
+        if (builtin == BuiltinId::JsonSet) {
             std::shared_ptr<Expr> value;
             if (!evalNamed("value", 2, value)) throw InterpreterError("json.set expects argument 'value'");
             upsertEntry(entries, key, cloneExprOrNil(value));
@@ -2990,7 +2994,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "json:toText") {
+    if (builtin == BuiltinId::JsonToText) {
         std::shared_ptr<Expr> dataValue;
         if (!evalNamed("data", 0, dataValue) && !evalNamed("value", 0, dataValue)) {
             throw InterpreterError("json.toText expects argument 'data'");
@@ -2999,18 +3003,20 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "thread:createThread") {
+    if (builtin == BuiltinId::ThreadCreateThread) {
         std::string functionName = requireNamedString({"function", "name"}, 0, "function");
         out = makeThreadHandle(createThreadTask(functionName));
         return true;
     }
 
-    if (term.name == "thread:start" || term.name == "thread:status" || term.name == "thread:result") {
+    if (builtin == BuiltinId::ThreadStart ||
+        builtin == BuiltinId::ThreadStatus ||
+        builtin == BuiltinId::ThreadResult) {
         std::shared_ptr<Expr> handle;
         if (!evalNamed("thread", 0, handle)) throw InterpreterError(term.name + " expects thread argument 'thread'");
-        if (term.name == "thread:start") {
+        if (builtin == BuiltinId::ThreadStart) {
             out = std::make_shared<StringExpr>(startThreadTask(handle));
-        } else if (term.name == "thread:status") {
+        } else if (builtin == BuiltinId::ThreadStatus) {
             out = std::make_shared<StringExpr>(threadTaskStatus(handle));
         } else {
             out = threadTaskResult(handle);
@@ -3018,7 +3024,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "thread:pause" || term.name == "thread:stop") {
+    if (builtin == BuiltinId::ThreadPause || builtin == BuiltinId::ThreadStop) {
         throw InterpreterError(term.name + " is not supported; Felidae threads run immutable snapshots to completion");
     }
 
@@ -3431,7 +3437,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         throw InterpreterError("Unknown ml builtin: " + term.name);
     }
 
-    if (term.name == "ParseDoc") {
+    if (builtin == BuiltinId::ParseDoc) {
         if (args.size() != 1) throw InterpreterError("ParseDoc expects one argument");
         std::string text;
         if (!argAsString(args[0], text)) throw InterpreterError("ParseDoc expects a string");
@@ -3439,7 +3445,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "count" || term.name == "length") {
+    if (builtin == BuiltinId::Count || builtin == BuiltinId::Length) {
         if (args.size() != 1) throw InterpreterError(term.name + " expects one argument");
         if (auto array = std::dynamic_pointer_cast<ArrayExpr>(args[0])) {
             out = std::make_shared<NumberExpr>(static_cast<double>(array->items.size()));
@@ -3458,7 +3464,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         throw InterpreterError(term.name + " expects an array, collection, or string");
     }
 
-    if (term.name == "sum" || term.name == "average") {
+    if (builtin == BuiltinId::Sum || builtin == BuiltinId::Average) {
         if (args.size() != 1) throw InterpreterError(term.name + " expects one numeric array");
         auto array = std::dynamic_pointer_cast<ArrayExpr>(args[0]);
         if (!array) throw InterpreterError(term.name + " expects a numeric array");
@@ -3468,12 +3474,12 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
             if (!argAsNumber(item, number)) throw InterpreterError(term.name + " expects only numbers");
             total += number;
         }
-        if (term.name == "average" && array->items.empty()) throw InterpreterError("average expects a non-empty array");
-        out = std::make_shared<NumberExpr>(term.name == "average" ? total / static_cast<double>(array->items.size()) : total);
+        if (builtin == BuiltinId::Average && array->items.empty()) throw InterpreterError("average expects a non-empty array");
+        out = std::make_shared<NumberExpr>(builtin == BuiltinId::Average ? total / static_cast<double>(array->items.size()) : total);
         return true;
     }
 
-    if (term.name == "min" || term.name == "max" || term.name == "sort") {
+    if (builtin == BuiltinId::Min || builtin == BuiltinId::Max || builtin == BuiltinId::Sort) {
         if (args.size() != 1) throw InterpreterError(term.name + " expects one array");
         auto array = std::dynamic_pointer_cast<ArrayExpr>(args[0]);
         if (!array) throw InterpreterError(term.name + " expects an array");
@@ -3487,16 +3493,16 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
             return lhs->debug() < rhs->debug();
         };
         std::sort(items.begin(), items.end(), less);
-        if (term.name == "sort") {
+        if (builtin == BuiltinId::Sort) {
             out = std::make_shared<ArrayExpr>(std::move(items));
         } else {
             if (items.empty()) throw InterpreterError(term.name + " expects a non-empty array");
-            out = term.name == "min" ? items.front() : items.back();
+            out = builtin == BuiltinId::Min ? items.front() : items.back();
         }
         return true;
     }
 
-    if (term.name == "contains" || term.name == "search") {
+    if (builtin == BuiltinId::Contains || builtin == BuiltinId::Search) {
         if (args.size() != 2) throw InterpreterError(term.name + " expects two arguments");
         std::string query;
         if (!argAsString(args[1], query)) throw InterpreterError(term.name + " query must be a string");
@@ -3512,27 +3518,27 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         for (const auto& item : array->items) {
             std::string itemText;
             if (argAsString(item, itemText) && itemText.find(query) != std::string::npos) {
-                if (term.name == "contains") {
+                if (builtin == BuiltinId::Contains) {
                     out = std::make_shared<StringExpr>("true");
                     return true;
                 }
                 matches.push_back(item->clone());
-            } else if (term.name == "contains" && exprEqualsLiteral(item, args[1])) {
+            } else if (builtin == BuiltinId::Contains && exprEqualsLiteral(item, args[1])) {
                 out = std::make_shared<StringExpr>("true");
                 return true;
             }
         }
-        out = term.name == "contains"
+        out = builtin == BuiltinId::Contains
             ? std::static_pointer_cast<Expr>(std::make_shared<StringExpr>("false"))
             : std::static_pointer_cast<Expr>(std::make_shared<ArrayExpr>(std::move(matches)));
         return true;
     }
 
-    if (term.name == "lower" || term.name == "upper") {
+    if (builtin == BuiltinId::Lower || builtin == BuiltinId::Upper) {
         if (args.size() != 1) throw InterpreterError(term.name + " expects one string");
         std::string text;
         if (!argAsString(args[0], text)) throw InterpreterError(term.name + " expects a string");
-        out = std::make_shared<StringExpr>(term.name == "lower" ? lowerText(text) : upperText(text));
+        out = std::make_shared<StringExpr>(builtin == BuiltinId::Lower ? lowerText(text) : upperText(text));
         return true;
     }
 

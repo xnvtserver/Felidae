@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AST.h"
+#include "Lexer.h"
 #include "Token.h"
 #include <functional>
 #include <map>
@@ -19,6 +20,7 @@ public:
 class Parser {
 public:
     explicit Parser(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
+    explicit Parser(Lexer& lexer) : lexer_(&lexer) {}
 
     Program parseProgram();
     void parseProgram(const std::function<void(std::shared_ptr<Statement>)>& consume);
@@ -26,7 +28,8 @@ public:
     std::shared_ptr<Expr> parseExpressionText();
 
 private:
-    std::vector<Token> tokens_;
+    mutable std::vector<Token> tokens_;
+    Lexer* lexer_ = nullptr;
     std::set<std::string> globals_;
     std::map<std::string, std::set<std::string>> predicateFields_;
     std::set<std::string> knownTypes_;
@@ -34,6 +37,9 @@ private:
     size_t pos_ = 0;
     size_t anonymousCounter_ = 0;
 
+    void ensureToken(size_t index) const;
+    const Token& tokenAt(size_t index) const;
+    bool hasToken(size_t index) const;
     const Token& peek() const;
     const Token& previous() const;
     bool check(TokenType type) const;
@@ -44,7 +50,7 @@ private:
     void consumeLogicalNewline();
     bool matchGoalSeparator();
     bool isGoalListTerminator() const;
-    void rejectUnsupportedTokens() const;
+    void rejectUnsupportedToken(const Token& token) const;
     bool checkElse() const;
 
     std::shared_ptr<Statement> parseStatement();

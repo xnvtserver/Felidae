@@ -25,6 +25,10 @@ void setProgramAstCacheEnabled(bool enabled);
 void clearProgramAstCache();
 std::filesystem::path resolveProgramEntryPath(const std::filesystem::path& path);
 void loadProgramRoot(const std::filesystem::path& file, Interpreter& interpreter);
+void loadProgramRoot(
+    const std::filesystem::path& file,
+    Interpreter& interpreter,
+    const std::function<void(const Program&)>& afterChunk);
 void loadProgramRoot(const std::filesystem::path& file,
                      const Program& program,
                      Interpreter& interpreter);

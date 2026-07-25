@@ -2,9 +2,11 @@
 #include "FelidaeRuntime.h"
 #include "Version.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <filesystem>
+#include <future>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -209,7 +211,30 @@ int main(int argc, char** argv) {
         if (entryFile.extension() != FILE_EXTENSION) {
             throw std::runtime_error("Felidae source files must use .fx extension");
         }
-        loadProgramRoot(entryFile, interpreter);
+        std::shared_ptr<Expr> streamedMainResult;
+        bool streamedMainExecuted = false;
+        Clock::duration streamedMainDuration{};
+        const bool executeMainDuringParse = !options.repl && !options.query;
+        loadProgramRoot(entryFile, interpreter, [&](const Program& chunk) {
+            if (!executeMainDuringParse || streamedMainExecuted) return;
+            const bool chunkDefinesMain = std::any_of(
+                chunk.clauses.begin(),
+                chunk.clauses.end(),
+                [](const std::shared_ptr<ClauseStmt>& clause) {
+                    return clause && clause->head.name == "main" &&
+                           clause->clauseKind == ClauseKind::Method;
+                });
+            if (!chunkDefinesMain) return;
+            const auto mainStarted = Clock::now();
+            auto systemInput = makeSystemInput(options.remainingArgs);
+            streamedMainResult = std::async(
+                std::launch::async,
+                [&interpreter, systemInput]() {
+                    return interpreter.callMain(systemInput);
+                }).get();
+            streamedMainDuration += Clock::now() - mainStarted;
+            streamedMainExecuted = true;
+        });
         const auto executionStarted = Clock::now();
         double firstQueryMs = 0.0;
         double repeatedQueryAverageMs = 0.0;
@@ -217,10 +242,10 @@ int main(int argc, char** argv) {
         auto reportMetrics = [&]() {
             if (!options.metricsJson) return;
             const auto finished = Clock::now();
-            const auto loadMicros =
-                std::chrono::duration_cast<std::chrono::microseconds>(executionStarted - loadStarted).count();
-            const auto executionMicros =
-                std::chrono::duration_cast<std::chrono::microseconds>(finished - executionStarted).count();
+            const auto loadMicros = std::chrono::duration_cast<std::chrono::microseconds>(
+                (executionStarted - loadStarted) - streamedMainDuration).count();
+            const auto executionMicros = std::chrono::duration_cast<std::chrono::microseconds>(
+                (finished - executionStarted) + streamedMainDuration).count();
             std::cerr << "FELIDAE_METRICS {"
                       << "\"loadMs\":" << (static_cast<double>(loadMicros) / 1000.0) << ","
                       << "\"executionMs\":" << (static_cast<double>(executionMicros) / 1000.0) << ","
@@ -267,7 +292,9 @@ int main(int argc, char** argv) {
             return 0;
         }
 
-        if (interpreter.hasMethod("main")) {
+        if (streamedMainExecuted) {
+            std::cout << interpreter.valueToString(streamedMainResult) << "\n";
+        } else if (interpreter.hasMethod("main")) {
             auto result = interpreter.callMain(makeSystemInput(options.remainingArgs));
             std::cout << interpreter.valueToString(result) << "\n";
         } else if (interpreter.hasAutoEntryCall()) {

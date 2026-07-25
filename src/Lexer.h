@@ -28,6 +28,7 @@ private:
     std::unique_ptr<std::istringstream> ownedInput_;
     std::istream* input_ = nullptr;
     std::deque<char> chars_;
+    std::vector<char> readBuffer_ = std::vector<char>(64 * 1024);
     bool inputEnded_ = false;
     bool endEmitted_ = false;
     int nestingDepth_ = 0;
