@@ -1,7 +1,8 @@
 # Felidae source files. GitHub Linguist must learn this language upstream
 # before GitHub can provide native "Felidae" stats/highlighting.
-*.fx linguist-language=Felidae
+*.fx linguist-language=hlsl
 examples/*.fx linguist-language=Felidae
+v2_examples/*.fx linguist-language=Felidae
 
 # Keep generated and packaged artifacts out of GitHub language statistics.
 build/** linguist-generated=true
