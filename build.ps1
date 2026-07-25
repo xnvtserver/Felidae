@@ -2,7 +2,7 @@ param(
     [ValidateSet("native", "windows-x64", "windows-arm64", "wasm")]
     [string] $Target = "native",
     [ValidateSet("debug", "release", "production", "sanitize")]
-    [string] $Configuration = "debug",
+    [string] $Configuration = "release",
     [switch] $WarningsAsErrors
 )
 
