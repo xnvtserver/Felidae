@@ -1,7 +1,10 @@
-# Qt rendering library for Felidae graphics programs.
-# Qt is the public import name; the implementation stays behind a native DLL.
+# Qt-compatible graphics API. The current backend produces portable SVG/HTML;
+# query qt.backend() before assuming native widget-toolkit behavior.
 
 import ("flibrary", "file", "system.flibrary.qt")
+
+qt.backend() =>
+    return (system_library_loader(module: "qt", function: "backend", args: {}))
 
 qt.canvas(width: number, height: number, title: string) =>
     return (system_library_loader(module: "qt", function: "canvas", args: {width: width, height: height, title: title}))

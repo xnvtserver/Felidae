@@ -99,6 +99,7 @@ private:
     bool containsAccessExpr(const std::shared_ptr<Expr>& expr) const;
     void validateSystemResultUsage(const std::shared_ptr<Expr>& expr, bool allowed) const;
     void validateGoalSystemResultUsage(const std::shared_ptr<Goal>& goal) const;
+    void validateExceptionFlow(const std::vector<std::shared_ptr<Goal>>& goals) const;
     void collectExprVars(const std::shared_ptr<Expr>& expr, std::set<std::string>& vars) const;
     void validateGoalVars(const std::shared_ptr<Goal>& goal, std::set<std::string>& declared) const;
     bool isDeclaredName(const std::string& name, const std::set<std::string>& declared) const;

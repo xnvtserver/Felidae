@@ -1,6 +1,9 @@
 #include "NativeCsv.h"
 #include "../common/NativeJson.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -90,6 +93,20 @@ const Value& requireRows(const Value& args) {
     return Felidae::NativeJson::requireField(args, "data", Value::Kind::Array, "csv native call");
 }
 
+bool valuesEqual(const Value& left, const Value& right) {
+    if (left.kind == Value::Kind::Number && right.kind == Value::Kind::Number) {
+        return std::fabs(left.number - right.number) < 1e-12;
+    }
+    return scalarText(left) == scalarText(right);
+}
+
+Value number(double value) {
+    Value result;
+    result.kind = Value::Kind::Number;
+    result.number = value;
+    return result;
+}
+
 std::string rowsToCsv(const Value& rows) {
     if (rows.items.empty()) return "";
     if (rows.items.front().kind != Value::Kind::Object) {
@@ -164,6 +181,156 @@ Value dispatch(const std::string& functionName, const Value& args) {
         result.items.push_back(*row);
         return result;
     }
+    if (operation == "findMany") {
+        const Value& conditions =
+            Felidae::NativeJson::requireField(args, "conditions", Value::Kind::Object, "csv.findMany");
+        result.items.clear();
+        for (const auto& row : rows.items) {
+            if (row.kind != Value::Kind::Object) throw std::runtime_error("csv.findMany expects object rows");
+            bool matches = true;
+            for (const auto& condition : conditions.fields) {
+                const auto found = row.fields.find(condition.first);
+                if (found == row.fields.end() || !valuesEqual(found->second, condition.second)) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) result.items.push_back(row);
+        }
+        return result;
+    }
+    if (operation == "sortRows") {
+        const std::string key =
+            Felidae::NativeJson::requireField(args, "key", Value::Kind::String, "csv.sortRows").text;
+        const std::string direction =
+            Felidae::NativeJson::requireField(args, "direction", Value::Kind::String, "csv.sortRows").text;
+        if (direction != "asc" && direction != "desc") {
+            throw std::runtime_error("csv.sortRows direction must be 'asc' or 'desc'");
+        }
+        for (const auto& row : result.items) {
+            if (row.kind != Value::Kind::Object || row.fields.find(key) == row.fields.end()) {
+                throw std::runtime_error("csv.sortRows field '" + key + "' is missing");
+            }
+        }
+        std::stable_sort(result.items.begin(), result.items.end(), [&](const Value& left, const Value& right) {
+            const Value& a = left.fields.at(key);
+            const Value& b = right.fields.at(key);
+            bool less = a.kind == Value::Kind::Number && b.kind == Value::Kind::Number
+                ? a.number < b.number
+                : scalarText(a) < scalarText(b);
+            return direction == "asc" ? less : !less && !valuesEqual(a, b);
+        });
+        return result;
+    }
+    if (operation == "searchRows") {
+        const std::string key =
+            Felidae::NativeJson::requireField(args, "key", Value::Kind::String, "csv.searchRows").text;
+        std::string query =
+            Felidae::NativeJson::requireField(args, "query", Value::Kind::String, "csv.searchRows").text;
+        std::transform(query.begin(), query.end(), query.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        result.items.clear();
+        for (const auto& row : rows.items) {
+            if (row.kind != Value::Kind::Object) throw std::runtime_error("csv.searchRows expects object rows");
+            const auto found = row.fields.find(key);
+            if (found == row.fields.end()) continue;
+            std::string text = scalarText(found->second);
+            std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            if (text.find(query) != std::string::npos) result.items.push_back(row);
+        }
+        return result;
+    }
+    if (operation == "distinct") {
+        const std::string key =
+            Felidae::NativeJson::requireField(args, "key", Value::Kind::String, "csv.distinct").text;
+        result.items.clear();
+        std::set<std::string> seen;
+        for (const auto& row : rows.items) {
+            if (row.kind != Value::Kind::Object) throw std::runtime_error("csv.distinct expects object rows");
+            const auto found = row.fields.find(key);
+            if (found != row.fields.end() && seen.insert(scalarText(found->second)).second) {
+                result.items.push_back(found->second);
+            }
+        }
+        return result;
+    }
+    if (operation == "paginate") {
+        const Value& offsetValue =
+            Felidae::NativeJson::requireField(args, "offset", Value::Kind::Number, "csv.paginate");
+        const Value& limitValue =
+            Felidae::NativeJson::requireField(args, "limit", Value::Kind::Number, "csv.paginate");
+        if (offsetValue.number < 0 || limitValue.number < 0 ||
+            std::floor(offsetValue.number) != offsetValue.number ||
+            std::floor(limitValue.number) != limitValue.number) {
+            throw std::runtime_error("csv.paginate offset and limit must be non-negative integers");
+        }
+        const size_t begin = std::min(rows.items.size(), static_cast<size_t>(offsetValue.number));
+        const size_t end = std::min(rows.items.size(), begin + static_cast<size_t>(limitValue.number));
+        result.items.assign(rows.items.begin() + static_cast<std::ptrdiff_t>(begin),
+                            rows.items.begin() + static_cast<std::ptrdiff_t>(end));
+        return result;
+    }
+    if (operation == "aggregate") {
+        const std::string aggregate =
+            Felidae::NativeJson::requireField(args, "operation", Value::Kind::String, "csv.aggregate").text;
+        if (aggregate == "count") return number(static_cast<double>(rows.items.size()));
+        const std::string key =
+            Felidae::NativeJson::requireField(args, "key", Value::Kind::String, "csv.aggregate").text;
+        if (aggregate != "sum" && aggregate != "average" && aggregate != "min" && aggregate != "max") {
+            throw std::runtime_error("csv.aggregate operation must be count, sum, average, min, or max");
+        }
+        if (rows.items.empty()) throw std::runtime_error("csv.aggregate cannot aggregate an empty collection");
+        double total = 0.0;
+        double minimum = 0.0;
+        double maximum = 0.0;
+        bool firstNumber = true;
+        for (const auto& row : rows.items) {
+            if (row.kind != Value::Kind::Object) throw std::runtime_error("csv.aggregate expects object rows");
+            const auto found = row.fields.find(key);
+            if (found == row.fields.end() || found->second.kind != Value::Kind::Number) {
+                throw std::runtime_error("csv.aggregate field '" + key + "' must be numeric in every row");
+            }
+            const double current = found->second.number;
+            total += current;
+            if (firstNumber) minimum = maximum = current;
+            else {
+                minimum = std::min(minimum, current);
+                maximum = std::max(maximum, current);
+            }
+            firstNumber = false;
+        }
+        if (aggregate == "sum") return number(total);
+        if (aggregate == "average") return number(total / static_cast<double>(rows.items.size()));
+        return number(aggregate == "min" ? minimum : maximum);
+    }
+    if (operation == "deleteCascade") {
+        const Value& dependents =
+            Felidae::NativeJson::requireField(args, "dependents", Value::Kind::Array, "csv.deleteCascade");
+        const std::string parentKey =
+            Felidae::NativeJson::requireField(args, "parentKey", Value::Kind::String, "csv.deleteCascade").text;
+        const std::string dependentKey =
+            Felidae::NativeJson::requireField(args, "dependentKey", Value::Kind::String, "csv.deleteCascade").text;
+        const Value* expected = Felidae::NativeJson::field(args, "value");
+        if (!expected) throw std::runtime_error("csv.deleteCascade expects argument 'value'");
+        Value keptParents;
+        keptParents.kind = Value::Kind::Array;
+        Value keptDependents;
+        keptDependents.kind = Value::Kind::Array;
+        for (const auto& row : rows.items) {
+            const auto found = row.fields.find(parentKey);
+            if (found == row.fields.end() || !valuesEqual(found->second, *expected)) keptParents.items.push_back(row);
+        }
+        for (const auto& row : dependents.items) {
+            if (row.kind != Value::Kind::Object) throw std::runtime_error("csv.deleteCascade expects object dependent rows");
+            const auto found = row.fields.find(dependentKey);
+            if (found == row.fields.end() || !valuesEqual(found->second, *expected)) keptDependents.items.push_back(row);
+        }
+        Value cascade;
+        cascade.kind = Value::Kind::Object;
+        cascade.fieldOrder = {"parents", "dependents"};
+        cascade.fields.emplace("parents", std::move(keptParents));
+        cascade.fields.emplace("dependents", std::move(keptDependents));
+        return cascade;
+    }
     const std::string key =
         Felidae::NativeJson::requireField(args, "key", Value::Kind::String, "csv." + operation).text;
     const Value* expectedValue = Felidae::NativeJson::field(args, "value");
@@ -182,7 +349,14 @@ Value dispatch(const std::string& functionName, const Value& args) {
                 if (!patch || patch->kind != Value::Kind::Object) {
                     throw std::runtime_error("csv.updateRows expects object argument 'patch'");
                 }
-                for (const auto& entry : patch->fields) row.fields[entry.first] = entry.second;
+                for (const auto& fieldName : patch->fieldOrder) {
+                    const auto entry = patch->fields.find(fieldName);
+                    if (entry == patch->fields.end()) continue;
+                    if (row.fields.find(fieldName) == row.fields.end()) {
+                        row.fieldOrder.push_back(fieldName);
+                    }
+                    row.fields[fieldName] = entry->second;
+                }
             }
             result.items.push_back(std::move(row));
         }

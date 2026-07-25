@@ -77,7 +77,6 @@ void collectGoalUses(const std::shared_ptr<Goal>& goal,
         }
         for (const auto& arg : call->call.args) collectExprUses(arg.value, vars, calls);
     } else if (auto assign = std::dynamic_pointer_cast<AssignGoal>(goal)) {
-        if (assign->goal) collectGoalUses(assign->goal, vars, calls);
         if (assign->expr) collectExprUses(assign->expr, vars, calls);
     } else if (auto multi = std::dynamic_pointer_cast<MultiAssignGoal>(goal)) {
         collectExprUses(multi->expr, vars, calls);
@@ -106,7 +105,6 @@ void collectAssignedNames(const std::vector<std::shared_ptr<Goal>>& goals,
     for (const auto& goal : goals) {
         if (auto assign = std::dynamic_pointer_cast<AssignGoal>(goal)) {
             if (!isIgnoredName(assign->name)) assigned.insert(assign->name);
-            if (assign->goal) collectAssignedNames({assign->goal}, assigned);
         } else if (auto multi = std::dynamic_pointer_cast<MultiAssignGoal>(goal)) {
             for (const auto& target : multi->targets) {
                 if (!isIgnoredName(target.name)) assigned.insert(target.name);
@@ -137,7 +135,6 @@ void collectGlobalAssignmentCollisions(const std::vector<std::shared_ptr<Goal>>&
                     1,
                     1});
             }
-            if (assign->goal) collectGlobalAssignmentCollisions({assign->goal}, globals, diagnostics);
         } else if (auto multi = std::dynamic_pointer_cast<MultiAssignGoal>(goal)) {
             for (const auto& target : multi->targets) {
                 if (globals.count(target.name)) {
@@ -179,6 +176,35 @@ void warn(std::vector<AstDiagnostic>& diagnostics, std::string message) {
     diagnostics.push_back(AstDiagnostic{"warning", std::move(message), 1, 1});
 }
 
+void collectDiscardedExpressions(const std::vector<std::shared_ptr<Goal>>& goals,
+                                 const std::string& method,
+                                 std::vector<AstDiagnostic>& diagnostics) {
+    for (const auto& goal : goals) {
+        if (auto binary = std::dynamic_pointer_cast<BinaryGoal>(goal)) {
+            warn(diagnostics,
+                 "Raw expression '" + binary->debug() + "' in method '" + method +
+                 "' has no result consumer. Use it in where/if, assign or return it, "
+                 "or pass it to a call such as system.print.");
+        } else if (auto group = std::dynamic_pointer_cast<GroupGoal>(goal)) {
+            collectDiscardedExpressions(group->goals, method, diagnostics);
+        } else if (auto orGoal = std::dynamic_pointer_cast<OrGoal>(goal)) {
+            for (const auto& branch : orGoal->branches) {
+                collectDiscardedExpressions(branch, method, diagnostics);
+            }
+        } else if (auto ifGoal = std::dynamic_pointer_cast<IfGoal>(goal)) {
+            // The condition is consumed by if. Branch bodies still need checking.
+            collectDiscardedExpressions(ifGoal->thenBranch, method, diagnostics);
+            collectDiscardedExpressions(ifGoal->elseBranch, method, diagnostics);
+        } else if (auto assign = std::dynamic_pointer_cast<AssignGoal>(goal)) {
+            // Assignment consumes either its expression or nested goal result.
+            (void)assign;
+        } else if (auto where = std::dynamic_pointer_cast<WhereGoal>(goal)) {
+            // The condition is consumed by where.
+            (void)where;
+        }
+    }
+}
+
 } // namespace
 
 std::vector<AstDiagnostic> analyzeProgramAst(const Program& program) {
@@ -215,8 +241,10 @@ std::vector<AstDiagnostic> analyzeProgramAst(const Program& program) {
 
         methodDefinitions[clause->head.name]++;
         collectGlobalAssignmentCollisions(clause->body, globals, diagnostics);
+        collectDiscardedExpressions(clause->body, clause->head.name, diagnostics);
         for (const auto& branch : clause->fallbackBranches) {
             collectGlobalAssignmentCollisions(branch, globals, diagnostics);
+            collectDiscardedExpressions(branch, clause->head.name, diagnostics);
         }
         std::set<std::string> declared;
         std::set<std::string> used;

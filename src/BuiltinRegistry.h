@@ -2,6 +2,7 @@
 
 #include "Token.h"
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Felidae {
@@ -20,6 +21,7 @@ struct BuiltinInfo {
 };
 
 BuiltinId builtinIdForName(const std::string& name);
+BuiltinId builtinIdForName(std::string_view name);
 BuiltinId builtinIdForName(const char* name);
 bool isBuiltinFunctionName(const std::string& name);
 const char* builtinName(BuiltinId id);

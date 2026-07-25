@@ -34,9 +34,10 @@ $tests = @(
     @{ Name = "nested map access"; File = "examples\structures.fx"; Query = "? StructureExtractionTest(x: x, w: w)"; Expect = @("x = 1", "w = `"hello`"") },
     @{ Name = "json nested access"; File = "examples\structures.fx"; Query = "? JsonNestedTest(value: value)"; Expect = @("value = `"hello`"") },
     @{ Name = "complex nested fact declaration"; File = "examples\complex_facts.fx"; Query = "? EmployeePlace(value: value)"; Expect = @("value = `"ABC location`"") },
+    @{ Name = "multiline nested fact declaration"; File = "examples\multiline_nested_fact.fx"; Query = "? User(id: id, name: name, region: region, status: status)"; Expect = @("id = 1", "name = `"Alice`"", "region = {name: `"south`", region_id: 20}", "status = `"active`"") },
     @{ Name = "global binding in fact declaration"; File = "examples\complex_facts.fx"; Query = "? AddressRadiusUnit(value: value)"; Expect = @("value = `"cm`"") },
     @{ Name = "head variables declared"; File = "examples\head_vars.fx"; Query = "? HeadManagerName(name: name)"; Expect = @("name = `"Alice`"") },
-    @{ Name = "omitted head output binds in method body"; File = "examples\head_vars.fx"; Query = ""; Expect = @("Hello, World!", "has_manager: fn:tuple(value: `"true`", value: `"true`")") },
+    @{ Name = "omitted head output binds in method body"; File = "examples\head_vars.fx"; Query = ""; Expect = @("Hello, World!", 'has_manager: "Alice"') },
     @{ Name = "type concrete name"; File = "examples\types.fx"; Query = "? SampleTypeName(name: name)"; Expect = @("name = `"Employee`"") },
     @{ Name = "instanceof parent"; File = "examples\types.fx"; Query = "? SampleEmployeeIsPerson(name: name)"; Expect = @("name = `"Ravi`"") },
     @{ Name = "instanceof self"; File = "examples\types.fx"; Query = "? SampleEmployeeIsEmployee(name: name)"; Expect = @("name = `"Ravi`"") },
@@ -65,7 +66,7 @@ $tests = @(
     @{ Name = "unification repeated variable"; File = "examples\backtracking_unification.fx"; Query = "? SamePair(value: value)"; Expect = @("value = `"red`"", "value = `"green`"") },
     @{ Name = "unification anonymous variable"; File = "examples\backtracking_unification.fx"; Query = "? AnyEmployee(name: name)"; Expect = @("name = `"Alice`"", "name = `"Bob`"") },
     @{ Name = "unification nested map pattern"; File = "examples\backtracking_unification.fx"; Query = "? NestedEmployee(name: name, role: role, office: office)"; Expect = @("name = `"Alice`", role = `"Engineer`", office = `"SEA`"", "name = `"Bob`", role = `"Manager`", office = `"LAX`"") },
-    @{ Name = "method truth tuple values"; File = "examples\method_truth_tuple.fx"; Query = ""; Expect = @("manager_true: fn:tuple(value: `"true`", value: `"true`")", "manager_false: fn:tuple(value: `"true`", value: `"false`")", "technical_manager: fn:tuple(value: `"true`", value: `"true`")", "ancestor_true: fn:tuple(value: `"true`")", "nested_false: fn:tuple(value: `"false`")", "print_once: fn:tuple(value: `"true`")", 'lambda_result: ["Alice", "Carol"]', 'explicit_true: true') },
+    @{ Name = "method truth tuple values"; File = "examples\method_truth_tuple.fx"; Query = ""; Expect = @('manager_true: "Alice"', "manager_false: fn:tuple(value: `"true`", value: `"false`")", "technical_manager: fn:tuple(value: `"true`", value: `"true`")", "ancestor_true: fn:tuple(value: `"true`")", "nested_false: fn:tuple(value: `"false`")", "print_once: fn:tuple(value: `"true`")", 'lambda_result: ["Alice", "Carol"]', 'status: "ok"', 'explicit_true: true') },
     @{ Name = "tuple destructuring assignment"; File = "examples\tuple_assignment.fx"; Query = ""; Expect = @('name: "Alice"', 'active: true', 'score: 2.5', 'flags: fn:tuple(value: "true", value: "true", value: "true")', 'raw_flags: fn:tuple(value: "true", value: "true", value: "true")') },
     @{ Name = "thread snapshot worker"; File = "examples\thread_snapshot_test.fx"; Query = ""; Expect = @("started: `"started`"", "status: `"finished`"", "result: `"{status: \`"done\`"}`"") }
 )
@@ -73,7 +74,7 @@ $tests = @(
 $negativeTests = @(
     @{ Name = "reject undeclared body variable"; File = "examples\invalid\undeclared_body_var.fx"; Query = "? EngineerInSEA(name: Name)"; Expect = "Variable 'e' is used before declaration" },
     @{ Name = "reject member access in head"; File = "examples\invalid\member_access_head.fx"; Query = "? HasManager(name: Name)"; Expect = "Rule head fields cannot use member access" },
-    @{ Name = "reject double colon call"; File = "examples\invalid\double_colon_call.fx"; Query = "? Bad(value: value)"; Expect = "'::' is not supported in Felidae" },
+    @{ Name = "reject invocation through callable reference"; File = "examples\invalid\double_colon_call.fx"; Query = "? Bad(value: value)"; Expect = "'::' is only valid for a two-part callable reference" },
     @{ Name = "reject immutable reassignment"; File = "examples\invalid\reassign_immutable.fx"; Query = "? Bad(value: value)"; Expect = "already assigned and immutable" },
     @{ Name = "reject method immutable reassignment"; File = "examples\invalid\method_reassign.fx"; Query = "? BadResult(value: value)"; Expect = "already assigned and immutable" },
     @{ Name = "reject unknown extended parent"; File = "examples\invalid\method_unknown_parent.fx"; Query = "? Employee(name: name)"; Expect = "Unknown parent fact/type" },
@@ -82,6 +83,11 @@ $negativeTests = @(
     @{ Name = "reject stray return after terminator"; File = "examples\invalid\stray_return.fx"; Query = ""; Expect = "'return' is only valid inside a method body" },
     @{ Name = "reject missing source or native module"; File = "examples\invalid\missing_module.fx"; Query = ""; Expect = "Module 'missing_native_or_source_module' not found" },
     @{ Name = "reject dangling else"; File = "examples\invalid\dangling_else.fx"; Query = "? Bad(value: value)"; Expect = "'else' is only valid inside method fallback branches" },
+    @{ Name = "reject if without then keyword"; File = "examples\invalid\if_missing_then.fx"; Query = ""; Expect = "Expected 'then' after if condition" },
+    @{ Name = "reject implicit inline return"; File = "examples\invalid\implicit_inline_return.fx"; Query = ""; Expect = "Expected comparison operator in goal" },
+    @{ Name = "reject unreachable goal after throw"; File = "examples\invalid\unreachable_after_throw.fx"; Query = ""; Expect = "Unreachable goal after throw" },
+    @{ Name = "reject string exception handler target"; File = "examples\invalid\throw_string_target.fx"; Query = ""; Expect = "throw target must be a callable reference such as someFunction::Function" },
+    @{ Name = "reject exception without kind"; File = "examples\invalid\throw_missing_kind.fx"; Query = ""; Expect = "throw exception must be an object with a string 'kind' field" },
     @{ Name = "reject native type mismatch"; File = "examples\invalid\native_type_mismatch.fx"; Query = ""; Expect = "expects argument 'value' to be string" },
     @{ Name = "reject native reported failure"; File = "examples\invalid\native_abi_failure.fx"; Query = ""; Expect = "Native function 'smoke:fail' failed: expected native failure" },
     @{ Name = "reject native invalid json"; File = "examples\invalid\native_abi_invalid_json.fx"; Query = ""; Expect = "Native function 'smoke:invalidJson' returned invalid JSON" },
@@ -123,12 +129,18 @@ $directTests = @(
     @{ Name = "fact db create"; Args = @("examples\fact_db_create.fx"); Expect = @("source_count: 4", "inserted_count: 3", 'Customer(name: \"Alice\"', 'Customer(name: \"Dana\"') },
     @{ Name = "fact db update"; Args = @("examples\fact_db_update.fx"); Expect = @("updated_count: 3", "gold_count: 2", 'tier: \"gold\"') },
     @{ Name = "fact db delete"; Args = @("examples\fact_db_delete.fx"); Expect = @("kept_count: 2", "deleted_count: 1", 'reason: "inactive"', 'Customer(name: \"Dana\"') },
+    @{ Name = "nested fact database transaction"; Args = @("examples\db_workflow\query.fx"); Expect = @("region_count: 4", 'name: "Mira"', 'region: {name: "south", region_id: 21}', 'name: "Cup Cake"', "quantity: 2", 'name: "Chocolate Pudding"', "quantity: 3", "total: 26", 'status: "created"') },
+    @{ Name = "multi-model fact database"; Args = @("examples\db_workflow\multi_model_database.fx"); Expect = @('models: ["cart", "product", "shop"]', 'model: "product"', 'model: "cart"', "product_count: 1", "cart_count: 1", "shop_count: 1", 'product(', 'price: 6', 'cart(', 'quantity: 2', 'shop(', 'South Bakery') },
+    @{ Name = "pizza delivery separate and shared databases"; Args = @("examples\db_workflow\pizza_delivery.fx"); Expect = @('matched: 1, modified: 1', 'status: "delivered"', 'matched: 1, modified: 0', 'kind: "DeliveredOrderCannotBeCancelled"', 'user_count: 1', 'region_count: 1', 'product_count: 2', 'order_count: 3', 'corrected_request: {quantity: 1, recovered: true', 'kind: "InvalidPizzaQuantity"', 'status: "resubmitted"', 'status: "preparing"', 'total: 36', 'status: "cancelled"', 'cancellationReason: "customer_changed_mind"') },
+    @{ Name = "connection database identity and stale-write safety"; Args = @("examples\db_workflow\db_connection_safety.fx"); Expect = @('inserted: {matched: 0, modified: 0, inserted: 1', 'duplicate: {matched: 1, modified: 0, inserted: 0', 'kind: "DuplicateKey"', 'source: "db"', 'handled_library_exception: "DuplicateKey"', 'updated: {matched: 1, modified: 1', 'stale_update: {matched: 0, modified: 0', 'kind: "NotFound"', 'name: "original"', 'status: "confirmed"', 'preserved: "yes"') },
     @{ Name = "csv to generated felidae facts"; Args = @("examples\csv_school.fx"); Expect = @('export: "ok"', '__type: "School"', 'student: "John"', 'class: "10c"', 'student: "Maya"') },
     @{ Name = "query generated csv facts"; Args = @("examples\data\converted_csv_school.fx", '? School(student: student, subject: subject)'); Expect = @('student = "John"', 'subject = "physics"') },
     @{ Name = "file operations reusable test"; Args = @("examples\file_operations_test.fx"); Expect = @('write: "ok"', 'append: "ok"', 'lines: ["alpha", "beta", "gamma"]', 'text: "alpha\nbeta\ngamma\n"') },
     @{ Name = "streaming file reader smoke"; Args = @("examples\large_file_stream_test.fx"); Expect = @('write: "ok"', 'line_count: 5', 'third: "gamma"', 'has_epsilon: "true"') },
     @{ Name = "stdlib utilities"; Args = @("examples\stdlib_utilities.fx"); Expect = @('trimmed: "Alice,Engineer,SEA"', 'parts: ["Alice", "Engineer", "SEA"]', 'normalized: "Alice,Engineer,NYC"', 'has_engineer: "true"', 'starts_alice: "true"', 'ends_sea: "true"', 'has_office: "true"', 'office: "SEA"', 'sea_count: 2', 'deleted_count: 2', 'write_status: "ok"', 'second_line: "Engineer"', 'line_count: 3') },
+    @{ Name = "insertion sort with typed exception handling"; Args = @("examples\insertion_sort.fx"); Expect = @('sorted: {ok: true, data: [1, 3, 3, 5, 7, 9], error: nil}', 'rejected: {ok: false, data: [], error: {__type: "Exception"', 'kind: "SortLimitExceeded"', 'source: "insertion_sort"') },
     @{ Name = "standard linear and binary search"; Args = @("v2_examples\standard_search_algorithms.fx"); Expect = @("linear_last: 63", "binary_last: 63", "missing: {linear: -1, binary: -1}") },
+    @{ Name = "native set and finite group packages"; Args = @("v2_examples\set_group_native.fx"); Expect = @("union_count: 5", "common_taste_count: 4", "fruit_only_taste_count: 1", "exact_disjoint: true", "has_sweet: true", "same_tastes: true", "fruit_subset: true", "valid: true", "closure: true", "associative: true", "identity: true", "inverse: true") },
     @{ Name = "web server reusable integration test"; Args = @("examples\web_server_test.fx"); Expect = @('ready: "ok"', 'get: "Hello World"', 'post: "Hello World"', 'put: "Hello World"', 'delete: "Hello World"') },
     @{ Name = "fx self analysis line classifier"; Args = @("examples\fx_self_analysis.fx"); Expect = @('line_count: 23', 'http_call_count: 1', 'missing_language_primitives:', 'string.split', 'method body builtin output binding') },
     @{ Name = "data structure stress"; Args = @("examples\data_structure_stress.fx"); Expect = @('count: 2', 'generated: "ok"', 'name: "Alice"', 'known_gap: "expression array:get is not evaluated yet"') },
@@ -161,10 +173,10 @@ $directTests = @(
     @{ Name = "ml sales forecast"; Args = @("examples\ml_sales_forecast.fx"); Expect = @('profile: {method: "numeric_fact_profile"', 'visitorRevenue: {method: "pearson_fact_correlation"', 'revenueModel: {model_type: "linear_regression"', 'feature: "visitors"', 'forecast: {prediction:', 'generated: {prediction: {prediction:', 'saved: "ok"') },
     @{ Name = "cooking expert system"; Args = @("examples\cooking_expert_system.fx"); Expect = @('proposal: {request:', 'predictedDishType: {prediction: "starter"', 'rankedIngredients: {count: 1', 'matched_candidate_count: 1', 'rejected_count: 7', 'required_fields: ["category", "role"]', 'name: "Tomato"', 'important_differences:', 'ingredientFitnessExample: {ingredient: "Tomato"', 'ingredientClusters: {model_type: "k_means"', 'ingredientProfile: {method: "numeric_fact_profile"', 'dishAssociations: {method: "key_value_association_mining"', 'dishType=starter', 'evidence: {probability:', 'justification: "The proposal is based on property similarity') },
     @{ Name = "cache import thread stress"; Args = @("examples\cache_thread_import_stress.fx"); Expect = @('start1: "started"', 'start2: "started"', 'start3: "started"', 'count: 12', 'Eve', 'Engineer') },
-    @{ Name = "then pipeline direct execution"; Args = @("examples\then_pipeline.fx"); Expect = @('direct: {seen: 4, tag: "wrapped"}', 'nested: {seen: 13, tag: "wrapped"}', 'stopped: nil', 'arithmeticPrecedence: 10') },
+    @{ Name = "then pipeline direct execution"; Args = @("examples\then_pipeline.fx"); Expect = @('result: 4', 'direct: {seen: 4, tag: "wrapped"}', 'returned: 8', 'compactReturned: 10', 'methodThen: 10', 'methodIfThen: 12', 'methodElseThen: 1', 'nested: {seen: 13, tag: "wrapped"}', 'stopped: nil', 'arithmeticPrecedence: 10', 'conditional: "condition-ok"') },
     @{ Name = "then pipeline command line query"; Args = @("examples\then_pipeline.fx", "? Increment(value: 1) then Double(value: system.result) == 4"); Expect = @("true") },
     @{ Name = "auto system print"; Args = @("examples\system_print.fx"); Expect = @("Felidae system running!", "{}") },
-    @{ Name = "main returns status value"; Args = @("examples\main_comment_return.fx"); Expect = @("Felidae system running!", '"true"') },
+    @{ Name = "main returns status value"; Args = @("examples\main_comment_return.fx"); Expect = @("Felidae system running!", '"ok"') },
     @{ Name = "direct no main"; Args = @("examples\family.fx"); Expect = @("Program loaded successfully. No main() method found.", "Use a query argument, add a zero-argument entry call, or run with --repl.") },
     @{ Name = "help"; Args = @("--help"); Expect = @("Felidae Logic Programming Language v0.1.0", ".fx", "Total commands supported: 7", "felidae --repl examples/main.fx", "functional logic language", "______") },
     @{ Name = "debug flag"; Args = @("examples\system_print.fx", "--debug"); Expect = @("Felidae debug mode enabled", "Felidae system running!", "{}") },
@@ -172,7 +184,8 @@ $directTests = @(
 )
 
 $debugCheckTests = @(
-    @{ Name = "debug AST check accepts native declaration import"; Args = @("examples\native_module_smoke.fx", "--check"); Expect = @("FELIDAE_CHECK_OK") }
+    @{ Name = "debug AST check accepts native declaration import"; Args = @("examples\native_module_smoke.fx", "--check"); Expect = @("FELIDAE_CHECK_OK") },
+    @{ Name = "debug AST warns about discarded raw expression"; Args = @("examples\warnings\discarded_expression.fx", "--check"); Expect = @("severity=warning", "Raw expression '10 == 1'", "has no result consumer") }
 )
 
 $celidaeTests = @(

@@ -72,12 +72,19 @@ set_target_properties(felidae_smoke PROPERTIES
 )
 
 add_library(csv SHARED native_modules/csv/NativeCsv.cpp)
+add_library(db_native SHARED native_modules/db/NativeDb.cpp)
 add_library(http SHARED native_modules/http/NativeHttp.cpp)
 add_library(process SHARED native_modules/process/NativeProcess.cpp)
+add_library(set_native SHARED native_modules/set/NativeSet.cpp)
+add_library(group_native SHARED native_modules/group/NativeGroup.cpp)
 set_target_properties(csv PROPERTIES OUTPUT_NAME csv
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/csv"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/csv"
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/csv")
+set_target_properties(db_native PROPERTIES OUTPUT_NAME db
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/db"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/db"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/db")
 set_target_properties(http PROPERTIES OUTPUT_NAME http
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/http"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/http"
@@ -86,6 +93,14 @@ set_target_properties(process PROPERTIES OUTPUT_NAME process
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/process"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/process"
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/process")
+set_target_properties(set_native PROPERTIES OUTPUT_NAME set
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/set"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/set"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/set")
+set_target_properties(group_native PROPERTIES OUTPUT_NAME group
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/group"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/group"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/group")
 
 add_library(wordnet SHARED native_modules/wordnet/NativeWordNet.cpp)
 target_include_directories(wordnet PRIVATE native_modules/wordnet)

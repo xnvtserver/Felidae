@@ -1,0 +1,5 @@
+system.flibrary.group.validate(set: array, table: array, identity: any) => ()
+system.flibrary.group.closed(set: array, table: array) => ()
+system.flibrary.group.associative(set: array, table: array) => ()
+system.flibrary.group.identity(set: array, table: array, identity: any) => ()
+system.flibrary.group.inverse(set: array, table: array, identity: any) => ()

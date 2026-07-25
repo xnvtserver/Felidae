@@ -223,7 +223,7 @@ echo "Building $CELIDAE"
 echo "Building $FELIDAE_DEBUG"
 "$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -Isrc -isystem third_party "${DEBUG_SOURCES[@]}" -o "$FELIDAE_DEBUG"
 
-for MODULE in csv http process; do
+for MODULE in csv db http process set group; do
     CLASS="$(tr '[:lower:]' '[:upper:]' <<< "${MODULE:0:1}")${MODULE:1}"
     MODULE_LIB="native_modules/$MODULE/lib$MODULE.so"
     if [[ "$(uname -s)" == "Darwin" ]]; then MODULE_LIB="native_modules/$MODULE/lib$MODULE.dylib"; fi

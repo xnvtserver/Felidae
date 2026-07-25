@@ -1,7 +1,10 @@
-# GTK rendering library for Felidae graphics programs.
-# GTK is the public import name; the implementation stays behind a native DLL.
+# GTK-compatible graphics API. The current backend produces portable SVG/HTML;
+# query gtk.backend() before assuming native widget-toolkit behavior.
 
 import ("flibrary", "file", "system.flibrary.gtk")
+
+gtk.backend() =>
+    return (system_library_loader(module: "gtk", function: "backend", args: {}))
 
 gtk.canvas(width: number, height: number, title: string) =>
     return (system_library_loader(module: "gtk", function: "canvas", args: {width: width, height: height, title: title}))

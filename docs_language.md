@@ -422,13 +422,16 @@ this goal runs. `fn:array` is a plain `:=` assignment and always works.
 
 ## Exceptions
 
-`throw(msg: reason)` signals an in-language exception reason by binding `error_reason`.
-Rules can then check the reason with normal comparisons:
+`throw` has explicit handling modes. `throw(msg: reason, out: value)` captures the
+reason as a value, while `throw(msg: reason, target: Handler)` routes it to a
+handler rule. A throw without either `out` or `target` is unhandled and stops
+execution with an interpreter error. Goals after a throw are unreachable; only
+the branch's final `return` may follow it.
 
 ```Felidae
 DivideFailure(error_reason: error_reason) =>
-    throw(msg: "DivisionByZero")
-    error_reason == "DivisionByZero"
+    throw(msg: "DivisionByZero", out: error_reason)
+    return
 ```
 
 `throw` can also route directly to a handler rule by name:
@@ -438,8 +441,8 @@ DivideFailureHandler(msg: msg) =>
     HandledFailure(type: "division", msg: msg)
 
 RoutedFailure(msg: msg) =>
-    throw(msg: "thrown from module a", target: DivideFailureHandler)
-    HandledFailure(type: "division", msg: msg)
+    throw(msg: "thrown from module a", target: DivideFailureHandler, out: msg)
+    return
 ```
 
 ## Built-In Expression Functions

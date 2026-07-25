@@ -399,24 +399,19 @@ public:
 
 class AssignGoal final : public Goal {
 public:
-    AssignGoal(std::string name, std::shared_ptr<Goal> goal)
-        : name(std::move(name)), goal(std::move(goal)) {}
     AssignGoal(std::string name, std::shared_ptr<Expr> expr)
         : name(std::move(name)), expr(std::move(expr)) {}
 
     std::string name;
-    std::shared_ptr<Goal> goal;
     std::shared_ptr<Expr> expr;
 
     GoalKind kind() const override { return GoalKind::Assign; }
     std::shared_ptr<Goal> clone() const override {
-        if (goal) return std::make_shared<AssignGoal>(name, goal->clone());
         if (!expr) return std::make_shared<AssignGoal>(name, std::shared_ptr<Expr>{});
         return std::make_shared<AssignGoal>(name, expr->clone());
     }
 
     std::string debug() const override {
-        if (goal) return name + " := " + goal->debug();
         return name + " := " + (expr ? expr->debug() : "<missing expression>");
     }
 };
