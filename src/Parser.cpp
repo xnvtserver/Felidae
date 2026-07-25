@@ -65,24 +65,26 @@ bool isSystemResultExpr(const std::shared_ptr<Expr>& expr) {
     return target && target->nameId == InternalSymbol::SystemId;
 }
 
-bool containsReturnGoal(const std::shared_ptr<Goal>& goal) {
+bool containsValueReturnGoal(const std::shared_ptr<Goal>& goal) {
     if (!goal) return false;
-    if (std::dynamic_pointer_cast<ReturnGoal>(goal)) return true;
+    if (auto returned = std::dynamic_pointer_cast<ReturnGoal>(goal)) {
+        return !returned->fields.empty();
+    }
     if (auto conditional = std::dynamic_pointer_cast<IfGoal>(goal)) {
         for (const auto& nested : conditional->thenBranch) {
-            if (containsReturnGoal(nested)) return true;
+            if (containsValueReturnGoal(nested)) return true;
         }
         for (const auto& nested : conditional->elseBranch) {
-            if (containsReturnGoal(nested)) return true;
+            if (containsValueReturnGoal(nested)) return true;
         }
     } else if (auto group = std::dynamic_pointer_cast<GroupGoal>(goal)) {
         for (const auto& nested : group->goals) {
-            if (containsReturnGoal(nested)) return true;
+            if (containsValueReturnGoal(nested)) return true;
         }
     } else if (auto alternatives = std::dynamic_pointer_cast<OrGoal>(goal)) {
         for (const auto& branch : alternatives->branches) {
             for (const auto& nested : branch) {
-                if (containsReturnGoal(nested)) return true;
+                if (containsValueReturnGoal(nested)) return true;
             }
         }
     }
@@ -124,6 +126,7 @@ bool Parser::matchGoalSeparator() {
 
 bool Parser::isGoalListTerminator() const {
     return check(TokenType::End) ||
+           check(TokenType::Dot) ||
            check(TokenType::Pipe) ||
            check(TokenType::RParen) ||
            checkElse();
@@ -153,14 +156,20 @@ void Parser::rejectUnsupportedTokens() const {
 }
 
 Program Parser::parseProgram() {
-    rejectUnsupportedTokens();
     Program program;
+    parseProgram([&](std::shared_ptr<Statement> statement) {
+        program.addStatement(std::move(statement));
+    });
+    return program;
+}
+
+void Parser::parseProgram(const std::function<void(std::shared_ptr<Statement>)>& consume) {
+    rejectUnsupportedTokens();
     consumeLogicalNewline();
     while (!isAtEnd()) {
-        program.addStatement(parseStatement());
+        consume(parseStatement());
         consumeLogicalNewline();
     }
-    return program;
 }
 
 std::vector<std::shared_ptr<Goal>> Parser::parseQuery() {
@@ -227,6 +236,7 @@ std::shared_ptr<ImportStmt> Parser::parseImport() {
     } else {
         paths.push_back(consume(TokenType::String, "Expected string path after import").text);
     }
+    match(TokenType::Dot);
     if (!match(TokenType::Newline) && !isAtEnd()) {
         consume(TokenType::Newline, "Expected a newline after import");
     }
@@ -254,19 +264,47 @@ std::shared_ptr<ClauseStmt> Parser::parseClause() {
         emptyDeclaration = parseEmptyDeclarationBody();
         if (!emptyDeclaration) parseRuleBody(head, body, fallbackBranches);
     }
-    if (emptyDeclaration || (!body.empty() && (head.name == "main" || isMethodStyleHead(head)))) {
+    bool bodyHasValueReturn = false;
+    for (const auto& goal : body) {
+        bodyHasValueReturn = bodyHasValueReturn || containsValueReturnGoal(goal);
+    }
+    for (const auto& branch : fallbackBranches) {
+        for (const auto& goal : branch) {
+            bodyHasValueReturn = bodyHasValueReturn || containsValueReturnGoal(goal);
+        }
+    }
+    if (emptyDeclaration || bodyHasValueReturn || !fallbackBranches.empty() ||
+        (!body.empty() && (head.name == "main" || isMethodStyleHead(head)))) {
         methodPredicates_.insert(head.name);
     }
     validateClauseBody(head, body, fallbackBranches);
+    ClauseKind clauseKind = ClauseKind::Rule;
+    if (emptyDeclaration) {
+        clauseKind = ClauseKind::NativeDeclaration;
+    } else if (body.empty() && fallbackBranches.empty()) {
+        clauseKind = head.args.empty() && methodPredicates_.count(head.name) > 0
+            ? ClauseKind::EntryCall
+            : ClauseKind::Fact;
+    } else if (head.name == "main" || bodyHasValueReturn ||
+               isMethodStyleHead(head) || !fallbackBranches.empty()) {
+        clauseKind = ClauseKind::Method;
+    }
+    const bool endedByDot = match(TokenType::Dot);
     bool endedByNewline = pos_ > 0 && previous().type == TokenType::Newline;
     if (!endedByNewline) endedByNewline = match(TokenType::Newline);
-    if (!endedByNewline && !isAtEnd()) {
+    if (!endedByDot && !endedByNewline && !isAtEnd()) {
         std::ostringstream oss;
         oss << "Expected a newline after fact/rule at " << peek().line << ":" << peek().column
             << ", found " << tokenTypeName(peek().type);
         throw ParserError(oss.str());
     }
-    return std::make_shared<ClauseStmt>(std::move(head), std::move(parentName), std::move(body), std::move(fallbackBranches), emptyDeclaration);
+    return std::make_shared<ClauseStmt>(
+        std::move(head),
+        std::move(parentName),
+        std::move(body),
+        std::move(fallbackBranches),
+        emptyDeclaration,
+        clauseKind);
 }
 
 bool Parser::parseEmptyDeclarationBody() {
@@ -313,16 +351,6 @@ void Parser::validateClauseBody(const Call& head,
                                 const std::vector<std::shared_ptr<Goal>>& body,
                                 const std::vector<std::vector<std::shared_ptr<Goal>>>& fallbackBranches) const {
     if (body.empty() && fallbackBranches.empty()) return;
-    if (head.name == "main" || isMethodStyleHead(head)) {
-        bool hasReturn = false;
-        for (const auto& goal : body) hasReturn = hasReturn || containsReturnGoal(goal);
-        for (const auto& branch : fallbackBranches) {
-            for (const auto& goal : branch) hasReturn = hasReturn || containsReturnGoal(goal);
-        }
-        if (!hasReturn) {
-            throw ParserError("Method '" + head.name + "' must contain at least one return");
-        }
-    }
     for (const auto& arg : head.args) {
         if (head.name != "main" && containsAccessExpr(arg.value)) {
             throw ParserError("Rule head fields cannot use member access. Bind a head variable in the body, e.g. Name == e.name");
@@ -362,6 +390,7 @@ std::shared_ptr<GlobalBindingStmt> Parser::parseGlobalBinding() {
     consume(TokenType::Bind, "Expected ':=' after binding name");
     auto expr = parseExpr();
     validateSystemResultUsage(expr, false);
+    match(TokenType::Dot);
     if (!match(TokenType::Newline) && !isAtEnd()) {
         consume(TokenType::Newline, "Expected a newline after global binding");
     }
@@ -615,6 +644,12 @@ void Parser::splitFallbackPrelude(std::vector<std::shared_ptr<Goal>>& primary,
 
 std::shared_ptr<Expr> Parser::parseExpr() {
     auto expr = parseAccessExpr();
+    if (check(TokenType::Dot) &&
+        pos_ + 1 < tokens_.size() &&
+        tokens_[pos_ + 1].type == TokenType::Then) {
+        throw ParserError(
+            "Unexpected token after statement terminator: use 'left then right', not 'left.then right'");
+    }
     while (true) {
         size_t beforeThen = pos_;
         consumeLogicalNewline();
@@ -1110,7 +1145,7 @@ bool Parser::isMethodStyleHead(const Call& head) const {
     if (head.args.empty()) return false;
     for (const auto& arg : head.args) {
         auto var = std::dynamic_pointer_cast<VarExpr>(arg.value);
-        if (!arg.name.empty() && var && (isFelidaeTypeAnnotationName(var->name) || var->name != arg.name)) {
+        if (!arg.name.empty() && var && isFelidaeTypeAnnotationName(var->name)) {
             return true;
         }
     }

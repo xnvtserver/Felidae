@@ -26,7 +26,9 @@ public:
     iterator begin();
     const_iterator begin() const;
     std::shared_ptr<Expr>& operator[](const std::string& name);
-    void bind(std::string name, std::shared_ptr<Expr> value, std::filesystem::path origin = {});
+    void bind(const std::string& name,
+              const std::shared_ptr<Expr>& value,
+              std::filesystem::path origin = {});
     void setOrigin(const std::string& name, std::filesystem::path origin);
     void erase(const std::string& name);
     void eraseOrigin(const std::filesystem::path& origin);
@@ -80,10 +82,12 @@ public:
     void collectGarbage(std::size_t maxCachedFrames);
     std::size_t created() const;
     std::size_t cached() const;
+    std::size_t copies() const;
 
 private:
     std::vector<std::unique_ptr<Env>> free_;
     std::size_t created_ = 0;
+    std::size_t copies_ = 0;
 };
 
 } // namespace Felidae

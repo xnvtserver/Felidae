@@ -45,22 +45,23 @@ function Invoke-MeasuredQuery {
     $process = [Diagnostics.Process]::new()
     $process.StartInfo.FileName = $exe
     $process.StartInfo.WorkingDirectory = $root
-    $process.StartInfo.Arguments = "`"$Program`" --repl --metrics-json"
+    $escapedQuery = $Query -replace '"', '\"'
+    $process.StartInfo.Arguments =
+        "`"$Program`" `"$escapedQuery`" --benchmark-repeat $Repeat --metrics-json"
     $process.StartInfo.UseShellExecute = $false
-    $process.StartInfo.RedirectStandardInput = $true
     $process.StartInfo.RedirectStandardOutput = $true
     $process.StartInfo.RedirectStandardError = $true
 
     $timer = [Diagnostics.Stopwatch]::StartNew()
     [void] $process.Start()
-    for ($i = 0; $i -lt $Repeat; $i++) {
-        $process.StandardInput.WriteLine($Query)
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    if (-not $process.WaitForExit(120000)) {
+        try { $process.Kill() } catch {}
+        throw "Large fact query exceeded the 120 second timeout."
     }
-    $process.StandardInput.WriteLine("exit")
-    $process.StandardInput.Close()
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    $process.WaitForExit()
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
     $timer.Stop()
 
     if ($process.ExitCode -ne 0) {
@@ -74,8 +75,8 @@ function Invoke-MeasuredQuery {
     [pscustomobject]@{
         TotalMs = $timer.Elapsed.TotalMilliseconds
         LoadMs = $metrics.loadMs
-        RepeatedQueryMs = $metrics.executionMs
-        AverageQueryMs = $metrics.executionMs / $Repeat
+        FirstQueryMs = $metrics.firstQueryMs
+        AverageQueryMs = $metrics.repeatedQueryAverageMs
         FactCandidates = $metrics.runtime.factCandidates
         EnvCopies = $metrics.runtime.environmentCopies
         Unifications = $metrics.runtime.unificationAttempts
@@ -90,6 +91,7 @@ $results = foreach ($count in ($Counts | Sort-Object -Unique)) {
         [pscustomobject]@{
             Facts = $count
             LoadMs = $measurement.LoadMs
+            FirstQueryMs = $measurement.FirstQueryMs
             QueryAvgMs = $measurement.AverageQueryMs
             FactCandidates = $measurement.FactCandidates
             EnvCopies = $measurement.EnvCopies
@@ -100,12 +102,13 @@ $results = foreach ($count in ($Counts | Sort-Object -Unique)) {
     }
 }
 
-"| Facts | Load | Repeated query avg | Fact candidates | Env copies | Unifications |"
-"|---:|---:|---:|---:|---:|---:|"
+"| Facts | Load | First query | Repeated query avg | Fact candidates | Env copies | Unifications |"
+"|---:|---:|---:|---:|---:|---:|---:|"
 foreach ($result in $results) {
-    "| {0:N0} | `{1:N2} ms` | `{2:N3} ms` | `{3:N0}` | `{4:N0}` | `{5:N0}` |" -f `
+    "| {0:N0} | `{1:N2} ms` | `{2:N3} ms` | `{3:N3} ms` | `{4:N0}` | `{5:N0}` | `{6:N0}` |" -f `
         $result.Facts,
         $result.LoadMs,
+        $result.FirstQueryMs,
         $result.QueryAvgMs,
         $result.FactCandidates,
         $result.EnvCopies,

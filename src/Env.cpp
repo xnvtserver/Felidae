@@ -66,7 +66,9 @@ std::shared_ptr<Expr>& GlobalEnv::operator[](const std::string& name) {
     return values_[name];
 }
 
-void GlobalEnv::bind(std::string name, std::shared_ptr<Expr> value, std::filesystem::path origin) {
+void GlobalEnv::bind(const std::string& name,
+                     const std::shared_ptr<Expr>& value,
+                     std::filesystem::path origin) {
     values_[name] = value ? value->clone() : nullptr;
     if (!origin.empty()) origins_[name] = std::move(origin);
 }
@@ -163,6 +165,7 @@ EnvFrame EnvFramePool::acquire() {
 }
 
 EnvFrame EnvFramePool::acquireCopy(const Env& source) {
+    ++copies_;
     EnvFrame frame = acquire();
     Env& env = frame.get();
     env.clear();
@@ -199,6 +202,10 @@ std::size_t EnvFramePool::created() const {
 
 std::size_t EnvFramePool::cached() const {
     return free_.size();
+}
+
+std::size_t EnvFramePool::copies() const {
+    return copies_;
 }
 
 } // namespace Felidae

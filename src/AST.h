@@ -43,6 +43,14 @@ enum class StatementKind {
     GlobalBinding
 };
 
+enum class ClauseKind {
+    Fact,
+    Rule,
+    Method,
+    NativeDeclaration,
+    EntryCall
+};
+
 class AstNode {
 public:
     virtual ~AstNode() = default;
@@ -243,7 +251,13 @@ public:
 };
 
 struct Arg {
+    Arg() = default;
+    Arg(std::string name, std::shared_ptr<Expr> value)
+        : name(std::move(name)), nameId(this->name.empty() ? 0 : symbolIdForName(this->name)),
+          value(std::move(value)) {}
+
     std::string name; // empty means positional argument
+    SymbolId nameId = 0;
     std::shared_ptr<Expr> value;
 
     std::string debug() const {
@@ -614,25 +628,30 @@ public:
 class ClauseStmt final : public Statement {
 public:
     ClauseStmt(Call head, std::vector<std::shared_ptr<Goal>> body)
-        : head(std::move(head)), body(std::move(body)) {}
+        : head(std::move(head)), body(std::move(body)),
+          clauseKind(this->body.empty() ? ClauseKind::Fact : ClauseKind::Rule) {}
     ClauseStmt(Call head, std::string parentName, std::vector<std::shared_ptr<Goal>> body)
-        : head(std::move(head)), parentName(std::move(parentName)), body(std::move(body)) {}
+        : head(std::move(head)), parentName(std::move(parentName)), body(std::move(body)),
+          clauseKind(this->body.empty() ? ClauseKind::Fact : ClauseKind::Rule) {}
     ClauseStmt(Call head,
                std::string parentName,
                std::vector<std::shared_ptr<Goal>> body,
                std::vector<std::vector<std::shared_ptr<Goal>>> fallbackBranches,
-               bool emptyDeclaration = false)
+               bool emptyDeclaration = false,
+               ClauseKind clauseKind = ClauseKind::Rule)
         : head(std::move(head)), parentName(std::move(parentName)), body(std::move(body)),
-          fallbackBranches(std::move(fallbackBranches)), emptyDeclaration(emptyDeclaration) {}
+          fallbackBranches(std::move(fallbackBranches)), emptyDeclaration(emptyDeclaration),
+          clauseKind(clauseKind) {}
 
     Call head;
     std::string parentName;
     std::vector<std::shared_ptr<Goal>> body; // empty body without => () means fact
     std::vector<std::vector<std::shared_ptr<Goal>>> fallbackBranches;
     bool emptyDeclaration = false;
+    ClauseKind clauseKind = ClauseKind::Rule;
 
     StatementKind kind() const override { return StatementKind::Clause; }
-    bool isFact() const { return body.empty() && fallbackBranches.empty() && !emptyDeclaration; }
+    bool isFact() const { return clauseKind == ClauseKind::Fact; }
 
     std::string debug() const override {
         std::ostringstream oss;

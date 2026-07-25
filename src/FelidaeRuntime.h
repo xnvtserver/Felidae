@@ -13,7 +13,11 @@
 namespace Felidae {
 
 Program parseProgramFile(const std::filesystem::path& path);
-Program parseProgramText(const std::string& text);
+Program parseProgramText(std::string text);
+void parseProgramFileChunks(
+    const std::filesystem::path& path,
+    const std::function<void(Program&&)>& consume,
+    std::size_t statementsPerChunk = 1024);
 std::string readSourceFile(const std::filesystem::path& path);
 void readSourceLines(const std::filesystem::path& path,
                      const std::function<void(const std::string&)>& onLine);
