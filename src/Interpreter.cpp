@@ -33,6 +33,7 @@ namespace {
 
 constexpr size_t kMaxCachedEnvFrames = 4096;
 constexpr size_t kHotMethodPrepareThreshold = 2;
+constexpr size_t kMaxRetainedLazyModules = 64;
 
 class PipelineResultClearScope {
 public:
@@ -780,21 +781,9 @@ void Interpreter::addProgram(const Program& program) {
                     break;
                 case StatementKind::Clause: {
                     auto clause = std::static_pointer_cast<ClauseStmt>(statement);
-                    if (clause->isFact() && clause->head.args.empty()) {
-                        auto existing = findClauses(clause->head.name, clause->head.nameId);
-                        bool callsDeclaredMethod = false;
-                        if (existing) {
-                            for (const auto& existingClause : *existing) {
-                                if (existingClause && isMethodClause(*existingClause)) {
-                                    callsDeclaredMethod = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if (callsDeclaredMethod) {
-                            autoEntryCalls_.push_back(clause->head);
-                            break;
-                        }
+                    if (clause->clauseKind == ClauseKind::EntryCall) {
+                        autoEntryCalls_.push_back(clause->head);
+                        break;
                     }
                     addClause(clause);
                     break;
@@ -828,22 +817,11 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
     const std::string clauseName = clause->head.name;
     if (clause->isFact() && globals_.count(clause->head.name) == 0) {
         auto factMap = factToMap(*clause, clause->parentName);
-        Call mergedHead(clause->head.name, {});
-        for (const auto& entry : factMap->entries) {
-            if (entry.keyId != InternalSymbol::TypeId && entry.keyId != InternalSymbol::ParentId) {
-                std::vector<std::shared_ptr<Expr>> items;
-                if (exprAsArrayItems(entry.value, items)) {
-                    for (const auto& item : items) mergedHead.args.push_back(Arg{entry.key, item->clone()});
-                } else {
-                    mergedHead.args.push_back(Arg{entry.key, entry.value->clone()});
-                }
-            }
-        }
-        clause = std::make_shared<ClauseStmt>(std::move(mergedHead), clause->parentName, std::vector<std::shared_ptr<Goal>>{});
         memory_.addFact(clause->head.name, clause->parentName, factMap, currentLoadingFile_);
         if (!clause->parentName.empty() && !memory_.parents().count(clause->head.name)) {
             memory_.setParent(clause->head.name, clause->parentName, currentLoadingFile_);
         }
+        return;
     }
     if (!currentLoadingFile_.empty()) {
         clauseOrigins_[clause.get()] = currentLoadingFile_;
@@ -870,7 +848,11 @@ std::vector<Solution> Interpreter::solve(const std::vector<std::shared_ptr<Goal>
     const std::string cacheKey = cacheable ? solveCacheKey(queryGoals, maxSolutions) : std::string{};
     if (cacheable) {
         auto cached = solveCache_.find(cacheKey);
-        if (cached != solveCache_.end()) return cached->second;
+        if (cached != solveCache_.end()) {
+            solveCacheRecency_.splice(
+                solveCacheRecency_.begin(), solveCacheRecency_, cached->second.recency);
+            return cached->second.solutions;
+        }
     }
 
     std::vector<Solution> out;
@@ -883,7 +865,7 @@ std::vector<Solution> Interpreter::solve(const std::vector<std::shared_ptr<Goal>
     }
     evictColdModules();
     collectExecutionGarbage();
-    if (cacheable) solveCache_[cacheKey] = out;
+    if (cacheable) storeCachedSolutions(cacheKey, out);
     return out;
 }
 
@@ -1021,6 +1003,7 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
     if (depth > 10000) throw InterpreterError("Maximum recursion depth reached");
 
     if (goalIndex >= goals.size()) {
+        ++solutionMaterializations_;
         out.push_back(Solution{cloneEnv(env)});
         return;
     }
@@ -1082,41 +1065,36 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
         }
         case GoalKind::Assign: {
             auto assign = std::static_pointer_cast<AssignGoal>(first);
-            EnvFrame nextEnv = envFramePool_.acquireCopy(env);
-            if (solveAssignGoal(*assign, nextEnv.get())) {
-                solveRecursiveFrame(goals, nextGoalIndex, nextEnv.get(), out, maxSolutions, depth + 1);
+            if (solveAssignGoal(*assign, env)) {
+                solveRecursiveFrame(goals, nextGoalIndex, env, out, maxSolutions, depth + 1);
             }
             return;
         }
         case GoalKind::MultiAssign: {
             auto multiAssign = std::static_pointer_cast<MultiAssignGoal>(first);
-            EnvFrame nextEnv = envFramePool_.acquireCopy(env);
-            if (solveMultiAssignGoal(*multiAssign, nextEnv.get())) {
-                solveRecursiveFrame(goals, nextGoalIndex, nextEnv.get(), out, maxSolutions, depth + 1);
+            if (solveMultiAssignGoal(*multiAssign, env)) {
+                solveRecursiveFrame(goals, nextGoalIndex, env, out, maxSolutions, depth + 1);
             }
             return;
         }
         case GoalKind::Binary: {
             auto bin = std::static_pointer_cast<BinaryGoal>(first);
-            EnvFrame nextEnv = envFramePool_.acquireCopy(env);
-            if (solveBinaryGoal(*bin, nextEnv.get())) {
-                solveRecursiveFrame(goals, nextGoalIndex, nextEnv.get(), out, maxSolutions, depth + 1);
+            if (solveBinaryGoal(*bin, env)) {
+                solveRecursiveFrame(goals, nextGoalIndex, env, out, maxSolutions, depth + 1);
             }
             return;
         }
         case GoalKind::Where: {
             auto where = std::static_pointer_cast<WhereGoal>(first);
-            EnvFrame nextEnv = envFramePool_.acquireCopy(env);
-            if (solveWhereGoal(*where, nextEnv.get())) {
-                solveRecursiveFrame(goals, nextGoalIndex, nextEnv.get(), out, maxSolutions, depth + 1);
+            if (solveWhereGoal(*where, env)) {
+                solveRecursiveFrame(goals, nextGoalIndex, env, out, maxSolutions, depth + 1);
             }
             return;
         }
         case GoalKind::Return: {
             auto ret = std::static_pointer_cast<ReturnGoal>(first);
-            EnvFrame nextEnv = envFramePool_.acquireCopy(env);
-            if (solveReturnGoal(*ret, nextEnv.get())) {
-                solveRecursiveFrame(goals, nextGoalIndex, nextEnv.get(), out, maxSolutions, depth + 1);
+            if (solveReturnGoal(*ret, env)) {
+                solveRecursiveFrame(goals, nextGoalIndex, env, out, maxSolutions, depth + 1);
             }
             return;
         }
@@ -1138,49 +1116,64 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
             if (out.size() >= maxSolutions) return;
         }
     }
-    if (!clauses) return;
-    touchClauses(*clauses);
+    if (clauses) {
+        touchClauses(*clauses);
 
-    for (const auto& originalClause : *clauses) {
-        if (isMethodClause(*originalClause)) {
-            std::vector<Solution> methodSolutions;
-            solveMethodCall(callGoal->call, originalClause, env, methodSolutions, maxSolutions, depth + 1);
-            for (auto& solution : methodSolutions) {
-                EnvFrame methodEnv = envFramePool_.acquireMove(std::move(solution.env));
-                solveRecursiveFrame(goals, nextGoalIndex, methodEnv.get(), out, maxSolutions, depth + 1);
+        for (const auto& originalClause : *clauses) {
+            ++clauseAttempts_;
+            if (isMethodClause(*originalClause)) {
+                std::vector<Solution> methodSolutions;
+                solveMethodCall(callGoal->call, originalClause, env, methodSolutions, maxSolutions, depth + 1);
+                for (auto& solution : methodSolutions) {
+                    EnvFrame methodEnv = envFramePool_.acquireMove(std::move(solution.env));
+                    solveRecursiveFrame(goals, nextGoalIndex, methodEnv.get(), out, maxSolutions, depth + 1);
+                    if (out.size() >= maxSolutions) return;
+                }
+                if (out.size() >= maxSolutions) return;
+                continue;
+            }
+            auto clause = standardizeApart(*originalClause);
+            for (auto& nextEnv : unifyCallAlternatives(callGoal->call, clause->head, env)) {
+                std::vector<std::shared_ptr<Goal>> combined;
+                combined.reserve(clause->body.size() + goals.size() - nextGoalIndex);
+                for (const auto& g : clause->body) combined.push_back(g);
+                appendRemainingGoals(combined);
+
+                EnvFrame unifiedEnv = envFramePool_.acquireMove(std::move(nextEnv));
+                solveRecursiveFrame(combined, 0, unifiedEnv.get(), out, maxSolutions, depth + 1);
                 if (out.size() >= maxSolutions) return;
             }
-            if (out.size() >= maxSolutions) return;
-            continue;
-        }
-        auto clause = standardizeApart(*originalClause);
-        for (auto& nextEnv : unifyCallAlternatives(callGoal->call, clause->head, env)) {
-            std::vector<std::shared_ptr<Goal>> combined;
-            combined.reserve(clause->body.size() + goals.size() - nextGoalIndex);
-            for (const auto& g : clause->body) combined.push_back(g);
-            appendRemainingGoals(combined);
-
-            EnvFrame unifiedEnv = envFramePool_.acquireMove(std::move(nextEnv));
-            solveRecursiveFrame(combined, 0, unifiedEnv.get(), out, maxSolutions, depth + 1);
-            if (out.size() >= maxSolutions) return;
         }
     }
 
-    for (size_t factIndex : memory_.compatibleFactIndexes(callGoal->call.name)) {
+    const auto* factCandidates =
+        &memory_.compatibleFactIndexes(callGoal->call.name, callGoal->call.nameId);
+    for (const auto& arg : callGoal->call.args) {
+        if (arg.name.empty()) continue;
+        std::shared_ptr<Expr> resolved;
+        if (!evalExprValue(arg.value, env, resolved) || !isGroundLiteral(resolved)) continue;
+        const auto& indexed = memory_.propertyFactIndexes(
+            callGoal->call.name,
+            callGoal->call.nameId,
+            arg.name,
+            arg.nameId,
+            resolved);
+        if (indexed.size() < factCandidates->size()) factCandidates = &indexed;
+    }
+    for (size_t factIndex : *factCandidates) {
+        ++factCandidates_;
         const auto& fact = memory_.fact(factIndex);
-        if (fact.type == callGoal->call.name) continue;
-        Call factHead(fact.type, {});
+        Call factHead(callGoal->call.name, {});
         for (const auto& entry : fact.value->entries) {
             if (entry.keyId != InternalSymbol::TypeId && entry.keyId != InternalSymbol::ParentId) {
                 std::vector<std::shared_ptr<Expr>> items;
                 if (exprAsArrayItems(entry.value, items)) {
-                    for (const auto& item : items) factHead.args.push_back(Arg{entry.key, item->clone()});
+                    for (const auto& item : items) factHead.args.push_back(Arg{entry.key, item});
                 } else {
-                    factHead.args.push_back(Arg{entry.key, entry.value->clone()});
+                    factHead.args.push_back(Arg{entry.key, entry.value});
                 }
             }
         }
-        factHead.name = callGoal->call.name;
         for (auto& nextEnv : unifyCallAlternatives(callGoal->call, factHead, env)) {
             EnvFrame factEnv = envFramePool_.acquireMove(std::move(nextEnv));
             solveRecursiveFrame(goals, nextGoalIndex, factEnv.get(), out, maxSolutions, depth + 1);
@@ -1407,8 +1400,11 @@ bool Interpreter::solveReturnGoal(const ReturnGoal& goal, Env& env) {
 bool Interpreter::bodyHasReturnGoal(const std::vector<std::shared_ptr<Goal>>& goals) const {
     for (const auto& goal : goals) {
         switch (goal->kind()) {
-            case GoalKind::Return:
-                return true;
+            case GoalKind::Return: {
+                auto returned = std::static_pointer_cast<ReturnGoal>(goal);
+                if (!returned->fields.empty()) return true;
+                break;
+            }
             case GoalKind::Group: {
                 auto group = std::static_pointer_cast<GroupGoal>(goal);
                 if (bodyHasReturnGoal(group->goals)) return true;
@@ -1728,19 +1724,47 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         call.builtinId == BuiltinId::MathDiv ||
         call.builtinId == BuiltinId::MathMod;
 
+    const bool stringPredicateBuiltin =
+        call.builtinId == BuiltinId::StrLen ||
+        call.builtinId == BuiltinId::StrContains ||
+        call.builtinId == BuiltinId::StrConcat ||
+        call.builtinId == BuiltinId::StrJoin ||
+        call.builtinId == BuiltinId::StrLower ||
+        call.builtinId == BuiltinId::StrUpper ||
+        call.builtinId == BuiltinId::StrTrim ||
+        call.builtinId == BuiltinId::StrSplit ||
+        call.builtinId == BuiltinId::StrReplace ||
+        call.builtinId == BuiltinId::StrStartsWith ||
+        call.builtinId == BuiltinId::StrEndsWith;
+    const bool arrayPredicateBuiltin =
+        call.builtinId == BuiltinId::ArrayGet ||
+        call.builtinId == BuiltinId::ArrayLen ||
+        call.builtinId == BuiltinId::ArrayPush;
+    const bool pairPredicateBuiltin =
+        call.builtinId == BuiltinId::PairFirst ||
+        call.builtinId == BuiltinId::PairSecond;
+    const bool jsonPredicateBuiltin =
+        call.builtinId == BuiltinId::JsonParse ||
+        call.builtinId == BuiltinId::JsonGet ||
+        call.builtinId == BuiltinId::JsonHas ||
+        call.builtinId == BuiltinId::JsonKeys ||
+        call.builtinId == BuiltinId::JsonSet ||
+        call.builtinId == BuiltinId::JsonRemove ||
+        call.builtinId == BuiltinId::JsonToText;
+
     if (call.builtinId != BuiltinId::Unknown &&
         call.builtinId != BuiltinId::Throw &&
         call.builtinId != BuiltinId::Type &&
         call.builtinId != BuiltinId::Instanceof &&
         !mathPredicateBuiltin &&
-        call.name.rfind("str:", 0) != 0 &&
-        call.name.rfind("array:", 0) != 0 &&
-        call.name.rfind("pair:", 0) != 0 &&
-        call.name.rfind("json:", 0) != 0) {
+        !stringPredicateBuiltin &&
+        !arrayPredicateBuiltin &&
+        !pairPredicateBuiltin &&
+        !jsonPredicateBuiltin) {
         return callNativeValueBuiltin();
     }
 
-    if (call.name == "throw") {
+    if (call.builtinId == BuiltinId::Throw) {
         if (!valueArg({"msg", "reason"}, 0, a)) return false;
         env["error_reason"] = a->clone();
 
@@ -1798,7 +1822,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         return true;
     }
 
-    if (call.name == "type") {
+    if (call.builtinId == BuiltinId::Type) {
         if (!valueArg({"value", "data", "input"}, 0, a)) return false;
         auto typeValue = findMapValue(a, internalSymbolString(InternalSymbolKind::Type));
         auto typeString = std::dynamic_pointer_cast<StringExpr>(typeValue);
@@ -1810,7 +1834,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         return out && unifyExpr(out->value, std::make_shared<StringExpr>(typeString->value), env);
     }
 
-    if (call.name == "instanceof") {
+    if (call.builtinId == BuiltinId::Instanceof) {
         if (!valueArg({"value", "data", "input"}, 0, a)) return false;
         const Arg* typeArg = namedArg("type");
         if (!typeArg) typeArg = namedArg("parent");
@@ -1862,13 +1886,9 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         return out && unifyExpr(out->value, result, env);
     }
 
-    if (call.name == "str:len" || call.name == "str:contains" ||
-        call.name == "str:concat" || call.name == "str:join" || call.name == "str:lower" ||
-        call.name == "str:upper" || call.name == "str:trim" ||
-        call.name == "str:split" || call.name == "str:replace" ||
-        call.name == "str:startsWith" || call.name == "str:endsWith") {
+    if (stringPredicateBuiltin) {
         if (!valueArg({"left", "data", "value"}, 0, a)) return false;
-        if (call.name == "str:join") {
+        if (call.builtinId == BuiltinId::StrJoin) {
             std::vector<std::shared_ptr<Expr>> items;
             if (!exprAsArrayItems(a, items)) return false;
             std::string delimiter;
@@ -1887,13 +1907,13 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         }
         std::string text;
         if (!argAsString(a, text)) return false;
-        if (call.name == "str:len") {
+        if (call.builtinId == BuiltinId::StrLen) {
             result = std::make_shared<NumberExpr>(static_cast<double>(text.size()));
             const Arg* out = namedArg("equals");
             if (!out) out = outArg("out", 1);
             return out && unifyExpr(out->value, result, env);
         }
-        if (call.name == "str:contains") {
+        if (call.builtinId == BuiltinId::StrContains) {
             if (!valueArg({"needle"}, 1, b)) return false;
             std::string needle;
             if (!argAsString(b, needle)) return false;
@@ -1902,7 +1922,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
             if (!out) out = outArg("out", 2);
             return out ? unifyExpr(out->value, result, env) : text.find(needle) != std::string::npos;
         }
-        if (call.name == "str:concat") {
+        if (call.builtinId == BuiltinId::StrConcat) {
             if (!valueArg({"right", "rhs"}, 1, b)) return false;
             std::string right;
             if (!argAsString(b, right)) return false;
@@ -1911,13 +1931,13 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
             if (!out) out = outArg("out", 2);
             return out && unifyExpr(out->value, result, env);
         }
-        if (call.name == "str:trim") {
+        if (call.builtinId == BuiltinId::StrTrim) {
             result = std::make_shared<StringExpr>(Felidae::trim(text));
             const Arg* out = namedArg("access");
             if (!out) out = outArg("out", 1);
             return out && unifyExpr(out->value, result, env);
         }
-        if (call.name == "str:split") {
+        if (call.builtinId == BuiltinId::StrSplit) {
             if (!valueArg({"delimiter", "separator"}, 1, b)) return false;
             std::string delimiter;
             if (!argAsString(b, delimiter) || delimiter.empty()) return false;
@@ -1933,7 +1953,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
             if (!out) out = outArg("out", 2);
             return out && unifyExpr(out->value, std::make_shared<ArrayExpr>(std::move(parts)), env);
         }
-        if (call.name == "str:replace") {
+        if (call.builtinId == BuiltinId::StrReplace) {
             if (!valueArg({"search", "needle"}, 1, b)) return false;
             std::shared_ptr<Expr> replacementValue;
             const Arg* replacementArg = namedArg("replacement");
@@ -1951,11 +1971,13 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
             if (!out) out = outArg("out", 3);
             return out && unifyExpr(out->value, std::make_shared<StringExpr>(text), env);
         }
-        if (call.name == "str:startsWith" || call.name == "str:endsWith") {
-            if (!valueArg({call.name == "str:startsWith" ? "prefix" : "suffix"}, 1, b)) return false;
+        if (call.builtinId == BuiltinId::StrStartsWith ||
+            call.builtinId == BuiltinId::StrEndsWith) {
+            const bool startsWith = call.builtinId == BuiltinId::StrStartsWith;
+            if (!valueArg({startsWith ? "prefix" : "suffix"}, 1, b)) return false;
             std::string needle;
             if (!argAsString(b, needle)) return false;
-            bool ok = call.name == "str:startsWith"
+            bool ok = startsWith
                 ? text.rfind(needle, 0) == 0
                 : (needle.size() <= text.size() && text.compare(text.size() - needle.size(), needle.size(), needle) == 0);
             const Arg* out = namedArg("access");
@@ -1963,7 +1985,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
             return out && unifyExpr(out->value, std::make_shared<StringExpr>(ok ? "true" : "false"), env);
         }
         for (char& ch : text) {
-            ch = static_cast<char>(call.name == "str:lower"
+            ch = static_cast<char>(call.builtinId == BuiltinId::StrLower
                 ? std::tolower(static_cast<unsigned char>(ch))
                 : std::toupper(static_cast<unsigned char>(ch)));
         }
@@ -1973,9 +1995,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         return out && unifyExpr(out->value, result, env);
     }
 
-    if (call.builtinId == BuiltinId::ArrayGet ||
-        call.builtinId == BuiltinId::ArrayLen ||
-        call.builtinId == BuiltinId::ArrayPush) {
+    if (arrayPredicateBuiltin) {
         if (!valueArg({"data", "array"}, 0, a)) return false;
         auto args = termArgs(a, BuiltinId::FnArray);
         auto arrayTerm = std::dynamic_pointer_cast<TermExpr>(a);
@@ -2008,7 +2028,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         }
     }
 
-    if (call.builtinId == BuiltinId::PairFirst || call.builtinId == BuiltinId::PairSecond) {
+    if (pairPredicateBuiltin) {
         if (!valueArg({"data", "pair"}, 0, a)) return false;
         auto args = termArgs(a, BuiltinId::FnPair);
         if (args.size() != 2) return false;
@@ -2017,7 +2037,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         return out && unifyExpr(out->value, call.builtinId == BuiltinId::PairFirst ? args[0] : args[1], env);
     }
 
-    if (call.name == "json:parse") {
+    if (call.builtinId == BuiltinId::JsonParse) {
         if (!valueArg({"data", "value"}, 0, a)) return false;
         std::string jsonText;
         if (!argAsString(a, jsonText)) return false;
@@ -2028,7 +2048,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         return out && unifyExpr(out->value, parsed, env);
     }
 
-    if (call.name == "json:get") {
+    if (call.builtinId == BuiltinId::JsonGet) {
         if (!valueArg({"data", "object"}, 0, a) || !valueArg({"key"}, 1, b)) return false;
         std::string key;
         if (!argAsString(b, key)) return false;
@@ -2039,13 +2059,15 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         return false;
     }
 
-    if (call.name == "json:has" || call.name == "json:keys" ||
-        call.name == "json:set" || call.name == "json:remove") {
+    if (call.builtinId == BuiltinId::JsonHas ||
+        call.builtinId == BuiltinId::JsonKeys ||
+        call.builtinId == BuiltinId::JsonSet ||
+        call.builtinId == BuiltinId::JsonRemove) {
         if (!valueArg({"data", "object"}, 0, a)) return false;
         std::vector<MapEntry> entries;
         if (!exprAsMapEntries(a, entries)) return false;
         std::shared_ptr<Expr> resultValue;
-        if (call.name == "json:keys") {
+        if (call.builtinId == BuiltinId::JsonKeys) {
             std::vector<std::shared_ptr<Expr>> keys;
             keys.reserve(entries.size());
             for (const auto& entry : entries) keys.push_back(std::make_shared<StringExpr>(entry.key));
@@ -2057,13 +2079,13 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         if (!valueArg({"key"}, 1, b)) return false;
         std::string key;
         if (!argAsString(b, key)) return false;
-        if (call.name == "json:has") {
+        if (call.builtinId == BuiltinId::JsonHas) {
             resultValue = std::make_shared<StringExpr>(findMapValue(a, key) ? "true" : "false");
             const Arg* out = namedArg("access");
             if (!out) out = outArg("out", 2);
             return out && unifyExpr(out->value, resultValue, env);
         }
-        if (call.name == "json:set") {
+        if (call.builtinId == BuiltinId::JsonSet) {
             std::shared_ptr<Expr> value;
             const Arg* valueArgPtr = namedArg("value");
             if (!valueArgPtr || !evalExprValue(valueArgPtr->value, env, value)) return false;
@@ -2072,29 +2094,30 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
             removeEntry(entries, key);
         }
         const Arg* out = namedArg("access");
-        if (!out) out = outArg("out", call.name == "json:set" ? 3 : 2);
+        if (!out) out = outArg("out", call.builtinId == BuiltinId::JsonSet ? 3 : 2);
         return out && unifyExpr(out->value, std::make_shared<MapExpr>(std::move(entries)), env);
     }
 
-    if (call.name == "json:toText") {
+    if (call.builtinId == BuiltinId::JsonToText) {
         if (!valueArg({"data", "value"}, 0, a)) return false;
         const Arg* out = namedArg("access");
         if (!out) out = outArg("out", 1);
         return out && unifyExpr(out->value, std::make_shared<StringExpr>(exprToJson(a)), env);
     }
 
-    if (call.name == "csv:parse" || call.name == "csv:toFacts") {
+    if (call.builtinId == BuiltinId::CsvParse ||
+        call.builtinId == BuiltinId::CsvToFacts) {
         if (!valueArg({"data", "text", "csv"}, 0, a)) return false;
         std::string csvText;
         if (!argAsString(a, csvText)) return false;
         std::string typeName;
-        if (call.name == "csv:toFacts") {
+        if (call.builtinId == BuiltinId::CsvToFacts) {
             if (!valueArg({"type", "fact"}, 1, b) || !argAsString(b, typeName) || typeName.empty()) {
                 throw InterpreterError("csv.toFacts expects non-empty string argument 'type'");
             }
         }
         const Arg* out = namedArg("access");
-        if (!out) out = outArg("out", call.name == "csv:toFacts" ? 2 : 1);
+        if (!out) out = outArg("out", call.builtinId == BuiltinId::CsvToFacts ? 2 : 1);
         try {
             return out && unifyExpr(out->value, NativeCsv::parse(csvText, typeName, call.name), env);
         } catch (const NativeCsv::Error& ex) {
@@ -2102,11 +2125,12 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         }
     }
 
-    if (call.name == "csv:toText" || call.name == "csv:toFelidaeFacts") {
+    if (call.builtinId == BuiltinId::CsvToText ||
+        call.builtinId == BuiltinId::CsvToFelidaeFacts) {
         if (!valueArg({"data", "rows"}, 0, a)) return false;
         std::shared_ptr<Expr> csvResult;
         try {
-            if (call.name == "csv:toText") {
+            if (call.builtinId == BuiltinId::CsvToText) {
                 csvResult = std::make_shared<StringExpr>(NativeCsv::toText(a, call.name));
             } else {
                 if (!valueArg({"type", "fact"}, 1, b)) return false;
@@ -2118,17 +2142,21 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
             throw InterpreterError(ex.what());
         }
         const Arg* out = namedArg("access");
-        if (!out) out = outArg("out", call.name == "csv:toFelidaeFacts" ? 2 : 1);
+        if (!out) {
+            out = outArg("out", call.builtinId == BuiltinId::CsvToFelidaeFacts ? 2 : 1);
+        }
         return out && unifyExpr(out->value, csvResult, env);
     }
 
-    if (call.name == "csv:addRow" || call.name == "csv:findRows" ||
-        call.name == "csv:updateRows" || call.name == "csv:deleteRows") {
+    if (call.builtinId == BuiltinId::CsvAddRow ||
+        call.builtinId == BuiltinId::CsvFindRows ||
+        call.builtinId == BuiltinId::CsvUpdateRows ||
+        call.builtinId == BuiltinId::CsvDeleteRows) {
         if (!valueArg({"data", "rows"}, 0, a)) return false;
         std::vector<std::shared_ptr<Expr>> rows;
         if (!exprAsArrayItems(a, rows)) return false;
         std::vector<std::shared_ptr<Expr>> resultRows;
-        if (call.name == "csv:addRow") {
+        if (call.builtinId == BuiltinId::CsvAddRow) {
             if (!valueArg({"row", "value"}, 1, b)) return false;
             std::vector<MapEntry> rowEntries;
             if (!exprAsMapEntries(b, rowEntries)) return false;
@@ -2143,7 +2171,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
             if (!valueArgPtr || !evalExprValue(valueArgPtr->value, env, valueExpr)) return false;
             std::string expected = exprTextValue(valueExpr);
             std::shared_ptr<Expr> patch;
-            if (call.name == "csv:updateRows") {
+            if (call.builtinId == BuiltinId::CsvUpdateRows) {
                 const Arg* patchArg = namedArg("patch");
                 if (!patchArg || !evalExprValue(patchArg->value, env, patch)) return false;
                 std::vector<MapEntry> patchEntries;
@@ -2151,9 +2179,9 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
             }
             for (const auto& row : rows) {
                 bool match = mapFieldMatches(row, key, expected);
-                if (call.name == "csv:findRows") {
+                if (call.builtinId == BuiltinId::CsvFindRows) {
                     if (match) resultRows.push_back(cloneExprOrNil(row));
-                } else if (call.name == "csv:deleteRows") {
+                } else if (call.builtinId == BuiltinId::CsvDeleteRows) {
                     if (!match) resultRows.push_back(cloneExprOrNil(row));
                 } else {
                     auto patched = match ? patchMapValue(row, patch) : cloneExprOrNil(row);
@@ -2163,7 +2191,12 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
             }
         }
         const Arg* out = namedArg("access");
-        if (!out) out = outArg("out", call.name == "csv:addRow" ? 2 : (call.name == "csv:updateRows" ? 4 : 3));
+        if (!out) {
+            const size_t outputIndex = call.builtinId == BuiltinId::CsvAddRow
+                ? 2
+                : (call.builtinId == BuiltinId::CsvUpdateRows ? 4 : 3);
+            out = outArg("out", outputIndex);
+        }
         return out && unifyExpr(out->value, std::make_shared<ArrayExpr>(std::move(resultRows)), env);
     }
 
@@ -2631,6 +2664,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
 }
 
 bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out) {
+    const BuiltinId builtin = term.builtinId;
     if (!nativeDeclarationFor(term.name)) {
         ensurePredicateLoaded(term.name);
     }
@@ -2793,8 +2827,10 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return {};
     };
 
-    if (term.name == "console:readLine" || term.name == "console:input" || term.name == "console:inputNumber") {
-        if (term.name == "console:input" || term.name == "console:inputNumber") {
+    if (builtin == BuiltinId::ConsoleReadLine ||
+        builtin == BuiltinId::ConsoleInput ||
+        builtin == BuiltinId::ConsoleInputNumber) {
+        if (builtin == BuiltinId::ConsoleInput || builtin == BuiltinId::ConsoleInputNumber) {
             if (args.size() > 1) throw InterpreterError(term.name + " expects zero arguments or one prompt argument");
             const Arg* promptArg = findTermArgByNameOrIndex(term, "print", 0);
             if (!promptArg) promptArg = findTermArgByNameOrIndex(term, "prompt", 0);
@@ -2812,7 +2848,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         }
         std::string line;
         if (!std::getline(std::cin, line)) line.clear();
-        if (term.name == "console:inputNumber") {
+        if (builtin == BuiltinId::ConsoleInputNumber) {
             char* end = nullptr;
             const double number = std::strtod(line.c_str(), &end);
             while (end && *end && std::isspace(static_cast<unsigned char>(*end))) ++end;
@@ -2826,24 +2862,26 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "console:writeLine" || term.name == "console:write" || term.name == "system:print") {
+    if (builtin == BuiltinId::ConsoleWriteLine ||
+        builtin == BuiltinId::ConsoleWrite ||
+        builtin == BuiltinId::SystemPrint) {
         if (args.size() != 1) throw InterpreterError(term.name + " expects one value");
         std::string text = args[0]->debug();
         if (auto str = std::dynamic_pointer_cast<StringExpr>(args[0])) text = str->value;
         std::cout << text;
-        if (term.name == "console:writeLine" || term.name == "system:print") std::cout << "\n";
+        if (builtin == BuiltinId::ConsoleWriteLine || builtin == BuiltinId::SystemPrint) std::cout << "\n";
         out = std::make_shared<StringExpr>("ok");
         return true;
     }
 
-    if (term.name == "str:concat") {
+    if (builtin == BuiltinId::StrConcat) {
         std::string left = requireNamedString({"left", "data", "value"}, 0, "left");
         std::string right = requireNamedString({"right", "rhs"}, 1, "right");
         out = std::make_shared<StringExpr>(left + right);
         return true;
     }
 
-    if (term.name == "str:join") {
+    if (builtin == BuiltinId::StrJoin) {
         if (args.empty()) throw InterpreterError("str.join expects array argument 'data'");
         std::vector<std::shared_ptr<Expr>> items;
         if (!exprAsArrayItems(args[0], items)) throw InterpreterError("str.join expects array argument 'data'");
@@ -2858,10 +2896,10 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         out = std::make_shared<StringExpr>(joined.str());
         return true;
     }
-    if (term.name == "str:lower" || term.name == "str:upper") {
+    if (builtin == BuiltinId::StrLower || builtin == BuiltinId::StrUpper) {
         std::string text = requireNamedString({"data", "value"}, 0, "data");
         for (char& ch : text) {
-            ch = static_cast<char>(term.name == "str:lower"
+            ch = static_cast<char>(builtin == BuiltinId::StrLower
                 ? std::tolower(static_cast<unsigned char>(ch))
                 : std::toupper(static_cast<unsigned char>(ch)));
         }
@@ -2869,12 +2907,12 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "str:trim") {
+    if (builtin == BuiltinId::StrTrim) {
         out = std::make_shared<StringExpr>(Felidae::trim(requireNamedString({"data", "value"}, 0, "data")));
         return true;
     }
 
-    if (term.name == "str:split") {
+    if (builtin == BuiltinId::StrSplit) {
         std::string text = requireNamedString({"data", "value"}, 0, "data");
         std::string delimiter = requireNamedString({"delimiter", "separator"}, 1, "delimiter");
         if (delimiter.empty()) throw InterpreterError("str.split expects non-empty delimiter");
@@ -2890,7 +2928,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "str:replace") {
+    if (builtin == BuiltinId::StrReplace) {
         std::string text = requireNamedString({"data", "value"}, 0, "data");
         std::string search = requireNamedString({"search", "needle"}, 1, "search");
         std::string replacement = requireNamedString({"replacement", "with"}, 2, "replacement");
@@ -2918,7 +2956,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
         return true;
     }
 
-    if (term.name == "str:len") {
+    if (builtin == BuiltinId::StrLen) {
         std::string text = requireNamedString({"data", "value"}, 0, "data");
         out = std::make_shared<NumberExpr>(static_cast<double>(text.size()));
         return true;
@@ -3946,7 +3984,7 @@ bool Interpreter::compareResolved(const std::shared_ptr<Expr>& left,
 }
 
 bool Interpreter::unifyCall(const Call& goal, const Call& head, Env& env) {
-    if (goal.name != head.name) return false;
+    if (goal.nameId != head.nameId || goal.name != head.name) return false;
 
     bool headHasNamed = false;
     for (const auto& a : head.args) if (!a.name.empty()) headHasNamed = true;
@@ -3971,7 +4009,7 @@ bool Interpreter::unifyCall(const Call& goal, const Call& head, Env& env) {
 }
 
 std::vector<Env> Interpreter::unifyCallAlternatives(const Call& goal, const Call& head, const Env& env) {
-    if (goal.name != head.name) return {};
+    if (goal.nameId != head.nameId || goal.name != head.name) return {};
 
     bool headHasNamed = false;
     bool goalHasNamed = false;
@@ -3981,13 +4019,17 @@ std::vector<Env> Interpreter::unifyCallAlternatives(const Call& goal, const Call
     if (goal.args.size() == 1 && goal.args[0].name.empty() && headHasNamed) return {};
     if (!goalHasNamed && !headHasNamed && goal.args.size() != head.args.size()) return {};
 
-    std::vector<Env> states{env};
+    std::vector<std::vector<const Arg*>> candidatesByArg;
+    candidatesByArg.reserve(goal.args.size());
+    bool hasAlternatives = false;
     for (size_t i = 0; i < goal.args.size(); ++i) {
         const Arg& goalArg = goal.args[i];
         std::vector<const Arg*> candidates;
         if (!goalArg.name.empty()) {
             for (const auto& headArg : head.args) {
-                if (headArg.name == goalArg.name) candidates.push_back(&headArg);
+                if (headArg.nameId == goalArg.nameId && headArg.name == goalArg.name) {
+                    candidates.push_back(&headArg);
+                }
             }
             if (candidates.empty() && i < head.args.size() && head.args[i].name.empty()) {
                 candidates.push_back(&head.args[i]);
@@ -3996,8 +4038,28 @@ std::vector<Env> Interpreter::unifyCallAlternatives(const Call& goal, const Call
             candidates.push_back(&head.args[i]);
         }
         if (candidates.empty()) return {};
+        hasAlternatives = hasAlternatives || candidates.size() > 1;
+        candidatesByArg.push_back(std::move(candidates));
+    }
+
+    if (!hasAlternatives) {
+        Env attempt = env;
+        for (size_t i = 0; i < goal.args.size(); ++i) {
+            if (!unifyExpr(goal.args[i].value, candidatesByArg[i].front()->value, attempt)) return {};
+        }
+        std::vector<Env> result;
+        result.reserve(1);
+        result.push_back(std::move(attempt));
+        return result;
+    }
+
+    std::vector<Env> states{env};
+    for (size_t i = 0; i < goal.args.size(); ++i) {
+        const Arg& goalArg = goal.args[i];
+        const auto& candidates = candidatesByArg[i];
 
         std::vector<Env> nextStates;
+        nextStates.reserve(states.size() * candidates.size());
         for (const auto& state : states) {
             for (const Arg* candidate : candidates) {
                 Env attempt = state;
@@ -4015,7 +4077,7 @@ std::vector<Env> Interpreter::unifyCallAlternatives(const Call& goal, const Call
 const Arg* Interpreter::findArg(const Call& call, const Arg& wanted, size_t index) const {
     if (!wanted.name.empty()) {
         for (const auto& a : call.args) {
-            if (a.name == wanted.name) return &a;
+            if (a.nameId == wanted.nameId && a.name == wanted.name) return &a;
         }
         if (index < call.args.size() && call.args[index].name.empty()) return &call.args[index];
         return nullptr;
@@ -4027,6 +4089,7 @@ const Arg* Interpreter::findArg(const Call& call, const Arg& wanted, size_t inde
 bool Interpreter::unifyExpr(const std::shared_ptr<Expr>& a,
                             const std::shared_ptr<Expr>& b,
                             Env& env) {
+    ++unificationAttempts_;
     auto ra = resolveExpr(a, env);
     auto rb = resolveExpr(b, env);
 
@@ -4150,6 +4213,7 @@ std::string Interpreter::exprToString(const std::shared_ptr<Expr>& expr, const E
 }
 
 std::shared_ptr<ClauseStmt> Interpreter::standardizeApart(const ClauseStmt& clause) {
+    ++standardizedClauses_;
     std::string prefix = makeRenameSymbolPrefix(++renameCounter_);
     Call head;
     head.name = clause.head.name;
@@ -4175,7 +4239,13 @@ std::shared_ptr<ClauseStmt> Interpreter::standardizeApart(const ClauseStmt& clau
         for (const auto& goal : branch) renamedBranch.push_back(renameGoal(goal, prefix));
         fallbackBranches.push_back(std::move(renamedBranch));
     }
-    return std::make_shared<ClauseStmt>(std::move(head), clause.parentName, std::move(body), std::move(fallbackBranches));
+    return std::make_shared<ClauseStmt>(
+        std::move(head),
+        clause.parentName,
+        std::move(body),
+        std::move(fallbackBranches),
+        clause.emptyDeclaration,
+        clause.clauseKind);
 }
 
 Call Interpreter::renameCall(const Call& call, const std::string& prefix) {
@@ -4184,8 +4254,9 @@ Call Interpreter::renameCall(const Call& call, const std::string& prefix) {
     out.nameId = call.nameId;
     out.builtinId = call.builtinId;
     for (const auto& a : call.args) {
-        if ((call.name == "throw" && a.name == "target") ||
-            (call.name == "instanceof" && (a.name == "type" || a.name == "parent" || a.name == "of"))) {
+        if ((call.builtinId == BuiltinId::Throw && a.name == "target") ||
+            (call.builtinId == BuiltinId::Instanceof &&
+             (a.name == "type" || a.name == "parent" || a.name == "of"))) {
             out.args.push_back(Arg{a.name, a.value->clone()});
             continue;
         }
@@ -4266,6 +4337,16 @@ std::shared_ptr<Goal> Interpreter::renameGoal(const std::shared_ptr<Goal>& goal,
 }
 
 std::shared_ptr<Expr> Interpreter::renameExpr(const std::shared_ptr<Expr>& expr, const std::string& prefix) {
+    if (!expr) return nullptr;
+    switch (expr->kind()) {
+        case ExprKind::String:
+        case ExprKind::Number:
+        case ExprKind::Bool:
+        case ExprKind::Nil:
+            return expr;
+        default:
+            break;
+    }
     if (auto v = std::dynamic_pointer_cast<VarExpr>(expr)) {
         if (v->nameId == InternalSymbol::SystemResultId) return v->clone();
         if (globals_.count(v->name) > 0) return v->clone();
@@ -4317,7 +4398,7 @@ std::shared_ptr<Expr> Interpreter::renameExpr(const std::shared_ptr<Expr>& expr,
             renameExpr(pipeline->left, prefix),
             renameExpr(pipeline->right, prefix));
     }
-    return expr->clone();
+    return expr;
 }
 
 bool Interpreter::isSameVariable(const std::shared_ptr<Expr>& a, const std::shared_ptr<Expr>& b) const {
@@ -4434,50 +4515,8 @@ bool Interpreter::exprMayHaveSideEffects(const std::shared_ptr<Expr>& expr) cons
 }
 
 bool Interpreter::isMethodClause(const ClauseStmt& clause) const {
-    if (clause.isFact()) return false;
-
-    auto cached = methodRuntimeCache_.find(&clause);
-    if (cached != methodRuntimeCache_.end() && cached->second.methodKnown) {
-        return cached->second.isMethod;
-    }
-
-    auto remember = [&](bool result) {
-        if (!methodMetadataCacheEligible(clause)) return result;
-        auto& info = methodRuntimeCache_[&clause];
-        info.methodKnown = true;
-        info.isMethod = result;
-        info.cacheEligible = true;
-        return result;
-    };
-
-    if (clause.emptyDeclaration) return remember(true);
-    if (!clause.fallbackBranches.empty()) return remember(true);
-    if (clause.body.empty()) return remember(false);
-    if (clause.head.name == "main") return remember(true);
-    bool hasReturn = false;
-    for (const auto& goal : clause.body) {
-        if (std::dynamic_pointer_cast<ReturnGoal>(goal)) {
-            hasReturn = true;
-            break;
-        }
-    }
-    for (const auto& arg : clause.head.args) {
-        if (!arg.name.empty()) {
-            auto typeExpr = std::dynamic_pointer_cast<VarExpr>(arg.value);
-            if (typeExpr && (isFelidaeTypeAnnotationName(typeExpr->name) || typeExpr->name != arg.name)) {
-                return remember(true);
-            }
-        }
-    }
-    if (!hasReturn) return remember(false);
-    if (clause.head.args.empty()) return remember(true);
-    for (const auto& arg : clause.head.args) {
-        auto typeExpr = std::dynamic_pointer_cast<VarExpr>(arg.value);
-        if (!typeExpr || !isFelidaeTypeAnnotationName(typeExpr->name)) {
-            return remember(false);
-        }
-    }
-    return remember(true);
+    return clause.clauseKind == ClauseKind::Method ||
+           clause.clauseKind == ClauseKind::NativeDeclaration;
 }
 
 bool Interpreter::methodMetadataCacheEligible(const ClauseStmt& clause) const {
@@ -4600,8 +4639,8 @@ const Arg* Interpreter::findArgByNameOrIndex(const Call& call, const std::string
 
 Interpreter::ClauseList* Interpreter::findClauses(const std::string& name, SymbolId nameId) {
     if (nameId == 0) nameId = symbolIdForName(name);
-    auto found = clauses_.find(nameId);
-    if (found == clauses_.end()) return nullptr;
+    auto found = clauses_->find(nameId);
+    if (found == clauses_->end()) return nullptr;
     for (auto& bucket : found->second) {
         if (bucket.name == name) return &bucket.clauses;
     }
@@ -4610,8 +4649,8 @@ Interpreter::ClauseList* Interpreter::findClauses(const std::string& name, Symbo
 
 const Interpreter::ClauseList* Interpreter::findClauses(const std::string& name, SymbolId nameId) const {
     if (nameId == 0) nameId = symbolIdForName(name);
-    auto found = clauses_.find(nameId);
-    if (found == clauses_.end()) return nullptr;
+    auto found = clauses_->find(nameId);
+    if (found == clauses_->end()) return nullptr;
     for (const auto& bucket : found->second) {
         if (bucket.name == name) return &bucket.clauses;
     }
@@ -4620,7 +4659,8 @@ const Interpreter::ClauseList* Interpreter::findClauses(const std::string& name,
 
 Interpreter::ClauseList& Interpreter::getOrCreateClauseList(const std::string& name, SymbolId nameId) {
     if (nameId == 0) nameId = symbolIdForName(name);
-    auto& buckets = clauses_[nameId];
+    ensureClauseTableUnique();
+    auto& buckets = (*clauses_)[nameId];
     for (auto& bucket : buckets) {
         if (bucket.name == name) return bucket.clauses;
     }
@@ -4630,15 +4670,20 @@ Interpreter::ClauseList& Interpreter::getOrCreateClauseList(const std::string& n
 
 void Interpreter::removeClauseBucket(const std::string& name, SymbolId nameId) {
     if (nameId == 0) nameId = symbolIdForName(name);
-    auto found = clauses_.find(nameId);
-    if (found == clauses_.end()) return;
+    ensureClauseTableUnique();
+    auto found = clauses_->find(nameId);
+    if (found == clauses_->end()) return;
     auto& buckets = found->second;
     buckets.erase(
         std::remove_if(buckets.begin(), buckets.end(), [&](const ClauseBucket& bucket) {
             return bucket.name == name;
         }),
         buckets.end());
-    if (buckets.empty()) clauses_.erase(found);
+    if (buckets.empty()) clauses_->erase(found);
+}
+
+void Interpreter::ensureClauseTableUnique() {
+    if (clauses_.use_count() != 1) clauses_ = std::make_shared<ClauseTable>(*clauses_);
 }
 
 std::string Interpreter::solveCacheKey(const std::vector<std::shared_ptr<Goal>>& goals,
@@ -4649,6 +4694,57 @@ std::string Interpreter::solveCacheKey(const std::vector<std::shared_ptr<Goal>>&
         out << goal->debug() << ';';
     }
     return out.str();
+}
+
+std::size_t Interpreter::estimateCachedSolutionsBytes(
+    const std::string& key,
+    const std::vector<Solution>& solutions) const {
+    std::size_t bytes = sizeof(SolveCacheEntry) + key.capacity();
+    bytes += solutions.capacity() * sizeof(Solution);
+    for (const auto& solution : solutions) {
+        bytes += solution.env.size() * sizeof(Env::value_type);
+        for (const auto& binding : solution.env) {
+            bytes += binding.first.capacity();
+        }
+    }
+    return bytes;
+}
+
+void Interpreter::storeCachedSolutions(const std::string& key,
+                                       const std::vector<Solution>& solutions) {
+    constexpr std::size_t MaxCacheEntries = 128;
+    constexpr std::size_t MaxCacheBytes = std::size_t{8} * 1024 * 1024;
+
+    auto existing = solveCache_.find(key);
+    if (existing != solveCache_.end()) {
+        solveCacheBytes_ -= existing->second.estimatedBytes;
+        solveCacheRecency_.erase(existing->second.recency);
+        solveCache_.erase(existing);
+    }
+
+    const std::size_t estimatedBytes = estimateCachedSolutionsBytes(key, solutions);
+    if (estimatedBytes > MaxCacheBytes) return;
+
+    solveCacheRecency_.push_front(key);
+    auto recency = solveCacheRecency_.begin();
+    auto inserted = solveCache_.emplace(
+        *recency,
+        SolveCacheEntry{solutions, recency, estimatedBytes});
+    if (!inserted.second) {
+        solveCacheRecency_.pop_front();
+        return;
+    }
+    solveCacheBytes_ += estimatedBytes;
+
+    while (solveCache_.size() > MaxCacheEntries || solveCacheBytes_ > MaxCacheBytes) {
+        const std::string& oldestKey = solveCacheRecency_.back();
+        auto oldest = solveCache_.find(oldestKey);
+        if (oldest != solveCache_.end()) {
+            solveCacheBytes_ -= oldest->second.estimatedBytes;
+            solveCache_.erase(oldest);
+        }
+        solveCacheRecency_.pop_back();
+    }
 }
 
 void Interpreter::invalidateCaches() {
@@ -4675,6 +4771,8 @@ void Interpreter::endCacheInvalidationBatch() {
 void Interpreter::clearCachesNow() {
     memory_.invalidateCaches();
     solveCache_.clear();
+    solveCacheRecency_.clear();
+    solveCacheBytes_ = 0;
     methodRuntimeCache_.clear();
 }
 
@@ -4712,17 +4810,27 @@ void Interpreter::touchClauses(const std::vector<std::shared_ptr<ClauseStmt>>& c
 }
 
 void Interpreter::evictColdModules() {
-    for (auto& module : lazyModules_) {
-        if (!module.loaded || module.files.empty()) continue;
-        if (module.useCount > 1) continue;
-        unloadModule(module);
+    size_t loadedCount = 0;
+    for (const auto& module : lazyModules_) {
+        if (module.loaded && !module.files.empty()) ++loadedCount;
+    }
+    while (loadedCount > kMaxRetainedLazyModules) {
+        auto oldest = lazyModules_.end();
+        for (auto it = lazyModules_.begin(); it != lazyModules_.end(); ++it) {
+            if (!it->loaded || it->files.empty() || it->lastUsed == solveEpoch_) continue;
+            if (oldest == lazyModules_.end() || it->lastUsed < oldest->lastUsed) oldest = it;
+        }
+        if (oldest == lazyModules_.end()) break;
+        unloadModule(*oldest);
+        --loadedCount;
     }
 }
 
 void Interpreter::unloadModule(LazyModule& module) {
     invalidateCaches();
+    ensureClauseTableUnique();
     for (const auto& file : module.files) {
-        for (auto idIt = clauses_.begin(); idIt != clauses_.end();) {
+        for (auto idIt = clauses_->begin(); idIt != clauses_->end();) {
             auto& buckets = idIt->second;
             for (auto bucketIt = buckets.begin(); bucketIt != buckets.end();) {
                 auto& list = bucketIt->clauses;
@@ -4741,7 +4849,7 @@ void Interpreter::unloadModule(LazyModule& module) {
                 }
             }
             if (buckets.empty()) {
-                idIt = clauses_.erase(idIt);
+                idIt = clauses_->erase(idIt);
             } else {
                 ++idIt;
             }
@@ -4756,6 +4864,7 @@ void Interpreter::unloadModule(LazyModule& module) {
 }
 
 void Interpreter::loadLazyModule(LazyModule& module) {
+    ++moduleLoads_;
     std::vector<fs::path> files = module.files;
     fs::path nativeLibrary = module.nativeLibrary;
     module.loaded = true;
@@ -4772,16 +4881,37 @@ void Interpreter::loadProgramFile(const std::filesystem::path& file) {
     if (loadedFiles_.count(normalized)) return;
     loadedFiles_.insert(normalized);
 
-    Program program = parseProgramFile(normalized);
     fs::path baseDir = normalized.parent_path();
-
-    for (const auto& imp : program.imports) {
-        for (const auto& path : imp->paths) addLazyImport(baseDir, path);
-    }
     fs::path previous = currentLoadingFile_;
     currentLoadingFile_ = normalized;
-    addProgram(program);
-    currentLoadingFile_ = previous;
+    try {
+        parseProgramFileChunks(normalized, [&](Program&& program) {
+            for (const auto& imp : program.imports) {
+                for (const auto& path : imp->paths) addLazyImport(baseDir, path);
+            }
+            addProgram(program);
+        });
+        currentLoadingFile_ = previous;
+    } catch (...) {
+        currentLoadingFile_ = previous;
+        throw;
+    }
+}
+
+std::string Interpreter::runtimeMetricsJson() const {
+    std::ostringstream out;
+    out << "{"
+        << "\"clauseAttempts\":" << clauseAttempts_ << ","
+        << "\"unificationAttempts\":" << unificationAttempts_ << ","
+        << "\"factCandidates\":" << factCandidates_ << ","
+        << "\"solutionMaterializations\":" << solutionMaterializations_ << ","
+        << "\"environmentFramesCreated\":" << envFramePool_.created() << ","
+        << "\"environmentCopies\":" << envFramePool_.copies() << ","
+        << "\"environmentFramesCached\":" << envFramePool_.cached() << ","
+        << "\"standardizedClauses\":" << standardizedClauses_ << ","
+        << "\"moduleLoads\":" << moduleLoads_
+        << "}";
+    return out.str();
 }
 
 std::vector<std::filesystem::path> Interpreter::expandImportPattern(const std::filesystem::path& baseDir,
@@ -5014,7 +5144,7 @@ std::string Interpreter::runtimeGraphJson() const {
         }
     };
 
-    for (const auto& idEntry : clauses_) {
+    for (const auto& idEntry : *clauses_) {
         for (const auto& bucket : idEntry.second) {
             for (const auto& clause : bucket.clauses) {
                 for (const auto& goal : clause->body) collectGoalCalls(goal);
@@ -5100,7 +5230,7 @@ std::string Interpreter::runtimeGraphJson() const {
         if (!factTypes.count(name)) writeNode(nodeId("fact", name), name, "fact", "referenced fact/type with no loaded records");
     }
 
-    for (const auto& idEntry : clauses_) {
+    for (const auto& idEntry : *clauses_) {
         for (const auto& bucket : idEntry.second) {
             if (hasNonFactClause(bucket.clauses)) {
                 writeNode(nodeId("method", bucket.name), bucket.name, "method");
@@ -5145,7 +5275,7 @@ std::string Interpreter::runtimeGraphJson() const {
         }
     }
 
-    for (const auto& idEntry : clauses_) {
+    for (const auto& idEntry : *clauses_) {
         for (const auto& bucket : idEntry.second) {
         if (!hasNonFactClause(bucket.clauses)) continue;
         auto from = nodeId("method", bucket.name);

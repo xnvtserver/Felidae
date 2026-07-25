@@ -2,6 +2,7 @@
 
 #include "AST.h"
 #include "Token.h"
+#include <functional>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -20,6 +21,7 @@ public:
     explicit Parser(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
 
     Program parseProgram();
+    void parseProgram(const std::function<void(std::shared_ptr<Statement>)>& consume);
     std::vector<std::shared_ptr<Goal>> parseQuery();
     std::shared_ptr<Expr> parseExpressionText();
 

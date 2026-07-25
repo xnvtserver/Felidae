@@ -163,6 +163,7 @@ Token Lexer::readString() {
 
 std::vector<Token> Lexer::tokenize() {
     std::vector<Token> out;
+    out.reserve(source_.size() / 4 + 1);
     int nestingDepth = 0;
     bool emittedLogicalNewline = false;
     while (!isAtEnd()) {

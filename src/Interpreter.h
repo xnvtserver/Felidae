@@ -5,6 +5,7 @@
 #include "Memory.h"
 #include "NativeRuntime.h"
 #include <filesystem>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -47,6 +48,7 @@ public:
     std::string runtimeGraphJson() const;
     std::string visualizeDataJson(bool loadImports = false);
     std::string visualizeDataHtml(bool loadImports = false);
+    std::string runtimeMetricsJson() const;
     void loadAllImports();
 
 private:
@@ -76,22 +78,28 @@ private:
     };
     struct MethodRuntimeInfo {
         size_t callCount = 0;
-        bool methodKnown = false;
-        bool isMethod = false;
         bool paramsPrepared = false;
         bool cacheEligible = false;
         std::vector<MethodParamPlan> params;
+    };
+    struct SolveCacheEntry {
+        std::vector<Solution> solutions;
+        std::list<std::string>::iterator recency;
+        std::size_t estimatedBytes = 0;
     };
     struct ClauseBucket {
         std::string name;
         ClauseList clauses;
     };
+    using ClauseTable = std::unordered_map<SymbolId, std::vector<ClauseBucket>>;
 
-    std::unordered_map<SymbolId, std::vector<ClauseBucket>> clauses_;
+    std::shared_ptr<ClauseTable> clauses_ = std::make_shared<ClauseTable>();
     std::vector<Call> autoEntryCalls_;
     FactMemory memory_;
     GlobalEnv globals_;
-    std::unordered_map<std::string, std::vector<Solution>> solveCache_;
+    std::unordered_map<std::string, SolveCacheEntry> solveCache_;
+    std::list<std::string> solveCacheRecency_;
+    std::size_t solveCacheBytes_ = 0;
     mutable std::unordered_map<const ClauseStmt*, MethodRuntimeInfo> methodRuntimeCache_;
     std::vector<LazyModule> lazyModules_;
     std::set<std::filesystem::path> loadedFiles_;
@@ -110,6 +118,12 @@ private:
     bool strictValueFailures_ = false;
     bool valueCallMode_ = false;
     std::vector<std::shared_ptr<Expr>> pipelineResults_;
+    std::size_t clauseAttempts_ = 0;
+    std::size_t unificationAttempts_ = 0;
+    std::size_t factCandidates_ = 0;
+    std::size_t solutionMaterializations_ = 0;
+    std::size_t standardizedClauses_ = 0;
+    std::size_t moduleLoads_ = 0;
 
     void solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals,
                         Env env,
@@ -160,7 +174,11 @@ private:
     const ClauseList* findClauses(const std::string& name, SymbolId nameId) const;
     ClauseList& getOrCreateClauseList(const std::string& name, SymbolId nameId);
     void removeClauseBucket(const std::string& name, SymbolId nameId);
+    void ensureClauseTableUnique();
     std::string solveCacheKey(const std::vector<std::shared_ptr<Goal>>& goals, size_t maxSolutions) const;
+    std::size_t estimateCachedSolutionsBytes(const std::string& key,
+                                             const std::vector<Solution>& solutions) const;
+    void storeCachedSolutions(const std::string& key, const std::vector<Solution>& solutions);
     void invalidateCaches();
     void beginCacheInvalidationBatch();
     void endCacheInvalidationBatch();

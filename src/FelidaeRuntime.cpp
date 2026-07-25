@@ -170,17 +170,40 @@ Program parseProgramFile(const fs::path& path) {
     return program;
 }
 
-Program parseProgramText(const std::string& text) {
-    Lexer lexer(text);
+Program parseProgramText(std::string text) {
+    Lexer lexer(std::move(text));
     auto tokens = lexer.tokenize();
     Parser parser(std::move(tokens));
     return parser.parseProgram();
 }
 
+void parseProgramFileChunks(const fs::path& path,
+                            const std::function<void(Program&&)>& consume,
+                            std::size_t statementsPerChunk) {
+    if (statementsPerChunk == 0) statementsPerChunk = 1;
+    const fs::path normalized = resolveProgramEntryPath(path);
+    Lexer lexer(readSourceFile(normalized));
+    Parser parser(lexer.tokenize());
+    Program chunk;
+    parser.parseProgram([&](std::shared_ptr<Statement> statement) {
+        chunk.addStatement(std::move(statement));
+        if (chunk.statements.size() >= statementsPerChunk) {
+            consume(std::move(chunk));
+            chunk = Program{};
+        }
+    });
+    if (!chunk.statements.empty()) consume(std::move(chunk));
+}
+
 void loadProgramRoot(const fs::path& file, Interpreter& interpreter) {
     fs::path normalized = resolveProgramEntryPath(file);
-    Program program = parseProgramFile(normalized);
-    loadProgramRoot(normalized, program, interpreter);
+    fs::path baseDir = normalized.parent_path();
+    parseProgramFileChunks(normalized, [&](Program&& program) {
+        for (const auto& imp : program.imports) {
+            for (const auto& path : imp->paths) interpreter.addLazyImport(baseDir, path);
+        }
+        interpreter.addProgram(program);
+    });
 }
 
 void loadProgramRoot(const fs::path& file,
