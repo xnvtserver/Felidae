@@ -1,7 +1,7 @@
-import ("json", "probability", "ml", "fact.fx", "fact_analysis.fx").
+import ("json", "probability", "ml", "fact.fx", "fact_analysis.fx")
 
 AnimalNeed(category: string, diet: string, habitat: string, wool: number, horns: number, milk: number, weight: number) =>
-    return ({category: category, diet: diet, habitat: habitat, wool: wool, horns: horns, milk: milk, weight: weight}).
+    return ({category: category, diet: diet, habitat: habitat, wool: wool, horns: horns, milk: milk, weight: weight})
 
 RuminantSynset(left: any, right: any) =>
     common := fact.commonAncestor(fact1: left, fact2: right),
@@ -13,7 +13,7 @@ RuminantSynset(left: any, right: any) =>
         generalized: common.generalized_fact,
         similarity: similarity.score,
         differences: similarity.differences
-    ).
+    )
 
 main() =>
     goat := {__type: "Goat", __parent: "Ruminant", name: "BlackGoat", category: "livestock", diet: "grass", habitat: "farm", coatColor: "black", wool: 0.2, horns: 0.9, milk: 0.7, weight: 42.5},
@@ -66,4 +66,4 @@ main() =>
         goatWolf: goatWolf,
         nearestLivestock: nearestLivestock,
         generatedSynset: generatedSynset
-    ).
+    )

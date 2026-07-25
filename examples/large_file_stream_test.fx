@@ -9,4 +9,4 @@ main() =>
         line_count: count(lines),
         third: third,
         has_epsilon: str.contains(data: text, needle: "epsilon")
-    ).
+    )

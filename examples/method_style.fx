@@ -2,35 +2,35 @@ Person(
     name: "Default",
     age: 0,
     country: "India"
-).
+)
 
 Employee extend Person(
     name: "Ravi",
     age: 30,
     role: "Engineer"
-).
+)
 
 Student extend Person(
     name: "Anu",
     age: 17,
     class: "12"
-).
+)
 
 Animal(
     name: "Tiger",
     age: 5
-).
+)
 
 isAdult(input: Person) =>
     p := input,
     where p.age >= 18,
     return (
         name: p.name
-    ).
+    )
 
-Adults := lambda(Person, p => isAdult(input: p)).
+Adults := lambda(Person, p => isAdult(input: p))
 
-Names := lambda(Person, p => p.name).
+Names := lambda(Person, p => p.name)
 
 ParsedDocs() =>
     docs := [
@@ -40,7 +40,7 @@ ParsedDocs() =>
     parsed := lambda(docs, d => ParseDoc(d.doc)),
     return (
         result: parsed
-    ).
+    )
 
 main() =>
     adults := Adults,
@@ -53,4 +53,4 @@ main() =>
         adults: adults,
         names: names,
         parsedDocs: parsedDocs.result
-    ).
+    )

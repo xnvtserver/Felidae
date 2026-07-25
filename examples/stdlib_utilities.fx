@@ -41,4 +41,4 @@ main() =>
         write_status: writeStatus,
         second_line: secondLine,
         line_count: count(lines)
-    ).
+    )

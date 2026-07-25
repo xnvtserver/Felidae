@@ -6,14 +6,14 @@ ImportedPeople() =>
     return (
         count: count(names),
         names: names
-    ).
+    )
 
 ImportedRoles() =>
     roles := lambda(Employee, p => p.role),
     return (
         count: count(roles),
         roles: roles
-    ).
+    )
 
 main() =>
     t1 := thread.createThread(function: "ImportedPeople"),
@@ -32,4 +32,4 @@ main() =>
         result1: result1,
         result2: result2,
         result3: result3
-    ).
+    )

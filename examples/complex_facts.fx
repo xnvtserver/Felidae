@@ -2,9 +2,9 @@ Employee(
     name: "Default",
     place: Place(name: "Default", address: "ABC location"),
     role: Role(name: "Default")
-).
+)
 
-radius_ := Radius(value: 5, unit: "cm").
+radius_ := Radius(value: 5, unit: "cm")
 
 Address(
     name: "Default",
@@ -13,7 +13,7 @@ Address(
     state: "Default",
     zip: "00000",
     radius: radius_
-).
+)
 
 EmployeePlace(place: place, value: value) =>
     Employee(place: place),
@@ -32,4 +32,4 @@ main(arguments: system.stdin) =>
     return (
         employee_place: employee_place,
         address_radius_unit: address_radius_unit
-    ).
+    )

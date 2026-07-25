@@ -1,8 +1,8 @@
-import ("csv", "file", "data/customer_facts.fx").
+import ("csv", "file", "data/customer_facts.fx")
 
 UpdateCustomer(input: row) =>
     c := row,
-    where c.total >= 200,
+ if c.total >= 200,
     return (
         name: c.name,
         city: c.city,
@@ -17,7 +17,7 @@ else
         total: c.total,
         status: c.status,
         tier: c.tier
-    ).
+    )
 
 main() =>
     updatedRows := lambda(Customer, c => UpdateCustomer(input: c)),
@@ -34,4 +34,4 @@ main() =>
         output_file: "examples/data/customer_facts_updated.fx",
         write: writeStatus,
         facts: factText
-    ).
+    )

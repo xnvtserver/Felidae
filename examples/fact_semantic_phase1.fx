@@ -22,4 +22,4 @@ main() =>
         similarity: similarity,
         difference: difference,
         near: near
-    ).
+    )

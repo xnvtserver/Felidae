@@ -1,7 +1,7 @@
-import ("fact.fx", "fact_analysis.fx").
+import ("fact.fx", "fact_analysis.fx")
 
 CandidateDietNeed(category: string, food: string, habitat: string, legs: number, wool: number, horns: number) =>
-    return ({__type: "CandidateLivestock", __parent: "Ruminant", category: category, food: food, habitat: habitat, legs: legs, wool: wool, horns: horns}).
+    return ({__type: "CandidateLivestock", __parent: "Ruminant", category: category, food: food, habitat: habitat, legs: legs, wool: wool, horns: horns})
 
 ClassifyAnimal(candidate: any, corpus: array) =>
     goat := {__type: "Goat", __parent: "Ruminant", category: "livestock", food: "grass", habitat: "farm", legs: 4, wool: 0, horns: 2, weight: 54},
@@ -16,7 +16,7 @@ ClassifyAnimal(candidate: any, corpus: array) =>
         sheepGraphScore: sheepScore,
         wolfGraphScore: wolfScore,
         nearestByProperties: nearest
-    ).
+    )
 
 main() =>
     animal := {__type: "Animal", __parent: "LivingThing"},
@@ -58,4 +58,4 @@ main() =>
         normalized: normalized,
         clusters: clusters,
         classification: classification
-    ).
+    )

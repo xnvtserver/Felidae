@@ -1,9 +1,9 @@
-import ("qt").
+import ("qt")
 
-MetricFact(name: "CPU", concentration: 40).
-MetricFact(name: "Memory", concentration: 30).
-MetricFact(name: "Disk", concentration: 20).
-MetricFact(name: "Network", concentration: 10).
+MetricFact(name: "CPU", concentration: 40)
+MetricFact(name: "Memory", concentration: 30)
+MetricFact(name: "Disk", concentration: 20)
+MetricFact(name: "Network", concentration: 10)
 
 main() =>
     metrics := lambda(MetricFact, fact => {
@@ -28,4 +28,4 @@ main() =>
         render: render,
         pieRender: pieRender,
         saved: saved
-    ).
+    )

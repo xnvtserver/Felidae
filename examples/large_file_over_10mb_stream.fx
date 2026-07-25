@@ -10,4 +10,4 @@ main() =>
         first: first,
         middle: middle,
         last: last
-    ).
+    )

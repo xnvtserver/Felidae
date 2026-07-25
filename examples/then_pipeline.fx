@@ -17,7 +17,7 @@ Wrap(value: any) =>
     return (
         seen: value,
         tag: "wrapped"
-    ).
+    )
 
 UseNested(value: number) =>
     inner := Increment(value: value)
@@ -40,4 +40,4 @@ main() =>
         nested: nested,
         stopped: stopped,
         arithmeticPrecedence: arithmeticPrecedence
-    ).
+    )

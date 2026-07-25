@@ -1,4 +1,4 @@
-import ("fact.fx", "fact_analysis.fx").
+import ("fact.fx", "fact_analysis.fx")
 
 main() =>
     sameShapePlant := {__type: "PlantSensor", __parent: "Sensor", category: "device", site: "lab", unit: "celsius", reading: 25.0, health: 0.9},
@@ -19,4 +19,4 @@ main() =>
         missingFieldComparison: missingFieldComparison,
         exactPropertyComparison: exactPropertyComparison,
         constrained: constrained
-    ).
+    )

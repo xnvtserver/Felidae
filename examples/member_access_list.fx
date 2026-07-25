@@ -7,27 +7,32 @@ Employees := [
 ].
 
 EmployeeAt(index: number, employee: employee) =>
-    array:get(data: Employees, position: index, access: employee).
+    array:get(data: Employees, position: index, access: employee)
+    return
 
 HasManager(employee: e, name: string) =>
     name == e.name,
-    e.manager != nil.
+    e.manager != nil
+    return
 
 NoManager(employee: e, name: string) =>
     name == e.name,
-    e.manager == nil.
+    e.manager == nil
+    return
 
 EngineerInSEA(employee: e, name: string) =>
     name == e.name,
     e.role == "Engineer",
-    e.office == "SEA".
+    e.office == "SEA"
+    return
 
 ManagerValue(employee: e, value: value) =>
     e.name == "Alice",
-    value == e.manager.
+    value == e.manager
+    return
 
 sum(x: number, y: number) =>
-    return x + y.
+    return x + y
 
 main() =>
     e1 := array:get(data: Employees, position: 0), HasManager(e1, "Alice"),
@@ -41,4 +46,4 @@ main() =>
     system.print(value: e3),
     system.print(value:" ... \n"),
     system.print(value: e4),
-    system.print(value: sum(1, 2)).
+    system.print(value: sum(1, 2))

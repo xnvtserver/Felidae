@@ -18,4 +18,4 @@ main() =>
         append: appendStatus,
         lines: lines,
         text: text
-    ).
+    )

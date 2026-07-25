@@ -1,6 +1,6 @@
 foo.bar(value: string) =>
-    return (value).
+    return (value)
 
 main() =>
     result := foo.bar(value: "ok"),
-    return (result: result).
+    return (result: result)

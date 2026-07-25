@@ -20,4 +20,4 @@ main(arguments: system.stdin) =>
         activation: activation,
         dot: dot,
         mse: mse
-    ).
+    )

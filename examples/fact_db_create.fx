@@ -1,9 +1,9 @@
-import ("csv", "file").
+import ("csv", "file")
 
-SourceCustomer(name: "Alice", city: "SEA", total: 250, status: "active").
-SourceCustomer(name: "Bob", city: "LAX", total: 90, status: "active").
-SourceCustomer(name: "Carol", city: "SEA", total: 140, status: "inactive").
-SourceCustomer(name: "Dana", city: "SEA", total: 320, status: "active").
+SourceCustomer(name: "Alice", city: "SEA", total: 250, status: "active")
+SourceCustomer(name: "Bob", city: "LAX", total: 90, status: "active")
+SourceCustomer(name: "Carol", city: "SEA", total: 140, status: "inactive")
+SourceCustomer(name: "Dana", city: "SEA", total: 320, status: "active")
 
 CustomerSeedRow(input: SourceCustomer) =>
     c := input,
@@ -13,7 +13,7 @@ CustomerSeedRow(input: SourceCustomer) =>
         total: c.total,
         status: c.status,
         tier: "standard"
-    ).
+    )
 
 SqlWhereSeed(input: SourceCustomer) =>
     c := input,
@@ -25,7 +25,7 @@ SqlWhereSeed(input: SourceCustomer) =>
         total: c.total,
         status: c.status,
         tier: "standard"
-    ).
+    )
 
 main() =>
     allRows := lambda(SourceCustomer, c => CustomerSeedRow(input: c)),
@@ -42,4 +42,4 @@ main() =>
         output_file: "examples/data/customer_facts.fx",
         write: writeStatus,
         facts: factText
-    ).
+    )

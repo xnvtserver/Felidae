@@ -1,7 +1,7 @@
-import ("fact.fx", "fact_analysis.fx", "probability").
+import ("fact.fx", "fact_analysis.fx", "probability")
 
 CandidateNeed(category: string, clearance: string, region: string, skillScore: number, reliability: number) =>
-    return ({category: category, clearance: clearance, region: region, skillScore: skillScore, reliability: reliability}).
+    return ({category: category, clearance: clearance, region: region, skillScore: skillScore, reliability: reliability})
 
 GenerateSharedFact(name: string, left: any, right: any) =>
     comparison := fact.compareFacts(fact1: left, fact2: right),
@@ -13,7 +13,7 @@ GenerateSharedFact(name: string, left: any, right: any) =>
         ancestor: ancestor.ancestor_type,
         generalized: ancestor.generalized_fact,
         differences: comparison.differences
-    ).
+    )
 
 main() =>
     backend := {__type: "BackendEngineer", __parent: "Employee", name: "Asha", category: "staff", clearance: "internal", region: "south", language: "Felidae", skillScore: 91, reliability: 0.96},
@@ -52,4 +52,4 @@ main() =>
         employeeSynset: employeeSynset,
         sauceSynset: sauceSynset,
         scenarioConfidence: confidence
-    ).
+    )

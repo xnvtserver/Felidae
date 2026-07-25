@@ -1,10 +1,10 @@
-import ("json", "csv", "file").
+import ("json", "csv", "file")
 
 RawPeopleCsv := "name,role,office\nAlice,Engineer,SEA\nBob,Manager,LAX\nCarol,Engineer,SEA\n".
 
-People := csv.toFacts(data: RawPeopleCsv, type: "PersonRow").
+People := csv.toFacts(data: RawPeopleCsv, type: "PersonRow")
 
-SeaEngineers := lambda(People, person => person.office == "SEA").
+SeaEngineers := lambda(People, person => person.office == "SEA")
 
 ProjectedSeaEngineers := lambda(
     SeaEngineers,
@@ -16,7 +16,7 @@ ProjectedSeaEngineers := lambda(
         source: "csv",
         tags: ["sea", "engineering"]
     }
-).
+)
 
 main() =>
     facts := csv.toFelidaeFacts(data: lambda(SeaEngineers, row => {name: row.name, office: row.office}), type: "SeaEmployee"),
@@ -26,4 +26,4 @@ main() =>
         generated: writeStatus,
         projected: ProjectedSeaEngineers,
         known_gap: "expression array:get is not evaluated yet"
-    ).
+    )

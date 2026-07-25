@@ -1,9 +1,9 @@
 import "system".
 
 
-Employee(name: "Alice", role: "Engineer", manager: "Bob", office: "SEA").
-Employee(name: "Carol", role: "Engineer", manager: nil, office: "SEA").
-Employee(name: "Dave", role: "Manager", manager: nil, office: "LAX").
+Employee(name: "Alice", role: "Engineer", manager: "Bob", office: "SEA")
+Employee(name: "Carol", role: "Engineer", manager: nil, office: "SEA")
+Employee(name: "Dave", role: "Manager", manager: nil, office: "LAX")
 
 HasManager(employee: e, name: string) =>
     name == e.name,
@@ -31,4 +31,4 @@ main() =>
      NoManager(all_employees, "Carol"),
      EngineerInSEA(all_employees, "Alice"),
      ManagerValue(all_employees, "Bob"),
-    system.print(value: sum(1, 2)).
+    system.print(value: sum(1, 2))

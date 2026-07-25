@@ -1,5 +1,5 @@
 MakeProfile() =>
-    return fn:tuple(first: "Alice", second: true, third: 2.5).
+    return fn:tuple(first: "Alice", second: true, third: 2.5)
 
 MakeFlags() =>
     "left" == "left",
@@ -17,4 +17,4 @@ main() =>
         score: score,
         flags: fn:tuple(first: first, second: second, third: third),
         raw_flags: fn:tuple(first: rawFirst, second: rawSecond, third: rawThird)
-    ).
+    )

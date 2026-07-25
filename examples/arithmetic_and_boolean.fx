@@ -9,7 +9,8 @@ AliceName := "Alice".
 CarolName := "Carol".
 
 EmployeeAt(index: number, employee: employee) =>
-    array:get(data: Employees, position: index, access: employee).
+    array:get(data: Employees, position: index, access: employee)
+    return
 
 HasManager(employee: e, name: string) =>
     name == e.name,
@@ -20,13 +21,13 @@ NoManager(employee: e, name: string) =>
     e.manager == nil.
 
 HasManagerValue(employee: e) =>
-    return HasManager(employee: e, name: "Alice").
+    return HasManager(employee: e, name: "Alice")
 
 BooleanReturnOnly() =>
     return HasManager(
         employee: Employee(name: "Alice", role: "Engineer", manager: "Bob", office: "SEA"),
         name: AliceName
-    ).
+    )
 
 ArrayAssignedFirst() =>
     first := array:get(data: Employees, position: 0),
@@ -43,13 +44,13 @@ ArithmeticResult() =>
         negativeLiteral: -2.5,
         negativeProduct: 3 * -2,
         negativeGrouped: -(2 + 3)
-    ).
+    )
 
 ArithmeticReturnOnly() =>
-    return ArithmeticResult().
+    return ArithmeticResult()
 
 main() =>
     return (
         first_has_manager: BooleanReturnOnly(),
         arithmetic: ArithmeticResult()
-    ).
+    )

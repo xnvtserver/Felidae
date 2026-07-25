@@ -1,4 +1,4 @@
-import ("http", "process").
+import ("http", "process")
 
 StartServerCommand(platform: string) =>
     where platform == "windows",
@@ -8,7 +8,7 @@ StartServerCommand(platform: string) =>
 else
     return (
         "sh -c './build/felidae examples/web_server.fx >/tmp/felidae_web_server.log 2>&1 & echo $! > /tmp/felidae_web_server.pid'"
-    ).
+    )
 
 StopServerCommand(platform: string) =>
     where platform == "windows",
@@ -18,7 +18,7 @@ StopServerCommand(platform: string) =>
 else
     return (
         "sh -c \"if [ -f /tmp/felidae_web_server.pid ]; then kill $(cat /tmp/felidae_web_server.pid) 2>/dev/null || true; rm -f /tmp/felidae_web_server.pid; fi\""
-    ).
+    )
 
 main() =>
     platform := process.platform(),
@@ -53,4 +53,4 @@ else
         put: put,
         delete: deleted,
         stopped: stopped
-    ).
+    )

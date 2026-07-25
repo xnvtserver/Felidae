@@ -1,4 +1,4 @@
-import ("fact.fx", "fact_analysis.fx").
+import ("fact.fx", "fact_analysis.fx")
 
 main() =>
     Employee1 := {name: "Mira", role: "Engineer", skill: "backend", score: 91},
@@ -13,4 +13,4 @@ main() =>
         propertyMatch: propertyMatch,
         difference: difference,
         nearest: nearest
-    ).
+    )

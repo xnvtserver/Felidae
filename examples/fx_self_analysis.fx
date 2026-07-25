@@ -16,7 +16,7 @@ else
     contains(line, "#") == "true",
     return ("comment")
 else
-    return ("other").
+    return ("other")
 
 LineInfo(line: string) =>
     return (
@@ -27,7 +27,7 @@ LineInfo(line: string) =>
         has_close_paren: contains(line, ")"),
         has_arrow: contains(line, "=>"),
         has_assignment: contains(line, ":=")
-    ).
+    )
 
 main() =>
     lines := file.readLines(path: "examples/web_server.fx"),
@@ -53,4 +53,4 @@ main() =>
             "expression array:get evaluation",
             "method body builtin output binding"
         ]
-    ).
+    )

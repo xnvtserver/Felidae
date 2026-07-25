@@ -32,4 +32,4 @@ main() =>
         numericPrediction: numericPrediction,
         savedModel: savedModel,
         savedRegression: savedRegression
-    ).
+    )

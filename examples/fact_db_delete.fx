@@ -1,4 +1,4 @@
-import ("csv", "file", "data/customer_facts_updated.fx").
+import ("csv", "file", "data/customer_facts_updated.fx")
 
 KeepCustomer(input: row) =>
     c := row,
@@ -10,11 +10,11 @@ KeepCustomer(input: row) =>
         total: c.total,
         status: c.status,
         tier: c.tier
-    ).
+    )
 
 DeletedCustomer(input: row) =>
     c := row,
-    where c.status == "inactive",
+if c.status == "inactive",
     return (
         name: c.name,
         reason: "inactive"
@@ -24,7 +24,7 @@ else
     return (
         name: c.name,
         reason: "below minimum total"
-    ).
+    )
 
 main() =>
     keptRows := lambda(Customer, c => KeepCustomer(input: c)),
@@ -42,4 +42,4 @@ main() =>
         write: writeStatus,
         deleted: deletedRows,
         facts: factText
-    ).
+    )
