@@ -8,6 +8,7 @@ import com.intellij.openapi.util.TextRange;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.psi.PsiFile;
 import local.felidae.intellij.execution.FelidaeExecutableResolver;
+import local.felidae.intellij.execution.FelidaeStdlibIndex;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -120,6 +121,11 @@ public final class FelidaeExternalAnnotator extends ExternalAnnotator<
 
             return diagnostics;
         }
+
+        // doAnnotate already runs on a background thread, so it's a safe
+        // place to opportunistically refresh the syntax highlighter's
+        // library-name list straight from Celidae instead of a hardcoded copy.
+        FelidaeStdlibIndex.refreshFrom(debugHost);
 
         if (!Files.isRegularFile(request.sourceFile())) {
             diagnostics.add(new CheckDiagnostic(

@@ -94,23 +94,23 @@ public final class FelidaeColorSettingsPage
         return """
                 # Felidae syntax-color preview
 
-                import "employees.fx".
+                import "employees.fx"
 
                 Employee(
                     name: "Alice",
                     age: 30,
                     role: "Engineer"
-                ).
+                )
 
                 isEngineer(input: Employee) =>
-                    employee := input,
+                    employee := input
                     label := employee.name
-                        then system.print(value: system.result),
-                    where employee.role == "Engineer",
+                        then system.print(value: system.result)
+                    where employee.role == "Engineer"
                     return (
                         name: employee.name,
                         active: true
-                    ).
+                    )
                 """;
     }
 

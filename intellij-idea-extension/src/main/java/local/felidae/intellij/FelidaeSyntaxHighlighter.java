@@ -10,6 +10,7 @@ import com.intellij.psi.TokenType;
 import com.intellij.psi.tree.IElementType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import local.felidae.intellij.execution.FelidaeStdlibIndex;
 import local.felidae.intellij.highlighting.FelidaeTextAttributes;
 
 import java.util.Set;
@@ -277,6 +278,7 @@ public final class FelidaeSyntaxHighlighter
                 "import",
                 "extend",
                 "where",
+                "if",
                 "else",
                 "return",
                 "lambda",
@@ -284,20 +286,6 @@ public final class FelidaeSyntaxHighlighter
                 "true",
                 "false",
                 "nil"
-        );
-
-        private static final Set<String> LIBRARIES = Set.of(
-                "array",
-                "console",
-                "file",
-                "fn",
-                "http",
-                "json",
-                "math",
-                "ml",
-                "pair",
-                "str",
-                "system"
         );
 
         private CharSequence buffer = "";
@@ -539,15 +527,135 @@ public final class FelidaeSyntaxHighlighter
                 return;
             }
 
-            tokenType = isLibraryAccess(text)
-                    ? LIBRARY
+            if (isLibraryAccess(text)) {
+                tokenType = LIBRARY;
+                return;
+            }
+
+            /*
+             * These three checks are local, single-token lookaheads that are
+             * unambiguous regardless of surrounding context, unlike a true
+             * fact/method/variable distinction (which needs clause-boundary
+             * tracking a stateless highlighting lexer cannot do reliably):
+             *
+             *   name := ...          -- always a fresh variable binding
+             *   name(...) =>         -- always a rule/method head, whatever
+             *                           the matching ')' is followed by
+             *   name: ...            -- always a named-argument/map key or
+             *                           a type-annotation name
+             */
+            if (isFollowedByBind()) {
+                tokenType = VARIABLE;
+                return;
+            }
+
+            if (isFollowedByMethodArrow()) {
+                tokenType = METHOD;
+                return;
+            }
+
+            tokenType = isFollowedByFieldColon()
+                    ? FIELD
                     : IDENTIFIER;
+        }
+
+        private boolean isFollowedByBind() {
+            int probe = skipWhitespaceFrom(tokenEnd);
+            return probe + 1 < bufferEnd &&
+                    buffer.charAt(probe) == ':' &&
+                    buffer.charAt(probe + 1) == '=';
+        }
+
+        private boolean isFollowedByFieldColon() {
+            int probe = skipWhitespaceFrom(tokenEnd);
+            if (probe >= bufferEnd || buffer.charAt(probe) != ':') {
+                return false;
+            }
+            // Exclude ':=' (bind, handled above) and '::' (unsupported syntax).
+            if (probe + 1 < bufferEnd) {
+                char after = buffer.charAt(probe + 1);
+                if (after == '=' || after == ':') {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /**
+         * Bounds the forward paren-matching scan below so that transiently
+         * unbalanced text (e.g. the user is mid-typing an unclosed '(') never
+         * turns highlighting into an O(file size) scan per identifier.
+         */
+        private static final int MAX_HEAD_LOOKAHEAD = 4096;
+
+        private boolean isFollowedByMethodArrow() {
+            int probe = skipWhitespaceFrom(tokenEnd);
+            if (probe >= bufferEnd || buffer.charAt(probe) != '(') {
+                return false;
+            }
+
+            int depth = 0;
+            int cursor = probe;
+            int scanLimit = Math.min(bufferEnd, probe + MAX_HEAD_LOOKAHEAD);
+            while (cursor < scanLimit) {
+                char current = buffer.charAt(cursor);
+
+                if (current == '"') {
+                    cursor = skipStringLiteral(cursor);
+                    continue;
+                }
+                if (current == '(') {
+                    depth++;
+                } else if (current == ')') {
+                    depth--;
+                    if (depth == 0) {
+                        cursor++;
+                        break;
+                    }
+                }
+                cursor++;
+            }
+
+            if (depth != 0) {
+                return false; // Unbalanced/unterminated; let the parser report it.
+            }
+
+            int afterClose = skipWhitespaceFrom(cursor);
+            return afterClose + 1 < bufferEnd &&
+                    buffer.charAt(afterClose) == '=' &&
+                    buffer.charAt(afterClose + 1) == '>';
+        }
+
+        private int skipWhitespaceFrom(int start) {
+            int probe = start;
+            while (probe < bufferEnd && Character.isWhitespace(buffer.charAt(probe))) {
+                probe++;
+            }
+            return probe;
+        }
+
+        /** Advances past a string literal starting at a '"' so its contents never confuse paren-depth scanning. */
+        private int skipStringLiteral(int quoteIndex) {
+            int cursor = quoteIndex + 1;
+            boolean escaped = false;
+            while (cursor < bufferEnd) {
+                char current = buffer.charAt(cursor);
+                if (escaped) {
+                    escaped = false;
+                } else if (current == '\\') {
+                    escaped = true;
+                } else if (current == '"' || current == '\n' || current == '\r') {
+                    return cursor + 1;
+                }
+                cursor++;
+            }
+            return cursor;
         }
 
         private boolean isLibraryAccess(
                 @NotNull String identifier
         ) {
-            if (!LIBRARIES.contains(identifier)) {
+            if (!FelidaeStdlibIndex.getLibraries().contains(identifier)) {
                 return false;
             }
 

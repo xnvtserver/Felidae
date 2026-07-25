@@ -197,6 +197,35 @@ void loadProgramRoot(const fs::path& file,
     interpreter.addProgram(program);
 }
 
+std::vector<std::string> listCoreLibraries(const fs::path& startDir) {
+    std::vector<std::string> names;
+    std::error_code ec;
+    fs::path current = fs::absolute(startDir, ec).lexically_normal();
+    if (ec) return names;
+
+    fs::path coreDir;
+    while (true) {
+        fs::path candidate = current / "core";
+        if (fs::exists(candidate, ec) && fs::is_directory(candidate, ec)) {
+            coreDir = candidate;
+            break;
+        }
+        fs::path parent = current.parent_path();
+        if (parent == current) break;
+        current = parent;
+    }
+    if (coreDir.empty()) return names;
+
+    for (const auto& entry : fs::directory_iterator(coreDir, ec)) {
+        if (ec) break;
+        if (!entry.is_regular_file()) continue;
+        if (entry.path().extension() != ".fx") continue;
+        names.push_back(entry.path().stem().string());
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
 std::vector<std::shared_ptr<Goal>> parseQueryText(const std::string& query) {
     Lexer lexer(query);
     auto tokens = lexer.tokenize();

@@ -205,4 +205,14 @@ bool isBuiltinPure(const std::string& name) {
     return isBuiltinPure(builtinIdForName(name));
 }
 
+const std::vector<BuiltinInfo>& allBuiltins() {
+    static const std::vector<BuiltinInfo> builtins = [] {
+        std::vector<BuiltinInfo> list;
+        list.reserve(builtinInfoCount() - 1);
+        for (std::size_t i = 1; i < builtinInfoCount(); ++i) list.push_back(kBuiltinInfos[i]);
+        return list;
+    }();
+    return builtins;
+}
+
 } // namespace Felidae

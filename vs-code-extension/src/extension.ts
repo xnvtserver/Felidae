@@ -81,7 +81,11 @@ interface RuntimeGraph {
   edges: RuntimeGraphEdge[];
 }
 
-const semanticLegend = new vscode.SemanticTokensLegend(["variable"], ["readonly"]);
+const semanticLegend = new vscode.SemanticTokensLegend(["variable", "method"], ["readonly"]);
+
+const FELIDAE_BUILTIN_TYPE_NAMES = new Set([
+  "any", "array", "bool", "boolean", "decimal", "double", "float", "int", "number", "string"
+]);
 
 const builtinDocs: Record<string, BuiltinDoc> = {
   "then": {
@@ -1472,11 +1476,46 @@ class FelidaeSemanticTokensProvider implements vscode.DocumentSemanticTokensProv
       const isAssignmentTarget = next?.kind === "bind";
       const isLambdaItem = previous?.kind === "comma" && next?.kind === "arrow";
       const isMemberBase = (next?.kind === "dot" || next?.kind === "colon") && nextNext?.kind === "ident";
-      const isKeyword = ["else", "extend", "where", "return", "lambda", "then", "nil"].includes(token.text);
+      const isKeyword = ["if", "else", "extend", "where", "return", "lambda", "then", "nil"].includes(token.text);
       const isCall = next?.kind === "lparen";
 
-      if (isKeyword || isCall) continue;
-      if (isHeadParam || isAssignmentTarget || isLambdaItem || isMemberBase) {
+      if (isKeyword) continue;
+
+      if (isCall) {
+        // A call/rule/method head: `Name(...)` immediately followed by `=>`.
+        // This never overlaps the variable checks below, which all require
+        // `next` to be colon/bind/arrow/dot rather than lparen.
+        const close = findMatchingParen(tokens, i + 1);
+        const isMethodHead = close !== undefined && tokens[close + 1]?.kind === "arrow";
+        if (isMethodHead) {
+          builder.push(token.line, token.start, Math.max(1, token.end - token.start), 1, 0);
+        }
+        continue;
+      }
+
+      // A plain variable reference: a lowercase-leading identifier used as a
+      // value (a call argument, list item, or comparison operand) rather than
+      // a named-arg key, a type annotation, or a call/predicate name. Type
+      // annotations (`input: Person`) are excluded by the leading-uppercase
+      // check, matching the interpreter's own convention for type names.
+      // Builtin primitive type names (`value: int`) are lowercase, so they
+      // need their own exclusion alongside the uppercase-type-name check.
+      const isBuiltinTypeName = FELIDAE_BUILTIN_TYPE_NAMES.has(token.text);
+      const isValuePosition =
+        previous?.kind === "colon" ||
+        previous?.kind === "comma" ||
+        previous?.kind === "lparen" ||
+        previous?.kind === "comparison" ||
+        previous?.kind === "bind" ||
+        next?.kind === "comparison";
+      const isBareValueReference =
+        !/^[A-Z]/.test(token.text) &&
+        !isBuiltinTypeName &&
+        isValuePosition &&
+        next?.kind !== "lparen" &&
+        next?.kind !== "colon";
+
+      if (isHeadParam || isAssignmentTarget || isLambdaItem || isMemberBase || isBareValueReference) {
         builder.push(token.line, token.start, Math.max(1, token.end - token.start), 0, 1);
       }
     }

@@ -1,23 +1,23 @@
 # Native Qt graphics declaration layer.
 # User code should import "qt" and call qt.* methods.
 
-system.flibrary.qt.canvas(width: number, height: number, title: string) => ().
-system.flibrary.qt.circle(cx: number, cy: number, radius: number, name: string, fill: string) => ().
-system.flibrary.qt.rect(x: number, y: number, width: number, height: number, name: string, fill: string) => ().
-system.flibrary.qt.line(x1: number, y1: number, x2: number, y2: number, name: string, stroke: string, width: number) => ().
-system.flibrary.qt.sector(cx: number, cy: number, radius: number, start: number, end: number, name: string, fill: string, weight: number) => ().
-system.flibrary.qt.text(x: number, y: number, content: string, size: number) => ().
-system.flibrary.qt.p(content: string) => ().
-system.flibrary.qt.h1(content: string) => ().
-system.flibrary.qt.button(id: string, label: string, value: string) => ().
-system.flibrary.qt.radio(id: string, label: string, value: string) => ().
-system.flibrary.qt.checkbox(id: string, label: string, value: string) => ().
-system.flibrary.qt.button_at(id: string, label: string, value: string, x: number, y: number, width: number, height: number) => ().
-system.flibrary.qt.radio_at(id: string, label: string, value: string, x: number, y: number, width: number, height: number) => ().
-system.flibrary.qt.checkbox_at(id: string, label: string, value: string, x: number, y: number, width: number, height: number) => ().
-system.flibrary.qt.pie_from_facts(facts: array, label: string, value: string, cx: number, cy: number, radius: number) => ().
-system.flibrary.qt.pie_from_fact_type(type: string, label: string, value: string, cx: number, cy: number, radius: number) => ().
-system.flibrary.qt.graph_from_facts(edges: array, from: string, to: string, label: string, cx: number, cy: number, radius: number) => ().
-system.flibrary.qt.graph_from_fact_type(type: string, from: string, to: string, label: string, cx: number, cy: number, radius: number) => ().
-system.flibrary.qt.plot(plot: any, x: number, y: number, width: number, height: number) => ().
-system.flibrary.qt.render(canvas: any, elements: array) => ().
+system.flibrary.qt.canvas(width: number, height: number, title: string) => ()
+system.flibrary.qt.circle(cx: number, cy: number, radius: number, name: string, fill: string) => ()
+system.flibrary.qt.rect(x: number, y: number, width: number, height: number, name: string, fill: string) => ()
+system.flibrary.qt.line(x1: number, y1: number, x2: number, y2: number, name: string, stroke: string, width: number) => ()
+system.flibrary.qt.sector(cx: number, cy: number, radius: number, start: number, end: number, name: string, fill: string, weight: number) => ()
+system.flibrary.qt.text(x: number, y: number, content: string, size: number) => ()
+system.flibrary.qt.p(content: string) => ()
+system.flibrary.qt.h1(content: string) => ()
+system.flibrary.qt.button(id: string, label: string, value: string) => ()
+system.flibrary.qt.radio(id: string, label: string, value: string) => ()
+system.flibrary.qt.checkbox(id: string, label: string, value: string) => ()
+system.flibrary.qt.button_at(id: string, label: string, value: string, x: number, y: number, width: number, height: number) => ()
+system.flibrary.qt.radio_at(id: string, label: string, value: string, x: number, y: number, width: number, height: number) => ()
+system.flibrary.qt.checkbox_at(id: string, label: string, value: string, x: number, y: number, width: number, height: number) => ()
+system.flibrary.qt.pie_from_facts(facts: array, label: string, value: string, cx: number, cy: number, radius: number) => ()
+system.flibrary.qt.pie_from_fact_type(type: string, label: string, value: string, cx: number, cy: number, radius: number) => ()
+system.flibrary.qt.graph_from_facts(edges: array, from: string, to: string, label: string, cx: number, cy: number, radius: number) => ()
+system.flibrary.qt.graph_from_fact_type(type: string, from: string, to: string, label: string, cx: number, cy: number, radius: number) => ()
+system.flibrary.qt.plot(plot: any, x: number, y: number, width: number, height: number) => ()
+system.flibrary.qt.render(canvas: any, elements: array) => ()
