@@ -1,5 +1,5 @@
-import "namespaced_method_import.fx".
+import "namespaced_method_import.fx"
 
 main() =>
-    result := foo.bar(value: "imported-ok"),
+    result := foo.bar(value: "imported-ok")
     return (result: result)

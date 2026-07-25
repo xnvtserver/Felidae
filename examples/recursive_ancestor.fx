@@ -7,6 +7,6 @@ AncestorOf(descendant: descendant, ancestor: ancestor) =>
     return
 
 AncestorOf(descendant: descendant, ancestor: ancestor) =>
-    Hypernym(child: descendant, parent: parent),
+    Hypernym(child: descendant, parent: parent)
     AncestorOf(descendant: parent, ancestor: ancestor)
     return

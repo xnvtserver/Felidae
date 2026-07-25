@@ -1,4 +1,4 @@
-import "wordnet.fx".
+import "wordnet.fx"
 
 Synset(id: "entity.n.01", pos: "n")
 Synset(id: "animal.n.01", pos: "n")
@@ -54,12 +54,12 @@ ConceptFrequency(synset: "bank.n.01", count: 8)
 ConceptFrequency(synset: "lender.n.01", count: 5)
 
 WordNetCliSmoke(result: any) =>
-    value := wordnet.check_similarity(word1: "cat", word2: "dog", algorithm: "path"),
+    value := wordnet.check_similarity(word1: "cat", word2: "dog", algorithm: "path")
     return (result: value)
 
 main() =>
-    cat := {word: "cat"},
-    dog := {word: "dog"},
+    cat := {word: "cat"}
+    dog := {word: "dog"}
     return (
         lookup: WordNetLookup(text: "cat"),
         lemmas: WordNetLemmas(text: "kittens"),

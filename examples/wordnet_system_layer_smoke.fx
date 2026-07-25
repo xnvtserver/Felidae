@@ -1,4 +1,4 @@
-import "system.flibrary.wordnet".
+import "system.flibrary.wordnet"
 
 Synset(id: "cat.n.01", pos: "n")
 Lemma(id: "lemma.cat.en", text: "cat", language: "en")
@@ -6,5 +6,5 @@ Sense(id: "sense.cat.1", lemma: "lemma.cat.en", synset: "cat.n.01", number: 1, f
 MorphException(surface: "kittens", lemma: "cat")
 
 main() =>
-    lemmas := system.flibrary.wordnet.lemmatize(text: "kittens", language: "en"),
+    lemmas := system.flibrary.wordnet.lemmatize(text: "kittens", language: "en")
     return (lemmas: lemmas)

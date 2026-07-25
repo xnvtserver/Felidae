@@ -2,6 +2,25 @@
 
 Felidae keeps the interpreter small by treating native libraries as runtime modules.
 
+## Architecture Boundary
+
+Package names are not compiled into the interpreter. `core/<package>.fx`
+defines the public Felidae API and calls `system_library_loader`; typed ABI
+declarations live in `core/system/flibrary/<package>.fx`. The generic runtime
+performs library loading, C ABI invocation, JSON marshalling, type validation,
+and error propagation.
+
+The interpreter retains language/runtime intrinsics only: syntax, facts and
+indexes, unification/backtracking, control flow, imports, method invocation,
+threads over immutable snapshots, primitive Felidae value representation, and
+the native bridge. Optional package computation belongs in independently
+built native modules.
+
+`core/smoke.fx` and `native_modules/smoke/NativeSmoke.cpp` form a minimal ABI
+extension example; the CSV package demonstrates the full public-wrapper plus
+`core/system/flibrary` declaration layout. An equivalent package and
+compatible library can be added without rebuilding `felidae`.
+
 ## Import Resolution
 
 For an import such as:
@@ -15,8 +34,10 @@ the interpreter checks in this order:
 1. `core/csv.fx`
 2. A platform native library for `csv`
 
-When both exist, Felidae loads both: the `.fx` file supplies the callable
-declarations and the native library supplies the implementation.
+The `.fx` API is registered lazily. Its native library is not opened during
+import; resolution and loading happen only when a package method executes.
+Missing libraries therefore fail at method execution and never fall back to
+an interpreter implementation.
 
 Native library names are platform-specific:
 
@@ -28,6 +49,10 @@ The resolver searches near the importing file and under workspace module folders
 
 - `native_modules/<module>/`
 - `modules/<module>/`
+
+WASM cannot load host shared libraries. Package calls report
+`native packages are unsupported in the Felidae WASM runtime`; host package
+implementations are not embedded.
 
 If neither a `.fx` declaration file nor a native library exists, the interpreter fails during load/check with `Module '<name>' not found`.
 

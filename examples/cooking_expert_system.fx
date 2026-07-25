@@ -45,35 +45,35 @@ IngredientNeedFromRequest(request: any) =>
     return ({category: request.preferredCategory, sweetness: request.sweetness, acidity: request.acidity, umami: request.umami, heat: request.heat, cookMinutes: request.maxIngredientMinutes, role: request.ingredientRole})
 
 IngredientFitness(ingredient: any, need: any) =>
-    similarity := fact.compareProperties(fact1: ingredient, fact2: need),
-    difference := fact.difference(fact1: ingredient, fact2: need),
+    similarity := fact.compareProperties(fact1: ingredient, fact2: need)
+    difference := fact.difference(fact1: ingredient, fact2: need)
     return (ingredient: ingredient.name, score: similarity.score, matchedFields: similarity.matched_fields, differences: difference.differences, justification: "score comes from shared key-value properties and listed differences")
 
 ChooseIngredients(request: any) =>
-    ingredients := CookingIngredients(),
-    need := IngredientNeedFromRequest(request: request),
-    nearest := fact_analysis.nearestFactsWhere(input: need, candidates: ingredients, count: 4, requiredFields: ["category", "role"]),
+    ingredients := CookingIngredients()
+    need := IngredientNeedFromRequest(request: request)
+    nearest := fact_analysis.nearestFactsWhere(input: need, candidates: ingredients, count: 4, requiredFields: ["category", "role"])
     return (need: need, ranked: nearest)
 
 ClassifyDish(request: any) =>
-    history := DishTrainingFacts(),
-    model := ml.train_decision_tree(facts: history, target: "dishType", features: ["cookMinutes", "sweetness", "acidity", "umami", "heat"]),
-    prediction := ml.predict(model: model, input: request),
+    history := DishTrainingFacts()
+    model := ml.train_decision_tree(facts: history, target: "dishType", features: ["cookMinutes", "sweetness", "acidity", "umami", "heat"])
+    prediction := ml.predict(model: model, input: request)
     return (model: model, prediction: prediction)
 
 ExplainDishProposal(request: any) =>
-    ingredients := CookingIngredients(),
-    tomato := {__type: "Vegetable", name: "Tomato", category: "vegetable", texture: "soft", sweetness: 4, acidity: 8, umami: 7, heat: 0, cookMinutes: 12, role: "base"},
-    ingredientChoices := ChooseIngredients(request: request),
-    dishClass := ClassifyDish(request: request),
-    tomatoFitness := IngredientFitness(ingredient: tomato, need: ingredientChoices.need),
-    profile := ml.profile_facts(facts: ingredients, features: ["sweetness", "acidity", "umami", "heat", "cookMinutes"]),
-    clusters := ml.cluster_facts(facts: ingredients, features: ["sweetness", "acidity", "umami", "heat", "cookMinutes"], clusters: 3),
-    associations := ml.discover_associations(facts: DishTrainingFacts(), min_support: 0.5),
+    ingredients := CookingIngredients()
+    tomato := {__type: "Vegetable", name: "Tomato", category: "vegetable", texture: "soft", sweetness: 4, acidity: 8, umami: 7, heat: 0, cookMinutes: 12, role: "base"}
+    ingredientChoices := ChooseIngredients(request: request)
+    dishClass := ClassifyDish(request: request)
+    tomatoFitness := IngredientFitness(ingredient: tomato, need: ingredientChoices.need)
+    profile := ml.profile_facts(facts: ingredients, features: ["sweetness", "acidity", "umami", "heat", "cookMinutes"])
+    clusters := ml.cluster_facts(facts: ingredients, features: ["sweetness", "acidity", "umami", "heat", "cookMinutes"], clusters: 3)
+    associations := ml.discover_associations(facts: DishTrainingFacts(), min_support: 0.5)
     evidence := fact.aggregateEvidence(evidence: [
         {source: "tomato_base_property_fit", probability: tomatoFitness.score, weight: 3},
         {source: "dish_type_classifier", probability: dishClass.prediction.confidence, weight: 2}
-    ]),
+    ])
     return (
         request: request,
         predictedDishType: dishClass.prediction,
@@ -88,9 +88,9 @@ ExplainDishProposal(request: any) =>
     )
 
 ProposeDish(meal: string, cookMinutes: number, sweetness: number, acidity: number, umami: number, heat: number, preferredCategory: string, maxIngredientMinutes: number, ingredientRole: string) =>
-    request := CookingRequest(meal: meal, cookMinutes: cookMinutes, sweetness: sweetness, acidity: acidity, umami: umami, heat: heat, preferredCategory: preferredCategory, maxIngredientMinutes: maxIngredientMinutes, ingredientRole: ingredientRole),
+    request := CookingRequest(meal: meal, cookMinutes: cookMinutes, sweetness: sweetness, acidity: acidity, umami: umami, heat: heat, preferredCategory: preferredCategory, maxIngredientMinutes: maxIngredientMinutes, ingredientRole: ingredientRole)
     return (ExplainDishProposal(request: request))
 
 main() =>
-    proposal := ProposeDish(meal: "lunch", cookMinutes: 20, sweetness: 3, acidity: 6, umami: 7, heat: 7, preferredCategory: "vegetable", maxIngredientMinutes: 15, ingredientRole: "base"),
+    proposal := ProposeDish(meal: "lunch", cookMinutes: 20, sweetness: 3, acidity: 6, umami: 7, heat: 7, preferredCategory: "vegetable", maxIngredientMinutes: 15, ingredientRole: "base")
     return (proposal: proposal)

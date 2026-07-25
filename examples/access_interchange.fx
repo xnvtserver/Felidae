@@ -9,12 +9,12 @@ SampleAccess(
 )
 
 ReadAccess(input: any, value: int) =>
-    dotValue := input.nested.left.right.value,
-    colonValue := input:nested:left:right:value,
-    mixedValue := input.nested:left.right:value,
-    value == dotValue,
-    value == colonValue,
-    value == mixedValue,
+    dotValue := input.nested.left.right.value
+    colonValue := input:nested:left:right:value
+    mixedValue := input.nested:left.right:value
+    value == dotValue
+    value == colonValue
+    value == mixedValue
     return (
         dot: dotValue,
         colon: colonValue,
@@ -33,9 +33,9 @@ main() =>
                 }
             }
         }
-    ),
-    access := ReadAccess(input: item, value: 42),
-    direct := ReturnInt(value: 42),
+    )
+    access := ReadAccess(input: item, value: 42)
+    direct := ReturnInt(value: 42)
     return (
         dot: item.nested.left.right.value,
         colon: item:nested:left:right:value,

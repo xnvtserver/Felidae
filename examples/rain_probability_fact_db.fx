@@ -16,16 +16,16 @@ Rain(
 )
 
 RainMonth(month: string) =>
-    record := db.first(type: "Rain", field: "month", equals: month),
-    chances := lambda(record.day, day => day.chance),
-    normalized := probability.normalize(data: chances),
-    averageChance := probability.mean(data: chances),
-    averageProbability := averageChance / 100,
+    record := db.first(type: "Rain", field: "month", equals: month)
+    chances := lambda(record.day, day => day.chance)
+    normalized := probability.normalize(data: chances)
+    averageChance := probability.mean(data: chances)
+    averageProbability := averageChance / 100
     atMostOneRainyDay := probability.binomialCdf(
         trials: count(chances),
         successes: 1,
         p: averageProbability
-    ),
+    )
     return (
         month: month,
         days: record.day,
@@ -36,8 +36,8 @@ RainMonth(month: string) =>
     )
 
 main() =>
-    august := RainMonth(month: "August"),
-    september := RainMonth(month: "September"),
+    august := RainMonth(month: "August")
+    september := RainMonth(month: "September")
     return (
         august: august,
         september: september

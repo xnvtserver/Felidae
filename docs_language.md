@@ -57,10 +57,12 @@ Facts and rules are stored by predicate name:
 predicate name -> list of ClauseStmt facts/rules
 ```
 
-Lazy modules are tracked separately with source-file ownership so cold module clauses can be evicted.
-The runtime also keeps hash maps for predicate-to-clause lookup, compatible fact
-indexes, and repeated query results. These caches are invalidated whenever new
-program state is loaded.
+Imported `.fx` statements are parsed and registered incrementally and remain
+available for the interpreter lifetime; modules are not evicted and reparsed.
+Native package libraries remain demand-loaded at the first native method call.
+The runtime also keeps hash maps for predicate-to-clause lookup, compatible
+fact indexes, and bounded repeated-query results. These caches are invalidated
+whenever new program state is registered.
 
 Variables bound with `:=` are immutable and single-assignment: a name already
 declared as a rule-head field or a prior `:=` cannot be rebound in the same

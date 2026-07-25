@@ -1,17 +1,17 @@
-import "smoke".
+import "smoke"
 
-GoalInput := "goal ok".
+GoalInput := "goal ok"
 
 NativeEchoExpression(value: string) =>
-    echoed := smoke.echo(value: value),
-    return echoed.
+    echoed := smoke.echo(value: value)
+    return echoed
 
 NativeEchoGoal(value: string, access: string) =>
-    smoke.echo(value: value, access: access),
-    return access.
+    smoke.echo(value: value, access: access)
+    return access
 
 main() =>
-    expression := NativeEchoExpression(value: "expression ok"),
+    expression := NativeEchoExpression(value: "expression ok")
     return (
         expression: expression
     )

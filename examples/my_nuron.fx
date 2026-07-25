@@ -60,22 +60,22 @@ HiddenNeuron(name: "hidden-1", weights: [2.0, 1.0], bias: 2.0)
 HiddenNeuron(name: "hidden-2", weights: [-1.0, 0.5], bias: 1.0)
 
 NeuronOutput(neuron: any, input: any) =>
-    dot := ml.dot(left: neuron.weights, right: input.values),
-    bias := neuron.bias,
-    raw := dot + bias,
+    dot := ml.dot(left: neuron.weights, right: input.values)
+    bias := neuron.bias
+    raw := dot + bias
     return (name: neuron.name, raw: raw, activated: ml.relu(value: raw))
 
 HiddenOutput(neuron: any, values: array) =>
-    dot := ml.dot(left: neuron.weights, right: values),
-    bias := neuron.bias,
-    raw := dot + bias,
+    dot := ml.dot(left: neuron.weights, right: values)
+    bias := neuron.bias
+    raw := dot + bias
     return (name: neuron.name, raw: raw, activated: ml.relu(value: raw))
 
 Network(input: any) =>
-    inputLayer := lambda(InputNeuron, neuron => NeuronOutput(neuron: neuron, input: input)),
-    activatedInput := lambda(inputLayer, item => item.activated),
-    hiddenLayer := lambda(HiddenNeuron, neuron => HiddenOutput(neuron: neuron, values: activatedInput)),
-    finalOutput := lambda(hiddenLayer, item => ml.relu(value: item.raw)),
+    inputLayer := lambda(InputNeuron, neuron => NeuronOutput(neuron: neuron, input: input))
+    activatedInput := lambda(inputLayer, item => item.activated)
+    hiddenLayer := lambda(HiddenNeuron, neuron => HiddenOutput(neuron: neuron, values: activatedInput))
+    finalOutput := lambda(hiddenLayer, item => ml.relu(value: item.raw))
     return (
         input: input.name,
         inputLayer: inputLayer,
@@ -86,5 +86,5 @@ Network(input: any) =>
     )
 
 main() =>
-    results := lambda(InputSample, sample => Network(input: sample)),
+    results := lambda(InputSample, sample => Network(input: sample))
     return (results: results)

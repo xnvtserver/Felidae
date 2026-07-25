@@ -36,19 +36,19 @@ ExpectedChoices := [
     {color: "red", shape: "square"},
     {color: "blue", shape: "circle"},
     {color: "blue", shape: "square"}
-].
+]
 
-ExpectedSamePairs := ["red", "green"].
+ExpectedSamePairs := ["red", "green"]
 
 main() =>
-    choiceChecks := lambda(ExpectedChoices, item => Choice(color: item.color, shape: item.shape)),
-    samePairChecks := lambda(ExpectedSamePairs, item => SamePair(value: item)),
-    employeeNames := lambda(Employee, employee => AnyEmployee(name: employee.name)),
+    choiceChecks := lambda(ExpectedChoices, item => Choice(color: item.color, shape: item.shape))
+    samePairChecks := lambda(ExpectedSamePairs, item => SamePair(value: item))
+    employeeNames := lambda(Employee, employee => AnyEmployee(name: employee.name))
     nestedEmployees := lambda(Wrapped, wrapped => NestedEmployee(
         name: wrapped.item.name,
         role: wrapped.item.meta.role,
         office: wrapped.item.meta.office
-    )),
+    ))
     return (
         choice_count: count(choiceChecks),
         same_pair_count: count(samePairChecks),

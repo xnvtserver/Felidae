@@ -1,19 +1,19 @@
-import "file".
+import "file"
 
 LineKind(line: string) =>
-    contains(line, "import") == "true",
+    contains(line, "import") == "true"
     return ("import")
 else
-    contains(line, "=>") == "true",
+    contains(line, "=>") == "true"
     return ("method")
 else
-    contains(line, "http.") == "true",
+    contains(line, "http.") == "true"
     return ("http-call")
 else
-    contains(line, "return") == "true",
+    contains(line, "return") == "true"
     return ("return")
 else
-    contains(line, "#") == "true",
+    contains(line, "#") == "true"
     return ("comment")
 else
     return ("other")
@@ -30,12 +30,12 @@ LineInfo(line: string) =>
     )
 
 main() =>
-    lines := file.readLines(path: "examples/web_server.fx"),
-    classified := lambda(lines, line => LineInfo(line: line)),
-    imports := lambda(classified, item => item.kind == "import"),
-    methods := lambda(classified, item => item.kind == "method"),
-    httpCalls := lambda(classified, item => item.kind == "http-call"),
-    comments := lambda(classified, item => item.kind == "comment"),
+    lines := file.readLines(path: "examples/web_server.fx")
+    classified := lambda(lines, line => LineInfo(line: line))
+    imports := lambda(classified, item => item.kind == "import")
+    methods := lambda(classified, item => item.kind == "method")
+    httpCalls := lambda(classified, item => item.kind == "http-call")
+    comments := lambda(classified, item => item.kind == "comment")
     return (
         file: "examples/web_server.fx",
         line_count: count(lines),

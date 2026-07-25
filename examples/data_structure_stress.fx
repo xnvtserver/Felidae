@@ -1,6 +1,6 @@
 import ("json", "csv", "file")
 
-RawPeopleCsv := "name,role,office\nAlice,Engineer,SEA\nBob,Manager,LAX\nCarol,Engineer,SEA\n".
+RawPeopleCsv := "name,role,office\nAlice,Engineer,SEA\nBob,Manager,LAX\nCarol,Engineer,SEA\n"
 
 People := csv.toFacts(data: RawPeopleCsv, type: "PersonRow")
 
@@ -19,8 +19,8 @@ ProjectedSeaEngineers := lambda(
 )
 
 main() =>
-    facts := csv.toFelidaeFacts(data: lambda(SeaEngineers, row => {name: row.name, office: row.office}), type: "SeaEmployee"),
-    writeStatus := file.writeFile(path: "build/data_structure_stress_generated.fx", data: facts, mode: "write"),
+    facts := csv.toFelidaeFacts(data: lambda(SeaEngineers, row => {name: row.name, office: row.office}), type: "SeaEmployee")
+    writeStatus := file.writeFile(path: "build/data_structure_stress_generated.fx", data: facts, mode: "write")
     return (
         count: count(ProjectedSeaEngineers),
         generated: writeStatus,

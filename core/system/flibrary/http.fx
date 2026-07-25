@@ -1,0 +1,8 @@
+system.flibrary.http.get(url: string) => ()
+system.flibrary.http.post(url: string, body: string) => ()
+system.flibrary.http.post(url: string, body: string, contentType: string) => ()
+system.flibrary.http.put(url: string, body: string) => ()
+system.flibrary.http.put(url: string, body: string, contentType: string) => ()
+system.flibrary.http.delete(url: string) => ()
+system.flibrary.http.serveStatic(host: string, port: int, response: string) => ()
+system.flibrary.http.serveStatic(host: string, port: int, response: string, contentType: string) => ()

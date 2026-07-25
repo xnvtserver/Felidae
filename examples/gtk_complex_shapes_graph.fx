@@ -14,25 +14,25 @@ DrawNode(node: any) =>
     return (gtk.circle(cx: node.x, cy: node.y, radius: node.concentration, name: node.name, fill: "#18f0d7"))
 
 DrawEdge(edge: any) =>
-    edge.from == "Interpreter",
+    edge.from == "Interpreter"
     return (gtk.line(x1: 300, y1: 165, x2: 390, y2: 152, name: edge.label, stroke: "#08363a", width: 3))
 else
-    edge.from == "FactMemory",
+    edge.from == "FactMemory"
     return (gtk.line(x1: 540, y1: 152, x2: 600, y2: 240, name: edge.label, stroke: "#08363a", width: 3))
 else
-    edge.from == "NativeDll",
+    edge.from == "NativeDll"
     return (gtk.line(x1: 600, y1: 240, x2: 360, y2: 360, name: edge.label, stroke: "#08363a", width: 3))
 else
     return (gtk.line(x1: 360, y1: 360, x2: 225, y2: 199, name: edge.label, stroke: "#08363a", width: 3))
 
 main() =>
-    nodeShapes := lambda(Node, node => DrawNode(node: node)),
-    edgeShapes := lambda(Edge, edge => DrawEdge(edge: edge)),
-    canvas := gtk.canvas(width: 760, height: 520, title: "GTK Complex Fact Shape Regression"),
-    title := gtk.H1(content: "Complex fact-shaped renderer"),
-    intro := gtk.P(content: "Shapes and graph edges are generated from Felidae facts."),
-    render := gtk.render(canvas: canvas, elements: [title, intro, edgeShapes, nodeShapes]),
-    saved := gtk.save(path: "examples/data/gtk_complex_shapes_graph.html", render: render),
+    nodeShapes := lambda(Node, node => DrawNode(node: node))
+    edgeShapes := lambda(Edge, edge => DrawEdge(edge: edge))
+    canvas := gtk.canvas(width: 760, height: 520, title: "GTK Complex Fact Shape Regression")
+    title := gtk.H1(content: "Complex fact-shaped renderer")
+    intro := gtk.P(content: "Shapes and graph edges are generated from Felidae facts.")
+    render := gtk.render(canvas: canvas, elements: [title, intro, edgeShapes, nodeShapes])
+    saved := gtk.save(path: "examples/data/gtk_complex_shapes_graph.html", render: render)
 
     return (
         title: title,

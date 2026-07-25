@@ -1,15 +1,23 @@
-import "str"
+import ("str", "flibrary", "system.flibrary.http")
 
 # Native HTTP stdlib declarations. Bodies are implemented by the native/runtime bridge.
 
-http.get(url: string) => ()
-http.post(url: string, body: string) => ()
-http.post(url: string, body: string, contentType: string) => ()
-http.put(url: string, body: string) => ()
-http.put(url: string, body: string, contentType: string) => ()
-http.delete(url: string) => ()
-http.serveStatic(host: string, port: int, response: string) => ()
-http.serveStatic(host: string, port: int, response: string, contentType: string) => ()
+http.get(url: string) =>
+    return (system_library_loader(module: "http", function: "get", args: {url: url}))
+http.post(url: string, body: string) =>
+    return (system_library_loader(module: "http", function: "post", args: {url: url, body: body}))
+http.post(url: string, body: string, contentType: string) =>
+    return (system_library_loader(module: "http", function: "post", args: {url: url, body: body, contentType: contentType}))
+http.put(url: string, body: string) =>
+    return (system_library_loader(module: "http", function: "put", args: {url: url, body: body}))
+http.put(url: string, body: string, contentType: string) =>
+    return (system_library_loader(module: "http", function: "put", args: {url: url, body: body, contentType: contentType}))
+http.delete(url: string) =>
+    return (system_library_loader(module: "http", function: "delete", args: {url: url}))
+http.serveStatic(host: string, port: int, response: string) =>
+    return (system_library_loader(module: "http", function: "serveStatic", args: {host: host, port: port, response: response}))
+http.serveStatic(host: string, port: int, response: string, contentType: string) =>
+    return (system_library_loader(module: "http", function: "serveStatic", args: {host: host, port: port, response: response, contentType: contentType}))
 
 # Felidae-level helpers. These keep application code data-shaped while the
 # native bridge remains responsible for network I/O.

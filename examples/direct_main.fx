@@ -45,8 +45,8 @@ Artists()=>
     ))
 
 main(arguments: system.stdin) =>
-    names := lambda(Adults, p => p.name),
-    Artists(),
+    names := lambda(Adults, p => p.name)
+    Artists()
     return (
         count: count(Adults),
         names: names,

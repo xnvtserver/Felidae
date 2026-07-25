@@ -1,5 +1,10 @@
-# Native process stdlib declarations. Bodies are implemented by the native/runtime bridge.
+import ("flibrary", "system.flibrary.process")
 
-process.platform() => ()
-process.exec(command: string) => ()
-process.sleep(milliseconds: int) => ()
+process.platform() =>
+    return (system_library_loader(module: "process", function: "platform", args: {}))
+
+process.exec(command: string) =>
+    return (system_library_loader(module: "process", function: "exec", args: {command: command}))
+
+process.sleep(milliseconds: int) =>
+    return (system_library_loader(module: "process", function: "sleep", args: {milliseconds: milliseconds}))

@@ -6,7 +6,7 @@ SourceCustomer(name: "Carol", city: "SEA", total: 140, status: "inactive")
 SourceCustomer(name: "Dana", city: "SEA", total: 320, status: "active")
 
 CustomerSeedRow(input: SourceCustomer) =>
-    c := input,
+    c := input
     return (
         name: c.name,
         city: c.city,
@@ -16,9 +16,9 @@ CustomerSeedRow(input: SourceCustomer) =>
     )
 
 SqlWhereSeed(input: SourceCustomer) =>
-    c := input,
-    where c.city == "SEA",
-    where c.total >= 100,
+    c := input
+    where c.city == "SEA"
+    where c.total >= 100
     return (
         name: c.name,
         city: c.city,
@@ -28,14 +28,14 @@ SqlWhereSeed(input: SourceCustomer) =>
     )
 
 main() =>
-    allRows := lambda(SourceCustomer, c => CustomerSeedRow(input: c)),
-    filteredRows := lambda(SourceCustomer, c => SqlWhereSeed(input: c)),
-    factText := csv.toFelidaeFacts(data: filteredRows, type: "Customer"),
+    allRows := lambda(SourceCustomer, c => CustomerSeedRow(input: c))
+    filteredRows := lambda(SourceCustomer, c => SqlWhereSeed(input: c))
+    factText := csv.toFelidaeFacts(data: filteredRows, type: "Customer")
     writeStatus := file.writeFile(
         path: "examples/data/customer_facts.fx",
         data: factText,
         mode: "write"
-    ),
+    )
     return (
         source_count: count(allRows),
         inserted_count: count(filteredRows),
