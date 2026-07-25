@@ -1,6 +1,10 @@
 #pragma once
 
 #include "Token.h"
+#include <deque>
+#include <istream>
+#include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -14,23 +18,30 @@ public:
 
 class Lexer {
 public:
-    explicit Lexer(std::string source) : source_(std::move(source)) {}
+    explicit Lexer(std::string source);
+    explicit Lexer(std::istream& input) : input_(&input) {}
 
+    Token nextToken();
     std::vector<Token> tokenize();
 
 private:
-    std::string source_;
-    size_t pos_ = 0;
+    std::unique_ptr<std::istringstream> ownedInput_;
+    std::istream* input_ = nullptr;
+    std::deque<char> chars_;
+    bool inputEnded_ = false;
+    bool endEmitted_ = false;
+    int nestingDepth_ = 0;
+    bool emittedLogicalNewline_ = false;
     int line_ = 1;
     int col_ = 1;
 
-    bool isAtEnd() const;
-    char peek() const;
-    char peekNext() const;
+    bool ensureChar(size_t offset);
+    bool isAtEnd();
+    char peek(size_t offset = 0);
+    char peekNext();
     char advance();
     bool match(char expected);
 
-    void add(TokenType type, std::string text, std::vector<Token>& out, int line, int col);
     void skipWhitespaceAndComments();
     void consumePhysicalNewline();
     Token readIdentifier();
