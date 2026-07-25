@@ -1,8 +1,7 @@
-#include "AstAnalyzer.h"
+#include "debugger/AstAnalyzer.h"
 #include "BuiltinRegistry.h"
-#include "FelidaeRuntime.h"
+#include "tooling/SourceParser.h"
 #include "Version.h"
-#include "Visualization.h"
 
 #include <algorithm>
 #include <cctype>
@@ -21,10 +20,7 @@ using namespace Felidae;
 
 struct DebugOptions {
     bool stopOnEntry = false;
-    bool inspectGraph = false;
     bool loadImports = false;
-    bool visualizeDataJson = false;
-    bool visualizeDataHtml = false;
     bool checkOnly = false;
     bool checkJson = false;
     bool lspMode = false;
@@ -32,8 +28,6 @@ struct DebugOptions {
     bool listBuiltins = false;
     bool help = false;
     std::optional<fs::path> programFile;
-    std::optional<std::string> query;
-    std::vector<std::string> remainingArgs;
 };
 
 static DebugOptions parseDebugCli(int argc, char** argv) {
@@ -44,20 +38,8 @@ static DebugOptions parseDebugCli(int argc, char** argv) {
             options.stopOnEntry = true;
             continue;
         }
-        if (arg == "--inspect-graph") {
-            options.inspectGraph = true;
-            continue;
-        }
         if (arg == "--load-imports") {
             options.loadImports = true;
-            continue;
-        }
-        if (arg == "--visualize-data-json") {
-            options.visualizeDataJson = true;
-            continue;
-        }
-        if (arg == "--visualize-data-html") {
-            options.visualizeDataHtml = true;
             continue;
         }
         if (arg == "--check") {
@@ -84,37 +66,35 @@ static DebugOptions parseDebugCli(int argc, char** argv) {
             options.help = true;
             continue;
         }
-        if (arg == "--query" && i + 1 < argc) {
-            options.query = argv[++i];
-            continue;
+        if (arg == "--inspect-graph" || arg == "--visualize-data-json" ||
+            arg == "--visualize-data-html" || arg == "--json" || arg == "--html") {
+            throw std::runtime_error(
+                "Visualization is owned by Celidae. Run celidae program.fx --json or --html");
+        }
+        if (arg == "--query" || (!arg.empty() && arg.front() == '?')) {
+            throw std::runtime_error(
+                "felidae_debug does not execute queries. Run felidae program.fx '? Query(...)'");
         }
         if (!options.programFile) {
             options.programFile = fs::path(arg);
             continue;
         }
-        if (!options.query && !arg.empty() && arg[0] == '?') {
-            options.query = arg;
-            continue;
-        }
-        options.remainingArgs.push_back(arg);
+        throw std::runtime_error("Unexpected debugger argument: " + arg);
     }
     return options;
 }
 
 static void printDebugUsage(std::ostream& out) {
-    out << "Celidae debugger and analytics host " << LANGUAGE_VERSION << "\n"
-        << "Usage: celidae <file.fx> [--check|--inspect-graph|--visualize-data-json|--visualize-data-html|--query <query>] [--load-imports]\n"
+    out << "Felidae AST debugger " << LANGUAGE_VERSION << "\n"
+        << "Pipeline: Lexer -> Parser -> AST Analyzer\n"
+        << "Usage: felidae_debug <file.fx> [--check|--check-json] [--load-imports]\n"
         << "\n"
         << "Options:\n"
-        << "  --check          Parse, load imports, and emit FELIDAE_DIAGNOSTIC records.\n"
+        << "  --check          Parse and emit FELIDAE_DIAGNOSTIC records.\n"
         << "  --check-json     Emit structured JSON diagnostics for editor integrations.\n"
-        << "  --inspect-graph  Print a lightweight runtime graph JSON between FELIDAE_GRAPH markers.\n"
-        << "  --load-imports   Load imported modules/fact DBs before query or visualization output.\n"
-        << "  --visualize-data-json  Print viewer JSON between FELIDAE_GRAPH markers.\n"
-        << "  --visualize-data-html  Print a standalone HTML data visualization document.\n"
-        << "  --query <query>  Execute a query against the loaded program.\n"
-        << "  --stop-on-entry  Wait for a debugger command before running.\n"
-        << "  --lsp            Start the Celidae JSON-RPC language server over stdio.\n"
+        << "  --load-imports   Parse source imports before AST analysis; native imports are ignored.\n"
+        << "  --stop-on-entry  Wait for a debugger command before analysis.\n"
+        << "  --lsp            Start the Felidae JSON-RPC diagnostics server over stdio.\n"
         << "  --list-libraries Print a JSON array of importable core library names.\n"
         << "                   Resolved relative to <file.fx> when given, otherwise the\n"
         << "                   current directory. Editor integrations should call this\n"
@@ -122,11 +102,13 @@ static void printDebugUsage(std::ostream& out) {
         << "  --list-builtins  Print a JSON array of {name, effect} builtin functions.\n";
 }
 
+static std::string trimText(const std::string& text);
+
 static void waitForContinue() {
     std::cout << "FELIDAE_DEBUG_STOPPED reason=entry\n" << std::flush;
     std::string command;
     while (std::getline(std::cin, command)) {
-        command = trim(command);
+        command = trimText(command);
         if (command == "continue" || command == "c" ||
             command == "next" || command == "stepIn" || command == "stepOut") {
             std::cout << "FELIDAE_DEBUG_CONTINUED\n" << std::flush;
@@ -137,6 +119,14 @@ static void waitForContinue() {
             std::exit(0);
         }
     }
+}
+
+static std::string trimText(const std::string& text) {
+    std::size_t start = 0;
+    while (start < text.size() && std::isspace(static_cast<unsigned char>(text[start]))) start++;
+    std::size_t end = text.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(text[end - 1]))) end--;
+    return text.substr(start, end - start);
 }
 
 static void printAstDiagnostics(const std::vector<AstDiagnostic>& diagnostics) {
@@ -356,7 +346,7 @@ static std::string analyzeTextJson(const fs::path& path, const std::string& text
             program = cached->second.program;
             diagnostics = cached->second.diagnostics;
         } else {
-            program = parseProgramText(text);
+            program = Tooling::parseText(text);
             diagnostics = analyzeProgramAst(program);
             textCache[key] = CachedTextProgram{text.size(), hash, ++textCacheClock, program, diagnostics};
             if (textCache.size() > kMaxTextCacheEntries) {
@@ -369,9 +359,6 @@ static std::string analyzeTextJson(const fs::path& path, const std::string& text
                 if (oldest != textCache.end()) textCache.erase(oldest);
             }
         }
-        Interpreter interpreter;
-        loadProgramRoot(path, program, interpreter);
-        interpreter.loadAllImports();
         return diagnosticsJson(diagnostics);
     } catch (const std::exception& e) {
         return errorJson(e.what());
@@ -380,11 +367,8 @@ static std::string analyzeTextJson(const fs::path& path, const std::string& text
 
 static std::string analyzeFileJson(const fs::path& path) {
     try {
-        Program program = parseProgramFile(path);
-        auto diagnostics = analyzeProgramAst(program);
-        Interpreter interpreter;
-        loadProgramRoot(path, program, interpreter);
-        interpreter.loadAllImports();
+        auto loaded = Tooling::loadProgram(path, true);
+        auto diagnostics = analyzeProgramAst(loaded.program);
         return diagnosticsJson(diagnostics);
     } catch (const std::exception& e) {
         return errorJson(e.what());
@@ -420,7 +404,7 @@ static void publishDiagnostics(const std::string& uri, const std::string& checkJ
         out << "{\"range\":{\"start\":{\"line\":" << line << ",\"character\":" << column
             << "},\"end\":{\"line\":" << line << ",\"character\":" << (column + 1)
             << "}},\"severity\":" << severity
-            << ",\"source\":\"Celidae\",\"message\":\"" << jsonEscape(message) << "\"}";
+            << ",\"source\":\"Felidae Debugger\",\"message\":\"" << jsonEscape(message) << "\"}";
         pos += 9;
     }
     out << "]}}}";
@@ -435,7 +419,7 @@ static bool readLspMessage(std::string& body) {
         if (line.empty()) break;
         const std::string header = "Content-Length:";
         if (line.rfind(header, 0) == 0) {
-            contentLength = static_cast<size_t>(std::stoul(trim(line.substr(header.size()))));
+            contentLength = static_cast<size_t>(std::stoul(trimText(line.substr(header.size()))));
         }
     }
     if (contentLength == 0) return false;
@@ -475,7 +459,6 @@ static int runLspServer() {
 int main(int argc, char** argv) {
     DebugOptions options;
     try {
-        setProgramAstCacheEnabled(true);
         options = parseDebugCli(argc, argv);
         if (options.help) {
             printDebugUsage(std::cout);
@@ -486,9 +469,9 @@ int main(int argc, char** argv) {
         }
         if (options.listLibraries) {
             fs::path startDir = options.programFile
-                ? resolveProgramEntryPath(*options.programFile).parent_path()
+                ? Tooling::resolveEntryPath(*options.programFile).parent_path()
                 : fs::current_path();
-            std::cout << librariesJson(listCoreLibraries(startDir)) << "\n" << std::flush;
+            std::cout << librariesJson(Tooling::listCoreLibraries(startDir)) << "\n" << std::flush;
             return 0;
         }
         if (options.listBuiltins) {
@@ -496,7 +479,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (!options.programFile) {
-            std::cerr << "error: Celidae requires a .fx program file\n";
+            std::cerr << "error: felidae_debug requires a .fx program file\n";
             printDebugUsage(std::cerr);
             return 1;
         }
@@ -504,7 +487,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Felidae source files must use .fx extension");
         }
 
-        const bool dataOutputOnly = options.checkJson || options.visualizeDataJson || options.visualizeDataHtml;
+        const bool dataOutputOnly = options.checkJson;
         if (!dataOutputOnly) {
             std::cout << "FELIDAE_DEBUG_READY program=" << options.programFile->string() << "\n" << std::flush;
         }
@@ -512,43 +495,20 @@ int main(int argc, char** argv) {
             waitForContinue();
         }
 
-        Program program = parseProgramFile(*options.programFile);
-        auto astDiagnostics = analyzeProgramAst(program);
-
-        Interpreter interpreter;
-        loadProgramRoot(*options.programFile, program, interpreter);
+        auto loaded = Tooling::loadProgram(*options.programFile, options.loadImports);
+        auto astDiagnostics = analyzeProgramAst(loaded.program);
         if (!dataOutputOnly) {
-            std::cerr << "Celidae analytics host running " << options.programFile->string() << "\n";
-        }
-
-        if (options.loadImports && !options.checkJson && !options.checkOnly) {
-            interpreter.loadAllImports();
+            std::cerr << "Felidae AST debugger analyzing " << options.programFile->string() << "\n";
         }
 
         if (options.checkJson) {
-            interpreter.loadAllImports();
             std::cout << diagnosticsJson(astDiagnostics) << "\n" << std::flush;
             if (hasErrorDiagnostic(astDiagnostics)) {
                 return 1;
             }
-        } else if (options.checkOnly) {
-            interpreter.loadAllImports();
+        } else {
             printAstDiagnostics(astDiagnostics);
             std::cout << "FELIDAE_CHECK_OK\n" << std::flush;
-        } else if (options.visualizeDataHtml) {
-            std::cout << interpreter.visualizeDataHtml(false) << std::flush;
-        } else if (options.inspectGraph || options.visualizeDataJson) {
-            std::cout << graphJsonEnvelope(interpreter.visualizeDataJson(false)) << std::flush;
-        } else if (options.query) {
-            auto queryGoals = parseQueryText(*options.query);
-            auto solutions = interpreter.solve(queryGoals, 1000);
-            printSolutions(interpreter, queryGoals, solutions, std::cout);
-        } else if (interpreter.hasMethod("main")) {
-            auto result = interpreter.callMain(makeSystemInput(options.remainingArgs));
-            std::cout << interpreter.valueToString(result) << "\n";
-        } else {
-            std::cout << "Program loaded successfully. No main() method found.\n"
-                      << "Use a query argument or run with --repl.\n";
         }
 
         if (!dataOutputOnly) {
@@ -556,12 +516,8 @@ int main(int argc, char** argv) {
         }
         return 0;
     } catch (const std::exception& e) {
-        if (options.checkJson || options.visualizeDataJson) {
+        if (options.checkJson) {
             std::cout << errorJson(e.what()) << "\n" << std::flush;
-            return 1;
-        }
-        if (options.visualizeDataHtml) {
-            std::cerr << "error: " << e.what() << "\n";
             return 1;
         }
         std::cerr << "error: " << e.what() << "\n";

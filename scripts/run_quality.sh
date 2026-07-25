@@ -94,7 +94,7 @@ else
     run_logged "Felidae smoke .fx programs" 0 ./build/felidae examples/then_pipeline.fx
     run_logged "Native thread smoke" 0 ./build/felidae examples/native_thread_smoke.fx
     run_logged "Direct main smoke" 0 ./build/felidae examples/direct_main.fx one two
-    run_logged "Docs Celidae check" 0 ./build/celidae docs/server.fx --check-json
+    run_logged "Docs AST debugger check" 0 ./build/felidae_debug docs/server.fx --check-json
 fi
 
 echo "Quality report written to $REPORT"

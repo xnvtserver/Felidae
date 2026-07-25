@@ -79,8 +79,6 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::JsonSet, "json:set", BuiltinEffect::Pure},
         {BuiltinId::JsonRemove, "json:remove", BuiltinEffect::Pure},
         {BuiltinId::JsonToText, "json:toText", BuiltinEffect::Pure},
-        {BuiltinId::VisualizeDataJson, "visualize:dataJson", BuiltinEffect::ReadsExternalState},
-        {BuiltinId::VisualizeDataHtml, "visualize:dataHtml", BuiltinEffect::ReadsExternalState},
         {BuiltinId::VisualizeGraphJson, "visualize:graphJson", BuiltinEffect::ReadsExternalState},
         {BuiltinId::ThreadCreateThread, "thread:createThread", BuiltinEffect::WritesExternalState},
         {BuiltinId::ThreadStart, "thread:start", BuiltinEffect::WritesExternalState},

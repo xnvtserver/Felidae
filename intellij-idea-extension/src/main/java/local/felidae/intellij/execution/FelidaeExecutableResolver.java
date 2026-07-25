@@ -12,25 +12,25 @@ import java.util.List;
 public final class FelidaeExecutableResolver {
 
     public static final String DEBUG_ENVIRONMENT_VARIABLE =
-            "CELIDAE_PATH";
-
-    public static final String LEGACY_DEBUG_ENVIRONMENT_VARIABLE =
             "FELIDAE_DEBUG_PATH";
+
+    public static final String VISUALIZER_ENVIRONMENT_VARIABLE =
+            "CELIDAE_PATH";
 
     public static final String INTERPRETER_ENVIRONMENT_VARIABLE =
             "FELIDAE_PATH";
 
     private static final String WINDOWS_DEBUG_EXECUTABLE =
-            "celidae.exe";
-
-    private static final String UNIX_DEBUG_EXECUTABLE =
-            "celidae";
-
-    private static final String WINDOWS_LEGACY_DEBUG_EXECUTABLE =
             "felidae_debug.exe";
 
-    private static final String UNIX_LEGACY_DEBUG_EXECUTABLE =
+    private static final String UNIX_DEBUG_EXECUTABLE =
             "felidae_debug";
+
+    private static final String WINDOWS_VISUALIZER_EXECUTABLE =
+            "celidae.exe";
+
+    private static final String UNIX_VISUALIZER_EXECUTABLE =
+            "celidae";
 
     private static final String WINDOWS_INTERPRETER_EXECUTABLE =
             "felidae.exe";
@@ -47,20 +47,22 @@ public final class FelidaeExecutableResolver {
     public static @Nullable Path resolveDebugger(
             @NotNull Project project
     ) {
-        Path celidae = resolve(
+        return resolve(
                 project,
                 DEBUG_ENVIRONMENT_VARIABLE,
                 WINDOWS_DEBUG_EXECUTABLE,
                 UNIX_DEBUG_EXECUTABLE
         );
-        if (celidae != null) {
-            return celidae;
-        }
+    }
+
+    public static @Nullable Path resolveVisualizer(
+            @NotNull Project project
+    ) {
         return resolve(
                 project,
-                LEGACY_DEBUG_ENVIRONMENT_VARIABLE,
-                WINDOWS_LEGACY_DEBUG_EXECUTABLE,
-                UNIX_LEGACY_DEBUG_EXECUTABLE
+                VISUALIZER_ENVIRONMENT_VARIABLE,
+                WINDOWS_VISUALIZER_EXECUTABLE,
+                UNIX_VISUALIZER_EXECUTABLE
         );
     }
 

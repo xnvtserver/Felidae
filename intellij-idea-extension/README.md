@@ -1,13 +1,13 @@
 # Felidae IntelliJ IDEA Plugin
 
 IntelliJ IDEA language support for Felidae `.fx` files, backed by the
-Celidae analysis host for diagnostics and data graph inspection.
+felidae_debug AST analysis for diagnostics and Celidae for fact graph inspection.
 
 ## Features
 
 - Registers `.fx` as Felidae files
 - Basic syntax highlighting for comments, strings, numbers, keywords, operators, and core library calls
-- Diagnostics from `celidae --check-json`, including AST analyzer warnings from the C++ Celidae host
+- Diagnostics from `felidae_debug --check-json`, including C++ AST analyzer warnings
 - Celidae visual analytics action using `celidae --inspect-graph`
 - Brace matching for `()`, `{}`, and `[]`
 - File type, action, and tool-window icons
@@ -16,7 +16,7 @@ The plugin intentionally does not implement Felidae semantic validation in Java.
 It delegates file checks to Celidae so IntelliJ IDEA, VS Code, and the
 runtime stay aligned.
 
-Celidae also exposes `celidae --lsp` for JSON-RPC stdio clients. The IntelliJ
+felidae_debug also exposes `felidae_debug --lsp` for JSON-RPC stdio clients. The IntelliJ
 plugin uses direct `--check-json` diagnostics today so it stays lightweight and
 does not duplicate language semantics in Java.
 

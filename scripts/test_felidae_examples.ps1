@@ -1,16 +1,13 @@
 param(
     [string]$Exe = "build\felidae.exe",
-    [string]$DebugExe = "build\celidae.exe"
+    [string]$CelidaeExe = "build\celidae.exe",
+    [string]$DebugExe = "build\felidae_debug.exe"
 )
 
 $ErrorActionPreference = "Continue"
 
 if (-not (Test-Path -LiteralPath $Exe)) {
     Write-Error "Missing $Exe. Build first, for example: .\build.cmd"
-}
-
-if (-not (Test-Path -LiteralPath $DebugExe) -and (Test-Path -LiteralPath "build\felidae_debug.exe")) {
-    $DebugExe = "build\felidae_debug.exe"
 }
 
 $smokeSource = "native_modules\smoke\NativeSmoke.cpp"
@@ -122,9 +119,6 @@ $directTests = @(
     @{ Name = "direct imported method call"; Args = @("examples\function_caller.fx"); Expect = @("RemoteRole called with name: Anu, role: Student", 'result: fn:tuple(value: "true")') },
     @{ Name = "direct backtracking unification"; Args = @("examples\backtracking_unification.fx"); Expect = @("choice_count: 4", "same_pair_count: 2", "employee_count: 2", "nested_count: 2") },
     @{ Name = "recursive multi-clause method"; Args = @("examples\recursive_ancestor.fx", "? AncestorOf(descendant: descendant, ancestor: ancestor)"); Expect = @('descendant = "kitten", ancestor = "cat"', 'descendant = "kitten", ancestor = "organism"', 'descendant = "cat", ancestor = "organism"') },
-    @{ Name = "interpreter viewer json loads imported country fact db"; Args = @("examples\country_query.fx", "--visualize-data-json", "--load-imports"); Expect = @("FELIDAE_GRAPH_BEGIN", '"label":"Country","kind":"fact","detail":"records=249 fields=4"', '"label":"IndiaCountry","kind":"method"') },
-    @{ Name = "interpreter viewer html loads imported country fact db"; Args = @("examples\country_query.fx", "--visualize-data-html", "--load-imports"); Expect = @("<!doctype html>", "Celidae Data Visualization", '"label":"Country","kind":"fact","detail":"records=249 fields=4"') },
-    @{ Name = "interpreter programmatic visualization builtins"; Args = @("examples\visualize_programmatic.fx"); Expect = @('json_has_country: "true"', 'json_has_records: "true"', 'html_has_document: "true"', 'wrote_html: "ok"') },
     @{ Name = "facts to csv and json"; Args = @("examples\facts_to_csv_json.fx"); Expect = @("row_count: 3", "sea_engineer_count: 2", 'csv_text: "name,role,office', 'SeaEngineer(name: \"Alice\"', 'json_text: "[{\"name\":\"Alice\"', 'parsed_rows: [{name: "Alice"') },
     @{ Name = "fact db create"; Args = @("examples\fact_db_create.fx"); Expect = @("source_count: 4", "inserted_count: 3", 'Customer(name: \"Alice\"', 'Customer(name: \"Dana\"') },
     @{ Name = "fact db update"; Args = @("examples\fact_db_update.fx"); Expect = @("updated_count: 3", "gold_count: 2", 'tier: \"gold\"') },
@@ -177,11 +171,13 @@ $directTests = @(
 )
 
 $debugCheckTests = @(
-    @{ Name = "debug check loads native module"; Args = @("examples\native_module_smoke.fx", "--check"); Expect = @("FELIDAE_CHECK_OK") },
-    @{ Name = "celidae queries country fact db through method"; Args = @("examples\country_query.fx", "? IndiaCountry(name: name, alpha2: alpha2, code: code)"); Expect = @('name = "India"', 'alpha2 = "IN"', 'code = "356"') },
-    @{ Name = "celidae profiles country fact db"; Args = @("examples\data\converted_csv_country.fx", "--inspect-graph"); Expect = @('"detail":"records=249 fields=4"', '"detail":"present=249 missing=0 coverage=100.0%"') },
-    @{ Name = "celidae viewer json loads imported country fact db"; Args = @("examples\country_query.fx", "--visualize-data-json", "--load-imports"); Expect = @("FELIDAE_GRAPH_BEGIN", '"label":"Country","kind":"fact","detail":"records=249 fields=4"', '"label":"IndiaCountry","kind":"method"') },
-    @{ Name = "celidae viewer html loads imported country fact db"; Args = @("examples\country_query.fx", "--visualize-data-html", "--load-imports"); Expect = @("<!doctype html>", "Celidae Data Visualization", '"label":"Country","kind":"fact","detail":"records=249 fields=4"') }
+    @{ Name = "debug AST check accepts native declaration import"; Args = @("examples\native_module_smoke.fx", "--check"); Expect = @("FELIDAE_CHECK_OK") }
+)
+
+$celidaeTests = @(
+    @{ Name = "celidae profiles country fact db"; Args = @("examples\data\converted_csv_country.fx", "--inspect-graph"); Expect = @('"detail":"records=249 fields=3"', '"detail":"present=249 missing=0 coverage=100.0%"') },
+    @{ Name = "celidae viewer json loads imported country fact db"; Args = @("examples\country_query.fx", "--visualize-data-json", "--load-imports"); Expect = @("FELIDAE_GRAPH_BEGIN", '"label":"Country","kind":"fact","detail":"records=249 fields=3"', '"label":"IndiaCountry","kind":"method"') },
+    @{ Name = "celidae viewer html loads imported country fact db"; Args = @("examples\country_query.fx", "--visualize-data-html", "--load-imports"); Expect = @("<!doctype html>", "Celidae Fact Graph", '"label":"Country","kind":"fact","detail":"records=249 fields=3"') }
 )
 
 $directInputTests = @(
@@ -305,7 +301,33 @@ if (Test-Path -LiteralPath $DebugExe) {
         }
     }
 } else {
-    Write-Host "[SKIP] debug check loads native module (missing $DebugExe)"
+    Write-Host "[SKIP] debugger AST checks (missing $DebugExe)"
+}
+
+if (Test-Path -LiteralPath $CelidaeExe) {
+    foreach ($test in $celidaeTests) {
+        $output = & $CelidaeExe @($test.Args) 2>&1
+        $text = ($output | Out-String).Trim()
+        $ok = $LASTEXITCODE -eq 0
+        foreach ($expected in $test.Expect) {
+            if (-not $text.Contains($expected)) {
+                $ok = $false
+                break
+            }
+        }
+        if ($ok) {
+            Write-Host "[PASS] $($test.Name)"
+        } else {
+            $failed++
+            Write-Host "[FAIL] $($test.Name)"
+            Write-Host "  Args:  $($test.Args -join ' ')"
+            Write-Host "  Exit:  $LASTEXITCODE"
+            Write-Host "  Output:"
+            Write-Host $text
+        }
+    }
+} else {
+    Write-Host "[SKIP] Celidae visualization checks (missing $CelidaeExe)"
 }
 
 foreach ($test in $directInputTests) {

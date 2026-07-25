@@ -45,9 +45,6 @@ public:
     std::shared_ptr<Expr> callMain(const std::shared_ptr<Expr>& systemInput);
     std::shared_ptr<Expr> callAutoEntry();
     std::string valueToString(const std::shared_ptr<Expr>& value) const;
-    std::string runtimeGraphJson() const;
-    std::string visualizeDataJson(bool loadImports = false);
-    std::string visualizeDataHtml(bool loadImports = false);
     std::string runtimeMetricsJson() const;
     void loadAllImports();
 

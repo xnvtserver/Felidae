@@ -1,7 +1,6 @@
 #include "Interpreter.h"
 #include "FelidaeRuntime.h"
 #include "Version.h"
-#include "Visualization.h"
 
 #include <chrono>
 #include <cctype>
@@ -19,9 +18,6 @@ struct CliOptions {
     bool showVersion = false;
     bool repl = false;
     bool debug = false;
-    bool loadImports = false;
-    bool visualizeDataJson = false;
-    bool visualizeDataHtml = false;
     bool metricsJson = false;
     size_t benchmarkRepeat = 1;
     std::optional<fs::path> programFile;
@@ -54,21 +50,14 @@ static CliOptions parseCli(int argc, char** argv) {
             options.debug = true;
             continue;
         }
-        if (arg == "--load-imports") {
-            options.loadImports = true;
-            continue;
-        }
-        if (arg == "--visualize-data-json") {
-            options.visualizeDataJson = true;
-            continue;
-        }
-        if (arg == "--visualize-data-html") {
-            options.visualizeDataHtml = true;
-            continue;
-        }
         if (arg == "--metrics-json") {
             options.metricsJson = true;
             continue;
+        }
+        if (arg == "--visualize-data-json" || arg == "--visualize-data-html" ||
+            arg == "--inspect-graph" || arg == "--load-imports") {
+            throw std::runtime_error(
+                "Visualization is owned by Celidae. Run celidae program.fx --json or --html --load-imports");
         }
         if (arg == "--benchmark-repeat") {
             if (i + 1 >= argc) {
@@ -126,8 +115,6 @@ static void printHelp() {
               << "  felidae --repl program.fx\n"
               << "  felidae program.fx --repl\n"
               << "  felidae program.fx --debug\n"
-              << "  felidae program.fx --visualize-data-json --load-imports\n"
-              << "  felidae program.fx --visualize-data-html --load-imports\n"
               << "  felidae program.fx --metrics-json\n"
               << "  felidae program.fx '? Query(key: x)' --benchmark-repeat 100 --metrics-json\n"
               << "  felidae --help\n"
@@ -138,9 +125,6 @@ static void printHelp() {
               << "  --repl program.fx                   Start interactive REPL\n"
               << "  program.fx --repl                   Start interactive REPL\n"
               << "  program.fx --debug                  Run with debug adapter diagnostics enabled\n"
-              << "  program.fx --visualize-data-json    Emit Celidae-compatible graph JSON markers\n"
-              << "  program.fx --visualize-data-html    Emit standalone Celidae visualization HTML\n"
-              << "  --load-imports                      Include imported modules/fact DBs in visualization output\n"
               << "  --metrics-json                      Emit load and runtime performance counters to stderr\n"
               << "  --benchmark-repeat N                Repeat an external query in one runtime for benchmarking\n"
               << "  --help                              Show this help screen\n"
@@ -248,18 +232,6 @@ int main(int argc, char** argv) {
         };
         if (options.debug) {
             std::cerr << "Felidae debug mode enabled for " << entryFile.string() << "\n";
-        }
-
-        if (options.visualizeDataHtml) {
-            std::cout << interpreter.visualizeDataHtml(options.loadImports);
-            reportMetrics();
-            return 0;
-        }
-
-        if (options.visualizeDataJson) {
-            std::cout << graphJsonEnvelope(interpreter.visualizeDataJson(options.loadImports));
-            reportMetrics();
-            return 0;
         }
 
         if (options.repl) {

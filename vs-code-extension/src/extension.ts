@@ -1568,9 +1568,9 @@ async function visualizeFelidae(context: vscode.ExtensionContext, uri?: vscode.U
 }
 
 async function loadRuntimeGraph(document: vscode.TextDocument): Promise<RuntimeGraph | undefined> {
-  const interpreterPath = resolveDebugInterpreterPath(document.uri);
+  const interpreterPath = resolveCelidaePath(document.uri);
   if (!fs.existsSync(interpreterPath)) {
-    vscode.window.showWarningMessage(`Celidae debugger not found. Using static source graph instead: ${interpreterPath}`);
+    vscode.window.showWarningMessage(`Celidae visualizer not found. Using static source graph instead: ${interpreterPath}`);
     return undefined;
   }
 
@@ -2508,25 +2508,25 @@ function resolveInterpreterPath(documentUri: vscode.Uri): string {
 }
 
 function resolveDebugInterpreterPath(documentUri: vscode.Uri): string {
+  const debuggerFromEnv = process.env.FELIDAE_DEBUG_PATH;
+  if (debuggerFromEnv && fs.existsSync(debuggerFromEnv)) return debuggerFromEnv;
+
+  const config = vscode.workspace.getConfiguration("felidae");
+  return resolveConfiguredPath(
+    documentUri,
+    config.get<string>("debugInterpreterPath", "build/felidae_debug.exe")
+  );
+}
+
+function resolveCelidaePath(documentUri: vscode.Uri): string {
   const celidaeFromEnv = process.env.CELIDAE_PATH;
   if (celidaeFromEnv && fs.existsSync(celidaeFromEnv)) return celidaeFromEnv;
 
   const config = vscode.workspace.getConfiguration("felidae");
-  const celidaePath = config.get<string>("celidaePath", "");
-  const configuredPath = celidaePath && celidaePath.trim()
-    ? celidaePath
-    : config.get<string>("debugInterpreterPath", "build/celidae.exe");
-  const resolved = resolveConfiguredPath(documentUri, configuredPath);
-  if (fs.existsSync(resolved)) return resolved;
-
-  const legacyFromEnv = process.env.FELIDAE_DEBUG_PATH;
-  if (legacyFromEnv && fs.existsSync(legacyFromEnv)) return legacyFromEnv;
-
-  if (configuredPath === "build/celidae.exe" || configuredPath === "build/celidae") {
-    const legacy = resolveConfiguredPath(documentUri, process.platform === "win32" ? "build/felidae_debug.exe" : "build/felidae_debug");
-    if (fs.existsSync(legacy)) return legacy;
-  }
-  return resolved;
+  return resolveConfiguredPath(
+    documentUri,
+    config.get<string>("celidaePath", "build/celidae.exe")
+  );
 }
 
 function resolveConfiguredPath(documentUri: vscode.Uri, configuredPath: string): string {
@@ -2570,7 +2570,7 @@ function runtimeCheckDiagnostics(document: vscode.TextDocument): Promise<vscode.
       const range = new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 1));
       resolve([new vscode.Diagnostic(
         range,
-        `Celidae debugger not found: ${interpreterPath}. Runtime validation via --check-json is disabled.`,
+        `Felidae AST debugger not found: ${interpreterPath}. Parser and AST validation via --check-json is disabled.`,
         vscode.DiagnosticSeverity.Warning
       )]);
       return;
@@ -2640,7 +2640,7 @@ function parseRuntimeJsonDiagnostics(document: vscode.TextDocument, stdout: stri
             new vscode.Position(boundedLine, boundedColumn),
             new vscode.Position(boundedLine, Math.min(boundedColumn + 1, lineText.length))
           ),
-          item.message ?? "Celidae diagnostic",
+          item.message ?? "Felidae AST diagnostic",
           severity
         );
       });
@@ -2695,7 +2695,7 @@ function formatRuntimeCheckMessage(text: string): { message: string; severity: v
   } else if (/^Module '.*' not found/.test(message)) {
     message = `${message}. Check the import path, native module name, or workspace-relative Celidae configuration.`;
   } else if (/expects argument/.test(message)) {
-    message = `${message}. This was reported by Celidae --check-json while validating native/module argument contracts.`;
+    message = `${message}. This was reported by felidae_debug --check-json during parser and AST validation.`;
   } else if (/Unknown field/.test(message)) {
     message = `${message}. Named fact calls must match the declared fact fields.`;
   }
@@ -2705,7 +2705,7 @@ function formatRuntimeCheckMessage(text: string): { message: string; severity: v
 
 async function confirmRuntimeCheck(document: vscode.TextDocument, actionLabel: string): Promise<boolean> {
   const interpreterPath = resolveDebugInterpreterPath(document.uri);
-  const installed = await ensureInterpreterInstalled(interpreterPath, "Celidae debugger");
+  const installed = await ensureInterpreterInstalled(interpreterPath, "Felidae AST debugger");
   if (!installed) return false;
 
   const diagnostics = await runtimeCheckDiagnostics(document);
@@ -2713,7 +2713,7 @@ async function confirmRuntimeCheck(document: vscode.TextDocument, actionLabel: s
   if (!hasErrors) return true;
 
   const choice = await vscode.window.showWarningMessage(
-    `Celidae --check-json reported errors. ${actionLabel} anyway?`,
+    `felidae_debug --check-json reported errors. ${actionLabel} anyway?`,
     `${actionLabel} Anyway`,
     "Cancel"
   );
@@ -2836,7 +2836,7 @@ async function debugMain(uri?: vscode.Uri): Promise<void> {
   if (!canDebug) return;
 
   const interpreterPath = resolveDebugInterpreterPath(document.uri);
-  const installed = await ensureInterpreterInstalled(interpreterPath, "Celidae debugger");
+  const installed = await ensureInterpreterInstalled(interpreterPath, "Felidae AST debugger");
   if (!installed) return;
 
   const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
@@ -2893,7 +2893,7 @@ class FelidaeDebugAdapter implements vscode.DebugAdapter {
     }
 
     if (request.command === "threads") {
-      this.sendResponse(request, { threads: [{ id: 1, name: "Celidae debugger" }] });
+      this.sendResponse(request, { threads: [{ id: 1, name: "Felidae AST debugger" }] });
       return;
     }
 
@@ -3394,7 +3394,7 @@ class FelidaeDebugConfigurationProvider implements vscode.DebugConfigurationProv
     config.name ??= "Debug Felidae Query";
     config.request ??= "launch";
     config.program ??= activeDocument?.uri.fsPath ?? "${file}";
-    config.interpreterPath ??= workspacePath ? path.join(workspacePath, "build", "celidae.exe") : resolveDebugInterpreterPath(activeDocument?.uri ?? vscode.Uri.file(""));
+    config.interpreterPath ??= workspacePath ? path.join(workspacePath, "build", "felidae_debug.exe") : resolveDebugInterpreterPath(activeDocument?.uri ?? vscode.Uri.file(""));
     config.stopOnEntry ??= true;
     return config;
   }

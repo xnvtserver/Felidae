@@ -13,7 +13,6 @@ endif()
 add_executable(felidae
     src/main.cpp
     src/FelidaeRuntime.cpp
-    src/Visualization.cpp
     src/BuiltinRegistry.cpp
     src/Lexer.cpp
     src/Parser.cpp
@@ -37,20 +36,12 @@ if(UNIX AND NOT APPLE)
 endif()
 
 set(CELIDAE_SOURCES
-    src/felidae_debug.cpp
-    src/FelidaeRuntime.cpp
-    src/Visualization.cpp
+    src/celidae/main.cpp
+    src/celidae/Visualization.cpp
+    src/tooling/SourceParser.cpp
     src/BuiltinRegistry.cpp
     src/Lexer.cpp
     src/Parser.cpp
-    src/Interpreter.cpp
-    src/Env.cpp
-    src/Memory.cpp
-    src/NativeRuntime.cpp
-    src/AstAnalyzer.cpp
-    native_modules/csv/NativeCsv.cpp
-    native_modules/http/NativeHttp.cpp
-    native_modules/process/NativeProcess.cpp
 )
 
 add_executable(celidae ${CELIDAE_SOURCES})
@@ -60,23 +51,22 @@ target_compile_options(celidae PRIVATE
     $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
-if(UNIX AND NOT APPLE)
-    target_link_libraries(celidae PRIVATE dl)
-endif()
+set(FELIDAE_DEBUG_SOURCES
+    src/debugger/main.cpp
+    src/debugger/AstAnalyzer.cpp
+    src/tooling/SourceParser.cpp
+    src/BuiltinRegistry.cpp
+    src/Lexer.cpp
+    src/Parser.cpp
+)
 
-# Legacy target kept so existing editor/plugin installations do not break while
-# Celidae becomes the product name for debugger, analytics, and visualization.
-add_executable(felidae_debug ${CELIDAE_SOURCES})
+add_executable(felidae_debug ${FELIDAE_DEBUG_SOURCES})
 target_include_directories(felidae_debug PRIVATE src)
 target_include_directories(felidae_debug SYSTEM PRIVATE third_party)
 target_compile_options(felidae_debug PRIVATE
     $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
-if(UNIX AND NOT APPLE)
-    target_link_libraries(felidae_debug PRIVATE dl)
-endif()
-
 add_library(felidae_smoke SHARED native_modules/smoke/NativeSmoke.cpp)
 set_target_properties(felidae_smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/smoke"
@@ -138,8 +128,4 @@ find_package(Eigen3 QUIET)
 if(Eigen3_FOUND)
     target_compile_definitions(felidae PRIVATE FELIDAE_HAS_EIGEN=1)
     target_link_libraries(felidae PRIVATE Eigen3::Eigen)
-    target_compile_definitions(celidae PRIVATE FELIDAE_HAS_EIGEN=1)
-    target_link_libraries(celidae PRIVATE Eigen3::Eigen)
-    target_compile_definitions(felidae_debug PRIVATE FELIDAE_HAS_EIGEN=1)
-    target_link_libraries(felidae_debug PRIVATE Eigen3::Eigen)
 endif()

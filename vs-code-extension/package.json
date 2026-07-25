@@ -1,7 +1,7 @@
 {
   "name": "felidae-vscode",
   "displayName": "Felidae",
-  "description": "Felidae .fx language support with Celidae diagnostics, debugging, and data visualization.",
+  "description": "Felidae .fx support with AST debugger diagnostics and Celidae fact visualization.",
   "version": "0.0.2",
   "publisher": "local",
   "repository": {
@@ -124,8 +124,8 @@
               },
               "interpreterPath": {
                 "type": "string",
-                "description": "Path to the Celidae debugger and analytics executable.",
-                "default": "${workspaceFolder}/build/celidae.exe"
+                "description": "Path to the Felidae AST debugger executable.",
+                "default": "${workspaceFolder}/build/felidae_debug.exe"
               },
               "stopOnEntry": {
                 "type": "boolean",
@@ -141,7 +141,7 @@
             "request": "launch",
             "name": "Debug Felidae Main",
             "program": "${file}",
-            "interpreterPath": "${workspaceFolder}/build/celidae.exe",
+            "interpreterPath": "${workspaceFolder}/build/felidae_debug.exe",
             "stopOnEntry": true
           },
           {
@@ -150,7 +150,7 @@
             "name": "Debug Felidae Query",
             "program": "${file}",
             "query": "? Engineer(name: name)",
-            "interpreterPath": "${workspaceFolder}/build/celidae.exe",
+            "interpreterPath": "${workspaceFolder}/build/felidae_debug.exe",
             "stopOnEntry": true
           }
         ]
@@ -172,12 +172,12 @@
         "felidae.celidaePath": {
           "type": "string",
           "default": "build/celidae.exe",
-          "description": "Path to the Celidae debugger, diagnostics, and data visualization executable. Relative paths are resolved from the workspace folder."
+          "description": "Path to the Celidae fact relationship visualizer. Relative paths are resolved from the workspace folder."
         },
         "felidae.debugInterpreterPath": {
           "type": "string",
-          "default": "build/celidae.exe",
-          "description": "Legacy Celidae path setting. Prefer felidae.celidaePath; build/felidae_debug.exe is still used as a fallback for older local builds."
+          "default": "build/felidae_debug.exe",
+          "description": "Path to the Felidae Lexer-Parser-AST Analyzer debugger. Relative paths are resolved from the workspace folder."
         }
       }
     },
