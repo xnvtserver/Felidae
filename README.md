@@ -5,11 +5,17 @@ the same shape. Facts act as a lightweight database, methods transform and query
 those facts explicitly, and native modules keep heavy work outside the core
 interpreter.
 
-The repository contains two C++ products:
+The repository contains three isolated C++ products:
 
-- `felidae.exe`: the lean execution runtime for running programs and queries.
-- `celidae.exe`: the diagnostics, debugging, analytics, LSP, and visualization
-  host used by editor integrations.
+- `felidae.exe`: `Lexer -> Parser -> Interpreter`, for programs and queries.
+- `celidae.exe`: `Lexer -> Parser -> Visualization`, for non-programmatic fact,
+  property, inheritance, and rule-relationship graphs.
+- `felidae_debug.exe`: `Lexer -> Parser -> AST Analyzer`, for diagnostics, AST
+  checks, and editor LSP integration.
+
+Celidae does not execute `main`, methods, queries, builtins, or native libraries.
+The debugger does not execute or visualize programs. These are separate build
+targets and source folders rather than modes of one runtime.
 
 ## Language Shape
 
@@ -60,24 +66,23 @@ build\felidae.exe examples\main.fx "? Employee(name: name)"
 Check a file with structured diagnostics:
 
 ```powershell
-build\celidae.exe examples\main.fx --check-json
+build\felidae_debug.exe examples\main.fx --check-json
 ```
 
-Start the Celidae JSON-RPC language server:
+Start the Felidae debugger JSON-RPC language server:
 
 ```powershell
-build\celidae.exe --lsp
+build\felidae_debug.exe --lsp
 ```
 
 Create a visualization snapshot:
 
 ```powershell
-build\celidae.exe examples\main.fx --visualize-data-json --load-imports
-build\celidae.exe examples\main.fx --visualize-data-html --load-imports
+build\celidae.exe examples\main.fx --json --load-imports
+build\celidae.exe examples\main.fx --html --load-imports
 ```
 
-`build\felidae_debug.exe` is still built as a legacy compatibility binary for
-older editor installs.
+Target-specific C++ files live under `src/celidae` and `src/debugger`.
 
 ## Build
 
@@ -167,9 +172,9 @@ build\felidae.exe examples\felidae_test_suite.fx
 Useful focused checks:
 
 ```powershell
-build\celidae.exe examples\diagnostics_ast_warnings.fx --check-json
-build\celidae.exe examples\invalid\undeclared_body_var.fx --check-json
-build\celidae.exe examples\main.fx --visualize-data-json --load-imports
+build\felidae_debug.exe examples\diagnostics_ast_warnings.fx --check-json
+build\felidae_debug.exe examples\invalid\undeclared_body_var.fx --check-json
+build\celidae.exe examples\main.fx --json --load-imports
 ```
 
 Run the production quality gate:
@@ -204,7 +209,7 @@ See [docs_native_modules.md](docs_native_modules.md) for the native ABI.
 
 The VS Code extension is in [vs-code-extension](vs-code-extension). It provides
 syntax highlighting, file icons, snippets, import navigation, hovers, CodeLens
-actions, debugger integration, Celidae-backed Problems diagnostics, and a data
+actions, debugger integration, felidae_debug-backed Problems diagnostics, and a data
 visualizer with SVG/HTML export.
 
 Development commands:
@@ -227,7 +232,7 @@ code --install-extension felidae-vscode-0.0.2.vsix
 
 The IntelliJ plugin is in [intellij-idea-extension](intellij-idea-extension). It
 registers `.fx` files, highlights Felidae syntax, delegates diagnostics to
-Celidae `--check-json`, and adds run/check/visualize actions.
+felidae_debug `--check-json`, and adds run/check/visualize actions.
 
 Development commands:
 

@@ -146,8 +146,8 @@ public final class FelidaeProcessRunner {
          * Interpreter:
          *   felidae.exe file.fx
          *
-         * Celidae debugger and analytics:
-         *   celidae.exe file.fx --check-json
+         * Felidae AST debugger:
+         *   felidae_debug.exe file.fx --check-json
          */
         commandLine.addParameter(sourceFile.toString());
         commandLine.addParameters(trailingArguments);

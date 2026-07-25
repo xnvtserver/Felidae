@@ -48,7 +48,7 @@ Section: devel
 Priority: optional
 Architecture: amd64
 Maintainer: Felidae Project <noreply@github.com>
-Description: Felidae logic language runtime and Celidae diagnostics host
+Description: Felidae runtime, AST debugger, and Celidae fact visualizer
 EOF
     dpkg-deb --build "$debroot" "$DIST_DIR/felidae_${VERSION}_amd64.deb" >/dev/null
     echo "Created dist/felidae_${VERSION}_amd64.deb"

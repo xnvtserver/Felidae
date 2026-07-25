@@ -12,7 +12,6 @@ New-Item -ItemType Directory -Force -Path "build" | Out-Null
 
 $commonSources = @(
     "src/FelidaeRuntime.cpp",
-    "src/Visualization.cpp",
     "src/BuiltinRegistry.cpp",
     "src/Lexer.cpp",
     "src/Parser.cpp",
@@ -25,7 +24,23 @@ $commonSources = @(
     "native_modules/process/NativeProcess.cpp"
 )
 
-$debugSources = $commonSources + @("src/AstAnalyzer.cpp")
+$celidaeSources = @(
+    "src/celidae/main.cpp",
+    "src/celidae/Visualization.cpp",
+    "src/tooling/SourceParser.cpp",
+    "src/BuiltinRegistry.cpp",
+    "src/Lexer.cpp",
+    "src/Parser.cpp"
+)
+
+$debugSources = @(
+    "src/debugger/main.cpp",
+    "src/debugger/AstAnalyzer.cpp",
+    "src/tooling/SourceParser.cpp",
+    "src/BuiltinRegistry.cpp",
+    "src/Lexer.cpp",
+    "src/Parser.cpp"
+)
 
 $extraLibs = @()
 if ($env:FELIDAE_DLOPEN_LIBS) {
@@ -104,8 +119,8 @@ if ($Target -eq "windows-x64") { $suffix = "-windows-x64" }
 if ($Target -eq "windows-arm64") { $suffix = "-windows-arm64" }
 
 Invoke-FelidaeBuild -Output "build/felidae$suffix.exe" -Sources (@("src/main.cpp") + $commonSources)
-Invoke-FelidaeBuild -Output "build/celidae$suffix.exe" -Sources (@("src/felidae_debug.cpp") + $debugSources)
-Invoke-FelidaeBuild -Output "build/felidae_debug$suffix.exe" -Sources (@("src/felidae_debug.cpp") + $debugSources)
+Invoke-FelidaeBuild -Output "build/celidae$suffix.exe" -Sources $celidaeSources
+Invoke-FelidaeBuild -Output "build/felidae_debug$suffix.exe" -Sources $debugSources
 
 New-Item -ItemType Directory -Force -Path "native_modules/wordnet" | Out-Null
 Write-Host "Building native_modules/wordnet/wordnet.dll"

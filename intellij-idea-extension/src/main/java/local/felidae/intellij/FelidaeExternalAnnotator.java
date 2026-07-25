@@ -111,10 +111,9 @@ public final class FelidaeExternalAnnotator extends ExternalAnnotator<
         if (debugHost == null || !Files.isRegularFile(debugHost)) {
             diagnostics.add(new CheckDiagnostic(
                     "warning",
-                    "Celidae debugger executable was not found. " +
+                    "Felidae AST debugger executable was not found. " +
                             "Set " + FelidaeExecutableResolver.DEBUG_ENVIRONMENT_VARIABLE +
-                            " or place build/celidae.exe under the project root. " +
-                            "Legacy build/felidae_debug.exe is still supported.",
+                            " or place build/felidae_debug.exe under the project root.",
                     1,
                     1
             ));
@@ -237,7 +236,7 @@ public final class FelidaeExternalAnnotator extends ExternalAnnotator<
         } catch (ExecutionException exception) {
             diagnostics.add(new CheckDiagnostic(
                     "warning",
-                    "Cannot collect Celidae diagnostics: " +
+                    "Cannot collect Felidae AST diagnostics: " +
                             rootCauseMessage(exception),
                     1,
                     1
@@ -424,7 +423,7 @@ public final class FelidaeExternalAnnotator extends ExternalAnnotator<
             diagnostics.add(new CheckDiagnostic(
                     severity,
                     message.isBlank()
-                            ? "Celidae diagnostic"
+                            ? "Felidae AST diagnostic"
                             : message,
                     lineNumber,
                     columnNumber

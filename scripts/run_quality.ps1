@@ -117,7 +117,7 @@ if ($RunFullExamples) {
         & (Join-Path $root "build\felidae.exe") "examples\then_pipeline.fx"
         & (Join-Path $root "build\felidae.exe") "examples\native_thread_smoke.fx"
         & (Join-Path $root "build\felidae.exe") "examples\direct_main.fx" "one" "two"
-        & (Join-Path $root "build\celidae.exe") "docs\server.fx" "--check-json"
+        & (Join-Path $root "build\felidae_debug.exe") "docs\server.fx" "--check-json"
     } | Out-Null
 }
 

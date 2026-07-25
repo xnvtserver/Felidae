@@ -1,4 +1,4 @@
-#include "AstAnalyzer.h"
+#include "debugger/AstAnalyzer.h"
 #include "Symbol.h"
 
 #include <algorithm>

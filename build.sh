@@ -183,12 +183,19 @@ if [[ "$TARGET" == "android" ]]; then
 fi
 
 COMMON_SOURCES=(
-    src/FelidaeRuntime.cpp src/Visualization.cpp src/BuiltinRegistry.cpp
+    src/FelidaeRuntime.cpp src/BuiltinRegistry.cpp
     src/Lexer.cpp src/Parser.cpp src/Interpreter.cpp src/Env.cpp
     src/Memory.cpp src/NativeRuntime.cpp
     native_modules/csv/NativeCsv.cpp native_modules/http/NativeHttp.cpp native_modules/process/NativeProcess.cpp
 )
-DEBUG_SOURCES=("${COMMON_SOURCES[@]}" src/AstAnalyzer.cpp)
+CELIDAE_SOURCES=(
+    src/celidae/main.cpp src/celidae/Visualization.cpp src/tooling/SourceParser.cpp
+    src/BuiltinRegistry.cpp src/Lexer.cpp src/Parser.cpp
+)
+DEBUG_SOURCES=(
+    src/debugger/main.cpp src/debugger/AstAnalyzer.cpp src/tooling/SourceParser.cpp
+    src/BuiltinRegistry.cpp src/Lexer.cpp src/Parser.cpp
+)
 read -r -a EXTRA_LIBS <<< "${FELIDAE_DLOPEN_LIBS:-}"
 
 if [[ "$TARGET" == "wasm" ]]; then
@@ -212,10 +219,10 @@ echo "Building $FELIDAE"
 "$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -Isrc -isystem third_party src/main.cpp "${COMMON_SOURCES[@]}" -o "$FELIDAE" "${EXTRA_LIBS[@]}"
 
 echo "Building $CELIDAE"
-"$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -Isrc -isystem third_party src/felidae_debug.cpp "${DEBUG_SOURCES[@]}" -o "$CELIDAE" "${EXTRA_LIBS[@]}"
+"$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -Isrc -isystem third_party "${CELIDAE_SOURCES[@]}" -o "$CELIDAE"
 
 echo "Building $FELIDAE_DEBUG"
-"$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -Isrc -isystem third_party src/felidae_debug.cpp "${DEBUG_SOURCES[@]}" -o "$FELIDAE_DEBUG" "${EXTRA_LIBS[@]}"
+"$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -Isrc -isystem third_party "${DEBUG_SOURCES[@]}" -o "$FELIDAE_DEBUG"
 
 WORDNET_LIB="native_modules/wordnet/libwordnet.so"
 if [[ "$(uname -s)" == "Darwin" ]]; then WORDNET_LIB="native_modules/wordnet/libwordnet.dylib"; fi

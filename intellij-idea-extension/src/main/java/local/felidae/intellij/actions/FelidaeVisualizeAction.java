@@ -40,7 +40,7 @@ public final class FelidaeVisualizeAction
         }
 
         Path celidae =
-                FelidaeExecutableResolver.resolveDebugger(project);
+                FelidaeExecutableResolver.resolveVisualizer(project);
 
         if (celidae == null) {
             FelidaeConsoleService console =

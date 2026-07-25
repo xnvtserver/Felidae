@@ -11,7 +11,7 @@ MilestoneTimeline() =>
     logic := MilestoneItem(step: "2", title: "Facts, Rules, And Methods"),
     database := MilestoneItem(step: "3", title: "Fact Database And Aggregates"),
     libraries := MilestoneItem(step: "4", title: "Core Libraries"),
-    diagnostics := MilestoneItem(step: "5", title: "Celidae Diagnostics And Visualizer"),
+    diagnostics := MilestoneItem(step: "5", title: "AST Debugger And Celidae Visualizer"),
     editors := MilestoneItem(step: "6", title: "Editor Extensions"),
     wasm := MilestoneItem(step: "7", title: "WASM Playground"),
     releases := MilestoneItem(step: "Next", title: "Stable Releases And Packages"),
@@ -25,4 +25,4 @@ MilestoneTimeline() =>
 
 DocsMilestones() =>
     timeline := MilestoneTimeline(),
-    return (HtmlRichSectionData(id: "milestones", title: "Language Milestones", p: "Felidae milestones are the short development path of the language itself.", p2: "This list intentionally stays compact: interpreter first, then logic features, fact storage, libraries, tooling, editor support, browser execution, and stable packages.", content: timeline, code: "MilestoneItem(step: \"1\", title: \"Interpreter\")\nMilestoneItem(step: \"3\", title: \"Fact Database And Aggregates\")\nMilestoneItem(step: \"7\", title: \"WASM Playground\")", note: "Keep this page short. Detailed explanations belong in the dedicated documentation sections.", code2: "Current progression:\n1. Interpreter\n2. Facts, rules, and methods\n3. Fact database and aggregates\n4. Core libraries\n5. Celidae diagnostics and visualizer\n6. Editor extensions\n7. WASM playground\nNext. Stable releases and packages")).
+    return (HtmlRichSectionData(id: "milestones", title: "Language Milestones", p: "Felidae milestones are the short development path of the language itself.", p2: "This list intentionally stays compact: interpreter first, then logic features, fact storage, libraries, tooling, editor support, browser execution, and stable packages.", content: timeline, code: "MilestoneItem(step: \"1\", title: \"Interpreter\")\nMilestoneItem(step: \"3\", title: \"Fact Database And Aggregates\")\nMilestoneItem(step: \"7\", title: \"WASM Playground\")", note: "Keep this page short. Detailed explanations belong in the dedicated documentation sections.", code2: "Current progression:\n1. Interpreter\n2. Facts, rules, and methods\n3. Fact database and aggregates\n4. Core libraries\n5. AST debugger and Celidae visualizer\n6. Editor extensions\n7. WASM playground\nNext. Stable releases and packages")).

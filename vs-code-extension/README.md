@@ -13,7 +13,7 @@ VS Code support for Felidae `.fx` files.
 - Snippets for `main`, imports, facts, methods, lambdas, returns, core libraries, and named arguments
 - Import links, builtin hover docs, and Go to Definition for facts, methods, and core libraries
 - CodeLens actions beside `main(...)`: `Run | Debug | Visualize`
-- Problems diagnostics reported by `celidae --check-json`
+- Problems diagnostics reported by `felidae_debug --check-json`
 - Debug Console query execution while a Celidae debug session is active
 - Simulated breakpoints, Step Over, Step In, and Step Out for source navigation
 - Data visualizer using debugger graph snapshots, with SVG export
@@ -37,7 +37,7 @@ debugger is the source of truth for Problems diagnostics, and the extension
 calls:
 
 ```powershell
-build\celidae.exe path\to\file.fx --check-json
+build\felidae_debug.exe path\to\file.fx --check-json
 ```
 
 Celidae also provides `build\celidae.exe --lsp` for JSON-RPC stdio clients.
@@ -82,7 +82,7 @@ The normal run command uses:
 }
 ```
 
-Before execution, the extension checks the file through `celidae --check-json`.
+Before execution, the extension checks the file through `felidae_debug --check-json`.
 Direct fact declarations such as `Employee(name: "Alice")` are valid. The
 debugger reports an error only when a method body tries to use a fact type as an
 implicit iterator, for example `Employee(e)`; use `lambda(Employee, e => ...)`

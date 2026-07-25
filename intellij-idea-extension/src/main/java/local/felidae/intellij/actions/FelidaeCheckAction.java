@@ -49,12 +49,10 @@ public final class FelidaeCheckAction
             console.show();
             console.clear();
             console.printError(
-                    "Celidae debugger executable was not found.\n\n" +
+                    "Felidae AST debugger executable was not found.\n\n" +
                             "Expected location:\n" +
-                            "  <project>/build/celidae.exe\n\n" +
-                            "Legacy fallback:\n" +
                             "  <project>/build/felidae_debug.exe\n\n" +
-                            "Alternatively, configure the CELIDAE_PATH " +
+                            "Alternatively, configure the FELIDAE_DEBUG_PATH " +
                             "environment variable.\n"
             );
 
