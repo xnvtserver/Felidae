@@ -11,16 +11,18 @@
 
 Nine measured processes per fixture, following one warm-up. `Total CV` exposes
 host process-launch and scheduling noise; load and execution are medians from
-the interpreter's internal steady-clock metrics.
+the interpreter's internal steady-clock metrics. Search cases run the
+Felidae-level algorithms 10,000 times in-process; they are not interpreter
+builtins.
 
 | Case | Total median | Total CV | Load median | Execute median | First query | Repeated query |
 |---|---:|---:|---:|---:|---:|---:|
-| direct main | 18.94 ms | 20.5% | 0.91 ms | 0.17 ms | 0.000 ms | 0.000 ms |
-| recursive backtracking | 32.83 ms | 23.4% | 1.09 ms | 1.63 ms | 0.475 ms | 0.010 ms |
-| indexed fact property | 18.94 ms | 23.2% | 3.26 ms | 0.60 ms | 0.131 ms | 0.004 ms |
-| full fact scan | 19.84 ms | 24.4% | 2.72 ms | 3.46 ms | 1.155 ms | 0.082 ms |
-| thread snapshot | 20.94 ms | 18.3% | 1.00 ms | 1.16 ms | 0.000 ms | 0.000 ms |
-| stdlib utilities | 32.73 ms | 19.0% | 0.80 ms | 7.33 ms | 0.000 ms | 0.000 ms |
-| fact reasoning | 50.26 ms | 21.0% | 3.73 ms | 22.61 ms | 0.000 ms | 0.000 ms |
-| linear search | 18.80 ms | 28.7% | 0.72 ms | 4.56 ms | 0.206 ms | 0.004 ms |
-| binary search | 19.46 ms | 27.3% | 0.65 ms | 3.29 ms | 0.179 ms | 0.003 ms |
+| direct main | 28.00 ms | 30.7% | 1.06 ms | 0.22 ms | 0.000 ms | 0.000 ms |
+| recursive backtracking | 20.46 ms | 20.1% | 0.71 ms | 1.48 ms | 0.436 ms | 0.011 ms |
+| indexed fact property | 24.28 ms | 24.1% | 3.00 ms | 0.44 ms | 0.100 ms | 0.003 ms |
+| full fact scan | 33.27 ms | 23.9% | 3.67 ms | 3.48 ms | 1.213 ms | 0.083 ms |
+| thread snapshot | 25.79 ms | 24.7% | 0.92 ms | 1.13 ms | 0.000 ms | 0.000 ms |
+| stdlib utilities | 35.31 ms | 24.8% | 0.94 ms | 11.35 ms | 0.000 ms | 0.000 ms |
+| fact reasoning | 50.99 ms | 42.2% | 4.12 ms | 29.76 ms | 0.000 ms | 0.000 ms |
+| linear search | 108.99 ms | 10.4% | 1.76 ms | 81.64 ms | 31.920 ms | 0.005 ms |
+| binary search | 76.61 ms | 13.4% | 1.58 ms | 50.29 ms | 3.260 ms | 0.005 ms |
