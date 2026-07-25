@@ -1,5 +1,5 @@
-import "smoke".
+import "smoke"
 
 main() =>
-    smoke.invalidJson(),
-    return "unreachable".
+    smoke.invalidJson()
+    return "unreachable"

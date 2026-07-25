@@ -12,12 +12,12 @@ Employee(name: "Olivia", role: "Engineer", office: "NYC")
 Employee(name: "Paul", role: "Manager", office: "SEA")
 
 RemoteEngineer(name: name) =>
-    output:= Employee(name: name, role: "Engineer", office: "NYC"),
-    return output.
+    output:= Employee(name: name, role: "Engineer", office: "NYC")
+    return output
 
 main() =>
-    remoteEngineer := RemoteEngineer(name: "Grace"),
-    system.print(value: remoteEngineer),
+    remoteEngineer := RemoteEngineer(name: "Grace")
+    system.print(value: remoteEngineer)
     return (
         remoteEngineer: remoteEngineer
     )

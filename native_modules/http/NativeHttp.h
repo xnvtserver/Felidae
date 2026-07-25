@@ -3,6 +3,12 @@
 #include <stdexcept>
 #include <string>
 
+#if defined(_WIN32)
+#define FELIDAE_HTTP_EXPORT __declspec(dllexport)
+#else
+#define FELIDAE_HTTP_EXPORT __attribute__((visibility("default")))
+#endif
+
 namespace Felidae::NativeHttp {
 
 class Error : public std::runtime_error {
@@ -21,3 +27,8 @@ std::string serveStatic(const std::string& host,
                         const std::string& contentType);
 
 } // namespace Felidae::NativeHttp
+
+extern "C" {
+FELIDAE_HTTP_EXPORT char* felidae_native_call(const char* functionName, const char* argsJson);
+FELIDAE_HTTP_EXPORT void felidae_native_free(char* value);
+}

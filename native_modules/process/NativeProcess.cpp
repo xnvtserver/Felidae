@@ -1,4 +1,5 @@
 #include "NativeProcess.h"
+#include "../common/NativeJson.h"
 
 #include <array>
 #include <chrono>
@@ -178,4 +179,57 @@ std::string sleepMs(int milliseconds) {
 }
 
 } // namespace Felidae::NativeProcess
+
+namespace {
+
+std::string processOperation(const std::string& functionName) {
+    const size_t separator = functionName.rfind(':');
+    return separator == std::string::npos ? functionName : functionName.substr(separator + 1);
+}
+
+Felidae::NativeJson::Value dispatchProcess(const std::string& functionName,
+                                           const Felidae::NativeJson::Value& args) {
+    using Felidae::NativeJson::Value;
+    const std::string operation = processOperation(functionName);
+    if (operation == "platform") {
+        return Felidae::NativeJson::string(Felidae::NativeProcess::platform());
+    }
+    if (operation == "exec") {
+        const auto& command = Felidae::NativeJson::requireField(
+            args, "command", Value::Kind::String, "process.exec");
+        return Felidae::NativeJson::string(Felidae::NativeProcess::exec(command.text));
+    }
+    if (operation == "sleep") {
+        const auto& milliseconds = Felidae::NativeJson::requireField(
+            args, "milliseconds", Value::Kind::Number, "process.sleep");
+        if (milliseconds.number < 0.0 ||
+            milliseconds.number != static_cast<int>(milliseconds.number)) {
+            throw std::runtime_error("process.sleep expects a non-negative integer");
+        }
+        return Felidae::NativeJson::string(
+            Felidae::NativeProcess::sleepMs(static_cast<int>(milliseconds.number)));
+    }
+    throw std::runtime_error("Unsupported process native function '" + functionName + "'");
+}
+
+} // namespace
+
+extern "C" FELIDAE_PROCESS_EXPORT char* felidae_native_call(const char* functionName,
+                                                              const char* argsJson) {
+    try {
+        const auto args = Felidae::NativeJson::parse(argsJson, "process native module");
+        return Felidae::NativeJson::copyResponse(Felidae::NativeJson::stringify(
+            dispatchProcess(functionName ? functionName : "", args)));
+    } catch (const std::exception& error) {
+        return Felidae::NativeJson::copyResponse(Felidae::NativeJson::stringify(
+            Felidae::NativeJson::error(error.what())));
+    } catch (...) {
+        return Felidae::NativeJson::copyResponse(
+            "{\"error\":\"Unknown process native module failure\"}");
+    }
+}
+
+extern "C" FELIDAE_PROCESS_EXPORT void felidae_native_free(char* value) {
+    std::free(value);
+}
 

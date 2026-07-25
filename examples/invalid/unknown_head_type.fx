@@ -1,2 +1,2 @@
 Bad(value: Name) =>
-    value == "x".
+    value == "x"

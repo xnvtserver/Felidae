@@ -1,2 +1,2 @@
 Bad(value: value) =>
-    value := math::sqrt(value: 81).
+    value := math::sqrt(value: 81)

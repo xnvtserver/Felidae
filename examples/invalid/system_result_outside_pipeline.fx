@@ -1,3 +1,3 @@
 main() =>
-    value := system.result,
-    return value.
+    value := system.result
+    return value

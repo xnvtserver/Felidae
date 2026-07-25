@@ -200,7 +200,7 @@ void loadProgramRoot(const fs::path& file, Interpreter& interpreter) {
     fs::path baseDir = normalized.parent_path();
     parseProgramFileChunks(normalized, [&](Program&& program) {
         for (const auto& imp : program.imports) {
-            for (const auto& path : imp->paths) interpreter.addLazyImport(baseDir, path);
+            for (const auto& path : imp->paths) interpreter.addImport(baseDir, path);
         }
         interpreter.addProgram(program);
     });
@@ -214,7 +214,7 @@ void loadProgramRoot(const fs::path& file,
 
     for (const auto& imp : program.imports) {
         for (const auto& path : imp->paths) {
-            interpreter.addLazyImport(baseDir, path);
+            interpreter.addImport(baseDir, path);
         }
     }
     interpreter.addProgram(program);

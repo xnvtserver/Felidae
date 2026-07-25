@@ -1,4 +1,5 @@
 #include "NativeHttp.h"
+#include "../common/NativeJson.h"
 
 #include <algorithm>
 #include <cctype>
@@ -165,4 +166,75 @@ std::string serveStatic(const std::string& host,
 }
 
 } // namespace Felidae::NativeHttp
+
+namespace {
+
+std::string httpOperation(const std::string& functionName) {
+    const size_t separator = functionName.rfind(':');
+    return separator == std::string::npos ? functionName : functionName.substr(separator + 1);
+}
+
+std::string optionalHttpString(const Felidae::NativeJson::Value& args,
+                               const std::string& name,
+                               const std::string& fallback) {
+    const auto* value = Felidae::NativeJson::field(args, name);
+    if (!value) return fallback;
+    if (value->kind != Felidae::NativeJson::Value::Kind::String) {
+        throw std::runtime_error("http native call expects string argument '" + name + "'");
+    }
+    return value->text;
+}
+
+Felidae::NativeJson::Value dispatchHttp(const std::string& functionName,
+                                        const Felidae::NativeJson::Value& args) {
+    using Felidae::NativeJson::Value;
+    const std::string operation = httpOperation(functionName);
+    if (operation == "get" || operation == "post" ||
+        operation == "put" || operation == "delete") {
+        const auto& url = Felidae::NativeJson::requireField(
+            args, "url", Value::Kind::String, "http." + operation);
+        const std::string body = optionalHttpString(args, "body", "");
+        const std::string contentType = optionalHttpString(args, "contentType", "text/plain");
+        return Felidae::NativeJson::string(
+            Felidae::NativeHttp::request(operation, url.text, body, contentType));
+    }
+    if (operation == "serveStatic") {
+        const auto& host = Felidae::NativeJson::requireField(
+            args, "host", Value::Kind::String, "http.serveStatic");
+        const auto& port = Felidae::NativeJson::requireField(
+            args, "port", Value::Kind::Number, "http.serveStatic");
+        const auto& response = Felidae::NativeJson::requireField(
+            args, "response", Value::Kind::String, "http.serveStatic");
+        if (port.number != static_cast<int>(port.number)) {
+            throw std::runtime_error("http.serveStatic expects integer argument 'port'");
+        }
+        return Felidae::NativeJson::string(Felidae::NativeHttp::serveStatic(
+            host.text,
+            static_cast<int>(port.number),
+            response.text,
+            optionalHttpString(args, "contentType", "text/plain")));
+    }
+    throw std::runtime_error("Unsupported HTTP native function '" + functionName + "'");
+}
+
+} // namespace
+
+extern "C" FELIDAE_HTTP_EXPORT char* felidae_native_call(const char* functionName,
+                                                           const char* argsJson) {
+    try {
+        const auto args = Felidae::NativeJson::parse(argsJson, "HTTP native module");
+        return Felidae::NativeJson::copyResponse(Felidae::NativeJson::stringify(
+            dispatchHttp(functionName ? functionName : "", args)));
+    } catch (const std::exception& error) {
+        return Felidae::NativeJson::copyResponse(Felidae::NativeJson::stringify(
+            Felidae::NativeJson::error(error.what())));
+    } catch (...) {
+        return Felidae::NativeJson::copyResponse(
+            "{\"error\":\"Unknown HTTP native module failure\"}");
+    }
+}
+
+extern "C" FELIDAE_HTTP_EXPORT void felidae_native_free(char* value) {
+    std::free(value);
+}
 

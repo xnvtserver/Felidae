@@ -1,2 +1,2 @@
 main() =>
-    system.print("a", "b").
+    system.print("a", "b")

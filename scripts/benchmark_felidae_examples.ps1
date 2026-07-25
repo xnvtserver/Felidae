@@ -25,7 +25,10 @@ $cases = @(
     @{ Name = "full fact scan"; Args = @("examples\data\converted_csv_country.fx", "? Country(name: name)", "--benchmark-repeat", "20") },
     @{ Name = "thread snapshot"; Args = @("examples\thread_snapshot_test.fx") },
     @{ Name = "stdlib utilities"; Args = @("examples\stdlib_utilities.fx") },
-    @{ Name = "fact reasoning workload"; Args = @("examples\advanced_mortality_fact_reasoning.fx") }
+    @{ Name = "fact reasoning workload"; Args = @("examples\advanced_mortality_fact_reasoning.fx") },
+    # Search microbenchmarks use enough in-process repetitions to dominate process-launch jitter.
+    @{ Name = "linear search"; Args = @("v2_examples\standard_search_algorithms.fx", "? LinearSearchLast() == 63", "--benchmark-repeat", "10000") },
+    @{ Name = "binary search"; Args = @("v2_examples\standard_search_algorithms.fx", "? BinarySearchLast() == 63", "--benchmark-repeat", "10000") }
 )
 
 function Invoke-FelidaeProcess {
@@ -100,28 +103,36 @@ function Invoke-BenchmarkCase {
         Invoke-FelidaeProcess -Arguments $Case.Args
     }
     Write-Progress -Activity "Felidae benchmark" -Completed
-    $times = @($samples | ForEach-Object { $_.TotalMs } | Sort-Object)
-    $middle = [int]($times.Count / 2)
-    $median = if ($times.Count % 2 -eq 0) {
-        ($times[$middle - 1] + $times[$middle]) / 2
-    } else {
-        $times[$middle]
+    function Get-Median([double[]]$Values) {
+        $ordered = @($Values | Sort-Object)
+        $middle = [int]($ordered.Count / 2)
+        if ($ordered.Count % 2 -eq 0) {
+            return ($ordered[$middle - 1] + $ordered[$middle]) / 2
+        }
+        return $ordered[$middle]
     }
+    $times = @($samples | ForEach-Object { $_.TotalMs })
+    $median = Get-Median $times
+    $average = ($times | Measure-Object -Average).Average
+    $sumSquares = 0.0
+    foreach ($time in $times) { $sumSquares += [Math]::Pow($time - $average, 2) }
+    $standardDeviation = [Math]::Sqrt($sumSquares / $times.Count)
 
     [pscustomobject]@{
         Case = $Case.Name
-        AvgMs = ($samples.TotalMs | Measure-Object -Average).Average
+        AvgMs = $average
         MedianMs = $median
-        LoadMs = ($samples.Metrics.loadMs | Measure-Object -Average).Average
-        ExecuteMs = ($samples.Metrics.executionMs | Measure-Object -Average).Average
+        TotalCv = if ($average -gt 0) { 100.0 * $standardDeviation / $average } else { 0.0 }
+        LoadMs = Get-Median @($samples.Metrics.loadMs)
+        ExecuteMs = Get-Median @($samples.Metrics.executionMs)
         PeakMb = ($samples.PeakMb | Measure-Object -Maximum).Maximum
         EnvCopies = ($samples.Metrics.runtime.environmentCopies | Measure-Object -Average).Average
         Unifications = ($samples.Metrics.runtime.unificationAttempts | Measure-Object -Average).Average
         FactCandidates = ($samples.Metrics.runtime.factCandidates | Measure-Object -Average).Average
         EnvFrames = ($samples.Metrics.runtime.environmentFramesCreated | Measure-Object -Average).Average
         StandardizedClauses = ($samples.Metrics.runtime.standardizedClauses | Measure-Object -Average).Average
-        FirstQueryMs = ($samples.Metrics.firstQueryMs | Measure-Object -Average).Average
-        RepeatedQueryMs = ($samples.Metrics.repeatedQueryAverageMs | Measure-Object -Average).Average
+        FirstQueryMs = Get-Median @($samples.Metrics.firstQueryMs)
+        RepeatedQueryMs = Get-Median @($samples.Metrics.repeatedQueryAverageMs)
     }
 }
 
@@ -129,12 +140,13 @@ $results = foreach ($case in $cases) {
     Invoke-BenchmarkCase -Case $case
 }
 
-"| Case | Total median | Load | Execute | First query | Repeated query | Peak RAM | Env frames | Env copies | Standardized clauses | Unifications | Fact candidates |"
-"|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+"| Case | Total median | Total CV | Load median | Execute median | First query | Repeated query | Peak RAM | Env frames | Env copies | Standardized clauses | Unifications | Fact candidates |"
+"|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
 foreach ($result in $results) {
-    "| {0} | `{1:N2} ms` | `{2:N2} ms` | `{3:N2} ms` | `{4:N3} ms` | `{5:N3} ms` | `{6:N2} MB` | `{7:N0}` | `{8:N0}` | `{9:N0}` | `{10:N0}` | `{11:N0}` |" -f `
+    "| {0} | `{1:N2} ms` | `{2:N1}%` | `{3:N2} ms` | `{4:N2} ms` | `{5:N3} ms` | `{6:N3} ms` | `{7:N2} MB` | `{8:N0}` | `{9:N0}` | `{10:N0}` | `{11:N0}` | `{12:N0}` |" -f `
         $result.Case,
         $result.MedianMs,
+        $result.TotalCv,
         $result.LoadMs,
         $result.ExecuteMs,
         $result.FirstQueryMs,

@@ -13,6 +13,7 @@
 #include <set>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Felidae {
@@ -30,7 +31,7 @@ public:
 
     void addProgram(const Program& program);
     void addClause(std::shared_ptr<ClauseStmt> clause);
-    void addLazyImport(const std::filesystem::path& baseDir, const std::string& pattern);
+    void addImport(const std::filesystem::path& baseDir, const std::string& pattern);
 
     std::vector<Solution> solve(const std::vector<std::shared_ptr<Goal>>& queryGoals,
                                 size_t maxSolutions = 1000);
@@ -46,18 +47,8 @@ public:
     std::shared_ptr<Expr> callAutoEntry();
     std::string valueToString(const std::shared_ptr<Expr>& value) const;
     std::string runtimeMetricsJson() const;
-    void loadAllImports();
 
 private:
-    struct LazyModule {
-        std::filesystem::path baseDir;
-        std::string pattern;
-        bool loaded = false;
-        size_t useCount = 0;
-        size_t lastUsed = 0;
-        std::vector<std::filesystem::path> files;
-        std::filesystem::path nativeLibrary;
-    };
     struct ThreadTask {
         explicit ThreadTask(std::string functionName) : functionName(std::move(functionName)) {}
         std::string functionName;
@@ -98,8 +89,8 @@ private:
     std::list<std::string> solveCacheRecency_;
     std::size_t solveCacheBytes_ = 0;
     mutable std::unordered_map<const ClauseStmt*, MethodRuntimeInfo> methodRuntimeCache_;
-    std::vector<LazyModule> lazyModules_;
     std::set<std::filesystem::path> loadedFiles_;
+    std::unordered_set<std::string> packageDiscoveryAttempts_;
     std::unordered_map<const ClauseStmt*, std::filesystem::path> clauseOrigins_;
     std::filesystem::path currentLoadingFile_;
     std::vector<NativeLibrary> nativeLibraries_;
@@ -200,10 +191,6 @@ private:
     std::vector<std::shared_ptr<Expr>> valuesForLambdaSource(const std::shared_ptr<Expr>& source, const Env& env);
 
     bool ensurePredicateLoaded(const std::string& predicate);
-    void touchClauses(const std::vector<std::shared_ptr<ClauseStmt>>& clauses);
-    void evictColdModules();
-    void unloadModule(LazyModule& module);
-    void loadLazyModule(LazyModule& module);
     void loadProgramFile(const std::filesystem::path& file);
     void loadNativeLibrary(const std::filesystem::path& file);
     void closeNativeLibraries();

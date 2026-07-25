@@ -1,4 +1,4 @@
-import ("http", "json").
+import ("http", "json")
 
 ApiContract := {
     service: "Felidae Facts DB API",
@@ -31,16 +31,16 @@ ApiContract := {
             description: "Rewrite the fact file without facts matching delete conditions."
         }
     ]
-}.
+}
 
 main() =>
-    response := json.toText(data: ApiContract),
+    response := json.toText(data: ApiContract)
     status := http.serveStatic(
         host: "127.0.0.1",
         port: 8090,
         response: response,
         contentType: "application/json"
-    ),
+    )
     return (
         status: status
-    ).
+    )
