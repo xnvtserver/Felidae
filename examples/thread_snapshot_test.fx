@@ -1,4 +1,4 @@
-import "thread".
+import "thread"
 
 Worker() =>
     return (
@@ -6,10 +6,10 @@ Worker() =>
     )
 
 main() =>
-    t1 := thread.createThread(function: "Worker"),
-    started := thread.start(thread: t1),
-    result := thread.result(thread: t1),
-    status := thread.status(thread: t1),
+    t1 := thread.createThread(function: "Worker")
+    started := thread.start(thread: t1)
+    result := thread.result(thread: t1)
+    status := thread.status(thread: t1)
     return (
         started: started,
         status: status,

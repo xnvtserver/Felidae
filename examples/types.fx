@@ -7,19 +7,19 @@ Adress(name: "Default", street: "Default", city: "Default", state: "Default", zi
 
 Employee extend Person(name: "Ravi", age: 30, role: Role(name: "Engineer"))
 
-SampleEmployee := {__type: "Employee", __parent: "Person", name: "Ravi"}.
+SampleEmployee := {__type: "Employee", __parent: "Person", name: "Ravi"}
 
 TypeName(employee: employee, name: string) =>
     type(value: employee, name: name)
     return
 
 EmployeeIsPerson(employee: employee, name: string) =>
-    instanceof(value: employee, type: Person),
+    instanceof(value: employee, type: Person)
     name == employee.name
     return
 
 EmployeeIsEmployee(employee: employee, name: string) =>
-    instanceof(value: employee, type: Employee),
+    instanceof(value: employee, type: Employee)
     name == employee.name
     return
 
@@ -36,14 +36,14 @@ SampleEmployeeIsEmployee(name: string) =>
     return
 
 main(arguments: system.stdin) =>
-    status := system.print(value: "Felidae system running!"),
-    type_name := SampleTypeName(name: "Employee"),
-    is_person := SampleEmployeeIsPerson(name: "Ravi"),
-    is_employee := SampleEmployeeIsEmployee(name: "Ravi"),
-    system.print(value: type_name),
-    system.print(value: is_person),
-    system.print(value: is_employee),
-       
+    status := system.print(value: "Felidae system running!")
+    type_name := SampleTypeName(name: "Employee")
+    is_person := SampleEmployeeIsPerson(name: "Ravi")
+    is_employee := SampleEmployeeIsEmployee(name: "Ravi")
+    system.print(value: type_name)
+    system.print(value: is_person)
+    system.print(value: is_employee)
+
     return (
         status: status
     )

@@ -1,4 +1,4 @@
-import "smoke".
+import "smoke"
 
 main() =>
     echoed := smoke.echo(value: "native module loaded")

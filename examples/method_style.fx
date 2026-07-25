@@ -22,8 +22,8 @@ Animal(
 )
 
 isAdult(input: Person) =>
-    p := input,
-    where p.age >= 18,
+    p := input
+    where p.age >= 18
     return (
         name: p.name
     )
@@ -36,19 +36,19 @@ ParsedDocs() =>
     docs := [
         {id: 1, doc: "Primary"},
         {id: 2, doc: "Secondary"}
-    ],
-    parsed := lambda(docs, d => ParseDoc(d.doc)),
+    ]
+    parsed := lambda(docs, d => ParseDoc(d.doc))
     return (
         result: parsed
     )
 
 main() =>
-    adults := Adults,
-    names := Names,
-    parsedDocs := ParsedDocs(),
-    system.print(value: adults),
-    system.print(value: names),
-    system.print(value: parsedDocs.result),
+    adults := Adults
+    names := Names
+    parsedDocs := ParsedDocs()
+    system.print(value: adults)
+    system.print(value: names)
+    system.print(value: parsedDocs.result)
     return (
         adults: adults,
         names: names,

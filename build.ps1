@@ -18,10 +18,7 @@ $commonSources = @(
     "src/Interpreter.cpp",
     "src/Env.cpp",
     "src/Memory.cpp",
-    "src/NativeRuntime.cpp",
-    "native_modules/csv/NativeCsv.cpp",
-    "native_modules/http/NativeHttp.cpp",
-    "native_modules/process/NativeProcess.cpp"
+    "src/NativeRuntime.cpp"
 )
 
 $celidaeSources = @(
@@ -122,6 +119,16 @@ Invoke-FelidaeBuild -Output "build/felidae$suffix.exe" -Sources (@("src/main.cpp
 Invoke-FelidaeBuild -Output "build/celidae$suffix.exe" -Sources $celidaeSources
 Invoke-FelidaeBuild -Output "build/felidae_debug$suffix.exe" -Sources $debugSources
 
+foreach ($module in @("csv", "http", "process")) {
+    $className = (Get-Culture).TextInfo.ToTitleCase($module)
+    $moduleOutput = "native_modules/$module/$module.dll"
+    Write-Host "Building $moduleOutput"
+    & clang++ -std=c++17 @warningFlags @configFlags @targetFlags "native_modules/$module/Native$className.cpp" -shared -o $moduleOutput
+    if ($LASTEXITCODE -ne 0) {
+        throw "clang++ failed while building $moduleOutput"
+    }
+}
+
 New-Item -ItemType Directory -Force -Path "native_modules/wordnet" | Out-Null
 Write-Host "Building native_modules/wordnet/wordnet.dll"
 & clang++ -std=c++17 @warningFlags @configFlags @targetFlags -Inative_modules/wordnet native_modules/wordnet/NativeWordNet.cpp -shared -o native_modules/wordnet/wordnet.dll
@@ -164,4 +171,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "clang++ failed while building native_modules/qt/qt.dll"
 }
 
-Write-Host "Built build/felidae$suffix.exe, build/celidae$suffix.exe, build/felidae_debug$suffix.exe, native_modules/wordnet/wordnet.dll, native_modules/fact/fact.dll, native_modules/fact_analysis/fact_analysis.dll, native_modules/plot/plot.dll, native_modules/gtk/gtk.dll, and native_modules/qt/qt.dll"
+Write-Host "Built build/felidae$suffix.exe, build/celidae$suffix.exe, build/felidae_debug$suffix.exe, and independent native package libraries"

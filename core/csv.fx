@@ -1,10 +1,25 @@
-# Native CSV stdlib declarations. Bodies are implemented by the native module bridge.
+import ("flibrary", "system.flibrary.csv")
 
-csv.parse(data: string, access: array) => ()
-csv.toFacts(data: string, type: string, access: array) => ()
-csv.toText(data: array, access: string) => ()
-csv.toFelidaeFacts(data: array, type: string, access: string) => ()
-csv.addRow(data: array, row: any, access: array) => ()
-csv.findRows(data: array, key: string, value: string, access: array) => ()
-csv.updateRows(data: array, key: string, value: string, patch: any, access: array) => ()
-csv.deleteRows(data: array, key: string, value: string, access: array) => ()
+csv.parse(data: string) =>
+    return (system_library_loader(module: "csv", function: "parse", args: {data: data}))
+
+csv.toFacts(data: string, type: string) =>
+    return (system_library_loader(module: "csv", function: "toFacts", args: {data: data, type: type}))
+
+csv.toText(data: array) =>
+    return (system_library_loader(module: "csv", function: "toText", args: {data: data}))
+
+csv.toFelidaeFacts(data: array, type: string) =>
+    return (system_library_loader(module: "csv", function: "toFelidaeFacts", args: {data: data, type: type}))
+
+csv.addRow(data: array, row: any) =>
+    return (system_library_loader(module: "csv", function: "addRow", args: {data: data, row: row}))
+
+csv.findRows(data: array, key: string, value: any) =>
+    return (system_library_loader(module: "csv", function: "findRows", args: {data: data, key: key, value: value}))
+
+csv.updateRows(data: array, key: string, value: any, patch: any) =>
+    return (system_library_loader(module: "csv", function: "updateRows", args: {data: data, key: key, value: value, patch: patch}))
+
+csv.deleteRows(data: array, key: string, value: any) =>
+    return (system_library_loader(module: "csv", function: "deleteRows", args: {data: data, key: key, value: value}))

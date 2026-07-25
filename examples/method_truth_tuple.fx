@@ -4,13 +4,13 @@ Employee(name: "Nina", role: "Architect", manager: nil)
 Employee(name: "Carol", role: "Engineer", manager: nil)
 
 HasManager(employee: e, name: string) =>
-    name == e.name,
+    name == e.name
     e.manager != nil
     return
 
 TechnicalArchitectManager(name: name) =>
     (Employee(name: name, role: "Engineer")
-    | Employee(name: name, role: "Architect")),
+    | Employee(name: name, role: "Architect"))
     Employee(name: name, role: "Manager")
     return
 
@@ -33,10 +33,10 @@ PrintOnce() =>
     return
 
 main(arguments: system.stdin) =>
-    alice := Employee(name: "Alice", role: "Engineer", manager: "Bob"),
-    carol := Employee(name: "Carol", role: "Engineer", manager: nil),
-    adults := lambda([alice, carol], p => p.name),
-    status := system.print(value: "empty declaration loaded"),
+    alice := Employee(name: "Alice", role: "Engineer", manager: "Bob")
+    carol := Employee(name: "Carol", role: "Engineer", manager: nil)
+    adults := lambda([alice, carol], p => p.name)
+    status := system.print(value: "empty declaration loaded")
     return (
         manager_true: HasManager(employee: alice),
         manager_false: HasManager(employee: carol),

@@ -20,9 +20,6 @@ add_executable(felidae
     src/Env.cpp
     src/Memory.cpp
     src/NativeRuntime.cpp
-    native_modules/csv/NativeCsv.cpp
-    native_modules/http/NativeHttp.cpp
-    native_modules/process/NativeProcess.cpp
 )
 
 target_include_directories(felidae PRIVATE src)
@@ -74,6 +71,22 @@ set_target_properties(felidae_smoke PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/smoke"
 )
 
+add_library(csv SHARED native_modules/csv/NativeCsv.cpp)
+add_library(http SHARED native_modules/http/NativeHttp.cpp)
+add_library(process SHARED native_modules/process/NativeProcess.cpp)
+set_target_properties(csv PROPERTIES OUTPUT_NAME csv
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/csv"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/csv"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/csv")
+set_target_properties(http PROPERTIES OUTPUT_NAME http
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/http"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/http"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/http")
+set_target_properties(process PROPERTIES OUTPUT_NAME process
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/process"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/process"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/process")
+
 add_library(wordnet SHARED native_modules/wordnet/NativeWordNet.cpp)
 target_include_directories(wordnet PRIVATE native_modules/wordnet)
 set_target_properties(wordnet PROPERTIES
@@ -100,6 +113,7 @@ set_target_properties(fact_analysis PROPERTIES
 
 add_library(plot SHARED native_modules/plot/NativePlot.cpp)
 target_include_directories(plot PRIVATE native_modules/plot)
+target_compile_definitions(plot PRIVATE FELIDAE_PLOT_BUILD=1)
 set_target_properties(plot PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/plot"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/plot"

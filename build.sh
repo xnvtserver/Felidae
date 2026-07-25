@@ -186,7 +186,6 @@ COMMON_SOURCES=(
     src/FelidaeRuntime.cpp src/BuiltinRegistry.cpp
     src/Lexer.cpp src/Parser.cpp src/Interpreter.cpp src/Env.cpp
     src/Memory.cpp src/NativeRuntime.cpp
-    native_modules/csv/NativeCsv.cpp native_modules/http/NativeHttp.cpp native_modules/process/NativeProcess.cpp
 )
 CELIDAE_SOURCES=(
     src/celidae/main.cpp src/celidae/Visualization.cpp src/tooling/SourceParser.cpp
@@ -223,6 +222,15 @@ echo "Building $CELIDAE"
 
 echo "Building $FELIDAE_DEBUG"
 "$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" -Isrc -isystem third_party "${DEBUG_SOURCES[@]}" -o "$FELIDAE_DEBUG"
+
+for MODULE in csv http process; do
+    CLASS="$(tr '[:lower:]' '[:upper:]' <<< "${MODULE:0:1}")${MODULE:1}"
+    MODULE_LIB="native_modules/$MODULE/lib$MODULE.so"
+    if [[ "$(uname -s)" == "Darwin" ]]; then MODULE_LIB="native_modules/$MODULE/lib$MODULE.dylib"; fi
+    echo "Building $MODULE_LIB"
+    "$CXX" -std=c++17 "${WARNING_FLAGS[@]}" "${CONFIG_FLAGS[@]}" "${TARGET_FLAGS[@]}" \
+        -shared -fPIC "native_modules/$MODULE/Native$CLASS.cpp" -o "$MODULE_LIB"
+done
 
 WORDNET_LIB="native_modules/wordnet/libwordnet.so"
 if [[ "$(uname -s)" == "Darwin" ]]; then WORDNET_LIB="native_modules/wordnet/libwordnet.dylib"; fi

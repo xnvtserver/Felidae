@@ -12,12 +12,12 @@ main() =>
         from: relation.from,
         to: relation.to,
         label: relation.label
-    }),
-    canvas := qt.canvas(width: 820, height: 560, title: "Qt Fact Relationship Graph"),
-    graph := qt.graphFromFacts(edges: relations, from: "from", to: "to", label: "label", cx: 410, cy: 285, radius: 185),
-    heading := qt.H1(content: "Fact relationship graph"),
-    render := qt.render(canvas: canvas, elements: [heading, graph.elements]),
-    saved := qt.save(path: "examples/data/qt_fact_relationship_graph.html", render: render),
+    })
+    canvas := qt.canvas(width: 820, height: 560, title: "Qt Fact Relationship Graph")
+    graph := qt.graphFromFacts(edges: relations, from: "from", to: "to", label: "label", cx: 410, cy: 285, radius: 185)
+    heading := qt.H1(content: "Fact relationship graph")
+    render := qt.render(canvas: canvas, elements: [heading, graph.elements])
+    saved := qt.save(path: "examples/data/qt_fact_relationship_graph.html", render: render)
 
     return (
         heading: heading,

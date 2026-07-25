@@ -1,4 +1,4 @@
-import "http".
+import "http"
 
 # Blocking standalone server. Run this file in its own process:
 # ./build/felidae examples/web_server.fx
@@ -17,7 +17,7 @@ main() =>
         port: 8080,
         response: "Hello World",
         contentType: "text/plain"
-    ),
+    )
     return (
         status: status
     )

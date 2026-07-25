@@ -13,7 +13,7 @@ NamedEmployeeSea(name: string) =>
     return
 
 ArrayAssigned(value: value) =>
-    array1 := fn:array(data: [1, 2, 3, 4]),
+    array1 := fn:array(data: [1, 2, 3, 4])
     array:get(data: array1, position: 2, access: value)
     return
 
@@ -23,7 +23,7 @@ ArrayAssignedRaw(array: array1) =>
 
 main() =>
     ArrayAssigned(value: 3)
-    # ArrayAssignedRaw(array: [1, 2, 3, 4])
+# ArrayAssignedRaw(array: [1, 2, 3, 4])
     EmployeeSea(name: "Alice")
     NamedEmployeeSea(name: "Alice")
     return

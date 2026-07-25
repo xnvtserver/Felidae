@@ -1,4 +1,4 @@
-import "family.fx".
+import "family.fx"
 
 Employee(name: "Alice", role: "Engineer", office: "SEA")
 Employee(name: "Bob", role: "Manager", office: "SEA")
@@ -6,17 +6,17 @@ Employee(name: "Caroline", role: "Engineer", office: "LAX")
 Employee(name: "David", role: "Engineer", office: "SEA")
 
 Engineer(input: Employee) =>
-    where input.role == "Engineer",
+    where input.role == "Engineer"
     return (
         name: input.name,
         office: input.office
     )
 
 SameOfficeEngineer(x: Employee, y: Employee) =>
-    where x.role == "Engineer",
-    where y.role == "Engineer",
-    where x.office == y.office,
-    where x.name != y.name,
+    where x.role == "Engineer"
+    where y.role == "Engineer"
+    where x.office == y.office
+    where x.name != y.name
     return (
         x: x.name,
         y: y.name,
@@ -41,7 +41,7 @@ Ancestor(x: x, y: y) =>
     return
 
 Ancestor(x: x, y: y, mid: z) =>
-    Parent(parent: x, child: z),
+    Parent(parent: x, child: z)
     Ancestor(x: z, y: y)
     return
 

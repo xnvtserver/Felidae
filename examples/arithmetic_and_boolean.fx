@@ -1,24 +1,24 @@
-import "system".
+import "system"
 
 Employees := [
     Employee(name: "Alice", role: "Engineer", manager: "Bob", office: "SEA"),
     Employee(name: "Carol", role: "Engineer", manager: nil, office: "SEA")
-].
+]
 
-AliceName := "Alice".
-CarolName := "Carol".
+AliceName := "Alice"
+CarolName := "Carol"
 
 EmployeeAt(index: number, employee: employee) =>
     array:get(data: Employees, position: index, access: employee)
     return
 
 HasManager(employee: e, name: string) =>
-    name == e.name,
-    e.manager != nil.
+    name == e.name
+    e.manager != nil
 
 NoManager(employee: e, name: string) =>
-    name == e.name,
-    e.manager == nil.
+    name == e.name
+    e.manager == nil
 
 HasManagerValue(employee: e) =>
     return HasManager(employee: e, name: "Alice")
@@ -30,8 +30,8 @@ BooleanReturnOnly() =>
     )
 
 ArrayAssignedFirst() =>
-    first := array:get(data: Employees, position: 0),
-    return first.
+    first := array:get(data: Employees, position: 0)
+    return first
 
 ArithmeticResult() =>
     return (

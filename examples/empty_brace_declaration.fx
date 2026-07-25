@@ -1,4 +1,4 @@
-DocBrace(input: string) => {}.
+DocBrace(input: string) => {}
 
 main() =>
     return DocBrace(input: "x")

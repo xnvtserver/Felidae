@@ -1,8 +1,8 @@
 import ("csv", "file", "data/customer_facts.fx")
 
 UpdateCustomer(input: row) =>
-    c := row,
- if c.total >= 200,
+    c := row
+ if c.total >= 200
     return (
         name: c.name,
         city: c.city,
@@ -20,14 +20,14 @@ else
     )
 
 main() =>
-    updatedRows := lambda(Customer, c => UpdateCustomer(input: c)),
-    goldRows := lambda(updatedRows, c => c.tier == "gold"),
-    factText := csv.toFelidaeFacts(data: updatedRows, type: "Customer"),
+    updatedRows := lambda(Customer, c => UpdateCustomer(input: c))
+    goldRows := lambda(updatedRows, c => c.tier == "gold")
+    factText := csv.toFelidaeFacts(data: updatedRows, type: "Customer")
     writeStatus := file.writeFile(
         path: "examples/data/customer_facts_updated.fx",
         data: factText,
         mode: "write"
-    ),
+    )
     return (
         updated_count: count(updatedRows),
         gold_count: count(goldRows),

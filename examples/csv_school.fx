@@ -16,16 +16,16 @@ Class10cStudents() =>
     )
 
 main() =>
-    physicsRows := PhysicsStudents(),
+    physicsRows := PhysicsStudents()
     factText := csv.toFelidaeFacts(
         data: lambda(physicsRows, row => {student: row.student, subject: row.subject}),
         type: "School"
-    ),
+    )
     exportStatus := file.writeFile(
         path: "examples/data/converted_csv_school.fx",
         data: factText,
         mode: "write"
-    ),
+    )
     return (
         export: exportStatus,
         physics: PhysicsStudents(),

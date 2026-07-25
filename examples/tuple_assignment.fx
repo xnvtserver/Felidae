@@ -2,15 +2,15 @@ MakeProfile() =>
     return fn:tuple(first: "Alice", second: true, third: 2.5)
 
 MakeFlags() =>
-    "left" == "left",
-    "right" != "left",
-    2 < 3.
+    "left" == "left"
+    "right" != "left"
+    2 < 3
 
 main() =>
-    name: string, active: bool, score: float := MakeProfile(),
-    first: bool, second: bool, third: bool := MakeFlags(),
-    rawFirst, rawSecond, rawThird := MakeFlags(),
-    
+    name: string, active: bool, score: float := MakeProfile()
+    first: bool, second: bool, third: bool := MakeFlags()
+    rawFirst, rawSecond, rawThird := MakeFlags()
+
     return (
         name: name,
         active: active,
