@@ -1,12 +1,13 @@
 param(
     [int] $Runs = 5,
-    [switch] $SkipBuild
+    [switch] $SkipBuild,
+    [string] $Exe = ""
 )
 
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$exe = Join-Path $root "build\felidae.exe"
+$exe = if ($Exe) { $Exe } else { Join-Path $root "build\felidae.exe" }
 
 if (-not $SkipBuild) {
     & (Join-Path $root "build.ps1") -Configuration production

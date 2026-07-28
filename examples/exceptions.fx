@@ -1,62 +1,48 @@
-# User and library exceptions use the same typed value contract. The source
-# identifies who raised it; kind is the stable programmatic discriminator.
+# Recoverable failures are normal Result values. There is no try/catch:
+# application code explicitly checks `ok` and calls its own recovery method.
 
-exceptionActions.handle(exception: {__type: "Exception", kind: "DivisionByZero", message: message, source: source}) =>
-    return true
+import "exception"
 
-exceptionActions.handle(exception: {__type: "Exception", kind: "ProgrammingError", message: message, source: source}) =>
-    return true
+# These kinds belong to this program, not to core/exception.fx.
+CalculatorActions.handle(result: Result) =>
+    if result.error.kind == "DivisionByZero" then
+        return exception.ok(value: {
+            quotient: 0,
+            recovered: true,
+            reason: result.error.message
+        })
+    else
+        if result.error.kind == "UnsupportedOperation" then
+            return exception.ok(value: {
+                quotient: nil,
+                recovered: true,
+                reason: "Choose a supported calculator operation"
+            })
+        else
+            return result
 
-exceptionActions.handle(exception: {__type: "Exception", kind: "UnknownError", message: message, source: source}) =>
-    return true
+SafeDivide(dividend: number, divisor: number) =>
+    if divisor == 0 then
+        rejected := exception.failure(
+            kind: "DivisionByZero",
+            message: "Cannot divide by zero",
+            source: "calculator"
+        )
+        return CalculatorActions.handle(result: rejected)
+    else
+        quotient := math.div(lhs: dividend, rhs: divisor)
+        return exception.ok(value: {quotient: quotient, recovered: false})
 
-exceptionActions.handle(exception: {__type: "Exception", kind: "ModuleFailure", message: message, source: source}) =>
-    return true
-
-DivideFailure(error_reason: error_reason) =>
-    exception := {
-        __type: "Exception",
-        kind: "DivisionByZero",
-        message: "Cannot divide by zero",
-        source: "library"
-    }
-    throw(exception: exception, target: exceptionActions::handle)
-    return (error_reason: exception.kind)
-
-ProgrammingFailure(error_reason: error_reason) =>
-    exception := {
-        __type: "Exception",
-        kind: "ProgrammingError",
-        message: "Invalid program state",
-        source: "user"
-    }
-    throw(exception: exception, target: exceptionActions::handle)
-    return (error_reason: exception.kind)
-
-OtherFailure(error_reason: error_reason) =>
-    exception := {
-        __type: "Exception",
-        kind: "UnknownError",
-        message: "Unknown failure",
-        source: "user"
-    }
-    throw(exception: exception, target: exceptionActions::handle)
-    return (error_reason: exception.kind)
-
-RoutedFailure(msg: msg) =>
-    exception := {
-        __type: "Exception",
-        kind: "ModuleFailure",
-        message: "thrown from module a",
-        source: "library"
-    }
-    throw(exception: exception, target: exceptionActions::handle)
-    return (msg: exception.message)
+UnsupportedCalculatorOperation() =>
+    rejected := exception.failure(
+        kind: "UnsupportedOperation",
+        message: "The selected calculator operation is unavailable",
+        source: "calculator"
+    )
+    return CalculatorActions.handle(result: rejected)
 
 main() =>
-    return (
-        divide: DivideFailure(error_reason: "DivisionByZero"),
-        programming: ProgrammingFailure(error_reason: "ProgrammingError"),
-        other: OtherFailure(error_reason: "UnknownError"),
-        routed: RoutedFailure(msg: "thrown from module a")
-    )
+    normal := SafeDivide(dividend: 12, divisor: 3)
+    recovered := SafeDivide(dividend: 12, divisor: 0)
+    unsupported := UnsupportedCalculatorOperation()
+    return {normal: normal, recovered: recovered, unsupported: unsupported}

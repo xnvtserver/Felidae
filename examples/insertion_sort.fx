@@ -1,12 +1,4 @@
-import "array"
-
-sortActions.handle(exception: {
-    __type: "Exception",
-    kind: "SortLimitExceeded",
-    message: message,
-    source: "insertion_sort"
-}) =>
-    return true
+import ("array", "exception")
 
 AppendRemaining(data: array, index: number, size: number, result: array) =>
     if index >= size then
@@ -67,14 +59,12 @@ InsertionSortFrom(data: array, index: number, size: number, sorted: array) =>
 InsertionSort(data: array) =>
     size := count(data)
     if size > 8 then
-        exception := {
-            __type: "Exception",
+        rejected := exception.failure(
             kind: "SortLimitExceeded",
             message: "This example accepts at most eight values",
             source: "insertion_sort"
-        }
-        throw(exception: exception, target: sortActions::handle)
-        return {ok: false, data: [], error: exception}
+        )
+        return {ok: rejected.ok, data: [], error: rejected.error}
     else
         sorted := InsertionSortFrom(data: data, index: 0, size: size, sorted: [])
         return {ok: true, data: sorted, error: nil}

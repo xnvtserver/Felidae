@@ -76,6 +76,47 @@ private:
         std::list<std::string>::iterator recency;
         std::size_t estimatedBytes = 0;
     };
+    struct ComparisonDispatchKey {
+        SymbolId sourceTypeId = 0;
+        SymbolId targetTypeId = 0;
+        std::string sourceType;
+        std::string targetType;
+
+        bool operator==(const ComparisonDispatchKey& other) const {
+            return sourceTypeId == other.sourceTypeId && targetTypeId == other.targetTypeId &&
+                   sourceType == other.sourceType && targetType == other.targetType;
+        }
+    };
+    struct ComparisonDispatchKeyHash {
+        std::size_t operator()(const ComparisonDispatchKey& key) const {
+            std::size_t seed = std::hash<SymbolId>{}(key.sourceTypeId);
+            seed ^= std::hash<SymbolId>{}(key.targetTypeId) + 0x9e3779b9U +
+                    (seed << 6U) + (seed >> 2U);
+            seed ^= std::hash<std::string>{}(key.sourceType) + 0x9e3779b9U +
+                    (seed << 6U) + (seed >> 2U);
+            return seed ^ (std::hash<std::string>{}(key.targetType) + 0x9e3779b9U +
+                           (seed << 6U) + (seed >> 2U));
+        }
+    };
+    struct ComparisonDispatchPlan {
+        std::shared_ptr<ClauseStmt> membershipClause;
+        std::shared_ptr<ClauseStmt> comparisonClause;
+        std::string membershipName;
+        std::string comparisonName;
+        std::string targetFamily;
+    };
+    struct ReferenceAttachment {
+        std::uint64_t id = 0;
+        std::uint64_t sourceFactId = 0;
+        std::string callableName;
+        std::shared_ptr<ClauseStmt> callable;
+        std::shared_ptr<Expr> defaultFactor;
+        std::shared_ptr<MapExpr> descriptor;
+        std::size_t creationOrder = 0;
+        std::shared_ptr<MapExpr> canonicalResult;
+        std::uint64_t canonicalGeneration = 0;
+        bool dirty = true;
+    };
     struct ClauseBucket {
         std::string name;
         ClauseList clauses;
@@ -91,6 +132,15 @@ private:
     std::size_t solveCacheBytes_ = 0;
     mutable std::unordered_map<const ClauseStmt*, MethodRuntimeInfo> methodRuntimeCache_;
     mutable std::unordered_map<std::string, ClauseList*> clauseLookupCache_;
+    mutable std::unordered_map<std::string, std::vector<std::string>> typeAncestryCache_;
+    std::unordered_map<ComparisonDispatchKey,
+                       ComparisonDispatchPlan,
+                       ComparisonDispatchKeyHash> comparisonDispatchCache_;
+    std::unordered_map<std::uint64_t, std::vector<ReferenceAttachment>> referencesBySource_;
+    std::uint64_t nextReferenceAttachmentId_ = 1;
+    std::size_t nextReferenceCreationOrder_ = 0;
+    std::uint64_t referenceEvaluationGeneration_ = 0;
+    std::unordered_set<std::string> activeReferenceEvaluations_;
     std::set<std::filesystem::path> loadedFiles_;
     std::unordered_set<std::string> packageDiscoveryAttempts_;
     std::unordered_map<const ClauseStmt*, std::filesystem::path> clauseOrigins_;
@@ -110,6 +160,7 @@ private:
     bool valueCallMode_ = false;
     size_t valueCallTrampolineDepth_ = 0;
     size_t methodCallDepth_ = 0;
+    std::unordered_set<std::string> activeComparisons_;
     std::vector<std::shared_ptr<Expr>> pipelineResults_;
     std::size_t clauseAttempts_ = 0;
     std::size_t unificationAttempts_ = 0;
@@ -155,6 +206,28 @@ private:
     bool solveBuiltin(const Call& call, Env& env);
     bool solveNativeCall(const Call& call, Env& env);
     bool evalBuiltinTerm(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
+    bool evalRelationCompare(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
+    bool evalRelationFind(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
+    bool evalDependencySatisfied(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
+    bool evalFactReferences(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
+    bool solveFactAttachment(const Call& call, Env& env);
+    bool attachFactReference(const Call& call, Env& env, std::uint64_t sourceFactId);
+    std::shared_ptr<ClauseStmt> resolveReferenceCallable(const std::shared_ptr<Expr>& callable,
+                                                          const std::shared_ptr<Expr>& source,
+                                                          const std::shared_ptr<Expr>& factor,
+                                                          std::string& normalizedName);
+    bool validateReferenceResult(const std::shared_ptr<Expr>& value,
+                                 std::shared_ptr<MapExpr>& result) const;
+    bool isReferenceMethodPure(const std::shared_ptr<ClauseStmt>& clause,
+                               std::unordered_set<const ClauseStmt*>& visiting,
+                               std::string& reason) const;
+    bool referenceValueMatchesType(const std::shared_ptr<Expr>& value,
+                                   const MethodParamPlan& parameter) const;
+    std::shared_ptr<Expr> referenceEffectiveFactor(const ReferenceAttachment& attachment) const;
+    bool invokeComparisonMethod(const std::shared_ptr<ClauseStmt>& clause,
+                                const Call& call,
+                                const Env& env,
+                                std::shared_ptr<Expr>& out);
     bool evalCallAsValue(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
     bool evalCallAsValueOnce(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
     bool evalPipelineExpr(const PipelineExpr& pipeline, const Env& env, std::shared_ptr<Expr>& out);
@@ -202,6 +275,7 @@ private:
     const std::vector<MethodParamPlan>* hotMethodParamPlan(const std::shared_ptr<ClauseStmt>& clause);
     std::shared_ptr<MapExpr> factToMap(const ClauseStmt& clause, const std::string& parentType);
     std::shared_ptr<ArrayExpr> materializeFactSelection(const std::shared_ptr<Expr>& selection);
+    const std::vector<std::string>& typeAncestry(const std::string& type) const;
     std::vector<std::shared_ptr<Expr>> valuesForLambdaSource(const std::shared_ptr<Expr>& source, const Env& env);
 
     bool ensurePredicateLoaded(const std::string& predicate);

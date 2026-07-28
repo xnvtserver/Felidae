@@ -26,6 +26,25 @@ void addVarUse(const std::string& name, std::set<std::string>& uses) {
     if (!isIgnoredName(name)) uses.insert(name);
 }
 
+bool hasSuffix(const std::string& value, const std::string& suffix) {
+    return value.size() >= suffix.size() &&
+        value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+void collectReferenceCallable(const Call& call, std::set<std::string>& calls) {
+    if (!hasSuffix(call.name, ":references")) return;
+    calls.insert("Fact:references");
+    for (const auto& arg : call.args) {
+        if (arg.name != "by") continue;
+        const auto callable = std::dynamic_pointer_cast<VarExpr>(arg.value);
+        if (!callable) continue;
+        std::string name = callable->name;
+        const size_t separator = name.find("::");
+        if (separator != std::string::npos) name.replace(separator, 2, ":");
+        calls.insert(std::move(name));
+    }
+}
+
 void collectExprUses(const std::shared_ptr<Expr>& expr,
                      std::set<std::string>& vars,
                      std::set<std::string>& calls) {
@@ -70,7 +89,8 @@ void collectGoalUses(const std::shared_ptr<Goal>& goal,
                      std::set<std::string>& calls) {
     if (!goal) return;
     if (auto call = std::dynamic_pointer_cast<CallGoal>(goal)) {
-            calls.insert(call->call.name);
+        calls.insert(call->call.name);
+        collectReferenceCallable(call->call, calls);
         if (call->call.name == "thread:createThread") {
             for (const auto& arg : call->call.args) {
                 if (arg.name != "function" && arg.name != "name") continue;
@@ -135,7 +155,11 @@ void collectGlobalAssignmentCollisions(const std::vector<std::shared_ptr<Goal>>&
                     "error",
                     "Variable '" + assign->name + "' is already assigned and immutable.",
                     1,
-                    1});
+                    1,
+                    1,
+                    1,
+                    "",
+                    ""});
             }
         } else if (auto multi = std::dynamic_pointer_cast<MultiAssignGoal>(goal)) {
             for (const auto& target : multi->targets) {
@@ -144,7 +168,11 @@ void collectGlobalAssignmentCollisions(const std::vector<std::shared_ptr<Goal>>&
                         "error",
                         "Variable '" + target.name + "' is already assigned and immutable.",
                         1,
-                        1});
+                        1,
+                        1,
+                        1,
+                        "",
+                        ""});
                 }
             }
         } else if (auto group = std::dynamic_pointer_cast<GroupGoal>(goal)) {
@@ -175,7 +203,7 @@ std::string factSignature(const ClauseStmt& clause) {
 }
 
 void warn(std::vector<AstDiagnostic>& diagnostics, std::string message) {
-    diagnostics.push_back(AstDiagnostic{"warning", std::move(message), 1, 1});
+    diagnostics.push_back(AstDiagnostic{"warning", std::move(message), 1, 1, 1, 1, "", ""});
 }
 
 void collectDiscardedExpressions(const std::vector<std::shared_ptr<Goal>>& goals,

@@ -1,4 +1,4 @@
-import ("db", "flibrary", "system.flibrary.set")
+import ("flibrary", "system.flibrary.set")
 
 # Set mathematics is implemented by the independent native_modules/set package.
 # Arrays remain supported for interop.  FactSelection inputs are accepted by

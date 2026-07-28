@@ -1259,7 +1259,16 @@ bool Parser::isMethodStyleHead(const Call& head) const {
 }
 
 bool Parser::isTypeNameKnown(const std::string& name) const {
-    return isFelidaeBuiltinTypeName(name) || knownTypes_.count(name) > 0;
+    // Comparison is the built-in fact-compatible result type of
+    // Relation.compare.  It is deliberately not a scalar/builtin value type:
+    // normal methods such as Comparison.membership dispatch through the
+    // ordinary named-fact type path.
+    // Core result values are available through core/exception.fx. Treat their
+    // names as standard annotations during parsing so a source can write a
+    // typed Result handler without declaring a duplicate local fact solely to
+    // satisfy ordered import parsing.
+    return name == "Comparison" || name == "Exception" || name == "Result" ||
+           isFelidaeBuiltinTypeName(name) || knownTypes_.count(name) > 0;
 }
 
 void Parser::validateCallFields(const Call& call) const {

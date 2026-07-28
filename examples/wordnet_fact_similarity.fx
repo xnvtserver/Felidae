@@ -1,4 +1,4 @@
-import ("array", "db", "file", "http", "json", "probability")
+import ("array", "file", "http", "json", "probability")
 
 # The Open English WordNet project publishes current English WordNet releases
 # in JSON form. This method downloads a JSON resource into the local workspace.
@@ -27,8 +27,8 @@ Cat1(name: "kitten", name: "tiger", name: "lilly", name: "sony")
 Cat2(name: "joy", name: "teddy", name: "snowbell")
 
 WordScore(left: string, right: string) =>
-    leftSense := db.first(type: "WordNetSense", field: "word", equals: left)
-    rightSense := db.first(type: "WordNetSense", field: "word", equals: right)
+    leftSense := Fact.first(type: "WordNetSense", field: "word", equals: left)
+    rightSense := Fact.first(type: "WordNetSense", field: "word", equals: right)
     where leftSense.semantic == rightSense.semantic
     return (
         left: left,
@@ -45,14 +45,14 @@ else
     )
 
 ScoresAgainst(right: string) =>
-    cat1Rows := db.all(type: "Cat1")
+    cat1Rows := Fact.all(type: "Cat1")
     cat1 := array.get(data: cat1Rows, index: 0)
     scores := lambda(cat1.name, leftName => WordScore(left: leftName, right: right))
     return (right: right, scores: scores)
 
 main() =>
-    cat1Rows := db.all(type: "Cat1")
-    cat2Rows := db.all(type: "Cat2")
+    cat1Rows := Fact.all(type: "Cat1")
+    cat2Rows := Fact.all(type: "Cat2")
     cat1 := array.get(data: cat1Rows, index: 0)
     cat2 := array.get(data: cat2Rows, index: 0)
     joyScores := ScoresAgainst(right: "joy")

@@ -7,7 +7,6 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
-#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <system_error>
@@ -178,18 +177,6 @@ std::string felidaeValue(const Value& value, size_t indent = 0) {
         return output.str();
     }
     return Felidae::NativeJson::stringify(value);
-}
-
-Value filter(const Value& source, const std::string& key, const Value& expected, bool keepMatches) {
-    Value result;
-    result.kind = Value::Kind::Array;
-    for (const auto& row : source.items) {
-        if (row.kind != Value::Kind::Object) throw std::runtime_error("db expects fact/document rows");
-        const auto found = row.fields.find(key);
-        const bool match = found != row.fields.end() && equal(found->second, expected);
-        if (match == keepMatches) result.items.push_back(row);
-    }
-    return result;
 }
 
 std::string serializeFacts(const Value& source, const std::string& type) {
@@ -624,136 +611,6 @@ Value dispatch(const std::string& function, const Value& args) {
         return mutationResult(1, 0, 0, 1, std::move(deleted));
     }
 
-    if (operation == "add") {
-        const Value& row = fieldAs(args, "row", Value::Kind::Object);
-        Value result = source;
-        result.items.push_back(row);
-        return result;
-    }
-    if (operation == "find" || operation == "remove") {
-        const std::string key = fieldAs(args, "field", Value::Kind::String).text;
-        const Value* expected = Felidae::NativeJson::field(args, "equals");
-        if (!expected) throw std::runtime_error("db." + operation + " expects 'equals'");
-        return filter(source, key, *expected, operation == "find");
-    }
-    if (operation == "findMany") {
-        const Value& conditions = fieldAs(args, "conditions", Value::Kind::Object);
-        Value result;
-        result.kind = Value::Kind::Array;
-        for (const auto& row : source.items) {
-            if (row.kind != Value::Kind::Object) throw std::runtime_error("db.findMany expects document rows");
-            bool matches = true;
-            for (const auto& condition : conditions.fields) {
-                const auto found = row.fields.find(condition.first);
-                if (found == row.fields.end() || !equal(found->second, condition.second)) {
-                    matches = false;
-                    break;
-                }
-            }
-            if (matches) result.items.push_back(row);
-        }
-        return result;
-    }
-    if (operation == "update") {
-        const std::string key = fieldAs(args, "field", Value::Kind::String).text;
-        const Value* expected = Felidae::NativeJson::field(args, "equals");
-        const Value& patch = fieldAs(args, "patch", Value::Kind::Object);
-        if (!expected) throw std::runtime_error("db.update expects 'equals'");
-        Value result = source;
-        for (auto& row : result.items) {
-            const auto found = row.fields.find(key);
-            if (found == row.fields.end() || !equal(found->second, *expected)) continue;
-            for (const auto& patchKey : patch.fieldOrder) {
-                const auto item = patch.fields.find(patchKey);
-                if (item == patch.fields.end()) continue;
-                if (row.fields.find(patchKey) == row.fields.end()) row.fieldOrder.push_back(patchKey);
-                row.fields[patchKey] = item->second;
-            }
-        }
-        return result;
-    }
-    if (operation == "sort") {
-        const std::string key = fieldAs(args, "field", Value::Kind::String).text;
-        const std::string direction = fieldAs(args, "direction", Value::Kind::String).text;
-        if (direction != "asc" && direction != "desc") throw std::runtime_error("db.sort direction must be 'asc' or 'desc'");
-        Value result = source;
-        for (const auto& row : result.items) {
-            if (row.kind != Value::Kind::Object || row.fields.find(key) == row.fields.end()) {
-                throw std::runtime_error("db.sort field '" + key + "' is missing");
-            }
-        }
-        std::stable_sort(result.items.begin(), result.items.end(), [&](const Value& a, const Value& b) {
-            const Value& left = a.fields.at(key);
-            const Value& right = b.fields.at(key);
-            const bool less = left.kind == Value::Kind::Number && right.kind == Value::Kind::Number
-                ? left.number < right.number : text(left) < text(right);
-            return direction == "asc" ? less : (!less && !equal(left, right));
-        });
-        return result;
-    }
-    if (operation == "search") {
-        const std::string key = fieldAs(args, "field", Value::Kind::String).text;
-        std::string query = fieldAs(args, "query", Value::Kind::String).text;
-        std::transform(query.begin(), query.end(), query.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        Value result;
-        result.kind = Value::Kind::Array;
-        for (const auto& row : source.items) {
-            const auto found = row.fields.find(key);
-            if (found == row.fields.end()) continue;
-            std::string value = text(found->second);
-            std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (value.find(query) != std::string::npos) result.items.push_back(row);
-        }
-        return result;
-    }
-    if (operation == "distinct") {
-        const std::string key = fieldAs(args, "field", Value::Kind::String).text;
-        Value result;
-        result.kind = Value::Kind::Array;
-        std::set<std::string> seen;
-        for (const auto& row : source.items) {
-            const auto found = row.fields.find(key);
-            if (found != row.fields.end() && seen.insert(text(found->second)).second) result.items.push_back(found->second);
-        }
-        return result;
-    }
-    if (operation == "paginate") {
-        const double offset = fieldAs(args, "offset", Value::Kind::Number).number;
-        const double limit = fieldAs(args, "limit", Value::Kind::Number).number;
-        if (offset < 0 || limit < 0 || std::floor(offset) != offset || std::floor(limit) != limit) {
-            throw std::runtime_error("db.paginate offset and limit must be non-negative integers");
-        }
-        Value result;
-        result.kind = Value::Kind::Array;
-        const size_t begin = std::min(source.items.size(), static_cast<size_t>(offset));
-        const size_t end = std::min(source.items.size(), begin + static_cast<size_t>(limit));
-        result.items.assign(source.items.begin() + static_cast<std::ptrdiff_t>(begin),
-                            source.items.begin() + static_cast<std::ptrdiff_t>(end));
-        return result;
-    }
-    if (operation == "aggregate") {
-        const std::string mode = fieldAs(args, "operation", Value::Kind::String).text;
-        if (mode == "count") return numeric(static_cast<double>(source.items.size()));
-        const std::string key = fieldAs(args, "field", Value::Kind::String).text;
-        if (mode != "sum" && mode != "average" && mode != "min" && mode != "max") {
-            throw std::runtime_error("db.aggregate operation must be count, sum, average, min, or max");
-        }
-        if (source.items.empty()) throw std::runtime_error("db.aggregate cannot aggregate an empty database");
-        double sum = 0, minimum = 0, maximum = 0;
-        for (size_t i = 0; i < source.items.size(); ++i) {
-            const auto found = source.items[i].fields.find(key);
-            if (found == source.items[i].fields.end() || found->second.kind != Value::Kind::Number) {
-                throw std::runtime_error("db.aggregate field '" + key + "' must be numeric in every document");
-            }
-            const double value = found->second.number;
-            sum += value;
-            if (i == 0) minimum = maximum = value;
-            else { minimum = std::min(minimum, value); maximum = std::max(maximum, value); }
-        }
-        if (mode == "sum") return numeric(sum);
-        if (mode == "average") return numeric(sum / source.items.size());
-        return numeric(mode == "min" ? minimum : maximum);
-    }
     if (operation == "serialize") {
         const std::string type = trimmed(fieldAs(args, "type", Value::Kind::String).text);
         return Felidae::NativeJson::string(serializeFacts(source, type));
@@ -777,19 +634,6 @@ Value dispatch(const std::string& function, const Value& args) {
         }
         output << "\n";
         return Felidae::NativeJson::string(output.str());
-    }
-    if (operation == "deleteCascade") {
-        const Value& dependents = fieldAs(args, "dependents", Value::Kind::Array);
-        const std::string parentField = fieldAs(args, "parentField", Value::Kind::String).text;
-        const std::string dependentField = fieldAs(args, "dependentField", Value::Kind::String).text;
-        const Value* expected = Felidae::NativeJson::field(args, "equals");
-        if (!expected) throw std::runtime_error("db.deleteCascade expects 'equals'");
-        Value result;
-        result.kind = Value::Kind::Object;
-        result.fieldOrder = {"parents", "dependents"};
-        result.fields.emplace("parents", filter(source, parentField, *expected, false));
-        result.fields.emplace("dependents", filter(dependents, dependentField, *expected, false));
-        return result;
     }
     throw std::runtime_error("Unsupported db operation '" + operation + "'");
 }

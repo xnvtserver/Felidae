@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -34,6 +35,21 @@ struct FactMemoryStats {
     std::uint64_t generation = 0;
 };
 
+// Attachments deliberately live beside facts rather than in their serialized
+// MapExpr values.  That keeps structural equality/source export unchanged
+// while aliases of the same logical fact observe the same knowledge.
+struct FactDependency {
+    std::shared_ptr<MapExpr> required;
+};
+
+struct FactRelationship {
+    std::uint64_t sourceId = 0;
+    std::uint64_t targetId = 0;
+    std::shared_ptr<MapExpr> relationship;
+    std::shared_ptr<Expr> degree;
+    std::shared_ptr<Expr> confidence;
+};
+
 class FactMemory {
 public:
     FactMemory();
@@ -57,6 +73,18 @@ public:
                                          const std::shared_ptr<Expr>& value = nullptr,
                                          std::uint64_t snapshotGeneration = 0) const;
     const FactRecord& snapshotFact(std::uint64_t snapshotGeneration, size_t index) const;
+
+    std::optional<std::uint64_t> logicalFactId(const std::shared_ptr<Expr>& value) const;
+    std::shared_ptr<MapExpr> factValueById(std::uint64_t id) const;
+    bool addDependency(std::uint64_t sourceId, std::shared_ptr<MapExpr> required);
+    bool addRelationship(std::uint64_t sourceId,
+                         std::uint64_t targetId,
+                         std::shared_ptr<MapExpr> relationship,
+                         std::shared_ptr<Expr> degree,
+                         std::shared_ptr<Expr> confidence);
+    std::vector<std::shared_ptr<MapExpr>> missingDependencies(std::uint64_t sourceId) const;
+    bool hasDependencyCycle(std::uint64_t sourceId) const;
+    std::vector<FactRelationship> relationshipsFor(std::uint64_t factId) const;
 
     size_t addFact(std::string type,
                    std::string parentType,
@@ -121,12 +149,16 @@ private:
         std::uint64_t nextFactId = 1;
         std::uint64_t generation = 1;
         std::unordered_map<SymbolId, std::vector<size_t>> factsByType;
+        std::unordered_map<std::uint64_t, size_t> factIndexById;
         std::unordered_map<std::filesystem::path, std::vector<size_t>> factsByOrigin;
         std::unordered_map<std::string, std::string> parentOf;
         std::unordered_map<std::string, std::filesystem::path> parentOrigin;
         std::unordered_map<SymbolId, std::vector<SymbolId>> childrenByParent;
         std::unordered_map<SymbolId, std::vector<std::string>> typeNamesById;
         std::unordered_map<SymbolId, Relation> relations;
+        std::unordered_map<std::uint64_t, std::vector<FactDependency>> dependenciesBySource;
+        std::unordered_map<std::uint64_t, std::vector<FactRelationship>> relationshipsBySource;
+        std::unordered_map<std::uint64_t, std::vector<FactRelationship>> relationshipsByTarget;
     };
 
     std::shared_ptr<Data> data_;
@@ -137,6 +169,9 @@ private:
     static bool literalIndexKey(const std::shared_ptr<Expr>& value, std::string& out);
     static bool literalIndexHash(const std::shared_ptr<Expr>& value, std::size_t& out);
     static std::size_t stableExprHash(const std::shared_ptr<Expr>& value);
+    static bool structurallyEqual(const std::shared_ptr<Expr>& left,
+                                  const std::shared_ptr<Expr>& right);
+    static bool factSatisfiesPattern(const MapExpr& fact, const MapExpr& pattern);
     static bool isCompatibleTypeInData(const Data& data,
                                        const std::string& actual,
                                        const std::string& expected);

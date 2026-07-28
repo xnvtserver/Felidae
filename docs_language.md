@@ -229,6 +229,83 @@ Person(name: "Default", age: 0, country: "India")
 Employee extend Person(name: "Ravi", age: 30, role: "Engineer")
 ```
 
+## Contextual Fact Comparison
+
+`Relation.compare(left: ..., right: ...)` is a built-in fact-runtime operation;
+ordinary in-memory expert-system programs do not import `db.fx` for it. It
+returns a structured `Comparison` fact rather than a Boolean. The left fact
+provides contextual membership knowledge and the right fact family owns the
+rule that interprets that knowledge.
+
+```Felidae
+Dog.membership(input: Dog, against: Animal) =>
+    return {living: input.living, breathes: input.breathes}
+
+Animal.compareMembership(context: Fact) =>
+    return {
+        state: "animal-member",
+        evidence: context.structuralEvidence
+    }
+
+result := Relation.compare(left: dog, right: animal)
+where result.state == "animal-member"
+```
+
+Dispatch is directional and resolves one method only: the most-specific source
+`membership` method compatible with the target, followed by the target's exact
+or inherited `compareMembership` method on a concrete target family. If no
+target-owned method applies, the runtime produces a resolved-field micro-fact
+and structural result (`exact-member`, `subset-member`, `partial-member`,
+`conflicting`, or `unknown`). A membership method must return a map/fact or
+`nil`; `nil` becomes an explicit `incomparable` comparison result.
+
+Use `.depends(on: Fact(...))` for hard existential requirements and
+`.relate(to: Fact(...), as: Relationship(...), degree: ..., confidence: ...)`
+for generic relationship evidence. Dependencies are AND requirements for a
+stored fact and produce an `unresolved` comparison result when absent.
+Relationship names, degree combination, and domain judgment remain data and
+target-family rule decisions; the runtime does not impose similarity meaning.
+`Relation.find(input: context.relationships, name: "...")` returns a direct
+relationship fact or `nil`, and `Dependency.satisfied(input: fact)` returns an
+explicit Boolean for guards.
+
+### Dynamic method references
+
+`.references(by: owner::method, factor: ..., as: Reference(...))` attaches a
+pure executable derivation to one stored fact. It is neither a hard dependency
+nor a semantic relationship. Evaluate it explicitly with
+`Fact.references(input: fact)`; this returns ordered `ReferenceResult` values
+whose `result` field is a typed fact. A temporary `factor:` supplied to
+`Fact.references` is an ephemeral override and never replaces the attachment's
+default-factor canonical result.
+
+Referenced methods must declare compatible typed `input` and `factor`
+parameters, return `ReferenceResult(result: TypedFact(...))`, and use only
+pure operations (typed exceptions may propagate). Reference results are kept
+outside ordinary fact lookup, unification, dependencies, and
+`Relation.compare`; user rules must retrieve and consume them deliberately.
+
+```logic
+motion.references(
+    by: Physics::velocity,
+    factor: Time(seconds: 2.0),
+    as: Reference(name: "velocity")
+)
+velocity := Fact.references(input: motion, as: Reference(name: "velocity"))
+```
+
+The callable must be declared or imported before the attachment. Constructors,
+normal rule matching, Celidae, and debugger inspection never evaluate
+references.
+
+Comparison values can be passed through `then` and compared again. The built-in
+core `Comparison.membership` method provides the standard `previous*`
+micro-fact projection and returns `nil` for `unresolved` or `incomparable`
+results. A domain may declare its own normal `Comparison.membership` method
+before execution when it needs a different chained projection. Comparison
+facts, maps, arrays, strings, and numbers are not implicitly Boolean: use an
+explicit field comparison in `where` or `if`.
+
 Use `type(value: item, name: TypeName)` to read a value's concrete type, and
 `instanceof(value: item, type: Person)` to check whether a value is an instance
 of a fact/type or one of its parents through `extend`. Both are goal-style
@@ -422,28 +499,38 @@ this goal runs. `fn:array` is a plain `:=` assignment and always works.
 
 ## Exceptions
 
-`throw` has explicit handling modes. `throw(msg: reason, out: value)` captures the
-reason as a value, while `throw(msg: reason, target: Handler)` routes it to a
-handler rule. A throw without either `out` or `target` is unhandled and stops
-execution with an interpreter error. Goals after a throw are unreachable; only
-the branch's final `return` may follow it.
+Felidae does not use `try`/`catch`. Recoverable operations return the standard
+`Result` value from `core/exception.fx` instead: `{ok, value, error}`. A caller
+checks `ok` and passes a failed result to an ordinary source-owned method when
+it wants recovery. `core/exception.fx` defines only the `Exception` and
+`Result` shapes plus `exception.ok`, `exception.failure`, and
+`exception.from`; application error kinds remain in application source.
 
 ```Felidae
-DivideFailure(error_reason: error_reason) =>
-    throw(msg: "DivisionByZero", out: error_reason)
-    return
+import "exception"
+
+CalculatorActions.handle(result: Result) =>
+    if result.error.kind == "DivisionByZero" then
+        return exception.ok(value: {quotient: 0, recovered: true})
+    else
+        return result
+
+SafeDivide(dividend: number, divisor: number) =>
+    if divisor == 0 then
+        rejected := exception.failure(
+            kind: "DivisionByZero",
+            message: "Cannot divide by zero",
+            source: "calculator"
+        )
+        return CalculatorActions.handle(result: rejected)
+    else
+        return exception.ok(value: math.div(lhs: dividend, rhs: divisor))
 ```
 
-`throw` can also route directly to a handler rule by name:
-
-```Felidae
-DivideFailureHandler(msg: msg) =>
-    HandledFailure(type: "division", msg: msg)
-
-RoutedFailure(msg: msg) =>
-    throw(msg: "thrown from module a", target: DivideFailureHandler, out: msg)
-    return
-```
+Use `throw(exception: ..., target: Owner::method)` only for an unrecoverable
+path that must immediately stop the current method. The target is one exact
+callable reference, never a string. `kind` is the stable programmatic
+discriminator while `message` remains user-facing context.
 
 ## Built-In Expression Functions
 
@@ -486,8 +573,6 @@ console.writeLine(value: "hello")
 system.print(value: "hello")
 math.sqrt(value: 81)
 math.pow(base: 2, exponent: 8)
-db.all(type: "Customer")
-db.find(type: "Customer", field: "city", equals: "SEA")
 probability.mean(data: [2, 4, 6, 8])
 probability.binomialPmf(trials: 10, successes: 3, p: 0.5)
 ml.dot(left: [1, 2, 3], right: [4, 5, 6])
@@ -514,9 +599,30 @@ like typed fact values during explicit lambda processing. Use Felidae code to
 filter/project rows, `csv.toFelidaeFacts` to create declaration text, and
 `file.writeFile` to persist declarations such as
 `School(student: "John", class: "10c")` for later import or querying.
-`db.all`, `db.find`, `db.count`, `db.first`, `db.types`, and `db.fields` expose
-the loaded no-SQL fact store as method-body values. Command-line `? Fact(...)`
-queries still use the parallel external solver path for ad hoc inspection.
+The interpreter itself is the in-memory OLAP fact store. Import ordinary `.fx`
+fact sources and rule libraries as needed, then use named fact goals,
+unification, inheritance-aware methods, and `lambda(FactType, ...)` for normal
+fact reasoning; use `lambda("model", ...)` when a dynamically named or
+lowercase `.fx` model must be selected. None of these require importing
+`db.fx`. Facts are built-in
+language values: use typed goals and `lambda(FactType, ...)` to query and
+filter them, then normal array operations when one selected value is needed.
+`Fact.select(...)` remains the low-level lazy-selection API for code that
+specifically needs a reusable cursor. Import `db` only for explicit `.fx`
+fact-file connection, mutation, save, and reload workflows such as
+`db.connect`, `db.insert`, `db.updateOne`, `db.deleteOne`, `db.save`, and
+`db.sync`. It deliberately provides no collection query, filter, sort, or
+aggregate API: reload with `db.sync`, then use Felidae goals, `lambda`, set,
+group, and aggregate expressions against the in-memory fact runtime.
+Command-line `? Fact(...)` queries remain available for ad hoc inspection.
+
+Facts returned by `Fact.all`, `Fact.first`, or `Fact.materialize` retain an
+internal stable identity for `.depends(...)` and `.relate(...)`. This identity
+is not serialized and does not change structural equality. When two stored
+facts have identical visible fields, retrieve the intended row through one of
+these APIs before attaching knowledge; a reconstructed `Type(...)` map is
+intentionally rejected as ambiguous.
+
 `probability.fx` adds common probability and statistics helpers including
 mean, variance, standard deviation, normalization, entropy, covariance,
 correlation, Bernoulli, binomial, Poisson, normal, uniform, sample, and weighted

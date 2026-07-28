@@ -31,8 +31,11 @@ ModifyPizzaOrder(connection: any, orderId: number, items: array, subtotal: numbe
     )
 
 CancelPizzaOrder(connection: any, orderId: number, reason: string) =>
-    stored := db.findOne(connection: connection, conditions: {id: orderId})
-    if stored.matched == 0 then
+    # A connection changes a fact file; querying remains normal in-memory
+    # Felidae after the explicit reload boundary.
+    db.sync(path: connection.path)
+    matchingOrders := lambda(PizzaOrder, item => item.id == orderId)
+    if count(matchingOrders) == 0 then
         return {
             matched: 0,
             modified: 0,
@@ -45,11 +48,12 @@ CancelPizzaOrder(connection: any, orderId: number, reason: string) =>
             }
         }
     else
-        if stored.data.status == "delivered" then
+        stored := array:get(data: matchingOrders, position: 0)
+        if stored.status == "delivered" then
             return {
                 matched: 1,
                 modified: 0,
-                data: stored.data,
+                data: stored,
                 error: {
                     __type: "Exception",
                     kind: "DeliveredOrderCannotBeCancelled",
@@ -60,7 +64,7 @@ CancelPizzaOrder(connection: any, orderId: number, reason: string) =>
         else
             return db.updateOne(
                 connection: connection,
-                conditions: {id: orderId, status: stored.data.status},
+                conditions: {id: orderId, status: stored.status},
                 patch: {status: "cancelled", cancellationReason: reason}
             )
 
@@ -94,18 +98,21 @@ main() =>
     db.insert(connection: productDb, data: {
         id: 102, name: "Pepperoni Pizza", price: 15, available: true
     })
-    separatePizza := db.findOne(connection: productDb, conditions: {id: 101, available: true})
-    separateSubtotal := math.mul(lhs: separatePizza.data.price, rhs: 1)
+    db.sync(path: "examples/db_workflow/pizza_product.fx")
+    separateById := lambda(PizzaProduct, item => item.id == 101)
+    separatePizzas := lambda(separateById, item => item.available == true)
+    separatePizza := array:get(data: separatePizzas, position: 0)
+    separateSubtotal := math.mul(lhs: separatePizza.price, rhs: 1)
     separateTotal := math.add(lhs: separateSubtotal, rhs: 3)
     db.insert(connection: orderDb, data: {
         id: 5001,
         customer: {id: 1, name: "Mira"},
         region: {id: 10, name: "South"},
         items: [{
-            productId: separatePizza.data.id,
-            name: separatePizza.data.name,
+            productId: separatePizza.id,
+            name: separatePizza.name,
             quantity: 1,
-            unitPrice: separatePizza.data.price
+            unitPrice: separatePizza.price
         }],
         subtotal: separateSubtotal,
         deliveryFee: 3,
@@ -155,25 +162,26 @@ main() =>
     db.insert(connection: sharedProductDb, data: {
         id: 202, name: "Paneer Pizza", price: 16, available: true
     })
-    farmhousePizza := db.findOne(
-        connection: sharedProductDb, conditions: {id: 201, available: true}
-    )
-    paneerPizza := db.findOne(
-        connection: sharedProductDb, conditions: {id: 202, available: true}
-    )
-    farmhouseSubtotal := math.mul(lhs: farmhousePizza.data.price, rhs: 1)
+    db.sync(path: sharedPath)
+    farmhouseById := lambda(PizzaProduct, item => item.id == 201)
+    farmhousePizzas := lambda(farmhouseById, item => item.available == true)
+    paneerById := lambda(PizzaProduct, item => item.id == 202)
+    paneerPizzas := lambda(paneerById, item => item.available == true)
+    farmhousePizza := array:get(data: farmhousePizzas, position: 0)
+    paneerPizza := array:get(data: paneerPizzas, position: 0)
+    farmhouseSubtotal := math.mul(lhs: farmhousePizza.price, rhs: 1)
     farmhouseTotal := math.add(lhs: farmhouseSubtotal, rhs: 4)
-    paneerSubtotal := math.mul(lhs: paneerPizza.data.price, rhs: 1)
+    paneerSubtotal := math.mul(lhs: paneerPizza.price, rhs: 1)
     paneerTotal := math.add(lhs: paneerSubtotal, rhs: 4)
     db.insert(connection: sharedOrderDb, data: {
         id: 6001,
         customer: {id: 2, name: "Arun"},
         region: {id: 20, name: "North"},
         items: [{
-            productId: farmhousePizza.data.id,
-            name: farmhousePizza.data.name,
+            productId: farmhousePizza.id,
+            name: farmhousePizza.name,
             quantity: 1,
-            unitPrice: farmhousePizza.data.price
+            unitPrice: farmhousePizza.price
         }],
         subtotal: farmhouseSubtotal,
         deliveryFee: 4,
@@ -186,10 +194,10 @@ main() =>
         customer: {id: 2, name: "Arun"},
         region: {id: 20, name: "North"},
         items: [{
-            productId: paneerPizza.data.id,
-            name: paneerPizza.data.name,
+            productId: paneerPizza.id,
+            name: paneerPizza.name,
             quantity: 1,
-            unitPrice: paneerPizza.data.price
+            unitPrice: paneerPizza.price
         }],
         subtotal: paneerSubtotal,
         deliveryFee: 4,
@@ -204,10 +212,10 @@ main() =>
         customer: {id: 2, name: "Arun"},
         region: {id: 20, name: "North"},
         items: [{
-            productId: farmhousePizza.data.id,
-            name: farmhousePizza.data.name,
+            productId: farmhousePizza.id,
+            name: farmhousePizza.name,
             quantity: correctedRequest.quantity,
-            unitPrice: farmhousePizza.data.price
+            unitPrice: farmhousePizza.price
         }],
         subtotal: farmhouseSubtotal,
         deliveryFee: 4,
@@ -216,16 +224,16 @@ main() =>
         cancellationReason: nil
     })
 
-    modifiedSubtotal := math.mul(lhs: paneerPizza.data.price, rhs: 2)
+    modifiedSubtotal := math.mul(lhs: paneerPizza.price, rhs: 2)
     modifiedTotal := math.add(lhs: modifiedSubtotal, rhs: 4)
     modified := ModifyPizzaOrder(
         connection: sharedOrderDb,
         orderId: 6001,
         items: [{
-            productId: paneerPizza.data.id,
-            name: paneerPizza.data.name,
+            productId: paneerPizza.id,
+            name: paneerPizza.name,
             quantity: 2,
-            unitPrice: paneerPizza.data.price
+            unitPrice: paneerPizza.price
         }],
         subtotal: modifiedSubtotal,
         total: modifiedTotal
@@ -240,13 +248,20 @@ main() =>
         connection: sharedOrderDb, orderId: 6002, reason: "customer_changed_mind"
     )
 
-    users := db.findMany(connection: sharedUserDb, conditions: {status: "active"})
-    regions := db.findMany(connection: sharedRegionDb, conditions: {deliveryEnabled: true})
-    products := db.findMany(connection: sharedProductDb, conditions: {available: true})
-    orders := db.findMany(connection: sharedOrderDb, conditions: {customer: {id: 2, name: "Arun"}})
-    order6001 := db.findOne(connection: sharedOrderDb, conditions: {id: 6001})
-    order6002 := db.findOne(connection: sharedOrderDb, conditions: {id: 6002})
-    order6003 := db.findOne(connection: sharedOrderDb, conditions: {id: 6003})
+    db.sync(path: sharedPath)
+    sharedUsers := lambda(PizzaUser, item => item.id == 2)
+    users := lambda(sharedUsers, item => item.status == "active")
+    sharedRegions := lambda(PizzaRegion, item => item.id == 20)
+    regions := lambda(sharedRegions, item => item.deliveryEnabled == true)
+    sharedProducts := lambda(PizzaProduct, item => item.id >= 201)
+    products := lambda(sharedProducts, item => item.available == true)
+    orders := lambda(PizzaOrder, item => item.customer.id == 2)
+    order6001s := lambda(PizzaOrder, item => item.id == 6001)
+    order6002s := lambda(PizzaOrder, item => item.id == 6002)
+    order6003s := lambda(PizzaOrder, item => item.id == 6003)
+    order6001 := array:get(data: order6001s, position: 0)
+    order6002 := array:get(data: order6002s, position: 0)
+    order6003 := array:get(data: order6003s, position: 0)
 
     return (
         separate: {
@@ -260,10 +275,10 @@ main() =>
             database: sharedDatabase,
             users_query: users,
             products_query: products,
-            user_count: users.matched,
-            region_count: regions.matched,
-            product_count: products.matched,
-            order_count: orders.matched,
+            user_count: count(users),
+            region_count: count(regions),
+            product_count: count(products),
+            order_count: count(orders),
             corrected_request: correctedRequest,
             modified: modified,
             confirmed: sharedConfirmed,
