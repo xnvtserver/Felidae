@@ -16,6 +16,7 @@ db.exists(type: string, field: string, equals: any) => ()
 db.select(type: string) => ()
 db.select(type: string, field: string, equals: any) => ()
 db.materialize(selection: any) => ()
+db.release(selection: any) => ()
 db.sync(path: string) => ()
 
 db.read(path: string) =>

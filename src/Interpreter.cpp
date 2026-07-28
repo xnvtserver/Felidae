@@ -31,7 +31,7 @@ namespace {
 constexpr size_t kMaxCachedEnvFrames = 4096;
 constexpr size_t kHotMethodPrepareThreshold = 2;
 // A non-tail call expands through solver, value evaluation, and unification
-// frames.  Keep this deliberately below the platform stack danger zone until
+// frames. Keep this deliberately below the platform stack danger zone until
 // every non-tail continuation is represented by the iterative frame machine.
 // Tail calls unwind through TailCallSignal and are not limited by this guard.
 constexpr size_t kMaxNativeMethodCallDepth = 4;
@@ -2190,6 +2190,50 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
         }
     }
 
+    // Cardinality is the most common set operation in analytical programs.
+    // A FactSelection already owns an indexed cursor, so serializing every
+    // selected record only to count it defeats laziness.  Keep the public
+    // Set.cardinality API unchanged and answer this one selection-native
+    // operation directly from its immutable snapshot.
+    if (genericLibraryLoader && moduleName == "set" &&
+        nativeFunctionName == "system:flibrary:set:cardinality" && loaderArgs) {
+        const auto setsEntry = std::find_if(
+            loaderArgs->entries.begin(), loaderArgs->entries.end(),
+            [](const MapEntry& entry) { return entry.key == "sets"; });
+        if (setsEntry != loaderArgs->entries.end()) {
+            std::shared_ptr<Expr> setsValue;
+            if (!evalExprValue(setsEntry->value, env, setsValue)) return false;
+            const auto sets = std::dynamic_pointer_cast<ArrayExpr>(setsValue);
+            if (sets && sets->items.size() == 1) {
+                const auto selection = sets->items.front();
+                const auto kind = std::dynamic_pointer_cast<StringExpr>(
+                    findMapValue(selection, internalSymbolString(InternalSymbolKind::Type)));
+                const auto type = std::dynamic_pointer_cast<StringExpr>(findMapValue(selection, "fact_type"));
+                if (kind && kind->value == "FactSelection" && type) {
+                    std::string field;
+                    std::shared_ptr<Expr> equals;
+                    if (const auto fieldValue = std::dynamic_pointer_cast<StringExpr>(findMapValue(selection, "field"))) {
+                        field = fieldValue->value;
+                        equals = findMapValue(selection, "equals");
+                    }
+                    std::uint64_t snapshot = 0;
+                    if (const auto generation = std::dynamic_pointer_cast<NumberExpr>(
+                            findMapValue(selection, "snapshot_generation"))) {
+                        snapshot = static_cast<std::uint64_t>(generation->value);
+                    }
+                    const auto indexes = memory_.selectionIndexes(
+                        type->value,
+                        field,
+                        equals && isGroundLiteral(equals) ? equals : nullptr,
+                        snapshot);
+                    env[internalSymbolString(InternalSymbolKind::Return)] =
+                        std::make_shared<NumberExpr>(static_cast<double>(indexes.size()));
+                    return true;
+                }
+            }
+        }
+    }
+
     const NativeLibrary* library = nullptr;
     for (const auto& candidate : nativeLibraries_) {
         if (candidate.moduleName == moduleName) {
@@ -2400,12 +2444,23 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
     }
     const NativeCapabilities capabilities =
         nativeCapabilitiesFor(library->moduleName, nativeFunctionName);
-    if (capabilities.needsFactSnapshot) {
+    bool callerProvidedFacts = false;
+    if (genericLibraryLoader && loaderArgs) {
+        callerProvidedFacts = std::any_of(
+            loaderArgs->entries.begin(), loaderArgs->entries.end(),
+            [](const MapEntry& entry) { return entry.key == "facts"; });
+    } else {
+        callerProvidedFacts = std::any_of(
+            call.args.begin(), call.args.end(),
+            [](const Arg& arg) { return arg.name == "facts"; });
+    }
+    if (capabilities.needsFactSnapshot && !callerProvidedFacts) {
         if (!first) json << ",";
         const std::streampos snapshotStart = json.tellp();
         json << "\"__facts\":[";
         bool firstFact = true;
-        for (const auto& fact : memory_.facts()) {
+        for (const size_t factIndex : memory_.activeFactIndexes()) {
+            const auto& fact = memory_.fact(factIndex);
             if (!fact.value) continue;
             if (!capabilities.requestedFactTypes.empty() &&
                 std::find(
@@ -2425,6 +2480,18 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
                 static_cast<std::size_t>(snapshotEnd - snapshotStart);
         }
         ++nativeFactSnapshotCalls_;
+    }
+    if (capabilities.needsFactHierarchy && !callerProvidedFacts) {
+        if (!first) json << ",";
+        json << "\"__parents\":{";
+        bool firstParent = true;
+        for (const auto& relation : memory_.parents()) {
+            if (!firstParent) json << ",";
+            firstParent = false;
+            json << "\"" << jsonEscape(relation.first) << "\":\""
+                 << jsonEscape(relation.second) << "\"";
+        }
+        json << "}";
     }
     json << "}";
 
@@ -3160,9 +3227,28 @@ bool Interpreter::evalCallAsValueOnce(
             out = materializeFactSelection(selection);
             return true;
         }
+        if (op == "release") {
+            std::shared_ptr<Expr> selection;
+            if (!evalNamed("selection", 0, selection) && !evalNamed("value", 0, selection)) {
+                throw InterpreterError("db.release expects a FactSelection");
+            }
+            const auto kind = std::dynamic_pointer_cast<StringExpr>(
+                findMapValue(selection, internalSymbolString(InternalSymbolKind::Type)));
+            const auto generation = std::dynamic_pointer_cast<NumberExpr>(
+                findMapValue(selection, "snapshot_generation"));
+            if (!kind || kind->value != "FactSelection" || !generation ||
+                generation->value <= 0 || std::floor(generation->value) != generation->value) {
+                throw InterpreterError("db.release expects a captured FactSelection");
+            }
+            out = std::make_shared<BoolExpr>(memory_.releaseSnapshot(
+                static_cast<std::uint64_t>(generation->value)));
+            return true;
+        }
         if (op == "types") {
             std::set<std::string> types;
-            for (const auto& fact : memory_.facts()) types.insert(fact.type);
+            for (const size_t factIndex : memory_.activeFactIndexes()) {
+                types.insert(memory_.fact(factIndex).type);
+            }
             for (const auto& parent : memory_.parents()) {
                 types.insert(parent.first);
                 types.insert(parent.second);
@@ -3191,6 +3277,8 @@ bool Interpreter::evalCallAsValueOnce(
             entries.push_back(MapEntry{internalSymbolString(InternalSymbolKind::Type), std::make_shared<StringExpr>("FactSelection")});
             entries.push_back(MapEntry{"fact_type", std::make_shared<StringExpr>(typeName)});
             entries.push_back(MapEntry{"source", std::make_shared<StringExpr>("memory")});
+            entries.push_back(MapEntry{"snapshot_generation",
+                std::make_shared<NumberExpr>(static_cast<double>(memory_.captureSnapshot()))});
             if (term.args.size() > 1) {
                 const std::string field = requireNamedString({"field", "key"}, 1, "field");
                 std::shared_ptr<Expr> expected;
@@ -4433,14 +4521,15 @@ std::shared_ptr<MapExpr> Interpreter::factToMap(const ClauseStmt& clause, const 
                 throw InterpreterError("Inheritance cycle detected for " + clause.head.name);
             }
             seen.insert(current);
-            const auto& facts = memory_.facts();
-            auto parent = std::find_if(facts.begin(), facts.end(), [&](const FactRecord& fact) {
-                return fact.type == current;
+            const auto parentIndexes = memory_.compatibleFactIndexes(current);
+            auto parent = std::find_if(parentIndexes.begin(), parentIndexes.end(), [&](size_t index) {
+                const auto& fact = memory_.fact(index);
+                return fact.type == current && fact.active;
             });
-            if (parent == facts.end()) {
+            if (parent == parentIndexes.end()) {
                 throw InterpreterError("Unknown parent fact/type '" + current + "'");
             }
-            entries = cloneEntries(parent->value->entries);
+            entries = cloneEntries(memory_.fact(*parent).value->entries);
             current.clear();
         }
     }
@@ -4712,21 +4801,29 @@ std::shared_ptr<ArrayExpr> Interpreter::materializeFactSelection(
     if (!kind || kind->value != "FactSelection" || !selectedType) {
         throw InterpreterError("Expected a FactSelection");
     }
+    std::uint64_t snapshotGeneration = 0;
+    if (const auto snapshot = std::dynamic_pointer_cast<NumberExpr>(
+            findMapValue(selection, "snapshot_generation"))) {
+        if (snapshot->value < 0 || std::floor(snapshot->value) != snapshot->value) {
+            throw InterpreterError("FactSelection has an invalid snapshot generation");
+        }
+        snapshotGeneration = static_cast<std::uint64_t>(snapshot->value);
+    }
     std::string field;
     std::shared_ptr<Expr> equals;
     if (const auto fieldValue = std::dynamic_pointer_cast<StringExpr>(findMapValue(selection, "field"))) {
         field = fieldValue->value;
         equals = findMapValue(selection, "equals");
     }
-    const std::vector<size_t>* indexes = &memory_.compatibleFactIndexes(selectedType->value);
-    if (!field.empty() && equals && isGroundLiteral(equals)) {
-        const auto& indexed = memory_.propertyFactIndexes(selectedType->value, 0, field, 0, equals);
-        if (indexed.size() < indexes->size()) indexes = &indexed;
-    }
+    const auto indexes = memory_.selectionIndexes(
+        selectedType->value,
+        field,
+        equals && isGroundLiteral(equals) ? equals : nullptr,
+        snapshotGeneration);
     std::vector<std::shared_ptr<Expr>> rows;
-    rows.reserve(indexes->size());
-    for (const auto index : *indexes) {
-        const auto& fact = memory_.fact(index);
+    rows.reserve(indexes.size());
+    for (const auto index : indexes) {
+        const auto& fact = memory_.snapshotFact(snapshotGeneration, index);
         if (!field.empty()) {
             const auto actual = findMapValue(fact.value, field);
             if (!actual || !equals || !exprContainsLiteral(actual, equals)) continue;
@@ -4757,6 +4854,10 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
         chunks.push_back(std::move(program));
     });
 
+    // Validate the complete replacement before mutating.  The memory copy is
+    // copy-on-write, so rollback restores the original relation generations
+    // and fact ids without reparsing or rebuilding unrelated indexes.
+    FactMemory previousMemory = memory_;
     memory_.removeOrigin(normalized);
     const fs::path previous = currentLoadingFile_;
     currentLoadingFile_ = normalized;
@@ -4765,6 +4866,8 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
         for (const auto& chunk : chunks) addProgram(chunk);
         endCacheInvalidationBatch();
     } catch (...) {
+        memory_ = std::move(previousMemory);
+        clearCachesNow();
         currentLoadingFile_ = previous;
         endCacheInvalidationBatch();
         throw;
@@ -4774,6 +4877,7 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
 }
 
 std::string Interpreter::runtimeMetricsJson() const {
+    const FactMemoryStats factStats = memory_.stats();
     std::ostringstream out;
     out << "{"
         << "\"clauseAttempts\":" << clauseAttempts_ << ","
@@ -4791,7 +4895,12 @@ std::string Interpreter::runtimeMetricsJson() const {
         << "\"nativeFactSnapshotBytes\":" << nativeFactSnapshotBytes_ << ","
         << "\"nativeSerializationMicros\":" << nativeSerializationMicros_ << ","
         << "\"dispatchCacheHits\":" << dispatchCacheHits_ << ","
-        << "\"dispatchCacheMisses\":" << dispatchCacheMisses_
+        << "\"dispatchCacheMisses\":" << dispatchCacheMisses_ << ","
+        << "\"factStoreGeneration\":" << factStats.generation << ","
+        << "\"activeFacts\":" << factStats.activeFacts << ","
+        << "\"tombstonedFacts\":" << factStats.tombstonedFacts << ","
+        << "\"factRelations\":" << factStats.relations << ","
+        << "\"liveFactSnapshots\":" << factStats.snapshots
         << "}";
     return out.str();
 }

@@ -75,6 +75,7 @@ enum class BuiltinId {
     DbExists,
     DbSelect,
     DbMaterialize,
+    DbRelease,
     DbSync,
 
     JsonObject,
