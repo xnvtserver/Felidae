@@ -42,6 +42,31 @@ std::string nodeId(const std::string& kind, const std::string& name) {
     return kind + ":" + name;
 }
 
+bool hasSuffix(const std::string& value, const std::string& suffix) {
+    return value.size() >= suffix.size() &&
+        value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+void visitReferenceAttachments(const std::shared_ptr<Goal>& goal,
+                               const std::function<void(const Call&)>& visitAttachment) {
+    if (!goal) return;
+    if (auto call = std::dynamic_pointer_cast<CallGoal>(goal)) {
+        if (hasSuffix(call->call.name, ":references")) visitAttachment(call->call);
+    } else if (auto conditional = std::dynamic_pointer_cast<IfGoal>(goal)) {
+        visitReferenceAttachments(conditional->condition, visitAttachment);
+        for (const auto& child : conditional->thenBranch) visitReferenceAttachments(child, visitAttachment);
+        for (const auto& child : conditional->elseBranch) visitReferenceAttachments(child, visitAttachment);
+    } else if (auto group = std::dynamic_pointer_cast<GroupGoal>(goal)) {
+        for (const auto& child : group->goals) visitReferenceAttachments(child, visitAttachment);
+    } else if (auto alternatives = std::dynamic_pointer_cast<OrGoal>(goal)) {
+        for (const auto& branch : alternatives->branches) {
+            for (const auto& child : branch) visitReferenceAttachments(child, visitAttachment);
+        }
+    } else if (auto where = std::dynamic_pointer_cast<WhereGoal>(goal)) {
+        visitReferenceAttachments(where->condition, visitAttachment);
+    }
+}
+
 struct FactProfile {
     std::size_t records = 0;
     std::map<std::string, std::size_t> fields;
@@ -192,11 +217,51 @@ void SchemaGraphAccumulator::consume(const std::shared_ptr<Statement>& statement
 
     impl_->methods.insert(clause->head.name);
     auto recordCall = [&](const std::string& called) {
+        // Fact attachments are parser-lowered as calls on the source value
+        // (for example, "ava:depends").  The source variable is not an
+        // external callable, so preserve the operation's actual semantics in
+        // dependency graphs instead of emitting misleading external nodes.
+        if (hasSuffix(called, ":depends")) {
+            impl_->references.emplace(
+                "method:" + clause->head.name,
+                "Fact:depends",
+                "attaches dependency");
+            return;
+        }
+        if (hasSuffix(called, ":relate")) {
+            impl_->references.emplace(
+                "method:" + clause->head.name,
+                "Fact:relate",
+                "attaches relationship");
+            return;
+        }
+        if (hasSuffix(called, ":references")) {
+            impl_->references.emplace(
+                "method:" + clause->head.name,
+                "Fact:references",
+                "attaches reference");
+            return;
+        }
         impl_->references.emplace("method:" + clause->head.name, called, "calls");
     };
     for (const auto& goal : clause->body) visitGoal(goal, recordCall);
     for (const auto& branch : clause->fallbackBranches) {
         for (const auto& goal : branch) visitGoal(goal, recordCall);
+    }
+    auto recordReferenceTarget = [&](const Call& call) {
+        for (const auto& arg : call.args) {
+            if (arg.name != "by") continue;
+            const auto callable = std::dynamic_pointer_cast<VarExpr>(arg.value);
+            if (!callable) continue;
+            std::string target = callable->name;
+            const size_t separator = target.find("::");
+            if (separator != std::string::npos) target.replace(separator, 2, ":");
+            impl_->references.emplace("method:" + clause->head.name, target, "references");
+        }
+    };
+    for (const auto& goal : clause->body) visitReferenceAttachments(goal, recordReferenceTarget);
+    for (const auto& branch : clause->fallbackBranches) {
+        for (const auto& goal : branch) visitReferenceAttachments(goal, recordReferenceTarget);
     }
 }
 
@@ -210,6 +275,9 @@ std::string SchemaGraphAccumulator::json(
         if (impl_->methods.count(name)) return std::string("method");
         if (impl_->facts.count(name)) return std::string("fact");
         if (isBuiltinFunctionName(name)) return std::string("library");
+        if (name == "Fact:depends" || name == "Fact:relate") {
+            return std::string("library");
+        }
         const auto separator = name.find(':');
         if (separator != std::string::npos &&
             impl_->imports.count(name.substr(0, separator))) {

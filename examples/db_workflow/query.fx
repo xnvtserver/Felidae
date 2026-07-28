@@ -1,13 +1,12 @@
 import ("db", "user.fx", "region.fx", "order.fx", "product.fx")
 
 main() =>
-    regions := db.all(type: "Region")
-    users := db.all(type: "User")
-    orders := db.all(type: "Order")
-
-    # Remove matching identities first so rerunning this transaction remains
-    # deterministic, then persist each new fact with db.insert.
-    regionsWithout21 := db.delete(rows: regions, field: "region_id", equals: 21)
+    # db.fx changes only the backing fact files. Queries below are ordinary
+    # in-memory Felidae selection after an explicit reload.
+    regionDb := db.connect(model: "Region", path: "examples/db_workflow/region.fx")
+    userDb := db.connect(model: "User", path: "examples/db_workflow/user.fx")
+    orderDb := db.connect(model: "Order", path: "examples/db_workflow/order.fx")
+    db.deleteOne(connection: regionDb, conditions: {region_id: 21})
     newRegion := {
         region_id: 21,
         code: "south-21",
@@ -15,14 +14,9 @@ main() =>
         enabled: true,
         orderEnabled: true
     }
-    updatedRegions := db.insert(
-        path: "examples/db_workflow/region.fx",
-        type: "Region",
-        rows: regionsWithout21,
-        row: newRegion
-    )
+    db.insert(connection: regionDb, data: newRegion, key: "region_id")
 
-    usersWithout21 := db.delete(rows: users, field: "id", equals: 21)
+    db.deleteOne(connection: userDb, conditions: {id: 21})
     newUser := {
         id: 21,
         name: "Mira",
@@ -30,19 +24,16 @@ main() =>
         status: "active",
         email: "mira@example.test"
     }
-    updatedUsers := db.insert(
-        path: "examples/db_workflow/user.fx",
-        type: "User",
-        rows: usersWithout21,
-        row: newUser
-    )
+    db.insert(connection: userDb, data: newUser)
 
-    cupCake := db.first(type: "Product", field: "sku", equals: "CUPCAKE")
-    pudding := db.first(type: "Product", field: "sku", equals: "CHOCOLATE_PUDDING")
+    cupCakes := lambda(Product, item => item.sku == "CUPCAKE")
+    puddings := lambda(Product, item => item.sku == "CHOCOLATE_PUDDING")
+    cupCake := array:get(data: cupCakes, position: 0)
+    pudding := array:get(data: puddings, position: 0)
     cupCakeSubtotal := math.mul(lhs: cupCake.price, rhs: 2)
     puddingSubtotal := math.mul(lhs: pudding.price, rhs: 3)
     orderTotal := math.add(lhs: cupCakeSubtotal, rhs: puddingSubtotal)
-    ordersWithout21 := db.delete(rows: orders, field: "orderId", equals: 2021)
+    db.deleteOne(connection: orderDb, conditions: {orderId: 2021})
     newOrder := {
         orderId: 2021,
         customer: {
@@ -75,18 +66,19 @@ main() =>
         total: orderTotal,
         status: "created"
     }
-    updatedOrders := db.insert(
-        path: "examples/db_workflow/order.fx",
-        type: "Order",
-        rows: ordersWithout21,
-        row: newOrder
-    )
+    db.insert(connection: orderDb, data: newOrder, key: "orderId")
+    db.sync(path: "examples/db_workflow/region.fx")
+    db.sync(path: "examples/db_workflow/user.fx")
+    db.sync(path: "examples/db_workflow/order.fx")
+    regions := lambda(Region, item => item.name != "")
+    users := lambda(User, item => item.id == 21)
+    orders := lambda(Order, item => item.orderId == 2021)
 
     return (
-        regions: updatedRegions,
-        region_count: count(updatedRegions),
-        inserted_user: newUser,
-        user_count: count(updatedUsers),
-        inserted_order: newOrder,
-        order_count: count(updatedOrders)
+        regions: regions,
+        region_count: count(regions),
+        inserted_user: array:get(data: users, position: 0),
+        user_count: count(users),
+        inserted_order: array:get(data: orders, position: 0),
+        order_count: count(orders)
     )

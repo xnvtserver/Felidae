@@ -1,4 +1,4 @@
-import ("db", "set", "group")
+import ("set", "group")
 
 Fruit(name: "apple", taste: "sweet")
 Fruit(name: "orange", taste: "sweet")
@@ -8,8 +8,8 @@ Vegis(name: "carrot", taste: "sweet")
 Vegis(name: "tomato", taste: "sweet")
 
 main() =>
-    fruit := db.all(type: "Fruit")
-    vegis := db.all(type: "Vegis")
+    fruit := Fact.all(type: "Fruit")
+    vegis := Fact.all(type: "Vegis")
     allFood := Set.union(sets: [fruit, vegis])
     commonTaste := Set.intersectionBy(sets: [fruit, vegis], fields: ["taste"])
     fruitOnlyTaste := Set.differenceBy(sets: [fruit, vegis], fields: ["taste"])

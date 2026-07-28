@@ -1,5 +1,3 @@
-import "db"
-
 main() =>
     raw := "  Alice,Engineer,SEA  "
     trimmed := str.trim(data: raw)
@@ -16,11 +14,18 @@ main() =>
     hasOffice := json.has(data: withoutRole, key: "office")
     office := json.get(data: withoutRole, key: "office")
 
+    # Collection filtering and transformation are normal Felidae evaluation,
+    # not database operations. db.fx is only for explicit .fx persistence.
     rows := csv.parse(data: "name,role,office\nAlice,Engineer,SEA\nBob,Manager,LAX\n")
-    added := db.add(rows: rows, row: {name: "Carol", role: "Engineer", office: "SEA"})
-    seaRows := db.select(rows: added, field: "office", equals: "SEA")
-    updated := db.update(rows: added, field: "name", equals: "Bob", patch: {office: "SEA"})
-    deleted := db.delete(rows: updated, field: "role", equals: "Manager")
+    added := [
+        array:get(data: rows, position: 0),
+        array:get(data: rows, position: 1),
+        {name: "Carol", role: "Engineer", office: "SEA"}
+    ]
+    seaRows := lambda(added, item => item.office == "SEA")
+    updatedBob := json.set(data: array:get(data: added, position: 1), key: "office", value: "SEA")
+    updated := [array:get(data: added, position: 0), updatedBob, array:get(data: added, position: 2)]
+    deleted := lambda(updated, item => item.role != "Manager")
     csvText := csv.toText(data: deleted)
 
     writeStatus := file.writeLines(path: "build/stdlib_utilities.tmp", data: parts, mode: "write")

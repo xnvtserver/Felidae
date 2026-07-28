@@ -66,17 +66,22 @@ enum class BuiltinId {
     FileExists,
     FileDeleteFile,
 
-    DbAll,
-    DbFind,
-    DbCount,
-    DbFirst,
-    DbTypes,
-    DbFields,
-    DbExists,
-    DbSelect,
-    DbMaterialize,
-    DbRelease,
+    FactAll,
+    FactFind,
+    FactCount,
+    FactFirst,
+    FactTypes,
+    FactFields,
+    FactExists,
+    FactSelect,
+    FactMaterialize,
+    FactRelease,
+    FactReferences,
     DbSync,
+
+    RelationCompare,
+    RelationFind,
+    DependencySatisfied,
 
     JsonObject,
     JsonParse,
@@ -156,6 +161,7 @@ enum class LanguageTypeId {
     Boolean,
     Decimal,
     Double,
+    Fact,
     Float,
     Int,
     Number,
@@ -169,6 +175,7 @@ inline LanguageTypeId languageTypeIdForName(const std::string& name) {
     if (name == "boolean") return LanguageTypeId::Boolean;
     if (name == "decimal") return LanguageTypeId::Decimal;
     if (name == "double") return LanguageTypeId::Double;
+    if (name == "Fact") return LanguageTypeId::Fact;
     if (name == "float") return LanguageTypeId::Float;
     if (name == "int") return LanguageTypeId::Int;
     if (name == "number") return LanguageTypeId::Number;

@@ -1,4 +1,4 @@
-import ("db", "probability")
+import ("probability")
 
 Rain(
     month: "August",
@@ -16,7 +16,7 @@ Rain(
 )
 
 RainMonth(month: string) =>
-    record := db.first(type: "Rain", field: "month", equals: month)
+    record := Fact.first(type: "Rain", field: "month", equals: month)
     chances := lambda(record.day, day => day.chance)
     normalized := probability.normalize(data: chances)
     averageChance := probability.mean(data: chances)

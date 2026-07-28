@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <iomanip>
 #include <sstream>
 #include <set>
@@ -85,6 +86,211 @@ const FactMemory::Data& FactMemory::dataForSnapshot(std::uint64_t snapshotGenera
 
 const FactRecord& FactMemory::snapshotFact(std::uint64_t snapshotGeneration, size_t index) const {
     return dataForSnapshot(snapshotGeneration).facts.at(index);
+}
+
+bool FactMemory::structurallyEqual(const std::shared_ptr<Expr>& left,
+                                   const std::shared_ptr<Expr>& right) {
+    if (!left || !right || left->kind() != right->kind()) return false;
+    // Expr::debug is canonical for literals, arrays and maps in the current
+    // AST.  It is intentionally used only to match an attachment target at
+    // mutation time; query execution continues to use relation indexes.
+    return left->debug() == right->debug();
+}
+
+bool FactMemory::factSatisfiesPattern(const MapExpr& fact, const MapExpr& pattern) {
+    for (const auto& wanted : pattern.entries) {
+        if (wanted.key == internalSymbolString(InternalSymbolKind::Parent)) continue;
+        bool matched = false;
+        for (const auto& actual : fact.entries) {
+            if (actual.keyId != wanted.keyId || actual.key != wanted.key) continue;
+            matched = structurallyEqual(actual.value, wanted.value);
+            break;
+        }
+        if (!matched) return false;
+    }
+    return true;
+}
+
+std::optional<std::uint64_t> FactMemory::logicalFactId(const std::shared_ptr<Expr>& value) const {
+    const auto pattern = std::dynamic_pointer_cast<MapExpr>(value);
+    if (!pattern) return std::nullopt;
+    if (pattern->factIdentity != 0) {
+        const auto indexed = data_->factIndexById.find(pattern->factIdentity);
+        if (indexed == data_->factIndexById.end() || !data_->facts[indexed->second].active) {
+            return std::nullopt;
+        }
+        return pattern->factIdentity;
+    }
+    const auto typeValue = std::dynamic_pointer_cast<StringExpr>(
+        [&]() -> std::shared_ptr<Expr> {
+            for (const auto& entry : pattern->entries) {
+                if (entry.key == internalSymbolString(InternalSymbolKind::Type)) return entry.value;
+            }
+            return nullptr;
+        }());
+    if (!typeValue || typeValue->value == "Comparison") return std::nullopt;
+
+    // Constructor-shaped values normally contain an id/key field.  Use the
+    // existing relation equality index to find the small candidate set before
+    // structural validation; fall back to the type relation only when no
+    // literal identity field is available.
+    std::string identityField;
+    std::shared_ptr<Expr> identityValue;
+    for (const auto& entry : pattern->entries) {
+        if (entry.key == internalSymbolString(InternalSymbolKind::Type) ||
+            entry.key == internalSymbolString(InternalSymbolKind::Parent)) continue;
+        std::string ignored;
+        if (!literalIndexKey(entry.value, ignored)) continue;
+        if (!identityValue || entry.key == "id") {
+            identityField = entry.key;
+            identityValue = entry.value;
+            if (entry.key == "id") break;
+        }
+    }
+    const auto rows = identityValue
+        ? selectionIndexes(typeValue->value, identityField, identityValue)
+        : selectionIndexes(typeValue->value);
+    std::optional<std::uint64_t> matched;
+    for (size_t index : rows) {
+        const auto& fact = data_->facts[index];
+        if (!fact.active || !factSatisfiesPattern(*fact.value, *pattern)) continue;
+        // A reconstructed map has no durable reference to one of several
+        // structurally equal rows.  Refuse to choose arbitrarily: callers can
+        // obtain a fact through Fact.all/select, which carries this hidden id.
+        if (matched) return std::nullopt;
+        matched = fact.id;
+    }
+    return matched;
+}
+
+std::shared_ptr<MapExpr> FactMemory::factValueById(std::uint64_t id) const {
+    const auto indexed = data_->factIndexById.find(id);
+    if (indexed == data_->factIndexById.end()) return {};
+    const auto& fact = data_->facts[indexed->second];
+    if (!fact.active || !fact.value) return {};
+    return std::static_pointer_cast<MapExpr>(fact.value->clone());
+}
+
+bool FactMemory::addDependency(std::uint64_t sourceId, std::shared_ptr<MapExpr> required) {
+    if (sourceId == 0 || !required) return false;
+    ensureUnique();
+    auto& dependencies = data_->dependenciesBySource[sourceId];
+    for (const auto& dependency : dependencies) {
+        if (structurallyEqual(dependency.required, required)) return true;
+    }
+    dependencies.push_back(FactDependency{std::move(required)});
+    ++data_->generation;
+    return true;
+}
+
+bool FactMemory::addRelationship(std::uint64_t sourceId,
+                                 std::uint64_t targetId,
+                                 std::shared_ptr<MapExpr> relationship,
+                                 std::shared_ptr<Expr> degree,
+                                 std::shared_ptr<Expr> confidence) {
+    if (sourceId == 0 || targetId == 0 || !relationship) return false;
+    ensureUnique();
+    auto& outgoing = data_->relationshipsBySource[sourceId];
+    for (const auto& existing : outgoing) {
+        if (existing.targetId == targetId &&
+            structurallyEqual(existing.relationship, relationship) &&
+            structurallyEqual(existing.degree, degree) &&
+            structurallyEqual(existing.confidence, confidence)) {
+            return true;
+        }
+    }
+    FactRelationship record{sourceId, targetId, std::move(relationship), std::move(degree), std::move(confidence)};
+    outgoing.push_back(record);
+    data_->relationshipsByTarget[targetId].push_back(record);
+    ++data_->generation;
+    return true;
+}
+
+std::vector<std::shared_ptr<MapExpr>> FactMemory::missingDependencies(std::uint64_t sourceId) const {
+    std::vector<std::shared_ptr<MapExpr>> missing;
+    const auto found = data_->dependenciesBySource.find(sourceId);
+    if (found == data_->dependenciesBySource.end()) return missing;
+    for (const auto& dependency : found->second) {
+        bool satisfied = false;
+        std::string requiredType;
+        std::string identityField;
+        std::shared_ptr<Expr> identityValue;
+        for (const auto& entry : dependency.required->entries) {
+            if (entry.key == internalSymbolString(InternalSymbolKind::Type)) {
+                if (const auto type = std::dynamic_pointer_cast<StringExpr>(entry.value)) {
+                    requiredType = type->value;
+                }
+                continue;
+            }
+            if (entry.key == internalSymbolString(InternalSymbolKind::Parent)) continue;
+            std::string ignored;
+            if (!literalIndexKey(entry.value, ignored)) continue;
+            if (!identityValue || entry.key == "id") {
+                identityField = entry.key;
+                identityValue = entry.value;
+                if (entry.key == "id") break;
+            }
+        }
+        const auto candidates = requiredType.empty()
+            ? activeFactIndexes()
+            : selectionIndexes(requiredType, identityField, identityValue);
+        for (size_t candidate : candidates) {
+            const auto& fact = data_->facts[candidate];
+            if (fact.active && factSatisfiesPattern(*fact.value, *dependency.required)) {
+                satisfied = true;
+                break;
+            }
+        }
+        if (!satisfied) {
+            missing.push_back(std::static_pointer_cast<MapExpr>(dependency.required->clone()));
+        }
+    }
+    return missing;
+}
+
+bool FactMemory::hasDependencyCycle(std::uint64_t sourceId) const {
+    std::unordered_map<std::uint64_t, const FactRecord*> byId;
+    byId.reserve(data_->facts.size());
+    for (const auto& fact : data_->facts) {
+        if (fact.active) byId.emplace(fact.id, &fact);
+    }
+    std::unordered_set<std::uint64_t> visiting;
+    std::unordered_set<std::uint64_t> visited;
+    std::function<bool(std::uint64_t)> visit = [&](std::uint64_t current) {
+        if (!visiting.insert(current).second) return true;
+        if (visited.count(current)) {
+            visiting.erase(current);
+            return false;
+        }
+        const auto dependencies = data_->dependenciesBySource.find(current);
+        if (dependencies != data_->dependenciesBySource.end()) {
+            for (const auto& dependency : dependencies->second) {
+                for (const auto& candidate : byId) {
+                    if (factSatisfiesPattern(*candidate.second->value, *dependency.required) &&
+                        visit(candidate.first)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        visiting.erase(current);
+        visited.insert(current);
+        return false;
+    };
+    return visit(sourceId);
+}
+
+std::vector<FactRelationship> FactMemory::relationshipsFor(std::uint64_t factId) const {
+    std::vector<FactRelationship> result;
+    const auto outgoing = data_->relationshipsBySource.find(factId);
+    if (outgoing != data_->relationshipsBySource.end()) {
+        result.insert(result.end(), outgoing->second.begin(), outgoing->second.end());
+    }
+    const auto incoming = data_->relationshipsByTarget.find(factId);
+    if (incoming != data_->relationshipsByTarget.end()) {
+        result.insert(result.end(), incoming->second.begin(), incoming->second.end());
+    }
+    return result;
 }
 
 std::vector<size_t> FactMemory::selectionIndexes(const std::string& type,
@@ -176,6 +382,7 @@ size_t FactMemory::addFact(std::string type,
         0,
         true});
     const size_t index = data_->facts.size() - 1;
+    data_->facts[index].value->factIdentity = data_->facts[index].id;
     data_->facts[index].stableHash = stableExprHash(data_->facts[index].value);
     indexFact(index);
     ++data_->generation;
@@ -263,6 +470,7 @@ bool FactMemory::isCompatibleType(const std::string& actual, const std::string& 
 bool FactMemory::isCompatibleTypeInData(const Data& data,
                                         const std::string& actual,
                                         const std::string& expected) {
+    if (expected == "Fact") return !actual.empty();
     if (actual == expected) return true;
     std::set<std::string> seen;
     std::string current = actual;
@@ -391,6 +599,7 @@ void FactMemory::invalidateCaches() {
 
 void FactMemory::rebuildIndexes() {
     data_->factsByType.clear();
+    data_->factIndexById.clear();
     data_->factsByOrigin.clear();
     data_->typeNamesById.clear();
     data_->relations.clear();
@@ -520,6 +729,7 @@ void FactMemory::indexFact(size_t index) {
         fact.parentTypeId = symbolIdForName(fact.parentType);
     }
     rememberTypeName(fact.typeId, fact.type);
+    data_->factIndexById[fact.id] = index;
     data_->factsByType[fact.typeId].push_back(index);
     if (!fact.origin.empty()) data_->factsByOrigin[fact.origin].push_back(index);
     auto& relation = data_->relations[fact.typeId];

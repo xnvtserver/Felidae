@@ -55,13 +55,20 @@ else
     )
 
 main() =>
-    livingThing := db:first(type: "LivingThing", field: "domain", equals: "being")
-    mortalBeing := db:first(type: "MortalBeing", field: "lifeCycle", equals: "finite")
-    human := db:first(type: "Human", field: "reasoning", equals: "high")
-    man := db:first(type: "Man", field: "adult", equals: true)
-    socrates := db:first(type: "Socrates", field: "name", equals: "Socrates")
-    ram := db:first(type: "Ram", field: "name", equals: "Ram")
-    statue := db:first(type: "Statue", field: "name", equals: "StoneStatue")
+    livingThings := lambda(LivingThing, item => item.domain == "being")
+    mortalBeings := lambda(MortalBeing, item => item.lifeCycle == "finite")
+    humans := lambda(Human, item => item.reasoning == "high")
+    men := lambda(Man, item => item.adult == true)
+    socratesFacts := lambda(Socrates, item => item.name == "Socrates")
+    ramFacts := lambda(Ram, item => item.name == "Ram")
+    statues := lambda(Statue, item => item.name == "StoneStatue")
+    livingThing := array:get(data: livingThings, position: 0)
+    mortalBeing := array:get(data: mortalBeings, position: 0)
+    human := array:get(data: humans, position: 0)
+    man := array:get(data: men, position: 0)
+    socrates := array:get(data: socratesFacts, position: 0)
+    ram := array:get(data: ramFacts, position: 0)
+    statue := array:get(data: statues, position: 0)
     corpus := [livingThing, mortalBeing, human, man, socrates, ram, statue]
 
     socratesProof := ProveMortalByAncestry(entity: socrates, mortalKind: mortalBeing, corpus: corpus)

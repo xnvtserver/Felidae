@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Token.h"
+#include <cstdint>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -171,6 +172,11 @@ public:
         : entries(std::move(entries)) {}
 
     std::vector<MapEntry> entries;
+    // Runtime-only identity for a value materialized from FactMemory.  It is
+    // deliberately absent from debug(), serialization and structural
+    // equality: two facts may have equal visible fields while retaining
+    // distinct identities for dependencies and relationships.
+    std::uint64_t factIdentity = 0;
 
     ExprKind kind() const override { return ExprKind::Map; }
     std::shared_ptr<Expr> clone() const override {
@@ -179,7 +185,9 @@ public:
         for (const auto& entry : entries) {
             copied.push_back(MapEntry{entry.key, entry.value->clone()});
         }
-        return std::make_shared<MapExpr>(std::move(copied));
+        auto result = std::make_shared<MapExpr>(std::move(copied));
+        result->factIdentity = factIdentity;
+        return result;
     }
 
     std::string debug() const override {

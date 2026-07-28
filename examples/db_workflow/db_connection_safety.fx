@@ -1,16 +1,10 @@
-import "db"
+import ("db", "exception")
 
-libraryActions.handle(exception: {
-    __type: "Exception",
-    kind: "DuplicateKey",
-    message: message,
-    source: "db"
-}) =>
-    return true
-
-HandleLibraryException(exception: any) =>
-    throw(exception: exception, target: libraryActions::handle)
-    return exception.kind
+LibraryActions.handle(result: any) =>
+    if result.error.kind == "DuplicateKey" then
+        return {handled: true, kind: result.error.kind, action: "keep-existing-record"}
+    else
+        return {handled: false, kind: result.error.kind, action: "report-library-error"}
 
 main() =>
     connection := db.create(
@@ -27,7 +21,8 @@ main() =>
         connection: connection,
         data: {id: 1, name: "duplicate", status: "created", preserved: "no"}
     )
-    handledLibraryException := HandleLibraryException(exception: duplicate.error)
+    duplicateCheck := exception.from(value: duplicate.data, error: duplicate.error)
+    duplicateResolution := LibraryActions.handle(result: duplicateCheck)
     updated := db.updateOne(
         connection: connection,
         conditions: {id: 1, status: "created"},
@@ -44,12 +39,21 @@ main() =>
         model: "SafetyRecord",
         path: "examples/db_workflow/connection_safety.fx"
     )
-    stored := db.findOne(connection: reopened, conditions: {id: 1})
+    db.sync(path: "examples/db_workflow/connection_safety.fx")
+    storedFacts := lambda(SafetyRecord, item => item.id == 1)
+    stored := {
+        matched: count(storedFacts),
+        modified: 0,
+        inserted: 0,
+        deleted: 0,
+        data: array:get(data: storedFacts, position: 0),
+        error: nil
+    }
 
     return (
         inserted: inserted,
         duplicate: duplicate,
-        handled_library_exception: handledLibraryException,
+        handled_library_exception: duplicateResolution.kind,
         updated: updated,
         stale_update: staleUpdate,
         stored: stored
