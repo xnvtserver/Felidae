@@ -3,6 +3,8 @@ build/
 build-clang/
 *.exe
 *.obj
+*.exp
+*.lock
 *.o
 *.pdb
 *.ilk
