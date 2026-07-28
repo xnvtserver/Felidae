@@ -99,6 +99,7 @@ Token Lexer::readIdentifier() {
     // parsing or runtime dispatch; only user identifiers and literals keep
     // source text.
     if (text == "import") return Token{TokenType::Import, {}, startLine, startCol};
+    if (text == "not") return Token{TokenType::Not, {}, startLine, startCol};
     if (text == "then") return Token{TokenType::Then, {}, startLine, startCol};
     if (text == "if") return Token{TokenType::If, {}, startLine, startCol};
     if (text == "else") return Token{TokenType::Else, {}, startLine, startCol};

@@ -141,6 +141,7 @@ private:
     std::size_t nextReferenceCreationOrder_ = 0;
     std::uint64_t referenceEvaluationGeneration_ = 0;
     std::unordered_set<std::string> activeReferenceEvaluations_;
+    std::unordered_set<std::string> activeNegatedPredicates_;
     std::set<std::filesystem::path> loadedFiles_;
     std::unordered_set<std::string> packageDiscoveryAttempts_;
     std::unordered_map<const ClauseStmt*, std::filesystem::path> clauseOrigins_;
@@ -152,6 +153,7 @@ private:
     mutable std::mutex threadMutex_;
     EnvFramePool envFramePool_;
     size_t solveEpoch_ = 0;
+    std::uint64_t programGeneration_ = 1;
     size_t renameCounter_ = 0;
     size_t threadCounter_ = 0;
     size_t cacheInvalidationDepth_ = 0;
@@ -193,6 +195,7 @@ private:
     bool solveBinaryGoal(const BinaryGoal& goal, Env& env);
     bool solveWhereGoal(const WhereGoal& goal, Env& env);
     bool solveReturnGoal(const ReturnGoal& goal, Env& env);
+    bool solveNotGoal(const NotGoal& goal, Env& env, size_t depth);
     bool bodyHasReturnGoal(const std::vector<std::shared_ptr<Goal>>& goals) const;
     bool evaluateGoalTruth(const std::shared_ptr<Goal>& goal, Env& env);
     std::shared_ptr<Expr> evaluateGoalTruthTuple(const std::vector<std::shared_ptr<Goal>>& goals, Env env);

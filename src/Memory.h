@@ -24,6 +24,10 @@ struct FactRecord {
     std::shared_ptr<MapExpr> value;
     std::filesystem::path origin;
     std::size_t stableHash = 0;
+    // Logical identity and physical row version are intentionally separate.
+    // Updating a fact retains id and publishes a later immutable row version.
+    std::uint64_t rowVersion = 1;
+    std::uint64_t visibleGeneration = 0;
     bool active = true;
 };
 
@@ -32,6 +36,9 @@ struct FactMemoryStats {
     std::size_t tombstonedFacts = 0;
     std::size_t relations = 0;
     std::size_t snapshots = 0;
+    std::size_t relationRows = 0;
+    std::size_t relationColumnValues = 0;
+    std::size_t rowVersions = 0;
     std::uint64_t generation = 0;
 };
 
@@ -60,8 +67,10 @@ public:
 
     const std::vector<FactRecord>& facts() const;
     const FactRecord& fact(size_t index) const;
+    std::vector<Arg> factArguments(size_t index) const;
     bool isActive(size_t index) const;
     std::vector<size_t> activeFactIndexes() const;
+    bool hasActiveRelation(const std::string& type, SymbolId typeId = 0) const;
     std::uint64_t generation() const;
     FactMemoryStats stats() const;
     // A selection captures an immutable logical view.  It remains valid
@@ -89,7 +98,9 @@ public:
     size_t addFact(std::string type,
                    std::string parentType,
                    std::shared_ptr<MapExpr> value,
-                   std::filesystem::path origin = {});
+                   std::filesystem::path origin = {},
+                   std::optional<std::uint64_t> logicalId = std::nullopt,
+                   std::uint64_t rowVersion = 1);
     void setParent(const std::string& child, const std::string& parent);
     void setParent(const std::string& child,
                    const std::string& parent,
@@ -141,6 +152,12 @@ private:
             // retained only for source fidelity and interop; fact matching
             // and index planning use SymbolId-indexed relation metadata.
             std::unordered_map<SymbolId, std::vector<size_t>> rowsByField;
+            std::unordered_map<SymbolId, std::string> fieldNames;
+            std::unordered_map<size_t, std::vector<SymbolId>> fieldOrderByRow;
+            // Typed immutable field values by row. Indexed query candidates
+            // are verified here instead of scanning their MapExpr payload.
+            std::unordered_map<SymbolId,
+                std::unordered_map<size_t, std::vector<std::shared_ptr<const Expr>>>> valuesByRow;
             std::unordered_map<SymbolId,
                 std::unordered_map<std::size_t, std::vector<size_t>>> equalityIndexes;
         };

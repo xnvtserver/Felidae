@@ -779,47 +779,46 @@ void Interpreter::loadNativeLibrary(const std::filesystem::path& file) {
 
 void Interpreter::addProgram(const Program& program) {
     beginCacheInvalidationBatch();
-    try {
-        for (const auto& statement : program.statements) {
-            switch (statement->kind()) {
-                case StatementKind::Import:
-                    break;
-                case StatementKind::Clause: {
-                    auto clause = std::static_pointer_cast<ClauseStmt>(statement);
-                    if (clause->clauseKind == ClauseKind::EntryCall) {
-                        autoEntryCalls_.push_back(clause->head);
-                        break;
-                    }
-                    addClause(clause);
+    for (const auto& statement : program.statements) {
+        switch (statement->kind()) {
+            case StatementKind::Import:
+                break;
+            case StatementKind::Clause: {
+                auto clause = std::static_pointer_cast<ClauseStmt>(statement);
+                if (clause->clauseKind == ClauseKind::EntryCall) {
+                    autoEntryCalls_.push_back(clause->head);
                     break;
                 }
-                case StatementKind::GlobalBinding: {
-                    auto binding = std::static_pointer_cast<GlobalBindingStmt>(statement);
-                    if (globals_.count(binding->name) || findClauses(binding->name, symbolIdForName(binding->name))) {
-                        throw InterpreterError("Global '" + binding->name + "' is already defined and immutable");
-                    }
-                    Env env;
-                    std::shared_ptr<Expr> value;
-                    if (!evalExprValue(binding->expr, env, value)) {
-                        throw InterpreterError("Cannot evaluate global binding '" + binding->name + "'");
-                    }
-                    globals_.bind(binding->name, value, currentLoadingFile_);
-                    Call head(binding->name, std::vector<Arg>{{"value", value->clone()}});
-                    addClause(std::make_shared<ClauseStmt>(std::move(head), std::vector<std::shared_ptr<Goal>>{}));
-                    break;
+                addClause(clause);
+                break;
+            }
+            case StatementKind::GlobalBinding: {
+                auto binding = std::static_pointer_cast<GlobalBindingStmt>(statement);
+                if (globals_.count(binding->name) || findClauses(binding->name, symbolIdForName(binding->name))) {
+                    throw InterpreterError("Global '" + binding->name + "' is already defined and immutable");
                 }
+                Env env;
+                std::shared_ptr<Expr> value;
+                if (!evalExprValue(binding->expr, env, value)) {
+                    throw InterpreterError("Cannot evaluate global binding '" + binding->name + "'");
+                }
+                globals_.bind(binding->name, value, currentLoadingFile_);
+                Call head(binding->name, std::vector<Arg>{{"value", value->clone()}});
+                addClause(std::make_shared<ClauseStmt>(std::move(head), std::vector<std::shared_ptr<Goal>>{}));
+                break;
             }
         }
-    } catch (...) {
-        endCacheInvalidationBatch();
-        throw;
     }
     endCacheInvalidationBatch();
 }
 
 void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
-    invalidateCaches();
     const std::string clauseName = clause->head.name;
+    // Clause lookup plans are the only plans invalidated by an ordinary
+    // registration. Query results are generation-keyed, and relation indexes
+    // are invalidated by FactMemory at relation scope.
+    clauseLookupCache_.erase(clauseName);
+    ++programGeneration_;
     if (clause->isFact() && globals_.count(clause->head.name) == 0) {
         auto factMap = factToMap(*clause, clause->parentName);
         memory_.addFact(clause->head.name, clause->parentName, factMap, currentLoadingFile_);
@@ -1085,6 +1084,13 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
             }
             return;
         }
+        case GoalKind::Not: {
+            auto notGoal = std::static_pointer_cast<NotGoal>(first);
+            if (solveNotGoal(*notGoal, env, depth + 1)) {
+                solveRecursiveFrame(goals, nextGoalIndex, env, out, maxSolutions, depth + 1);
+            }
+            return;
+        }
         case GoalKind::Call:
             break;
     }
@@ -1148,23 +1154,55 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
     }
     for (size_t factIndex : *factCandidates) {
         ++factCandidates_;
-        const auto& fact = memory_.fact(factIndex);
         Call factHead(callGoal->call.name, {});
-        for (const auto& entry : fact.value->entries) {
-            if (entry.keyId != InternalSymbol::TypeId && entry.keyId != InternalSymbol::ParentId) {
-                std::vector<std::shared_ptr<Expr>> items;
-                if (exprAsArrayItems(entry.value, items)) {
-                    for (const auto& item : items) factHead.args.push_back(Arg{entry.key, item});
-                } else {
-                    factHead.args.push_back(Arg{entry.key, entry.value});
-                }
-            }
-        }
+        factHead.args = memory_.factArguments(factIndex);
         for (auto& nextEnv : unifyCallAlternatives(callGoal->call, factHead, env)) {
             EnvFrame factEnv = envFramePool_.acquireMove(std::move(nextEnv));
             solveRecursiveFrame(goals, nextGoalIndex, factEnv.get(), out, maxSolutions, depth + 1);
             if (out.size() >= maxSolutions) return;
         }
+    }
+}
+
+bool Interpreter::solveNotGoal(const NotGoal& goal, Env& env, size_t depth) {
+    // Negation-as-failure is safe only after every argument has been bound by
+    // preceding positive goals.  This avoids an accidental "not exists" scan
+    // and gives the construct deterministic Datalog-style semantics.
+    for (const auto& argument : goal.call.args) {
+        const auto resolved = resolveExpr(argument.value, env);
+        if (std::dynamic_pointer_cast<VarExpr>(resolved)) {
+            throw InterpreterError("Variables in 'not " + goal.call.name + "(...)' must be bound by preceding positive goals");
+        }
+    }
+
+    auto clauses = findClauses(goal.call.name, goal.call.nameId);
+    if (clauses) {
+        for (const auto& clause : *clauses) {
+            if (isMethodClause(*clause)) {
+                throw InterpreterError("'not " + goal.call.name + "(...)' only permits pure relational predicates");
+            }
+        }
+    } else {
+        if (!memory_.hasActiveRelation(goal.call.name, goal.call.nameId)) {
+            throw InterpreterError("Unknown relational predicate in negation: " + goal.call.name);
+        }
+    }
+
+    // A negative dependency cycle is unstratified.  We reject it instead of
+    // allowing recursive failure to become an arbitrary truth value.
+    if (!activeNegatedPredicates_.insert(goal.call.name).second) {
+        throw InterpreterError("Unstratified negative dependency cycle involving '" + goal.call.name + "'");
+    }
+    try {
+        std::vector<Solution> matches;
+        solveRecursive(std::vector<std::shared_ptr<Goal>>{
+                           std::make_shared<CallGoal>(goal.call)},
+                       cloneEnv(env), matches, 1, depth + 1);
+        activeNegatedPredicates_.erase(goal.call.name);
+        return matches.empty();
+    } catch (...) {
+        activeNegatedPredicates_.erase(goal.call.name);
+        throw;
     }
 }
 
@@ -3479,6 +3517,10 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
                 currentEnv = std::move(signal.env);
             }
         }
+        // The rollback snapshot can force `clauses_` copy-on-write. This cache
+        // stores raw ClauseList pointers, so it cannot retain entries into the
+        // pre-publication table after a successful transaction.
+        clauseLookupCache_.clear();
     } catch (...) {
         --valueCallTrampolineDepth_;
         throw;
@@ -5162,6 +5204,10 @@ std::shared_ptr<Goal> Interpreter::renameGoal(const std::shared_ptr<Goal>& goal,
             auto cg = std::static_pointer_cast<CallGoal>(goal);
             return std::make_shared<CallGoal>(renameCall(cg->call, prefix));
         }
+        case GoalKind::Not: {
+            auto ng = std::static_pointer_cast<NotGoal>(goal);
+            return std::make_shared<NotGoal>(renameCall(ng->call, prefix));
+        }
         case GoalKind::Assign: {
             auto ag = std::static_pointer_cast<AssignGoal>(goal);
             return std::make_shared<AssignGoal>(prefix + ag->name, renameExpr(ag->expr, prefix));
@@ -5317,6 +5363,12 @@ bool Interpreter::goalMayHaveSideEffects(const std::shared_ptr<Goal>& goal) cons
         if (nativeDeclarationFor(call->call.name)) return true;
         if (call->call.builtinId != BuiltinId::Unknown && !isBuiltinPure(call->call.builtinId)) return true;
         for (const auto& arg : call->call.args) {
+            if (exprMayHaveSideEffects(arg.value)) return true;
+        }
+        return false;
+    }
+    if (auto notGoal = std::dynamic_pointer_cast<NotGoal>(goal)) {
+        for (const auto& arg : notGoal->call.args) {
             if (exprMayHaveSideEffects(arg.value)) return true;
         }
         return false;
@@ -5616,7 +5668,10 @@ void Interpreter::ensureClauseTableUnique() {
 std::string Interpreter::solveCacheKey(const std::vector<std::shared_ptr<Goal>>& goals,
                                        size_t maxSolutions) const {
     std::ostringstream out;
-    out << maxSolutions << '|';
+    // Immutable program and fact generations make cached answers valid only
+    // for the state that produced them; unrelated registrations no longer
+    // require clearing every cached query.
+    out << programGeneration_ << '|' << memory_.generation() << '|' << maxSolutions << '|';
     for (const auto& goal : goals) {
         out << goal->debug() << ';';
     }
@@ -5675,11 +5730,7 @@ void Interpreter::storeCachedSolutions(const std::string& key,
 }
 
 void Interpreter::invalidateCaches() {
-    if (cacheInvalidationDepth_ > 0) {
-        pendingCacheInvalidation_ = true;
-        return;
-    }
-    clearCachesNow();
+    ++programGeneration_;
 }
 
 void Interpreter::beginCacheInvalidationBatch() {
@@ -5689,10 +5740,7 @@ void Interpreter::beginCacheInvalidationBatch() {
 void Interpreter::endCacheInvalidationBatch() {
     if (cacheInvalidationDepth_ == 0) return;
     --cacheInvalidationDepth_;
-    if (cacheInvalidationDepth_ == 0 && pendingCacheInvalidation_) {
-        pendingCacheInvalidation_ = false;
-        clearCachesNow();
-    }
+    if (cacheInvalidationDepth_ == 0) pendingCacheInvalidation_ = false;
 }
 
 void Interpreter::clearCachesNow() {
@@ -5797,36 +5845,87 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
     // Sync is intentionally restricted to fact-only files.  Reloading method
     // declarations or globals could duplicate executable definitions and
     // violate ordered immediate execution semantics.
-    std::vector<Program> chunks;
+    struct StagedFact {
+        std::string type;
+        std::string parentType;
+        std::shared_ptr<MapExpr> value;
+    };
+    std::vector<StagedFact> staged;
     parseProgramFileChunks(normalized, [&](Program&& program) {
         for (const auto& statement : program.statements) {
             if (statement->kind() != StatementKind::Clause ||
                 !std::static_pointer_cast<ClauseStmt>(statement)->isFact()) {
                 throw InterpreterError("db.sync accepts fact-only .fx sources: " + normalized.string());
             }
+            const auto clause = std::static_pointer_cast<ClauseStmt>(statement);
+            staged.push_back(StagedFact{
+                clause->head.name,
+                clause->parentName,
+                factToMap(*clause, clause->parentName)});
         }
-        chunks.push_back(std::move(program));
     });
 
-    // Validate the complete replacement before mutating.  The memory copy is
-    // copy-on-write, so rollback restores the original relation generations
-    // and fact ids without reparsing or rebuilding unrelated indexes.
+    // Match staged rows before mutation without inferring an application
+    // schema. An unchanged source fact has a structural source identity. A
+    // changed fact that lacks a runtime FactId is intentionally modelled as a
+    // delete plus insert: guessing identity from names such as "id" or
+    // "orderId" corrupts arbitrary user schemas.
+    struct ExistingFact {
+        std::uint64_t id = 0;
+        std::uint64_t rowVersion = 1;
+    };
+    std::unordered_map<std::string, std::vector<ExistingFact>> existingByValue;
+    const auto structuralSourceKey = [](const std::string& type,
+                                        const std::shared_ptr<MapExpr>& value) {
+        return type + "\x1f" + (value ? value->debug() : std::string{});
+    };
+    for (const size_t index : memory_.factIndexesFromOrigin(normalized)) {
+        const auto& fact = memory_.fact(index);
+        if (!fact.active || !fact.value) continue;
+        ExistingFact existing{fact.id, fact.rowVersion};
+        existingByValue[structuralSourceKey(fact.type, fact.value)].push_back(existing);
+    }
+    std::unordered_set<std::uint64_t> reusedIds;
+
+    // Validate the complete replacement before publishing. FactMemory itself
+    // is copy-on-write, so rollback restores the previous generation without
+    // rebuilding unrelated relations.
     FactMemory previousMemory = memory_;
-    memory_.removeOrigin(normalized);
-    const fs::path previous = currentLoadingFile_;
-    currentLoadingFile_ = normalized;
     try {
         beginCacheInvalidationBatch();
-        for (const auto& chunk : chunks) addProgram(chunk);
+        memory_.removeOrigin(normalized);
+        for (const auto& row : staged) {
+            std::optional<ExistingFact> existing;
+            const auto found = existingByValue.find(structuralSourceKey(row.type, row.value));
+            if (found != existingByValue.end()) {
+                for (const auto& candidate : found->second) {
+                    if (!reusedIds.count(candidate.id)) {
+                        existing = candidate;
+                        break;
+                    }
+                }
+            }
+            if (existing && !reusedIds.insert(existing->id).second) {
+                throw InterpreterError("db.sync source identity resolves to the same fact more than once");
+            }
+            memory_.addFact(
+                row.type,
+                row.parentType,
+                row.value,
+                normalized,
+                existing ? std::optional<std::uint64_t>(existing->id) : std::nullopt,
+                existing ? existing->rowVersion + 1 : 1);
+            if (!row.parentType.empty()) {
+                memory_.setParent(row.type, row.parentType, normalized);
+            }
+        }
         endCacheInvalidationBatch();
     } catch (...) {
         memory_ = std::move(previousMemory);
         clearCachesNow();
-        currentLoadingFile_ = previous;
         endCacheInvalidationBatch();
         throw;
     }
-    currentLoadingFile_ = previous;
     return memory_.factIndexesFromOrigin(normalized).size();
 }
 
@@ -5853,7 +5952,10 @@ std::string Interpreter::runtimeMetricsJson() const {
         << "\"factStoreGeneration\":" << factStats.generation << ","
         << "\"activeFacts\":" << factStats.activeFacts << ","
         << "\"tombstonedFacts\":" << factStats.tombstonedFacts << ","
+        << "\"factRowVersions\":" << factStats.rowVersions << ","
         << "\"factRelations\":" << factStats.relations << ","
+        << "\"relationRows\":" << factStats.relationRows << ","
+        << "\"relationColumnValues\":" << factStats.relationColumnValues << ","
         << "\"liveFactSnapshots\":" << factStats.snapshots
         << "}";
     return out.str();

@@ -33,6 +33,26 @@ const FactRecord& FactMemory::fact(size_t index) const {
     return data_->facts.at(index);
 }
 
+std::vector<Arg> FactMemory::factArguments(size_t index) const {
+    const auto& record = data_->facts.at(index);
+    const auto relation = data_->relations.find(record.typeId);
+    if (relation == data_->relations.end()) return {};
+    const auto order = relation->second.fieldOrderByRow.find(index);
+    if (order == relation->second.fieldOrderByRow.end()) return {};
+    std::vector<Arg> args;
+    for (const SymbolId fieldId : order->second) {
+        const auto name = relation->second.fieldNames.find(fieldId);
+        const auto column = relation->second.valuesByRow.find(fieldId);
+        if (name == relation->second.fieldNames.end() || column == relation->second.valuesByRow.end()) continue;
+        const auto values = column->second.find(index);
+        if (values == column->second.end()) continue;
+        for (const auto& value : values->second) {
+            if (value) args.push_back(Arg{name->second, std::const_pointer_cast<Expr>(value)});
+        }
+    }
+    return args;
+}
+
 bool FactMemory::isActive(size_t index) const {
     return index < data_->facts.size() && data_->facts[index].active;
 }
@@ -46,6 +66,14 @@ std::vector<size_t> FactMemory::activeFactIndexes() const {
     return indexes;
 }
 
+bool FactMemory::hasActiveRelation(const std::string& type, SymbolId typeId) const {
+    if (typeId == 0) typeId = symbolIdForName(type);
+    const auto relation = data_->relations.find(typeId);
+    if (relation == data_->relations.end() || relation->second.type != type) return false;
+    return std::any_of(relation->second.rows.begin(), relation->second.rows.end(),
+                       [&](size_t index) { return index < data_->facts.size() && data_->facts[index].active; });
+}
+
 std::uint64_t FactMemory::generation() const {
     return data_->generation;
 }
@@ -56,8 +84,15 @@ FactMemoryStats FactMemory::stats() const {
     result.snapshots = snapshots_.size();
     result.generation = data_->generation;
     for (const auto& fact : data_->facts) {
+        ++result.rowVersions;
         if (fact.active) ++result.activeFacts;
         else ++result.tombstonedFacts;
+    }
+    for (const auto& entry : data_->relations) {
+        result.relationRows += entry.second.rows.size();
+        for (const auto& column : entry.second.valuesByRow) {
+            for (const auto& row : column.second) result.relationColumnValues += row.second.size();
+        }
     }
     return result;
 }
@@ -130,26 +165,21 @@ std::optional<std::uint64_t> FactMemory::logicalFactId(const std::shared_ptr<Exp
         }());
     if (!typeValue || typeValue->value == "Comparison") return std::nullopt;
 
-    // Constructor-shaped values normally contain an id/key field.  Use the
-    // existing relation equality index to find the small candidate set before
-    // structural validation; fall back to the type relation only when no
-    // literal identity field is available.
-    std::string identityField;
-    std::shared_ptr<Expr> identityValue;
+    // Choose the most selective literal predicate without assigning semantic
+    // meaning to any user field name.  `id` is not special in Felidae: every
+    // fact schema is free to use its own fields or no scalar key at all.
+    std::vector<size_t> rows;
+    bool hasLiteralPredicate = false;
     for (const auto& entry : pattern->entries) {
         if (entry.key == internalSymbolString(InternalSymbolKind::Type) ||
             entry.key == internalSymbolString(InternalSymbolKind::Parent)) continue;
         std::string ignored;
         if (!literalIndexKey(entry.value, ignored)) continue;
-        if (!identityValue || entry.key == "id") {
-            identityField = entry.key;
-            identityValue = entry.value;
-            if (entry.key == "id") break;
-        }
+        const auto candidates = selectionIndexes(typeValue->value, entry.key, entry.value);
+        if (!hasLiteralPredicate || candidates.size() < rows.size()) rows = candidates;
+        hasLiteralPredicate = true;
     }
-    const auto rows = identityValue
-        ? selectionIndexes(typeValue->value, identityField, identityValue)
-        : selectionIndexes(typeValue->value);
+    if (!hasLiteralPredicate) rows = selectionIndexes(typeValue->value);
     std::optional<std::uint64_t> matched;
     for (size_t index : rows) {
         const auto& fact = data_->facts[index];
@@ -213,27 +243,28 @@ std::vector<std::shared_ptr<MapExpr>> FactMemory::missingDependencies(std::uint6
     for (const auto& dependency : found->second) {
         bool satisfied = false;
         std::string requiredType;
-        std::string identityField;
-        std::shared_ptr<Expr> identityValue;
         for (const auto& entry : dependency.required->entries) {
             if (entry.key == internalSymbolString(InternalSymbolKind::Type)) {
                 if (const auto type = std::dynamic_pointer_cast<StringExpr>(entry.value)) {
                     requiredType = type->value;
                 }
-                continue;
             }
+        }
+        std::vector<size_t> candidates;
+        bool hasLiteralPredicate = false;
+        for (const auto& entry : dependency.required->entries) {
+            if (entry.key == internalSymbolString(InternalSymbolKind::Type)) continue;
             if (entry.key == internalSymbolString(InternalSymbolKind::Parent)) continue;
             std::string ignored;
             if (!literalIndexKey(entry.value, ignored)) continue;
-            if (!identityValue || entry.key == "id") {
-                identityField = entry.key;
-                identityValue = entry.value;
-                if (entry.key == "id") break;
-            }
+            if (requiredType.empty()) continue;
+            const auto indexed = selectionIndexes(requiredType, entry.key, entry.value);
+            if (!hasLiteralPredicate || indexed.size() < candidates.size()) candidates = indexed;
+            hasLiteralPredicate = true;
         }
-        const auto candidates = requiredType.empty()
-            ? activeFactIndexes()
-            : selectionIndexes(requiredType, identityField, identityValue);
+        if (!hasLiteralPredicate) {
+            candidates = requiredType.empty() ? activeFactIndexes() : selectionIndexes(requiredType);
+        }
         for (size_t candidate : candidates) {
             const auto& fact = data_->facts[candidate];
             if (fact.active && factSatisfiesPattern(*fact.value, *dependency.required)) {
@@ -330,25 +361,19 @@ std::vector<size_t> FactMemory::selectionIndexes(const std::string& type,
                     const auto& fact = store.facts[index];
                     if (!fact.active || !isCompatibleTypeInData(store, fact.type, type)) continue;
                     if (!property.empty()) {
-                        bool exact = false;
-                        for (const auto& entry : fact.value->entries) {
-                            if (entry.keyId != propertyId || entry.key != property) continue;
-                            if (!value) exact = true;
-                            else if (auto array = std::dynamic_pointer_cast<ArrayExpr>(entry.value)) {
-                                for (const auto& item : array->items) {
-                                    std::string left;
-                                    std::string right;
-                                    if (literalIndexKey(item, left) && literalIndexKey(value, right) && left == right) {
-                                        exact = true;
-                                        break;
-                                    }
-                                }
-                            } else {
-                                std::string left;
-                                std::string right;
-                                exact = literalIndexKey(entry.value, left) && literalIndexKey(value, right) && left == right;
+                        const auto column = relation->second.valuesByRow.find(propertyId);
+                        if (column == relation->second.valuesByRow.end()) continue;
+                        const auto rowValues = column->second.find(index);
+                        if (rowValues == column->second.end()) continue;
+                        bool exact = !value;
+                        for (const auto& item : rowValues->second) {
+                            std::string left;
+                            std::string right;
+                            if (static_cast<bool>(item) && (!value || (literalIndexKey(std::const_pointer_cast<Expr>(item), left) &&
+                                literalIndexKey(value, right) && left == right))) {
+                                exact = true;
+                                break;
                             }
-                            break;
                         }
                         if (!exact) continue;
                     }
@@ -367,12 +392,16 @@ std::vector<size_t> FactMemory::selectionIndexes(const std::string& type,
 size_t FactMemory::addFact(std::string type,
                            std::string parentType,
                            std::shared_ptr<MapExpr> value,
-                           std::filesystem::path origin) {
+                           std::filesystem::path origin,
+                           std::optional<std::uint64_t> logicalId,
+                           std::uint64_t rowVersion) {
     const SymbolId typeId = symbolIdForName(type);
     const SymbolId parentTypeId = parentType.empty() ? 0 : symbolIdForName(parentType);
     ensureUnique();
+    const std::uint64_t factId = logicalId ? *logicalId : data_->nextFactId++;
+    if (logicalId && *logicalId >= data_->nextFactId) data_->nextFactId = *logicalId + 1;
     data_->facts.push_back(FactRecord{
-        data_->nextFactId++,
+        factId,
         std::move(type),
         typeId,
         std::move(parentType),
@@ -380,6 +409,8 @@ size_t FactMemory::addFact(std::string type,
         std::move(value),
         std::move(origin),
         0,
+        rowVersion,
+        data_->generation + 1,
         true});
     const size_t index = data_->facts.size() - 1;
     data_->facts[index].value->factIdentity = data_->facts[index].id;
@@ -562,21 +593,16 @@ const std::vector<size_t>& FactMemory::propertyFactIndexes(
                         const auto& fact = data_->facts[index];
                         if (!isCompatibleType(fact.type, type)) continue;
                         bool exactProperty = false;
-                        for (const auto& entry : fact.value->entries) {
-                            if (entry.keyId != propertyId || entry.key != property) continue;
-                            if (auto array = std::dynamic_pointer_cast<ArrayExpr>(entry.value)) {
-                                for (const auto& item : array->items) {
-                                    std::string indexedKey;
-                                    if (literalIndexKey(item, indexedKey) && indexedKey == valueKey) {
-                                        exactProperty = true;
-                                        break;
-                                    }
-                                }
-                            } else {
-                                std::string indexedKey;
-                                exactProperty = literalIndexKey(entry.value, indexedKey) && indexedKey == valueKey;
+                        const auto column = relation->second.valuesByRow.find(propertyId);
+                        if (column == relation->second.valuesByRow.end()) continue;
+                        const auto rowValues = column->second.find(index);
+                        if (rowValues == column->second.end()) continue;
+                        for (const auto& item : rowValues->second) {
+                            std::string indexedKey;
+                            if (static_cast<bool>(item) && literalIndexKey(std::const_pointer_cast<Expr>(item), indexedKey) && indexedKey == valueKey) {
+                                exactProperty = true;
+                                break;
                             }
-                            break;
                         }
                         if (exactProperty && seenIndexes.insert(index).second) indexes.push_back(index);
                     }
@@ -742,6 +768,8 @@ void FactMemory::indexFact(size_t index) {
     for (const auto& entry : fact.value->entries) {
         if (entry.keyId == InternalSymbol::TypeId || entry.keyId == InternalSymbol::ParentId) continue;
         relation.rowsByField[entry.keyId].push_back(index);
+        relation.fieldNames.emplace(entry.keyId, entry.key);
+        relation.fieldOrderByRow[index].push_back(entry.keyId);
         std::vector<std::shared_ptr<Expr>> items;
         if (auto array = std::dynamic_pointer_cast<ArrayExpr>(entry.value)) {
             items = array->items;
@@ -749,6 +777,7 @@ void FactMemory::indexFact(size_t index) {
             items.push_back(entry.value);
         }
         for (const auto& item : items) {
+            relation.valuesByRow[entry.keyId][index].push_back(item);
             std::size_t valueHash = 0;
             if (literalIndexHash(item, valueHash)) {
                 relation.equalityIndexes[entry.keyId][valueHash].push_back(index);

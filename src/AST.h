@@ -34,6 +34,7 @@ enum class GoalKind {
     Where,
     If,
     Return,
+    Not,
     Group,
     Or
 };
@@ -403,6 +404,27 @@ public:
     std::string debug() const override {
         return left->debug() + " " + tokenTypeName(op) + " " + right->debug();
     }
+};
+
+// Negation-as-failure is intentionally a goal, not an expression operator.
+// It is restricted to a predicate call so the runtime can enforce its pure,
+// bound-variable and stratification rules without introducing implicit
+// boolean coercions.
+class NotGoal final : public Goal {
+public:
+    explicit NotGoal(Call call) : call(std::move(call)) {}
+    Call call;
+
+    GoalKind kind() const override { return GoalKind::Not; }
+    std::shared_ptr<Goal> clone() const override {
+        Call copy;
+        copy.name = call.name;
+        copy.nameId = call.nameId;
+        copy.builtinId = call.builtinId;
+        for (const auto& arg : call.args) copy.args.push_back(Arg{arg.name, arg.value->clone()});
+        return std::make_shared<NotGoal>(std::move(copy));
+    }
+    std::string debug() const override { return "not " + call.debug(); }
 };
 
 class AssignGoal final : public Goal {
