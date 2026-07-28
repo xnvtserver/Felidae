@@ -66,6 +66,7 @@ $tests = @(
     @{ Name = "method truth tuple values"; File = "examples\method_truth_tuple.fx"; Query = ""; Expect = @('manager_true: "Alice"', "manager_false: fn:tuple(value: `"true`", value: `"false`")", "technical_manager: fn:tuple(value: `"true`", value: `"true`")", "ancestor_true: fn:tuple(value: `"true`")", "nested_false: fn:tuple(value: `"false`")", "print_once: fn:tuple(value: `"true`")", 'lambda_result: ["Alice", "Carol"]', 'status: "ok"', 'explicit_true: true') },
     @{ Name = "tuple destructuring assignment"; File = "examples\tuple_assignment.fx"; Query = ""; Expect = @('name: "Alice"', 'active: true', 'score: 2.5', 'flags: fn:tuple(value: "true", value: "true", value: "true")', 'raw_flags: fn:tuple(value: "true", value: "true", value: "true")') },
     @{ Name = "thread snapshot worker"; File = "examples\thread_snapshot_test.fx"; Query = ""; Expect = @("started: `"started`"", "status: `"finished`"", "result: `"{status: \`"done\`"}`"") }
+    @{ Name = "stratified negation as failure"; File = "examples\negation_as_failure.fx"; Query = ""; Expect = @('proved by absence of a contrary fact') }
 )
 
 $negativeTests = @(
@@ -113,6 +114,8 @@ $negativeTests = @(
     @{ Name = "reject hard dependency cycle"; File = "examples\invalid\relation_dependency_cycle.fx"; Query = ""; Expect = "detected a hard dependency cycle" },
     @{ Name = "reject untyped relationship metadata"; File = "examples\invalid\relation_invalid_descriptor.fx"; Query = ""; Expect = "Relationship(...) metadata" },
     @{ Name = "reject fact comparison non object"; File = "examples\invalid\fact_compare_non_object.fx"; Query = ""; Expect = "fact-shaped object values" }
+    @{ Name = "reject unbound negation variable"; File = "examples\invalid\negation_unbound_variable.fx"; Query = ""; Expect = "must be bound by preceding positive goals" }
+    @{ Name = "reject unstratified negative cycle"; File = "examples\invalid\negation_unstratified_cycle.fx"; Query = ""; Expect = "Unstratified negative dependency cycle" }
     @{ Name = "reject reference on unstored receiver"; File = "examples\invalid\reference_unstored_receiver.fx"; Query = ""; Expect = "Cannot evaluate fact field 'by' for references" }
     @{ Name = "reject invalid reference result"; File = "examples\invalid\reference_invalid_result.fx"; Query = ""; Expect = "must return ReferenceResult(result: TypedFact(...))" }
     @{ Name = "reject impure referenced method"; File = "examples\invalid\reference_impure_method.fx"; Query = ""; Expect = "is not pure: uses impure builtin 'system:print'" }
@@ -129,6 +132,7 @@ $falseTests = @(
 
 $directTests = @(
     @{ Name = "direct main execution"; Args = @("examples\direct_main.fx", "one", "two"); Expect = @("count: 3", 'names: ["Ravi", "Sita", "Ramesh"]', 'args: ["one", "two"]') },
+    @{ Name = "main executes after complete module publication"; Args = @("examples\module_publication_main.fx"); Expect = @('"complete module published"') },
     @{ Name = "direct imported method call"; Args = @("examples\function_caller.fx"); Expect = @("RemoteRole called with name: Anu, role: Student", 'result: fn:tuple(value: "true")') },
     @{ Name = "direct backtracking unification"; Args = @("examples\backtracking_unification.fx"); Expect = @("choice_count: 4", "same_pair_count: 2", "employee_count: 2", "nested_count: 2") },
     @{ Name = "recursive multi-clause method"; Args = @("examples\recursive_ancestor.fx", "? AncestorOf(descendant: descendant, ancestor: ancestor)"); Expect = @('descendant = "kitten", ancestor = "cat"', 'descendant = "kitten", ancestor = "organism"', 'descendant = "cat", ancestor = "organism"') },

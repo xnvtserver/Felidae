@@ -105,9 +105,11 @@ db.operationResult(result: any) =>
         }
 
 db.save(path: string, type: string, rows: array) =>
-    source := file.readFile(path: path)
-    facts := system_library_loader(module: "db", function: "merge", args: {rows: rows, type: type, source: source})
-    return file.writeFile(path: path, data: facts, mode: "write")
+    return system_library_loader(
+        module: "db",
+        function: "saveModelFile",
+        args: {rows: rows, path: path, type: type}
+    )
 
 db.save(database: any, rows: array) =>
     return db.save(path: database.path, type: database.model, rows: rows)

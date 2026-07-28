@@ -534,6 +534,16 @@ std::shared_ptr<Goal> Parser::parseGoal() {
     if (check(TokenType::If)) {
         return parseIfGoal();
     }
+    if (match(TokenType::Not)) {
+        size_t lookahead = pos_;
+        if (hasToken(lookahead) && isNameStartToken(tokenAt(lookahead).type)) {
+            lookahead = parseTokenChain(tokens_, lookahead).end;
+        }
+        if (!hasToken(lookahead) || tokenAt(lookahead).type != TokenType::LParen) {
+            throw ParserError("Expected predicate call after 'not'");
+        }
+        return std::make_shared<NotGoal>(parseCall(false));
+    }
     if (match(TokenType::LParen)) {
         auto grouped = parseGoalList();
         consume(TokenType::RParen, "Expected ')' after grouped goals");

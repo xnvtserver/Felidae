@@ -208,6 +208,7 @@ enum class TokenType {
     BuiltinFunction,
 
     Import,
+    Not,
     Then,
     If,
     Else,
@@ -284,6 +285,7 @@ inline std::string tokenTypeName(TokenType type) {
         case TokenType::Newline: return "Newline";
         case TokenType::BuiltinFunction: return "BuiltinFunction";
         case TokenType::Import: return "Import";
+        case TokenType::Not: return "not";
         case TokenType::Then: return "then";
         case TokenType::If: return "if";
         case TokenType::Else: return "else";

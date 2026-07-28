@@ -136,6 +136,12 @@ void visitGoal(const std::shared_ptr<Goal>& goal,
     if (auto call = std::dynamic_pointer_cast<CallGoal>(goal)) {
         visitCall(call->call.name);
         for (const auto& arg : call->call.args) visitExpr(arg.value, visitCall);
+    } else if (auto notGoal = std::dynamic_pointer_cast<NotGoal>(goal)) {
+        // Static graph analysis records negative dependencies without
+        // evaluating them.  The graph's edge label remains generic today,
+        // but the referenced predicate is retained for schema/linking.
+        visitCall(notGoal->call.name);
+        for (const auto& arg : notGoal->call.args) visitExpr(arg.value, visitCall);
     } else if (auto assign = std::dynamic_pointer_cast<AssignGoal>(goal)) {
         visitExpr(assign->expr, visitCall);
     } else if (auto multi = std::dynamic_pointer_cast<MultiAssignGoal>(goal)) {

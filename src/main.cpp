@@ -210,32 +210,12 @@ int main(int argc, char** argv) {
         if (entryFile.extension() != FILE_EXTENSION) {
             throw std::runtime_error("Felidae source files must use .fx extension");
         }
-        std::shared_ptr<Expr> streamedMainResult;
-        bool streamedMainExecuted = false;
-        Clock::duration streamedMainDuration{};
-        const bool executeMainDuringParse = !options.repl && !options.query;
-        loadProgramRoot(entryFile, interpreter, [&](const Program& chunk) {
-            if (!executeMainDuringParse || streamedMainExecuted) return;
-            const bool chunkDefinesMain = std::any_of(
-                chunk.clauses.begin(),
-                chunk.clauses.end(),
-                [](const std::shared_ptr<ClauseStmt>& clause) {
-                    return clause && clause->head.name == "main" &&
-                           clause->clauseKind == ClauseKind::Method;
-                });
-            if (!chunkDefinesMain) return;
-            const auto mainStarted = Clock::now();
-            auto systemInput = makeSystemInput(options.remainingArgs);
-            // Registration is the execution boundary.  Do not start a
-            // worker and immediately wait for it: that adds scheduling cost
-            // without overlapping parsing and is unsafe against a mutable
-            // interpreter state.  Ordered programs may deliberately place
-            // main before later declarations; those declarations are not
-            // visible to this invocation.
-            streamedMainResult = interpreter.callMain(systemInput);
-            streamedMainDuration += Clock::now() - mainStarted;
-            streamedMainExecuted = true;
-        });
+        // A source file becomes executable only after its imports and every
+        // declaration have registered successfully. Running main while the
+        // parser was still producing chunks made later declarations invisible
+        // and could leave effects behind when a later error rejected the file.
+        // Registration remains streaming; publication is the execution boundary.
+        loadProgramRoot(entryFile, interpreter);
         const auto executionStarted = Clock::now();
         double firstQueryMs = 0.0;
         double repeatedQueryAverageMs = 0.0;
@@ -244,9 +224,9 @@ int main(int argc, char** argv) {
             if (!options.metricsJson) return;
             const auto finished = Clock::now();
             const auto loadMicros = std::chrono::duration_cast<std::chrono::microseconds>(
-                (executionStarted - loadStarted) - streamedMainDuration).count();
+                executionStarted - loadStarted).count();
             const auto executionMicros = std::chrono::duration_cast<std::chrono::microseconds>(
-                (finished - executionStarted) + streamedMainDuration).count();
+                finished - executionStarted).count();
             std::cerr << "FELIDAE_METRICS {"
                       << "\"loadMs\":" << (static_cast<double>(loadMicros) / 1000.0) << ","
                       << "\"executionMs\":" << (static_cast<double>(executionMicros) / 1000.0) << ","
@@ -293,9 +273,7 @@ int main(int argc, char** argv) {
             return 0;
         }
 
-        if (streamedMainExecuted) {
-            std::cout << interpreter.valueToString(streamedMainResult) << "\n";
-        } else if (interpreter.hasMethod("main")) {
+        if (interpreter.hasMethod("main")) {
             auto result = interpreter.callMain(makeSystemInput(options.remainingArgs));
             std::cout << interpreter.valueToString(result) << "\n";
         } else if (interpreter.hasAutoEntryCall()) {

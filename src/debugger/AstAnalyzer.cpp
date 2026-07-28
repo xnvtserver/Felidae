@@ -98,6 +98,9 @@ void collectGoalUses(const std::shared_ptr<Goal>& goal,
             }
         }
         for (const auto& arg : call->call.args) collectExprUses(arg.value, vars, calls);
+    } else if (auto notGoal = std::dynamic_pointer_cast<NotGoal>(goal)) {
+        calls.insert(notGoal->call.name);
+        for (const auto& arg : notGoal->call.args) collectExprUses(arg.value, vars, calls);
     } else if (auto assign = std::dynamic_pointer_cast<AssignGoal>(goal)) {
         if (assign->expr) collectExprUses(assign->expr, vars, calls);
     } else if (auto multi = std::dynamic_pointer_cast<MultiAssignGoal>(goal)) {

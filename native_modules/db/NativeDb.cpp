@@ -200,59 +200,6 @@ std::string serializeFacts(const Value& source, const std::string& type) {
     return output.str();
 }
 
-std::string mergeModelFacts(const std::string& source,
-                            const std::string& model,
-                            const std::string& replacement) {
-    std::string kept;
-    size_t position = 0;
-    while (position < source.size()) {
-        const size_t lineStart = position;
-        size_t token = lineStart;
-        while (token < source.size() && (source[token] == ' ' || source[token] == '\t')) ++token;
-        const bool modelStart =
-            source.compare(token, model.size(), model) == 0 &&
-            token + model.size() < source.size() &&
-            source[token + model.size()] == '(';
-        if (!modelStart) {
-            const size_t lineEnd = source.find('\n', position);
-            if (lineEnd == std::string::npos) {
-                kept.append(source, position, std::string::npos);
-                break;
-            }
-            kept.append(source, position, lineEnd - position + 1);
-            position = lineEnd + 1;
-            continue;
-        }
-        size_t cursor = token + model.size();
-        int depth = 0;
-        bool quoted = false;
-        bool escaped = false;
-        for (; cursor < source.size(); ++cursor) {
-            const char current = source[cursor];
-            if (quoted) {
-                if (escaped) escaped = false;
-                else if (current == '\\') escaped = true;
-                else if (current == '"') quoted = false;
-                continue;
-            }
-            if (current == '"') quoted = true;
-            else if (current == '(') ++depth;
-            else if (current == ')' && --depth == 0) {
-                ++cursor;
-                break;
-            }
-        }
-        while (cursor < source.size() && (source[cursor] == '\r' || source[cursor] == '\n')) ++cursor;
-        while (!kept.empty() && std::isspace(static_cast<unsigned char>(kept.back())) != 0) kept.pop_back();
-        if (!kept.empty()) kept.push_back('\n');
-        position = cursor;
-    }
-    while (!kept.empty() && std::isspace(static_cast<unsigned char>(kept.back())) != 0) kept.pop_back();
-    if (!kept.empty() && !replacement.empty()) kept += "\n\n";
-    kept += replacement;
-    return kept;
-}
-
 class FactValueParser {
 public:
     explicit FactValueParser(std::string_view source) : source_(source) {}
@@ -427,6 +374,94 @@ Value loadModelFacts(const std::string& source, const std::string& model) {
     return result;
 }
 
+// Source persistence is fact-local.  Spans retain the original source around
+// each fact, so updates/deletes never regenerate unrelated facts, comments,
+// whitespace, or other models in the database file.
+struct FactSpan {
+    size_t start = 0;
+    size_t end = 0;
+    Value row;
+};
+
+std::vector<FactSpan> modelFactSpans(const std::string& source, const std::string& model) {
+    std::vector<FactSpan> result;
+    size_t position = 0;
+    while (position < source.size()) {
+        const size_t lineStart = position;
+        size_t token = position;
+        while (token < source.size() && (source[token] == ' ' || source[token] == '\t')) ++token;
+        const bool modelStart = source.compare(token, model.size(), model) == 0 &&
+            token + model.size() < source.size() && source[token + model.size()] == '(';
+        if (!modelStart) {
+            const size_t next = source.find('\n', position);
+            position = next == std::string::npos ? source.size() : next + 1;
+            continue;
+        }
+        const size_t bodyStart = token + model.size() + 1;
+        size_t cursor = bodyStart;
+        int parens = 1;
+        bool quoted = false;
+        bool escaped = false;
+        for (; cursor < source.size(); ++cursor) {
+            const char current = source[cursor];
+            if (quoted) {
+                if (escaped) escaped = false;
+                else if (current == '\\') escaped = true;
+                else if (current == '"') quoted = false;
+            } else if (current == '"') quoted = true;
+            else if (current == '(') ++parens;
+            else if (current == ')' && --parens == 0) break;
+        }
+        if (cursor >= source.size()) throw std::runtime_error("Unterminated " + model + " fact");
+        Value row = FactValueParser(std::string_view(source).substr(bodyStart, cursor - bodyStart)).parseFields();
+        row.fieldOrder.insert(row.fieldOrder.begin(), "__type");
+        row.fields.emplace("__type", stringValue(model));
+        size_t end = cursor + 1;
+        if (end < source.size() && source[end] == '\r') ++end;
+        if (end < source.size() && source[end] == '\n') ++end;
+        result.push_back(FactSpan{lineStart, end, std::move(row)});
+        position = end;
+    }
+    return result;
+}
+
+std::string serializeSingleFact(const Value& row, const std::string& type) {
+    Value rows;
+    rows.kind = Value::Kind::Array;
+    rows.items.push_back(row);
+    return serializeFacts(rows, type);
+}
+
+std::string appendFactSource(const std::string& source, const Value& row, const std::string& type) {
+    std::string patched = source;
+    if (!patched.empty() && patched.back() != '\n') patched.push_back('\n');
+    if (!patched.empty()) patched.push_back('\n');
+    patched += serializeSingleFact(row, type);
+    return patched;
+}
+
+std::string replaceFactSpan(const std::string& source, const FactSpan& span,
+                            const Value& row, const std::string& type) {
+    std::string patched = source;
+    patched.replace(span.start, span.end - span.start, serializeSingleFact(row, type));
+    return patched;
+}
+
+std::string eraseFactSpan(const std::string& source, const FactSpan& span) {
+    std::string patched = source;
+    patched.erase(span.start, span.end - span.start);
+    return patched;
+}
+
+std::string comparableFact(const Value& value) {
+    Value visible = value;
+    visible.fields.erase("__type");
+    visible.fieldOrder.erase(
+        std::remove(visible.fieldOrder.begin(), visible.fieldOrder.end(), "__type"),
+        visible.fieldOrder.end());
+    return Felidae::NativeJson::stringify(visible);
+}
+
 bool matchesConditions(const Value& row, const Value& conditions) {
     if (row.kind != Value::Kind::Object || conditions.kind != Value::Kind::Object) return false;
     for (const auto& condition : conditions.fields) {
@@ -557,8 +592,9 @@ Value dispatch(const std::string& function, const Value& args) {
             stored.fieldOrder.insert(stored.fieldOrder.begin(), "__type");
             stored.fields.emplace("__type", stringValue(type));
         }
-        current.items.push_back(stored);
-        atomicWriteDatabase(path, mergeModelFacts(existing, type, serializeFacts(current, type)));
+        // Insert appends one serialized fact and preserves every existing
+        // source span. No model-wide regeneration occurs here.
+        atomicWriteDatabase(path, appendFactSource(existing, stored, type));
         return mutationResult(0, 0, 1, 0, std::move(stored));
     }
     if (operation == "updateOneFile") {
@@ -570,6 +606,7 @@ Value dispatch(const std::string& function, const Value& args) {
         DatabaseFileLock fileLock(path);
         const std::string existing = readDatabaseFile(path);
         Value current = loadModelFacts(existing, type);
+        const auto spans = modelFactSpans(existing, type);
         std::vector<size_t> matches;
         for (size_t i = 0; i < current.items.size(); ++i) {
             if (matchesConditions(current.items[i], conditions)) matches.push_back(i);
@@ -586,7 +623,7 @@ Value dispatch(const std::string& function, const Value& args) {
             if (row.fields.find(name) == row.fields.end()) row.fieldOrder.push_back(name);
             row.fields[name] = item->second;
         }
-        atomicWriteDatabase(path, mergeModelFacts(existing, type, serializeFacts(current, type)));
+        atomicWriteDatabase(path, replaceFactSpan(existing, spans.at(matches.front()), row, type));
         return mutationResult(1, 1, 0, 0, row);
     }
     if (operation == "deleteOneFile") {
@@ -597,6 +634,7 @@ Value dispatch(const std::string& function, const Value& args) {
         DatabaseFileLock fileLock(path);
         const std::string existing = readDatabaseFile(path);
         Value current = loadModelFacts(existing, type);
+        const auto spans = modelFactSpans(existing, type);
         std::vector<size_t> matches;
         for (size_t i = 0; i < current.items.size(); ++i) {
             if (matchesConditions(current.items[i], conditions)) matches.push_back(i);
@@ -606,20 +644,45 @@ Value dispatch(const std::string& function, const Value& args) {
         }
         if (matches.empty()) return mutationResult(0, 0, 0, 0, nullValue(), stringValue("NotFound"));
         Value deleted = current.items[matches.front()];
-        current.items.erase(current.items.begin() + static_cast<std::ptrdiff_t>(matches.front()));
-        atomicWriteDatabase(path, mergeModelFacts(existing, type, serializeFacts(current, type)));
+        atomicWriteDatabase(path, eraseFactSpan(existing, spans.at(matches.front())));
         return mutationResult(1, 0, 0, 1, std::move(deleted));
+    }
+    if (operation == "saveModelFile") {
+        const fs::path path(fieldAs(args, "path", Value::Kind::String).text);
+        const std::string type = trimmed(fieldAs(args, "type", Value::Kind::String).text);
+        std::lock_guard<std::mutex> lock(databaseMutex);
+        DatabaseFileLock fileLock(path);
+        const std::string existing = readDatabaseFile(path);
+        const auto spans = modelFactSpans(existing, type);
+        std::vector<bool> retained(spans.size(), false);
+        std::vector<Value> additions;
+        for (const auto& requested : source.items) {
+            bool found = false;
+            const std::string requestedKey = comparableFact(requested);
+            for (size_t i = 0; i < spans.size(); ++i) {
+                if (!retained[i] && comparableFact(spans[i].row) == requestedKey) {
+                    retained[i] = true;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) additions.push_back(requested);
+        }
+        std::string patched = existing;
+        for (size_t i = spans.size(); i-- > 0;) {
+            if (retained[i]) continue;
+            patched.erase(spans[i].start, spans[i].end - spans[i].start);
+        }
+        for (const auto& addition : additions) patched = appendFactSource(patched, addition, type);
+        if (patched != existing) atomicWriteDatabase(path, patched);
+        return mutationResult(0, additions.size(), additions.size(), spans.size() -
+                              static_cast<size_t>(std::count(retained.begin(), retained.end(), true)),
+                              source);
     }
 
     if (operation == "serialize") {
         const std::string type = trimmed(fieldAs(args, "type", Value::Kind::String).text);
         return Felidae::NativeJson::string(serializeFacts(source, type));
-    }
-    if (operation == "merge") {
-        const std::string type = trimmed(fieldAs(args, "type", Value::Kind::String).text);
-        const std::string existing = fieldAs(args, "source", Value::Kind::String).text;
-        return Felidae::NativeJson::string(
-            mergeModelFacts(existing, type, serializeFacts(source, type)));
     }
     if (operation == "schema") {
         const Value& models = fieldAs(args, "models", Value::Kind::Array);
