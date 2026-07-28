@@ -4,6 +4,7 @@
 #include "FelidaeRuntime.h"
 #include "Parser.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cctype>
 #include <cstdlib>
@@ -29,6 +30,19 @@ namespace {
 
 constexpr size_t kMaxCachedEnvFrames = 4096;
 constexpr size_t kHotMethodPrepareThreshold = 2;
+// A non-tail call expands through solver, value evaluation, and unification
+// frames.  Keep this deliberately below the platform stack danger zone until
+// every non-tail continuation is represented by the iterative frame machine.
+// Tail calls unwind through TailCallSignal and are not limited by this guard.
+constexpr size_t kMaxNativeMethodCallDepth = 4;
+
+class CounterScope {
+public:
+    explicit CounterScope(size_t& counter) : counter_(counter) { ++counter_; }
+    ~CounterScope() { --counter_; }
+private:
+    size_t& counter_;
+};
 
 class PipelineResultClearScope {
 public:
@@ -44,6 +58,14 @@ public:
 private:
     std::vector<std::shared_ptr<Expr>>& results_;
     std::vector<std::shared_ptr<Expr>> saved_;
+};
+
+class TailCallSignal {
+public:
+    TailCallSignal(TermExpr next, Env environment)
+        : term(std::move(next)), env(std::move(environment)) {}
+    TermExpr term;
+    Env env;
 };
 
 class PipelineResultValueScope {
@@ -1246,6 +1268,27 @@ bool Interpreter::solveWhereGoal(const WhereGoal& goal, Env& env) {
 
 bool Interpreter::solveReturnGoal(const ReturnGoal& goal, Env& env) {
     if (goal.fields.size() == 1 && goal.fields.front().name.empty()) {
+        if (valueCallTrampolineDepth_ > 0) {
+            if (auto tailCall =
+                    std::dynamic_pointer_cast<TermExpr>(goal.fields.front().value)) {
+                // A user-method return can be executed by the iterative value
+                // call frame. Builtins and native calls retain their normal
+                // value contract: they may have output adaptation or ABI
+                // result shaping that cannot be bypassed by a tail jump.
+                if (tailCall->builtinId == BuiltinId::Unknown &&
+                    !nativeDeclarationFor(tailCall->name) &&
+                    findClauses(tailCall->name, tailCall->nameId)) {
+                    TermExpr next(tailCall->name, {}, tailCall->builtinId);
+                    next.nameId = tailCall->nameId;
+                    next.args.reserve(tailCall->args.size());
+                    for (const auto& argument : tailCall->args) {
+                        next.args.push_back(
+                            Arg{argument.name, argument.value->clone()});
+                    }
+                    throw TailCallSignal(std::move(next), env);
+                }
+            }
+        }
         std::shared_ptr<Expr> value;
         if (!evalExprValue(goal.fields.front().value, env, value)) {
             if (strictValueFailures_) {
@@ -1360,7 +1403,35 @@ bool Interpreter::solveMethodCall(const Call& call,
                                   std::vector<Solution>& out,
                                   size_t maxSolutions,
                                   size_t depth) {
+    if (methodCallDepth_ >= kMaxNativeMethodCallDepth) {
+        throw InterpreterError(
+            "Maximum non-tail method recursion depth reached; use an explicit tail return");
+    }
+    CounterScope methodDepth(methodCallDepth_);
     if (originalClause->emptyDeclaration) return false;
+    // Overloads are selected by their complete call shape.  Accepting an
+    // otherwise compatible prefix silently discarded later named arguments,
+    // which routed rich fact APIs through their short overloads.
+    for (size_t callIndex = 0; callIndex < call.args.size(); ++callIndex) {
+        const auto& callArg = call.args[callIndex];
+        bool declared = false;
+        for (size_t paramIndex = 0; paramIndex < originalClause->head.args.size(); ++paramIndex) {
+            const auto& param = originalClause->head.args[paramIndex];
+            if ((!callArg.name.empty() && callArg.name == param.name) ||
+                (callArg.name.empty() && callIndex == paramIndex)) {
+                declared = true;
+                break;
+            }
+        }
+        if (!declared) {
+            // Extra unbound variables are the established predicate-output
+            // contract. Concrete extras, however, would be silently ignored
+            // and must not select this overload.
+            const auto unresolved = std::dynamic_pointer_cast<VarExpr>(
+                resolveExpr(callArg.value, env));
+            if (!unresolved) return false;
+        }
+    }
     Env callerEnv = std::move(env);
     std::vector<Env> candidates{Env{}};
     const auto* hotParams = hotMethodParamPlan(originalClause);
@@ -1645,8 +1716,17 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
     }
 
     if (call.builtinId == BuiltinId::Throw) {
-        if (!valueArg({"msg", "reason"}, 0, a)) return false;
-        env["error_reason"] = a->clone();
+        if (!valueArg({"exception"}, 0, a)) {
+            throw InterpreterError("throw expects a resolvable typed 'exception'");
+        }
+        auto exceptionMap = std::dynamic_pointer_cast<MapExpr>(a);
+        auto exceptionKind = findMapValue(a, "kind");
+        auto kindString = std::dynamic_pointer_cast<StringExpr>(exceptionKind);
+        if (!exceptionMap || !kindString) {
+            throw InterpreterError(
+                "throw exception must be an object with a string 'kind' field");
+        }
+        env["error_reason"] = exceptionKind->clone();
 
         const Arg* target = namedArg("target");
         if (target) {
@@ -1654,45 +1734,36 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
             if (auto targetVar = std::dynamic_pointer_cast<VarExpr>(target->value)) {
                 targetName = targetVar->name;
             } else {
-                std::shared_ptr<Expr> targetValue;
-                if (!evalExprValue(target->value, env, targetValue)) return false;
-                if (auto targetString = std::dynamic_pointer_cast<StringExpr>(targetValue)) {
-                    targetName = targetString->value;
-                } else {
-                    return false;
-                }
+                throw InterpreterError(
+                    "throw target must be a callable reference such as someFunction::Function");
             }
+            const auto separator = targetName.find("::");
+            if (separator == std::string::npos ||
+                targetName.find("::", separator + 2) != std::string::npos) {
+                throw InterpreterError(
+                    "throw target must be a callable reference such as someFunction::Function");
+            }
+            targetName.replace(separator, 2, ":");
 
             Call handler(targetName, {});
-            handler.args.push_back(Arg{"msg", a});
+            handler.args.push_back(Arg{"exception", a});
 
             auto* clauses = findClauses(handler.name, handler.nameId);
             if (!clauses && ensurePredicateLoaded(handler.name)) {
                 clauses = findClauses(handler.name, handler.nameId);
             }
-            if (!clauses) return false;
-
-            bool handled = false;
-            for (const auto& originalClause : *clauses) {
-                Env attempt = env;
-                auto clause = standardizeApart(*originalClause);
-                if (!unifyCall(handler, clause->head, attempt)) continue;
-
-                if (clause->body.empty()) {
-                    env = std::move(attempt);
-                    handled = true;
-                    break;
-                }
-
-                std::vector<Solution> nested;
-                solveRecursive(clause->body, std::move(attempt), nested, 1, 0);
-                if (!nested.empty()) {
-                    env = std::move(nested.front().env);
-                    handled = true;
-                    break;
-                }
+            if (!clauses) {
+                throw InterpreterError("Exception handler not found: " + targetName);
             }
-            if (!handled) return false;
+            std::vector<Solution> handled;
+            solveRecursive(
+                {std::make_shared<CallGoal>(std::move(handler))},
+                env,
+                handled,
+                1,
+                0);
+            if (handled.empty()) return false;
+            env = std::move(handled.front().env);
         }
 
         const Arg* out = namedArg("out");
@@ -2162,7 +2233,10 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
         auto valueFor = [&](const std::string& name, size_t index) -> std::shared_ptr<Expr> {
             if (genericLibraryLoader && loaderArgs) {
                 for (const auto& entry : loaderArgs->entries) {
-                    if (entry.key == name) return entry.value;
+                    if (entry.key == name) {
+                        std::shared_ptr<Expr> value;
+                        return evalExprValue(entry.value, env, value) ? value : nullptr;
+                    }
                 }
                 return {};
             }
@@ -2273,15 +2347,38 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
         }
     }
 
+    const auto serializationStart = std::chrono::steady_clock::now();
     std::ostringstream json;
     json << "{";
     bool first = true;
     std::vector<const Arg*> outputArgs;
+    const bool selectionAwareNative =
+        library->moduleName == "set" || library->moduleName == "group" ||
+        library->moduleName == "fact_analysis";
+    std::function<std::shared_ptr<Expr>(const std::shared_ptr<Expr>&)> materializeNativeValue;
+    materializeNativeValue = [&](const std::shared_ptr<Expr>& value) -> std::shared_ptr<Expr> {
+        if (!selectionAwareNative || !value) return value;
+        if (std::dynamic_pointer_cast<StringExpr>(
+                findMapValue(value, internalSymbolString(InternalSymbolKind::Type))) &&
+            std::dynamic_pointer_cast<StringExpr>(findMapValue(value, "fact_type"))) {
+            return materializeFactSelection(value);
+        }
+        if (auto array = std::dynamic_pointer_cast<ArrayExpr>(value)) {
+            std::vector<std::shared_ptr<Expr>> items;
+            items.reserve(array->items.size());
+            for (const auto& item : array->items) items.push_back(materializeNativeValue(item));
+            return std::make_shared<ArrayExpr>(std::move(items));
+        }
+        return value;
+    };
     if (genericLibraryLoader) {
         for (const auto& entry : loaderArgs->entries) {
+            std::shared_ptr<Expr> value;
+            if (!evalExprValue(entry.value, env, value)) return false;
             if (!first) json << ",";
             first = false;
-            json << "\"" << jsonEscape(entry.key) << "\":" << exprToJson(entry.value);
+            json << "\"" << jsonEscape(entry.key) << "\":"
+                 << exprToJson(materializeNativeValue(value));
         }
     } else {
         for (size_t i = 0; i < call.args.size(); ++i) {
@@ -2294,25 +2391,50 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
                 }
                 return false;
             }
+            value = materializeNativeValue(value);
             if (!first) json << ",";
             first = false;
             std::string key = arg.name.empty() ? ("arg" + std::to_string(i)) : arg.name;
             json << "\"" << jsonEscape(key) << "\":" << exprToJson(value);
         }
     }
-    if (!first) json << ",";
-    json << "\"__facts\":[";
-    bool firstFact = true;
-    for (const auto& fact : memory_.facts()) {
-        if (!fact.value) continue;
-        if (!firstFact) json << ",";
-        firstFact = false;
-        json << exprToJson(fact.value);
+    const NativeCapabilities capabilities =
+        nativeCapabilitiesFor(library->moduleName, nativeFunctionName);
+    if (capabilities.needsFactSnapshot) {
+        if (!first) json << ",";
+        const std::streampos snapshotStart = json.tellp();
+        json << "\"__facts\":[";
+        bool firstFact = true;
+        for (const auto& fact : memory_.facts()) {
+            if (!fact.value) continue;
+            if (!capabilities.requestedFactTypes.empty() &&
+                std::find(
+                    capabilities.requestedFactTypes.begin(),
+                    capabilities.requestedFactTypes.end(),
+                    fact.type) == capabilities.requestedFactTypes.end()) {
+                continue;
+            }
+            if (!firstFact) json << ",";
+            firstFact = false;
+            json << exprToJson(fact.value);
+        }
+        json << "]";
+        const std::streampos snapshotEnd = json.tellp();
+        if (snapshotStart >= 0 && snapshotEnd >= snapshotStart) {
+            nativeFactSnapshotBytes_ +=
+                static_cast<std::size_t>(snapshotEnd - snapshotStart);
+        }
+        ++nativeFactSnapshotCalls_;
     }
-    json << "]";
     json << "}";
 
-    char* response = library->call(nativeFunctionName.c_str(), json.str().c_str());
+    const std::string requestJson = json.str();
+    nativeSerializationMicros_ += static_cast<std::size_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - serializationStart).count());
+    ++nativeCalls_;
+    nativeRequestBytes_ += requestJson.size();
+    char* response = library->call(nativeFunctionName.c_str(), requestJson.c_str());
     if (!response) throw InterpreterError("Native function '" + nativeFunctionName + "' returned a null response");
     std::string responseText(response);
     library->free(response);
@@ -2448,6 +2570,35 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
 }
 
 bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out) {
+    TermExpr current(term.name, {}, term.builtinId);
+    current.nameId = term.nameId;
+    current.args.reserve(term.args.size());
+    for (const auto& argument : term.args) {
+        current.args.push_back(Arg{argument.name, argument.value->clone()});
+    }
+    Env currentEnv = env;
+    ++valueCallTrampolineDepth_;
+    try {
+        while (true) {
+            try {
+                const bool result = evalCallAsValueOnce(current, currentEnv, out);
+                --valueCallTrampolineDepth_;
+                return result;
+            } catch (TailCallSignal& signal) {
+                current = std::move(signal.term);
+                currentEnv = std::move(signal.env);
+            }
+        }
+    } catch (...) {
+        --valueCallTrampolineDepth_;
+        throw;
+    }
+}
+
+bool Interpreter::evalCallAsValueOnce(
+    const TermExpr& term,
+    const Env& env,
+    std::shared_ptr<Expr>& out) {
     const BuiltinId builtin = term.builtinId;
     if (!nativeDeclarationFor(term.name)) {
         ensurePredicateLoaded(term.name);
@@ -2501,6 +2652,7 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
                 }
             }
         }
+
     }
 
     if (nativeDeclarationFor(term.name)) {
@@ -2995,6 +3147,19 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
 
     if (term.name.rfind("db:", 0) == 0) {
         const std::string op = term.name.substr(3);
+        if (op == "sync") {
+            const std::string pathText = requireNamedString({"path", "file"}, 0, "path");
+            out = std::make_shared<NumberExpr>(static_cast<double>(syncFactSource(fs::path(pathText))));
+            return true;
+        }
+        if (op == "materialize") {
+            std::shared_ptr<Expr> selection;
+            if (!evalNamed("selection", 0, selection) && !evalNamed("value", 0, selection)) {
+                throw InterpreterError("db.materialize expects a FactSelection");
+            }
+            out = materializeFactSelection(selection);
+            return true;
+        }
         if (op == "types") {
             std::set<std::string> types;
             for (const auto& fact : memory_.facts()) types.insert(fact.type);
@@ -3020,6 +3185,24 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
             }
             return rows;
         };
+
+        if (op == "select") {
+            std::vector<MapEntry> entries;
+            entries.push_back(MapEntry{internalSymbolString(InternalSymbolKind::Type), std::make_shared<StringExpr>("FactSelection")});
+            entries.push_back(MapEntry{"fact_type", std::make_shared<StringExpr>(typeName)});
+            entries.push_back(MapEntry{"source", std::make_shared<StringExpr>("memory")});
+            if (term.args.size() > 1) {
+                const std::string field = requireNamedString({"field", "key"}, 1, "field");
+                std::shared_ptr<Expr> expected;
+                if (!evalNamed("equals", 2, expected) && !evalNamed("value", 2, expected)) {
+                    throw InterpreterError("db.select expects argument 'equals'");
+                }
+                entries.push_back(MapEntry{"field", std::make_shared<StringExpr>(field)});
+                entries.push_back(MapEntry{"equals", expected->clone()});
+            }
+            out = std::make_shared<MapExpr>(std::move(entries));
+            return true;
+        }
 
         if (op == "all") {
             out = std::make_shared<ArrayExpr>(matchingFacts());
@@ -4317,21 +4500,45 @@ const Arg* Interpreter::findArgByNameOrIndex(const Call& call, const std::string
 }
 
 Interpreter::ClauseList* Interpreter::findClauses(const std::string& name, SymbolId nameId) {
+    if (cacheInvalidationDepth_ == 0) {
+        auto cached = clauseLookupCache_.find(name);
+        if (cached != clauseLookupCache_.end()) {
+            ++dispatchCacheHits_;
+            return cached->second;
+        }
+        ++dispatchCacheMisses_;
+    }
     if (nameId == 0) nameId = symbolIdForName(name);
     auto found = clauses_->find(nameId);
     if (found == clauses_->end()) return nullptr;
     for (auto& bucket : found->second) {
-        if (bucket.name == name) return &bucket.clauses;
+        if (bucket.name == name) {
+            auto* clauses = &bucket.clauses;
+            if (cacheInvalidationDepth_ == 0) clauseLookupCache_[name] = clauses;
+            return clauses;
+        }
     }
     return nullptr;
 }
 
 const Interpreter::ClauseList* Interpreter::findClauses(const std::string& name, SymbolId nameId) const {
+    if (cacheInvalidationDepth_ == 0) {
+        auto cached = clauseLookupCache_.find(name);
+        if (cached != clauseLookupCache_.end()) {
+            ++dispatchCacheHits_;
+            return cached->second;
+        }
+        ++dispatchCacheMisses_;
+    }
     if (nameId == 0) nameId = symbolIdForName(name);
     auto found = clauses_->find(nameId);
     if (found == clauses_->end()) return nullptr;
     for (const auto& bucket : found->second) {
-        if (bucket.name == name) return &bucket.clauses;
+        if (bucket.name == name) {
+            auto* clauses = const_cast<ClauseList*>(&bucket.clauses);
+            if (cacheInvalidationDepth_ == 0) clauseLookupCache_[name] = clauses;
+            return clauses;
+        }
     }
     return nullptr;
 }
@@ -4453,6 +4660,7 @@ void Interpreter::clearCachesNow() {
     solveCacheRecency_.clear();
     solveCacheBytes_ = 0;
     methodRuntimeCache_.clear();
+    clauseLookupCache_.clear();
 }
 
 bool Interpreter::ensurePredicateLoaded(const std::string& predicate) {
@@ -4496,6 +4704,75 @@ void Interpreter::loadProgramFile(const std::filesystem::path& file) {
     }
 }
 
+std::shared_ptr<ArrayExpr> Interpreter::materializeFactSelection(
+    const std::shared_ptr<Expr>& selection) {
+    const auto kind = std::dynamic_pointer_cast<StringExpr>(
+        findMapValue(selection, internalSymbolString(InternalSymbolKind::Type)));
+    const auto selectedType = std::dynamic_pointer_cast<StringExpr>(findMapValue(selection, "fact_type"));
+    if (!kind || kind->value != "FactSelection" || !selectedType) {
+        throw InterpreterError("Expected a FactSelection");
+    }
+    std::string field;
+    std::shared_ptr<Expr> equals;
+    if (const auto fieldValue = std::dynamic_pointer_cast<StringExpr>(findMapValue(selection, "field"))) {
+        field = fieldValue->value;
+        equals = findMapValue(selection, "equals");
+    }
+    const std::vector<size_t>* indexes = &memory_.compatibleFactIndexes(selectedType->value);
+    if (!field.empty() && equals && isGroundLiteral(equals)) {
+        const auto& indexed = memory_.propertyFactIndexes(selectedType->value, 0, field, 0, equals);
+        if (indexed.size() < indexes->size()) indexes = &indexed;
+    }
+    std::vector<std::shared_ptr<Expr>> rows;
+    rows.reserve(indexes->size());
+    for (const auto index : *indexes) {
+        const auto& fact = memory_.fact(index);
+        if (!field.empty()) {
+            const auto actual = findMapValue(fact.value, field);
+            if (!actual || !equals || !exprContainsLiteral(actual, equals)) continue;
+        }
+        ++factCandidates_;
+        rows.push_back(fact.value->clone());
+    }
+    return std::make_shared<ArrayExpr>(std::move(rows));
+}
+
+std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
+    const fs::path normalized = fs::absolute(file).lexically_normal();
+    if (!fs::exists(normalized) || !fs::is_regular_file(normalized)) {
+        throw InterpreterError("db.sync cannot read fact source: " + normalized.string());
+    }
+
+    // Sync is intentionally restricted to fact-only files.  Reloading method
+    // declarations or globals could duplicate executable definitions and
+    // violate ordered immediate execution semantics.
+    std::vector<Program> chunks;
+    parseProgramFileChunks(normalized, [&](Program&& program) {
+        for (const auto& statement : program.statements) {
+            if (statement->kind() != StatementKind::Clause ||
+                !std::static_pointer_cast<ClauseStmt>(statement)->isFact()) {
+                throw InterpreterError("db.sync accepts fact-only .fx sources: " + normalized.string());
+            }
+        }
+        chunks.push_back(std::move(program));
+    });
+
+    memory_.removeOrigin(normalized);
+    const fs::path previous = currentLoadingFile_;
+    currentLoadingFile_ = normalized;
+    try {
+        beginCacheInvalidationBatch();
+        for (const auto& chunk : chunks) addProgram(chunk);
+        endCacheInvalidationBatch();
+    } catch (...) {
+        currentLoadingFile_ = previous;
+        endCacheInvalidationBatch();
+        throw;
+    }
+    currentLoadingFile_ = previous;
+    return memory_.factIndexesFromOrigin(normalized).size();
+}
+
 std::string Interpreter::runtimeMetricsJson() const {
     std::ostringstream out;
     out << "{"
@@ -4507,7 +4784,14 @@ std::string Interpreter::runtimeMetricsJson() const {
         << "\"environmentCopies\":" << envFramePool_.copies() << ","
         << "\"environmentFramesCached\":" << envFramePool_.cached() << ","
         << "\"standardizedClauses\":" << standardizedClauses_ << ","
-        << "\"moduleLoads\":" << moduleLoads_
+        << "\"moduleLoads\":" << moduleLoads_ << ","
+        << "\"nativeCalls\":" << nativeCalls_ << ","
+        << "\"nativeFactSnapshotCalls\":" << nativeFactSnapshotCalls_ << ","
+        << "\"nativeRequestBytes\":" << nativeRequestBytes_ << ","
+        << "\"nativeFactSnapshotBytes\":" << nativeFactSnapshotBytes_ << ","
+        << "\"nativeSerializationMicros\":" << nativeSerializationMicros_ << ","
+        << "\"dispatchCacheHits\":" << dispatchCacheHits_ << ","
+        << "\"dispatchCacheMisses\":" << dispatchCacheMisses_
         << "}";
     return out.str();
 }

@@ -14,19 +14,6 @@ namespace Felidae::Tooling {
 
 namespace {
 
-std::string readFile(const fs::path& path) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) throw std::runtime_error("Cannot open file: " + path.string());
-    input.seekg(0, std::ios::end);
-    const auto size = input.tellg();
-    input.seekg(0, std::ios::beg);
-    std::string text;
-    if (size > 0) text.resize(static_cast<std::size_t>(size));
-    if (!text.empty()) input.read(&text[0], static_cast<std::streamsize>(text.size()));
-    if (!input && !input.eof()) throw std::runtime_error("Cannot read file: " + path.string());
-    return text;
-}
-
 fs::path findProjectRoot(fs::path start) {
     std::error_code ec;
     start = fs::absolute(start, ec).lexically_normal();
@@ -114,12 +101,27 @@ void appendProgram(Program& destination, Program source) {
 
 Program parseText(std::string text) {
     Lexer lexer(std::move(text));
-    Parser parser(lexer.tokenize());
+    Parser parser(lexer);
     return parser.parseProgram();
 }
 
 Program parseFile(const fs::path& path) {
-    return parseText(readFile(resolveEntryPath(path)));
+    Program program;
+    parseFileStatements(path, [&](std::shared_ptr<Statement> statement) {
+        program.addStatement(std::move(statement));
+    });
+    return program;
+}
+
+void parseFileStatements(
+    const fs::path& path,
+    const std::function<void(std::shared_ptr<Statement>)>& consume) {
+    const fs::path entry = resolveEntryPath(path);
+    std::ifstream input(entry, std::ios::binary);
+    if (!input) throw std::runtime_error("Cannot open file: " + entry.string());
+    Lexer lexer(input);
+    Parser parser(lexer);
+    parser.parseProgram(consume);
 }
 
 fs::path resolveEntryPath(const fs::path& path) {
@@ -166,6 +168,47 @@ LoadedProgram loadProgram(const fs::path& entryFile, bool loadImports) {
             }
         }
         appendProgram(loaded.program, std::move(parsed));
+    }
+
+    std::sort(loaded.files.begin(), loaded.files.end());
+    std::sort(loaded.unresolvedImports.begin(), loaded.unresolvedImports.end());
+    loaded.unresolvedImports.erase(
+        std::unique(loaded.unresolvedImports.begin(), loaded.unresolvedImports.end()),
+        loaded.unresolvedImports.end());
+    return loaded;
+}
+
+LoadedSources loadProgramStatements(
+    const fs::path& entryFile,
+    bool loadImports,
+    const std::function<void(const std::shared_ptr<Statement>&)>& consume) {
+    LoadedSources loaded;
+    const fs::path entry = resolveEntryPath(entryFile);
+    const fs::path projectRoot = findProjectRoot(entry);
+    std::vector<fs::path> pending{entry};
+    std::set<fs::path> visited;
+
+    while (!pending.empty()) {
+        fs::path file = fs::absolute(pending.back()).lexically_normal();
+        pending.pop_back();
+        if (!visited.insert(file).second) continue;
+
+        loaded.files.push_back(file);
+        parseFileStatements(file, [&](std::shared_ptr<Statement> statement) {
+            if (loadImports) {
+                if (auto import = std::dynamic_pointer_cast<ImportStmt>(statement)) {
+                    for (const auto& importName : import->paths) {
+                        auto resolved = resolveImport(file.parent_path(), projectRoot, importName);
+                        if (resolved.empty()) {
+                            loaded.unresolvedImports.push_back(importName);
+                        } else {
+                            pending.insert(pending.end(), resolved.begin(), resolved.end());
+                        }
+                    }
+                }
+            }
+            consume(statement);
+        });
     }
 
     std::sort(loaded.files.begin(), loaded.files.end());

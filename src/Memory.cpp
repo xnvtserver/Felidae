@@ -1,6 +1,7 @@
 #include "Memory.h"
 
 #include <algorithm>
+#include <cstring>
 #include <deque>
 #include <iomanip>
 #include <sstream>
@@ -42,8 +43,10 @@ size_t FactMemory::addFact(std::string type,
         std::move(parentType),
         parentTypeId,
         std::move(value),
-        std::move(origin)});
+        std::move(origin),
+        0});
     const size_t index = data_->facts.size() - 1;
+    data_->facts[index].stableHash = stableExprHash(data_->facts[index].value);
     indexFact(index);
     invalidateCaches();
     return index;
@@ -166,6 +169,8 @@ const std::vector<size_t>& FactMemory::propertyFactIndexes(
     static const std::vector<size_t> empty;
     std::string valueKey;
     if (!literalIndexKey(value, valueKey)) return empty;
+    std::size_t valueHash = 0;
+    if (!literalIndexHash(value, valueHash)) return empty;
     if (typeId == 0) typeId = symbolIdForName(type);
     if (propertyId == 0) propertyId = symbolIdForName(property);
 
@@ -177,7 +182,7 @@ const std::vector<size_t>& FactMemory::propertyFactIndexes(
     std::unordered_set<size_t> seenIndexes;
     auto propertyIt = data_->factsByPropertyValue.find(propertyId);
     if (propertyIt != data_->factsByPropertyValue.end()) {
-        auto valueIt = propertyIt->second.find(valueKey);
+        auto valueIt = propertyIt->second.find(valueHash);
         if (valueIt != propertyIt->second.end()) {
             for (size_t index : valueIt->second) {
                 if (index >= data_->facts.size()) continue;
@@ -186,7 +191,20 @@ const std::vector<size_t>& FactMemory::propertyFactIndexes(
                 bool exactProperty = false;
                 for (const auto& entry : fact.value->entries) {
                     if (entry.keyId == propertyId && entry.key == property) {
-                        exactProperty = true;
+                        if (auto array = std::dynamic_pointer_cast<ArrayExpr>(entry.value)) {
+                            for (const auto& item : array->items) {
+                                std::string indexedKey;
+                                if (literalIndexKey(item, indexedKey) && indexedKey == valueKey) {
+                                    exactProperty = true;
+                                    break;
+                                }
+                            }
+                        } else {
+                            std::string indexedKey;
+                            exactProperty =
+                                literalIndexKey(entry.value, indexedKey) &&
+                                indexedKey == valueKey;
+                        }
                         break;
                     }
                 }
@@ -254,6 +272,73 @@ bool FactMemory::literalIndexKey(const std::shared_ptr<Expr>& value, std::string
     }
 }
 
+bool FactMemory::literalIndexHash(
+    const std::shared_ptr<Expr>& value,
+    std::size_t& out) {
+    if (!value) return false;
+    constexpr std::size_t offset =
+        sizeof(std::size_t) == 8 ? 1469598103934665603ULL : 2166136261U;
+    constexpr std::size_t prime =
+        sizeof(std::size_t) == 8 ? 1099511628211ULL : 16777619U;
+    auto mix = [&](const void* data, std::size_t size, unsigned char kind) {
+        std::size_t hash = (offset ^ kind) * prime;
+        const auto* bytes = static_cast<const unsigned char*>(data);
+        for (std::size_t i = 0; i < size; ++i) hash = (hash ^ bytes[i]) * prime;
+        out = hash;
+    };
+    switch (value->kind()) {
+        case ExprKind::String: {
+            const auto& text = static_cast<const StringExpr&>(*value).value;
+            mix(text.data(), text.size(), 1);
+            return true;
+        }
+        case ExprKind::Number: {
+            const double number = static_cast<const NumberExpr&>(*value).value;
+            std::uint64_t bits = 0;
+            std::memcpy(&bits, &number, sizeof(bits));
+            mix(&bits, sizeof(bits), 2);
+            return true;
+        }
+        case ExprKind::Bool: {
+            const bool boolean = static_cast<const BoolExpr&>(*value).value;
+            mix(&boolean, sizeof(boolean), 3);
+            return true;
+        }
+        case ExprKind::Nil:
+            mix(nullptr, 0, 4);
+            return true;
+        default:
+            return false;
+    }
+}
+
+std::size_t FactMemory::stableExprHash(const std::shared_ptr<Expr>& value) {
+    if (!value) return 0;
+    std::size_t literal = 0;
+    if (literalIndexHash(value, literal)) return literal;
+    std::size_t seed = static_cast<std::size_t>(value->kind()) + 0x9e3779b9U;
+    auto combine = [&](std::size_t hash) {
+        seed ^= hash + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U);
+    };
+    if (auto array = std::dynamic_pointer_cast<ArrayExpr>(value)) {
+        for (const auto& item : array->items) combine(stableExprHash(item));
+    } else if (auto map = std::dynamic_pointer_cast<MapExpr>(value)) {
+        for (const auto& entry : map->entries) {
+            combine(std::hash<std::string>{}(entry.key));
+            combine(stableExprHash(entry.value));
+        }
+    } else if (auto term = std::dynamic_pointer_cast<TermExpr>(value)) {
+        combine(std::hash<std::string>{}(term->name));
+        for (const auto& argument : term->args) {
+            combine(std::hash<std::string>{}(argument.name));
+            combine(stableExprHash(argument.value));
+        }
+    } else {
+        combine(std::hash<std::string>{}(value->debug()));
+    }
+    return seed;
+}
+
 void FactMemory::rememberTypeName(SymbolId id, const std::string& name) {
     auto& names = data_->typeNamesById[id];
     if (std::find(names.begin(), names.end(), name) == names.end()) names.push_back(name);
@@ -277,9 +362,9 @@ void FactMemory::indexFact(size_t index) {
             items.push_back(entry.value);
         }
         for (const auto& item : items) {
-            std::string valueKey;
-            if (literalIndexKey(item, valueKey)) {
-                data_->factsByPropertyValue[entry.keyId][std::move(valueKey)].push_back(index);
+            std::size_t valueHash = 0;
+            if (literalIndexHash(item, valueHash)) {
+                data_->factsByPropertyValue[entry.keyId][valueHash].push_back(index);
             }
         }
     }

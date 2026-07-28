@@ -6,7 +6,6 @@
 #include <chrono>
 #include <cctype>
 #include <filesystem>
-#include <future>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -227,11 +226,13 @@ int main(int argc, char** argv) {
             if (!chunkDefinesMain) return;
             const auto mainStarted = Clock::now();
             auto systemInput = makeSystemInput(options.remainingArgs);
-            streamedMainResult = std::async(
-                std::launch::async,
-                [&interpreter, systemInput]() {
-                    return interpreter.callMain(systemInput);
-                }).get();
+            // Registration is the execution boundary.  Do not start a
+            // worker and immediately wait for it: that adds scheduling cost
+            // without overlapping parsing and is unsafe against a mutable
+            // interpreter state.  Ordered programs may deliberately place
+            // main before later declarations; those declarations are not
+            // visible to this invocation.
+            streamedMainResult = interpreter.callMain(systemInput);
             streamedMainDuration += Clock::now() - mainStarted;
             streamedMainExecuted = true;
         });

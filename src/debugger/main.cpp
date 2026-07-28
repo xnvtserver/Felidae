@@ -4,6 +4,7 @@
 #include "Version.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
@@ -23,6 +24,7 @@ struct DebugOptions {
     bool loadImports = false;
     bool checkOnly = false;
     bool checkJson = false;
+    bool metricsJson = false;
     bool lspMode = false;
     bool listLibraries = false;
     bool listBuiltins = false;
@@ -48,6 +50,10 @@ static DebugOptions parseDebugCli(int argc, char** argv) {
         }
         if (arg == "--check-json") {
             options.checkJson = true;
+            continue;
+        }
+        if (arg == "--metrics-json") {
+            options.metricsJson = true;
             continue;
         }
         if (arg == "--lsp") {
@@ -217,10 +223,19 @@ static std::string diagnosticsJson(const std::vector<AstDiagnostic>& diagnostics
         if (i) out << ",";
         int line = std::max(1, diagnostic.line);
         int column = std::max(1, diagnostic.column);
+        int endLine = std::max(line, diagnostic.endLine);
+        int endColumn = std::max(
+            endLine == line ? column : 1,
+            diagnostic.endColumn);
         out << "{\"severity\":\"" << jsonEscape(diagnostic.severity)
             << "\",\"lspSeverity\":" << lspSeverity(diagnostic.severity)
             << ",\"line\":" << line
             << ",\"column\":" << column
+            << ",\"endLine\":" << endLine
+            << ",\"endColumn\":" << endColumn
+            << ",\"code\":\"" << jsonEscape(
+                diagnostic.code.empty() ? "felidae.ast" : diagnostic.code) << "\""
+            << ",\"file\":\"" << jsonEscape(diagnostic.file) << "\""
             << ",\"message\":\"" << jsonEscape(diagnostic.message) << "\"}";
     }
     out << "]}";
@@ -367,8 +382,14 @@ static std::string analyzeTextJson(const fs::path& path, const std::string& text
 
 static std::string analyzeFileJson(const fs::path& path) {
     try {
-        auto loaded = Tooling::loadProgram(path, true);
-        auto diagnostics = analyzeProgramAst(loaded.program);
+        AstAnalysisSession analysis;
+        Tooling::loadProgramStatements(
+            path,
+            true,
+            [&](const std::shared_ptr<Statement>& statement) {
+                analysis.consume(statement);
+            });
+        auto diagnostics = analysis.finish();
         return diagnosticsJson(diagnostics);
     } catch (const std::exception& e) {
         return errorJson(e.what());
@@ -495,8 +516,17 @@ int main(int argc, char** argv) {
             waitForContinue();
         }
 
-        auto loaded = Tooling::loadProgram(*options.programFile, options.loadImports);
-        auto astDiagnostics = analyzeProgramAst(loaded.program);
+        AstAnalysisSession analysis;
+        const auto analysisStarted = std::chrono::steady_clock::now();
+        Tooling::loadProgramStatements(
+            *options.programFile,
+            options.loadImports,
+            [&](const std::shared_ptr<Statement>& statement) {
+                analysis.consume(statement);
+            });
+        auto astDiagnostics = analysis.finish();
+        const auto analysisMicros = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - analysisStarted).count();
         if (!dataOutputOnly) {
             std::cerr << "Felidae AST debugger analyzing " << options.programFile->string() << "\n";
         }
@@ -513,6 +543,10 @@ int main(int argc, char** argv) {
 
         if (!dataOutputOnly) {
             std::cout << "FELIDAE_DEBUG_EXIT code=0\n" << std::flush;
+        }
+        if (options.metricsJson) {
+            std::cerr << "FELIDAE_DEBUG_METRICS {\"analysisMs\":"
+                      << static_cast<double>(analysisMicros) / 1000.0 << "}\n";
         }
         return 0;
     } catch (const std::exception& e) {

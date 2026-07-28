@@ -17,6 +17,7 @@ struct FactRecord {
     SymbolId parentTypeId = 0;
     std::shared_ptr<MapExpr> value;
     std::filesystem::path origin;
+    std::size_t stableHash = 0;
 };
 
 class FactMemory {
@@ -76,7 +77,7 @@ private:
         std::vector<FactRecord> facts;
         std::unordered_map<SymbolId, std::vector<size_t>> factsByType;
         std::unordered_map<std::filesystem::path, std::vector<size_t>> factsByOrigin;
-        std::unordered_map<SymbolId, std::unordered_map<std::string, std::vector<size_t>>> factsByPropertyValue;
+        std::unordered_map<SymbolId, std::unordered_map<std::size_t, std::vector<size_t>>> factsByPropertyValue;
         std::unordered_map<std::string, std::string> parentOf;
         std::unordered_map<std::string, std::filesystem::path> parentOrigin;
         std::unordered_map<SymbolId, std::vector<SymbolId>> childrenByParent;
@@ -88,6 +89,8 @@ private:
     std::unordered_map<PropertyQueryKey, std::vector<size_t>, PropertyQueryKeyHash> propertyQueryCache_;
 
     static bool literalIndexKey(const std::shared_ptr<Expr>& value, std::string& out);
+    static bool literalIndexHash(const std::shared_ptr<Expr>& value, std::size_t& out);
+    static std::size_t stableExprHash(const std::shared_ptr<Expr>& value);
     void ensureUnique();
     void indexFact(size_t index);
     void rememberTypeName(SymbolId id, const std::string& name);

@@ -73,6 +73,9 @@ enum class BuiltinId {
     DbTypes,
     DbFields,
     DbExists,
+    DbSelect,
+    DbMaterialize,
+    DbSync,
 
     JsonObject,
     JsonParse,

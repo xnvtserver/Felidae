@@ -1287,7 +1287,10 @@ std::string aggregateEvidenceResponse(const Json& args) {
     if (!evidence || evidence->kind != Json::Array) return "{\"error\":\"fact.aggregate_evidence expects evidence array\"}";
     double weighted = 0.0;
     double weights = 0.0;
+    double supportingWeight = 0.0;
+    double refutingWeight = 0.0;
     size_t used = 0;
+    std::vector<std::string> sources;
     for (const auto& item : evidence->items) {
         const Json* probability = field(item, "probability");
         if (!probability) probability = field(item, "confidence");
@@ -1296,15 +1299,32 @@ std::string aggregateEvidenceResponse(const Json& args) {
         if (weight < 0.0 || !std::isfinite(weight)) continue;
         weighted += clamp01(probability->number) * weight;
         weights += weight;
+        if (clamp01(probability->number) >= 0.5) supportingWeight += weight;
+        else refutingWeight += weight;
+        const std::string source = stringField(item, "source");
+        if (!source.empty()) sources.push_back(source);
         ++used;
     }
     const double confidence = weights <= 0.0 ? 0.0 : weighted / weights;
     std::ostringstream out;
-    out << "{\"probability\":" << confidence
+    const bool contradictory = supportingWeight > 0.0 && refutingWeight > 0.0;
+    out << "{\"__type\":\"DerivationResult\""
+        << ",\"exact\":false"
+        << ",\"proof_status\":\"evidence_only\""
+        << ",\"probability\":" << confidence
         << ",\"confidence\":" << confidence
         << ",\"evidence_count\":" << used
+        << ",\"supporting_weight\":" << supportingWeight
+        << ",\"refuting_weight\":" << refutingWeight
+        << ",\"contradictory\":" << (contradictory ? "true" : "false")
         << ",\"method\":\"weighted_average\""
-        << ",\"decision\":\"" << (confidence >= 0.5 ? "likely" : "unlikely") << "\"}";
+        << ",\"decision\":\"" << (confidence >= 0.5 ? "likely" : "unlikely") << "\""
+        << ",\"evidence_sources\":[";
+    for (size_t i = 0; i < sources.size(); ++i) {
+        if (i) out << ",";
+        out << q(sources[i]);
+    }
+    out << "]}";
     return out.str();
 }
 

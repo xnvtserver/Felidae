@@ -25,6 +25,30 @@ std::string lowerText(std::string text) {
 
 } // namespace
 
+NativeCapabilities nativeCapabilitiesFor(const std::string& moduleName,
+                                         const std::string& functionName) {
+    (void)functionName;
+    NativeCapabilities capabilities;
+    capabilities.threadSafe = true;
+    if (moduleName == "fact" || moduleName == "fact_analysis") {
+        capabilities.needsFactSnapshot = true;
+    } else if (moduleName == "wordnet") {
+        // The WordNet native package builds its lexical graph from Felidae
+        // facts. Send only its declared graph records, not an unrelated
+        // application-wide snapshot.
+        capabilities.needsFactSnapshot = true;
+        capabilities.pure = true;
+        capabilities.requestedFactTypes = {
+            "Synset", "Lemma", "Sense", "Gloss", "Example", "Hypernym",
+            "SimilarTo", "Antonym", "MorphException", "ConceptFrequency"};
+    } else if (moduleName == "set" || moduleName == "group" ||
+               moduleName == "csv") {
+        capabilities.pure = true;
+        capabilities.supportsBatch = moduleName == "set" || moduleName == "group";
+    }
+    return capabilities;
+}
+
 std::vector<std::string> nativeLibraryFileNames(const std::string& moduleName) {
 #if defined(_WIN32)
     return {moduleName + ".dll", "felidae_" + moduleName + ".dll"};

@@ -45,11 +45,11 @@ Set.disjoint(sets: array) =>
 Set.disjointBy(sets: array, fields: array) =>
     return (system_library_loader(module: "set", function: "disjoint", args: {sets: sets, fields: fields}))
 
-Set.cardinality(set: array) =>
+Set.cardinality(set: any) =>
     return (system_library_loader(module: "set", function: "cardinality", args: {sets: [set]}))
 
-Set.contains(set: array, value: any) =>
+Set.contains(set: any, value: any) =>
     return (system_library_loader(module: "set", function: "contains", args: {sets: [set], value: value, fields: []}))
 
-Set.containsBy(set: array, value: any, fields: array) =>
+Set.containsBy(set: any, value: any, fields: array) =>
     return (system_library_loader(module: "set", function: "contains", args: {sets: [set], value: value, fields: fields}))
