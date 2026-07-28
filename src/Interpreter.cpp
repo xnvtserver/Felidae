@@ -3779,6 +3779,70 @@ bool Interpreter::evalCallAsValueOnce(
         return true;
     }
 
+    if (builtin == BuiltinId::SystemPrintf) {
+        if (args.size() != 1) throw InterpreterError("system.printf expects one format string");
+        const auto format = std::dynamic_pointer_cast<StringExpr>(args.front());
+        if (!format) throw InterpreterError("system.printf expects a string format");
+
+        auto placeholderValue = [&](std::string name) -> std::shared_ptr<Expr> {
+            const auto begin = name.find_first_not_of(" \t");
+            const auto end = name.find_last_not_of(" \t");
+            if (begin == std::string::npos) {
+                throw InterpreterError("system.printf does not allow an empty placeholder");
+            }
+            name = name.substr(begin, end - begin + 1);
+            std::shared_ptr<Expr> value;
+            const size_t separator = name.find('.');
+            const std::string root = name.substr(0, separator);
+            if (!evalExprValue(std::make_shared<VarExpr>(root), env, value)) {
+                throw InterpreterError("system.printf cannot resolve '{" + name + "}'");
+            }
+            size_t fieldStart = separator;
+            while (fieldStart != std::string::npos) {
+                const size_t next = name.find('.', fieldStart + 1);
+                const std::string field = name.substr(fieldStart + 1, next - fieldStart - 1);
+                if (field.empty()) throw InterpreterError("system.printf has an invalid placeholder '{" + name + "}'");
+                value = findMapValue(value, field);
+                if (!value) throw InterpreterError("system.printf cannot resolve '{" + name + "}'");
+                value = resolveExpr(value, env);
+                fieldStart = next;
+            }
+            return value;
+        };
+
+        std::ostringstream rendered;
+        for (size_t index = 0; index < format->value.size(); ++index) {
+            const char current = format->value[index];
+            if (current == '{') {
+                if (index + 1 < format->value.size() && format->value[index + 1] == '{') {
+                    rendered << '{';
+                    ++index;
+                    continue;
+                }
+                const size_t close = format->value.find('}', index + 1);
+                if (close == std::string::npos) throw InterpreterError("system.printf has an unmatched '{'");
+                const auto value = placeholderValue(format->value.substr(index + 1, close - index - 1));
+                if (const auto text = std::dynamic_pointer_cast<StringExpr>(value)) rendered << text->value;
+                else rendered << valueToString(value);
+                index = close;
+                continue;
+            }
+            if (current == '}') {
+                if (index + 1 < format->value.size() && format->value[index + 1] == '}') {
+                    rendered << '}';
+                    ++index;
+                    continue;
+                }
+                throw InterpreterError("system.printf has an unmatched '}'");
+            }
+            rendered << current;
+        }
+        std::cout << rendered.str();
+        std::cout.flush();
+        out = std::make_shared<StringExpr>("ok");
+        return true;
+    }
+
     if (builtin == BuiltinId::StrConcat) {
         std::string left = requireNamedString({"left", "data", "value"}, 0, "left");
         std::string right = requireNamedString({"right", "rhs"}, 1, "right");

@@ -49,6 +49,7 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::ConsoleWriteLine, "console:writeLine", BuiltinEffect::WritesExternalState},
         {BuiltinId::ConsoleWrite, "console:write", BuiltinEffect::WritesExternalState},
         {BuiltinId::SystemPrint, "system:print", BuiltinEffect::WritesExternalState},
+        {BuiltinId::SystemPrintf, "system:printf", BuiltinEffect::WritesExternalState},
         {BuiltinId::FileReadFile, "file:readFile", BuiltinEffect::ReadsExternalState},
         {BuiltinId::FileReadLines, "file:readLines", BuiltinEffect::ReadsExternalState},
         {BuiltinId::FileReadLine, "file:readLine", BuiltinEffect::ReadsExternalState},

@@ -57,6 +57,23 @@ LoanPolicy.compareMembership(context: Fact) =>
                 evidence: context.membership
             }
 
+# Presentation is intentionally separate from reasoning. The comparison still
+# retains complete evidence and provenance, while the example prints a report
+# a person can read without parsing one large nested value.
+PrintDecision(decision: any) =>
+    applicantLine := str.concat(left: "Applicant: ", right: decision.source.name)
+    stateLine := str.concat(left: "Decision: ", right: decision.state)
+    system.print(value: applicantLine)
+    system.print(value: stateLine)
+    if decision.state == "unresolved" then
+        reasonLine := str.concat(left: "Reason: ", right: decision.reason)
+        system.print(value: reasonLine)
+        return decision.state
+    else
+        ruleLine := str.concat(left: "Rule: ", right: decision.rule)
+        system.print(value: ruleLine)
+        return decision.state
+
 main() =>
     ava := Applicant(id: "ava", name: "Ava", creditScore: 782, monthlyIncome: 6200, employment: "stable")
     mira := Applicant(id: "mira", name: "Mira", creditScore: 801, monthlyIncome: 6800, employment: "stable")
@@ -73,4 +90,8 @@ main() =>
     approved := Relation.compare(left: ava, right: policy)
     incomplete := Relation.compare(left: mira, right: policy)
     declined := Relation.compare(left: arun, right: policy)
-    return {approved: approved, incomplete: incomplete, declined: declined}
+    system.print(value: "=== Loan policy decision report ===")
+    PrintDecision(decision: approved)
+    PrintDecision(decision: incomplete)
+    PrintDecision(decision: declined)
+    return "decision report complete"

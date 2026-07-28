@@ -571,6 +571,8 @@ factText := csv.toFelidaeFacts(data: filteredRows, type: "School")
 file.writeFile(path: "converted_csv_school.fx", data: factText, mode: "write")
 console.writeLine(value: "hello")
 system.print(value: "hello")
+name := "Felidae"
+system.printf("Hello {name}\n")
 math.sqrt(value: 81)
 math.pow(base: 2, exponent: 8)
 probability.mean(data: [2, 4, 6, 8])

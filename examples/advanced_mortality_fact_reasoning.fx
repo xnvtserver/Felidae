@@ -54,6 +54,38 @@ else
         rule: "insufficient_fact_similarity_to_proven_mortal"
     )
 
+# Print labelled primitive values and paths rather than returning one large
+# serialized analysis map. No string concatenation is needed for this style.
+PrintAncestryProof(proof: any) =>
+    system.print(value: "--- Ancestry proof ---")
+    system.print(value: "Subject")
+    system.print(value: proof.subject)
+    system.print(value: "Mortal")
+    system.print(value: proof.mortal)
+    system.print(value: "Rule")
+    system.print(value: proof.rule)
+    system.print(value: "Declared ancestry path")
+    system.print(value: proof.path.path)
+    system.print(value: "Inherited mortality")
+    system.print(value: proof.inheritedMortality)
+    return proof.mortal
+
+PrintSimilarityProof(proof: any) =>
+    system.print(value: "--- Similarity proof ---")
+    system.print(value: "Subject")
+    system.print(value: proof.subject)
+    system.print(value: "Exemplar")
+    system.print(value: proof.exemplar)
+    system.print(value: "Mortal")
+    system.print(value: proof.mortal)
+    system.print(value: "Property similarity score")
+    system.print(value: proof.comparison.score)
+    system.print(value: "Hierarchy similarity score")
+    system.print(value: proof.graphSimilarity.score)
+    system.print(value: "Lowest common ancestor")
+    system.print(value: proof.graphSimilarity.lowest_common_ancestor)
+    return proof.mortal
+
 main() =>
     livingThings := lambda(LivingThing, item => item.domain == "being")
     mortalBeings := lambda(MortalBeing, item => item.lifeCycle == "finite")
@@ -81,23 +113,26 @@ main() =>
     socratesRamComparison := fact.compareFacts(fact1: socrates, fact2: ram, facts: corpus)
     socratesRamLca := fact.commonAncestor(fact1: socrates, fact2: ram, facts: corpus)
     socratesRamPath := fact.shortestPath(fact1: socrates, fact2: ram, facts: corpus)
-    inheritedFields := {
-        socratesMortality: socrates.mortality,
-        ramMortality: ram.mortality,
-        socratesSpecies: socrates.species,
-        ramSpecies: ram.species
-    }
-
-    return (
-        socratesProof: socratesProof,
-        ramProof: ramProof,
-        statueComparison: statueComparison,
-        statueGraphSimilarity: statueGraphSimilarity,
-        manToHuman: manToHuman,
-        socratesToMan: socratesToMan,
-        ramToMan: ramToMan,
-        inheritedFields: inheritedFields,
-        socratesRamComparison: socratesRamComparison,
-        socratesRamLowestCommonAncestor: socratesRamLca,
-        socratesRamPath: socratesRamPath
-    )
+    system.print(value: "=== Mortality reasoning report ===")
+    PrintAncestryProof(proof: socratesProof)
+    PrintSimilarityProof(proof: ramProof)
+    system.print(value: "--- Negative comparison ---")
+    system.print(value: "Statue to Socrates property score")
+    system.print(value: statueComparison.score)
+    system.print(value: "Statue to Socrates hierarchy score")
+    system.print(value: statueGraphSimilarity.score)
+    system.print(value: "--- Declared relationships ---")
+    system.print(value: "Human -> Man")
+    system.print(value: manToHuman.matched)
+    system.print(value: "Man -> Socrates")
+    system.print(value: socratesToMan.matched)
+    system.print(value: "Man -> Ram")
+    system.print(value: ramToMan.matched)
+    system.print(value: "--- Shared hierarchy ---")
+    system.print(value: "Socrates and Ram common ancestor")
+    system.print(value: socratesRamLca.ancestor_type)
+    system.print(value: "Socrates to Ram path")
+    system.print(value: socratesRamPath.path)
+    system.print(value: "Socrates and Ram property score")
+    system.print(value: socratesRamComparison.score)
+    return "mortality report complete"
