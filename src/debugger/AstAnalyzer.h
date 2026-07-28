@@ -2,6 +2,7 @@
 
 #include "AST.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -12,6 +13,27 @@ struct AstDiagnostic {
     std::string message;
     int line = 1;
     int column = 1;
+    int endLine = 1;
+    int endColumn = 1;
+    std::string code;
+    std::string file;
+};
+
+class AstAnalysisSession {
+public:
+    AstAnalysisSession();
+    ~AstAnalysisSession();
+    AstAnalysisSession(AstAnalysisSession&&) noexcept;
+    AstAnalysisSession& operator=(AstAnalysisSession&&) noexcept;
+    AstAnalysisSession(const AstAnalysisSession&) = delete;
+    AstAnalysisSession& operator=(const AstAnalysisSession&) = delete;
+
+    void consume(const std::shared_ptr<Statement>& statement);
+    std::vector<AstDiagnostic> finish();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 std::vector<AstDiagnostic> analyzeProgramAst(const Program& program);

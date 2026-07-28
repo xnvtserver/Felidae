@@ -47,6 +47,7 @@ public:
     std::shared_ptr<Expr> callAutoEntry();
     std::string valueToString(const std::shared_ptr<Expr>& value) const;
     std::string runtimeMetricsJson() const;
+    std::size_t syncFactSource(const std::filesystem::path& file);
 
 private:
     struct ThreadTask {
@@ -89,6 +90,7 @@ private:
     std::list<std::string> solveCacheRecency_;
     std::size_t solveCacheBytes_ = 0;
     mutable std::unordered_map<const ClauseStmt*, MethodRuntimeInfo> methodRuntimeCache_;
+    mutable std::unordered_map<std::string, ClauseList*> clauseLookupCache_;
     std::set<std::filesystem::path> loadedFiles_;
     std::unordered_set<std::string> packageDiscoveryAttempts_;
     std::unordered_map<const ClauseStmt*, std::filesystem::path> clauseOrigins_;
@@ -106,6 +108,8 @@ private:
     bool pendingCacheInvalidation_ = false;
     bool strictValueFailures_ = false;
     bool valueCallMode_ = false;
+    size_t valueCallTrampolineDepth_ = 0;
+    size_t methodCallDepth_ = 0;
     std::vector<std::shared_ptr<Expr>> pipelineResults_;
     std::size_t clauseAttempts_ = 0;
     std::size_t unificationAttempts_ = 0;
@@ -113,6 +117,13 @@ private:
     std::size_t solutionMaterializations_ = 0;
     std::size_t standardizedClauses_ = 0;
     std::size_t moduleLoads_ = 0;
+    std::size_t nativeCalls_ = 0;
+    std::size_t nativeFactSnapshotCalls_ = 0;
+    std::size_t nativeRequestBytes_ = 0;
+    std::size_t nativeFactSnapshotBytes_ = 0;
+    std::size_t nativeSerializationMicros_ = 0;
+    mutable std::size_t dispatchCacheHits_ = 0;
+    mutable std::size_t dispatchCacheMisses_ = 0;
 
     void solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals,
                         Env env,
@@ -145,6 +156,7 @@ private:
     bool solveNativeCall(const Call& call, Env& env);
     bool evalBuiltinTerm(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
     bool evalCallAsValue(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
+    bool evalCallAsValueOnce(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
     bool evalPipelineExpr(const PipelineExpr& pipeline, const Env& env, std::shared_ptr<Expr>& out);
     bool evalExprValue(const std::shared_ptr<Expr>& expr, const Env& env, std::shared_ptr<Expr>& out);
     bool compareResolved(const std::shared_ptr<Expr>& left,
@@ -189,6 +201,7 @@ private:
     std::vector<MethodParamPlan> buildMethodParamPlan(const ClauseStmt& clause) const;
     const std::vector<MethodParamPlan>* hotMethodParamPlan(const std::shared_ptr<ClauseStmt>& clause);
     std::shared_ptr<MapExpr> factToMap(const ClauseStmt& clause, const std::string& parentType);
+    std::shared_ptr<ArrayExpr> materializeFactSelection(const std::shared_ptr<Expr>& selection);
     std::vector<std::shared_ptr<Expr>> valuesForLambdaSource(const std::shared_ptr<Expr>& source, const Env& env);
 
     bool ensurePredicateLoaded(const std::string& predicate);

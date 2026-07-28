@@ -1,17 +1,18 @@
 param(
-    [int[]] $Counts = @(10000, 100000),
-    [switch] $IncludeMillion,
-    [int] $RepeatedQueries = 20
+    [int[]] $Counts = @(10000, 100000, 1000000),
+    [int] $RepeatedQueries = 20,
+    [string] $Exe = "",
+    [string] $DebugExe = "",
+    [string] $CelidaeExe = ""
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$exe = Join-Path $root "build\felidae.exe"
+$exe = if ($Exe) { $Exe } else { Join-Path $root "build\felidae.exe" }
+$debugExe = if ($DebugExe) { $DebugExe } else { Join-Path $root "build\felidae_debug.exe" }
+$celidaeExe = if ($CelidaeExe) { $CelidaeExe } else { Join-Path $root "build\celidae.exe" }
 if (-not (Test-Path -LiteralPath $exe)) {
     throw "Missing $exe. Run .\build.cmd --configuration production first."
-}
-if ($IncludeMillion -and $Counts -notcontains 1000000) {
-    $Counts += 1000000
 }
 
 function New-LargeFactProgram {
@@ -83,11 +84,56 @@ function Invoke-MeasuredQuery {
     }
 }
 
+function Invoke-MeasuredTool {
+    param(
+        [string] $Executable,
+        [string[]] $Arguments
+    )
+    if (-not (Test-Path -LiteralPath $Executable)) {
+        return [pscustomobject]@{ TotalMs = [double]::NaN; PeakMb = [double]::NaN }
+    }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo.FileName = $Executable
+    $process.StartInfo.WorkingDirectory = $root
+    $process.StartInfo.Arguments = ($Arguments | ForEach-Object {
+        '"' + ($_ -replace '"', '\"') + '"'
+    }) -join " "
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.RedirectStandardOutput = $true
+    $process.StartInfo.RedirectStandardError = $true
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    [void] $process.Start()
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $peak = 0L
+    while (-not $process.HasExited) {
+        $process.Refresh()
+        if ($process.WorkingSet64 -gt $peak) { $peak = $process.WorkingSet64 }
+        if ($timer.Elapsed.TotalSeconds -ge 180) {
+            try { $process.Kill() } catch {}
+            throw "Tool exceeded the 180 second scalability timeout."
+        }
+        Start-Sleep -Milliseconds 5
+    }
+    [void] $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+    $timer.Stop()
+    if ($process.ExitCode -ne 0) {
+        throw "Tool failed with exit code $($process.ExitCode): $stderr"
+    }
+    [pscustomobject]@{
+        TotalMs = $timer.Elapsed.TotalMilliseconds
+        PeakMb = $peak / 1MB
+    }
+}
+
 $results = foreach ($count in ($Counts | Sort-Object -Unique)) {
     $program = New-LargeFactProgram -Count $count
     try {
         $query = "? LargeFact(id: $($count - 1), group: group)"
         $measurement = Invoke-MeasuredQuery -Program $program -Query $query -Repeat $RepeatedQueries
+        $debugMeasurement = Invoke-MeasuredTool -Executable $debugExe -Arguments @($program, "--check-json")
+        $celidaeMeasurement = Invoke-MeasuredTool -Executable $celidaeExe -Arguments @($program, "--json")
         [pscustomobject]@{
             Facts = $count
             LoadMs = $measurement.LoadMs
@@ -96,21 +142,29 @@ $results = foreach ($count in ($Counts | Sort-Object -Unique)) {
             FactCandidates = $measurement.FactCandidates
             EnvCopies = $measurement.EnvCopies
             Unifications = $measurement.Unifications
+            DebugMs = $debugMeasurement.TotalMs
+            DebugPeakMb = $debugMeasurement.PeakMb
+            CelidaeMs = $celidaeMeasurement.TotalMs
+            CelidaePeakMb = $celidaeMeasurement.PeakMb
         }
     } finally {
         Remove-Item -LiteralPath $program -Force -ErrorAction SilentlyContinue
     }
 }
 
-"| Facts | Load | First query | Repeated query avg | Fact candidates | Env copies | Unifications |"
-"|---:|---:|---:|---:|---:|---:|---:|"
+"| Facts | Load | First query | Repeated query avg | Fact candidates | Env copies | Unifications | Debugger | Debug RAM | Celidae | Celidae RAM |"
+"|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
 foreach ($result in $results) {
-    "| {0:N0} | `{1:N2} ms` | `{2:N3} ms` | `{3:N3} ms` | `{4:N0}` | `{5:N0}` | `{6:N0}` |" -f `
+    "| {0:N0} | `{1:N2} ms` | `{2:N3} ms` | `{3:N3} ms` | `{4:N0}` | `{5:N0}` | `{6:N0}` | `{7:N2} ms` | `{8:N2} MB` | `{9:N2} ms` | `{10:N2} MB` |" -f `
         $result.Facts,
         $result.LoadMs,
         $result.FirstQueryMs,
         $result.QueryAvgMs,
         $result.FactCandidates,
         $result.EnvCopies,
-        $result.Unifications
+        $result.Unifications,
+        $result.DebugMs,
+        $result.DebugPeakMb,
+        $result.CelidaeMs,
+        $result.CelidaePeakMb
 }

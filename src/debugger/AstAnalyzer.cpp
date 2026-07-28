@@ -2,9 +2,11 @@
 #include "Symbol.h"
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <set>
 #include <sstream>
+#include <unordered_set>
 
 namespace Felidae {
 
@@ -207,81 +209,116 @@ void collectDiscardedExpressions(const std::vector<std::shared_ptr<Goal>>& goals
 
 } // namespace
 
-std::vector<AstDiagnostic> analyzeProgramAst(const Program& program) {
+struct AstAnalysisSession::Impl {
     std::vector<AstDiagnostic> diagnostics;
     std::map<std::string, size_t> methodDefinitions;
     std::map<std::string, size_t> factDefinitions;
     std::set<std::string> globals;
     std::set<std::string> calls;
-    std::set<std::string> factSignatures;
+    std::unordered_set<std::size_t> factSignatureHashes;
+};
 
-    for (const auto& stmt : program.statements) {
-        if (auto binding = std::dynamic_pointer_cast<GlobalBindingStmt>(stmt)) {
-            globals.insert(binding->name);
-        }
+AstAnalysisSession::AstAnalysisSession() : impl_(std::make_unique<Impl>()) {}
+AstAnalysisSession::~AstAnalysisSession() = default;
+AstAnalysisSession::AstAnalysisSession(AstAnalysisSession&&) noexcept = default;
+AstAnalysisSession& AstAnalysisSession::operator=(AstAnalysisSession&&) noexcept = default;
+
+void AstAnalysisSession::consume(const std::shared_ptr<Statement>& stmt) {
+    if (auto binding = std::dynamic_pointer_cast<GlobalBindingStmt>(stmt)) {
+        impl_->globals.insert(binding->name);
+        std::set<std::string> vars;
+        collectExprUses(binding->expr, vars, impl_->calls);
+        return;
     }
 
-    for (const auto& stmt : program.statements) {
-        if (auto binding = std::dynamic_pointer_cast<GlobalBindingStmt>(stmt)) {
-            std::set<std::string> vars;
-            collectExprUses(binding->expr, vars, calls);
-            continue;
-        }
-        auto clause = std::dynamic_pointer_cast<ClauseStmt>(stmt);
-        if (!clause) continue;
+    auto clause = std::dynamic_pointer_cast<ClauseStmt>(stmt);
+    if (!clause) return;
 
-        if (clause->isFact()) {
-            factDefinitions[clause->head.name]++;
-            const auto signature = factSignature(*clause);
-            if (!factSignatures.insert(signature).second) {
-                warn(diagnostics, "Duplicate fact declaration for '" + clause->head.name + "'.");
+    if (clause->isFact()) {
+        impl_->factDefinitions[clause->head.name]++;
+        const std::size_t signatureHash =
+            std::hash<std::string>{}(factSignature(*clause));
+        if (!impl_->factSignatureHashes.insert(signatureHash).second) {
+            warn(
+                impl_->diagnostics,
+                "Duplicate fact declaration for '" + clause->head.name + "'.");
+        }
+        return;
+    }
+
+    impl_->methodDefinitions[clause->head.name]++;
+    collectGlobalAssignmentCollisions(
+        clause->body, impl_->globals, impl_->diagnostics);
+    collectDiscardedExpressions(
+        clause->body, clause->head.name, impl_->diagnostics);
+    for (const auto& branch : clause->fallbackBranches) {
+        collectGlobalAssignmentCollisions(
+            branch, impl_->globals, impl_->diagnostics);
+        collectDiscardedExpressions(
+            branch, clause->head.name, impl_->diagnostics);
+    }
+    std::set<std::string> declared;
+    std::set<std::string> used;
+    for (const auto& arg : clause->head.args) {
+        if (!arg.name.empty()) declared.insert(arg.name);
+        if (auto var = std::dynamic_pointer_cast<VarExpr>(arg.value)) {
+            if (!isIgnoredName(var->name) && !isLikelyTypeName(var->name)) {
+                declared.insert(var->name);
             }
-            continue;
         }
+    }
+    collectAssignedNames(clause->body, declared);
+    for (const auto& branch : clause->fallbackBranches) {
+        collectAssignedNames(branch, declared);
+    }
+    for (const auto& goal : clause->body) {
+        collectGoalUses(goal, used, impl_->calls);
+    }
+    for (const auto& branch : clause->fallbackBranches) {
+        for (const auto& goal : branch) {
+            collectGoalUses(goal, used, impl_->calls);
+        }
+    }
+    for (const auto& name : declared) {
+        if (!used.count(name)) {
+            warn(
+                impl_->diagnostics,
+                "Variable '" + name + "' is declared but never used in method '" +
+                    clause->head.name + "'.");
+        }
+    }
+}
 
-        methodDefinitions[clause->head.name]++;
-        collectGlobalAssignmentCollisions(clause->body, globals, diagnostics);
-        collectDiscardedExpressions(clause->body, clause->head.name, diagnostics);
-        for (const auto& branch : clause->fallbackBranches) {
-            collectGlobalAssignmentCollisions(branch, globals, diagnostics);
-            collectDiscardedExpressions(branch, clause->head.name, diagnostics);
-        }
-        std::set<std::string> declared;
-        std::set<std::string> used;
-        for (const auto& arg : clause->head.args) {
-            if (!arg.name.empty()) declared.insert(arg.name);
-            if (auto var = std::dynamic_pointer_cast<VarExpr>(arg.value)) {
-                if (!isIgnoredName(var->name) && !isLikelyTypeName(var->name)) declared.insert(var->name);
-            }
-        }
-        collectAssignedNames(clause->body, declared);
-        for (const auto& branch : clause->fallbackBranches) collectAssignedNames(branch, declared);
-        for (const auto& goal : clause->body) collectGoalUses(goal, used, calls);
-        for (const auto& branch : clause->fallbackBranches) {
-            for (const auto& goal : branch) collectGoalUses(goal, used, calls);
-        }
-        for (const auto& name : declared) {
-            if (!used.count(name)) warn(diagnostics, "Variable '" + name + "' is declared but never used in method '" + clause->head.name + "'.");
+std::vector<AstDiagnostic> AstAnalysisSession::finish() {
+    for (const auto& item : impl_->methodDefinitions) {
+        if (item.first != "main" && !impl_->calls.count(item.first)) {
+            warn(
+                impl_->diagnostics,
+                "Method '" + item.first + "' is defined but not called in this file.");
         }
     }
+    for (const auto& item : impl_->globals) {
+        if (!impl_->calls.count(item)) {
+            warn(
+                impl_->diagnostics,
+                "Global '" + item + "' is defined but not referenced in this file.");
+        }
+    }
+    for (const auto& item : impl_->factDefinitions) {
+        if (!impl_->calls.count(item.first)) {
+            warn(
+                impl_->diagnostics,
+                "Fact type '" + item.first +
+                    "' is declared but not referenced in this file.");
+        }
+    }
+    return std::move(impl_->diagnostics);
+}
 
-    for (const auto& item : methodDefinitions) {
-        if (item.first != "main" && !calls.count(item.first)) {
-            warn(diagnostics, "Method '" + item.first + "' is defined but not called in this file.");
-        }
-    }
-    for (const auto& item : globals) {
-        if (!calls.count(item)) {
-            warn(diagnostics, "Global '" + item + "' is defined but not referenced in this file.");
-        }
-    }
-    for (const auto& item : factDefinitions) {
-        if (!calls.count(item.first)) {
-            warn(diagnostics, "Fact type '" + item.first + "' is declared but not referenced in this file.");
-        }
-    }
-
-    return diagnostics;
+std::vector<AstDiagnostic> analyzeProgramAst(const Program& program) {
+    AstAnalysisSession session;
+    for (const auto& statement : program.statements) session.consume(statement);
+    return session.finish();
 }
 
 } // namespace Felidae

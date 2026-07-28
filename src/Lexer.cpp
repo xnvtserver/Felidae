@@ -94,17 +94,21 @@ Token Lexer::readIdentifier() {
     if (simpleBuiltinId != BuiltinId::Unknown) {
         return Token{TokenType::BuiltinFunction, text, startLine, startCol, simpleBuiltinId};
     }
-    if (text == "import") return Token{TokenType::Import, text, startLine, startCol};
-    if (text == "then") return Token{TokenType::Then, text, startLine, startCol};
-    if (text == "if") return Token{TokenType::If, text, startLine, startCol};
-    if (text == "else") return Token{TokenType::Else, text, startLine, startCol};
-    if (text == "return") return Token{TokenType::Return, text, startLine, startCol};
-    if (text == "where") return Token{TokenType::Where, text, startLine, startCol};
-    if (text == "extend") return Token{TokenType::Extend, text, startLine, startCol};
-    if (text == "lambda") return Token{TokenType::Lambda, text, startLine, startCol};
-    if (text == "true") return Token{TokenType::True, text, startLine, startCol};
-    if (text == "false") return Token{TokenType::False, text, startLine, startCol};
-    if (text == "nil") return Token{TokenType::Nil, text, startLine, startCol};
+    // Fixed language words are entirely represented by TokenType.  Retaining
+    // their spelling in every token adds allocations/copies without helping
+    // parsing or runtime dispatch; only user identifiers and literals keep
+    // source text.
+    if (text == "import") return Token{TokenType::Import, {}, startLine, startCol};
+    if (text == "then") return Token{TokenType::Then, {}, startLine, startCol};
+    if (text == "if") return Token{TokenType::If, {}, startLine, startCol};
+    if (text == "else") return Token{TokenType::Else, {}, startLine, startCol};
+    if (text == "return") return Token{TokenType::Return, {}, startLine, startCol};
+    if (text == "where") return Token{TokenType::Where, {}, startLine, startCol};
+    if (text == "extend") return Token{TokenType::Extend, {}, startLine, startCol};
+    if (text == "lambda") return Token{TokenType::Lambda, {}, startLine, startCol};
+    if (text == "true") return Token{TokenType::True, {}, startLine, startCol};
+    if (text == "false") return Token{TokenType::False, {}, startLine, startCol};
+    if (text == "nil") return Token{TokenType::Nil, {}, startLine, startCol};
     return Token{TokenType::Ident, text, startLine, startCol, BuiltinId::Unknown, languageTypeIdForName(text)};
 }
 
@@ -196,7 +200,7 @@ Token Lexer::nextToken() {
 
         advance();
         TokenType type = TokenType::End;
-        std::string text(1, c);
+        std::string text;
         switch (c) {
             case '(':
                 type = TokenType::LParen;
@@ -224,8 +228,8 @@ Token Lexer::nextToken() {
                 break;
             case ',': type = TokenType::Comma; break;
             case ':':
-                if (match('=')) { type = TokenType::Bind; text = ":="; }
-                else if (match(':')) { type = TokenType::DoubleColon; text = "::"; }
+                if (match('=')) { type = TokenType::Bind; }
+                else if (match(':')) { type = TokenType::DoubleColon; }
                 else type = TokenType::Colon;
                 break;
             case '+': type = TokenType::Plus; break;
@@ -236,20 +240,20 @@ Token Lexer::nextToken() {
             case '|': type = TokenType::Pipe; break;
             case '?': type = TokenType::Question; break;
             case '=':
-                if (match('>')) { type = TokenType::Arrow; text = "=>"; }
-                else if (match('=')) { type = TokenType::EqEq; text = "=="; }
+                if (match('>')) { type = TokenType::Arrow; }
+                else if (match('=')) { type = TokenType::EqEq; }
                 else throw LexerError("Unexpected '='. Did you mean '=>' or '=='?");
                 break;
             case '!':
-                if (match('=')) { type = TokenType::NotEq; text = "!="; }
+                if (match('=')) { type = TokenType::NotEq; }
                 else throw LexerError("Unexpected '!'. Did you mean '!='?");
                 break;
             case '<':
-                if (match('=')) { type = TokenType::LTE; text = "<="; }
+                if (match('=')) { type = TokenType::LTE; }
                 else type = TokenType::LT;
                 break;
             case '>':
-                if (match('=')) { type = TokenType::GTE; text = ">="; }
+                if (match('=')) { type = TokenType::GTE; }
                 else type = TokenType::GT;
                 break;
             default: {

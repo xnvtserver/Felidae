@@ -8,6 +8,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <tuple>
 #include <unordered_map>
 
 namespace Felidae::Celidae {
@@ -143,100 +144,146 @@ std::string scriptSafeJson(std::string json) {
 
 } // namespace
 
-std::string graphJson(const Program& program,
-                      const std::vector<std::string>& unresolvedImports) {
-    GraphWriter graph;
+struct SchemaGraphAccumulator::Impl {
     std::map<std::string, FactProfile> facts;
     std::set<std::string> methods;
     std::set<std::string> globals;
     std::set<std::string> imports;
+    std::set<std::tuple<std::string, std::string, std::string>> references;
+};
 
-    for (const auto& import : program.imports) {
-        imports.insert(import->paths.begin(), import->paths.end());
+SchemaGraphAccumulator::SchemaGraphAccumulator() : impl_(std::make_unique<Impl>()) {}
+SchemaGraphAccumulator::~SchemaGraphAccumulator() = default;
+SchemaGraphAccumulator::SchemaGraphAccumulator(SchemaGraphAccumulator&&) noexcept = default;
+SchemaGraphAccumulator& SchemaGraphAccumulator::operator=(SchemaGraphAccumulator&&) noexcept = default;
+
+void SchemaGraphAccumulator::consume(const std::shared_ptr<Statement>& statement) {
+    if (!statement) return;
+    if (auto import = std::dynamic_pointer_cast<ImportStmt>(statement)) {
+        impl_->imports.insert(import->paths.begin(), import->paths.end());
+        return;
     }
-    for (const auto& global : program.globals) globals.insert(global->name);
-    for (const auto& clause : program.clauses) {
-        if (clause->isFact()) {
-            auto& profile = facts[clause->head.name];
-            profile.records++;
-            std::set<std::string> fieldsInRecord;
-            for (const auto& arg : clause->head.args) {
-                if (!arg.name.empty()) fieldsInRecord.insert(arg.name);
-            }
-            for (const auto& field : fieldsInRecord) profile.fields[field]++;
-            if (!clause->parentName.empty()) facts.try_emplace(clause->parentName);
-        } else {
-            methods.insert(clause->head.name);
+    if (auto global = std::dynamic_pointer_cast<GlobalBindingStmt>(statement)) {
+        impl_->globals.insert(global->name);
+        visitExpr(global->expr, [&](const std::string& called) {
+            impl_->references.emplace("global:" + global->name, called, "references");
+        });
+        return;
+    }
+    auto clause = std::dynamic_pointer_cast<ClauseStmt>(statement);
+    if (!clause) return;
+    if (clause->isFact()) {
+        auto& profile = impl_->facts[clause->head.name];
+        ++profile.records;
+        std::set<std::string> fieldsInRecord;
+        for (const auto& argument : clause->head.args) {
+            if (!argument.name.empty()) fieldsInRecord.insert(argument.name);
         }
+        for (const auto& field : fieldsInRecord) ++profile.fields[field];
+        if (!clause->parentName.empty()) {
+            impl_->facts.try_emplace(clause->parentName);
+            impl_->references.emplace(
+                "fact:" + clause->head.name,
+                clause->parentName,
+                "extends");
+        }
+        return;
     }
 
+    impl_->methods.insert(clause->head.name);
+    auto recordCall = [&](const std::string& called) {
+        impl_->references.emplace("method:" + clause->head.name, called, "calls");
+    };
+    for (const auto& goal : clause->body) visitGoal(goal, recordCall);
+    for (const auto& branch : clause->fallbackBranches) {
+        for (const auto& goal : branch) visitGoal(goal, recordCall);
+    }
+}
+
+std::string SchemaGraphAccumulator::json(
+    DiagramType type,
+    const std::vector<std::string>& unresolvedImports) const {
+    GraphWriter graph;
+    const bool includeFields = type != DiagramType::Graph;
+    const bool includeExecution = type != DiagramType::Er;
     auto classify = [&](const std::string& name) {
-        if (methods.count(name)) return std::string("method");
-        if (facts.count(name)) return std::string("fact");
+        if (impl_->methods.count(name)) return std::string("method");
+        if (impl_->facts.count(name)) return std::string("fact");
         if (isBuiltinFunctionName(name)) return std::string("library");
-        return std::string("fact");
+        const auto separator = name.find(':');
+        if (separator != std::string::npos &&
+            impl_->imports.count(name.substr(0, separator))) {
+            return std::string("library");
+        }
+        return std::string("external");
     };
 
-    for (const auto& item : facts) {
+    for (const auto& item : impl_->facts) {
         std::ostringstream detail;
         detail << "records=" << item.second.records << " fields=" << item.second.fields.size();
         graph.node(nodeId("fact", item.first), item.first, "fact", detail.str());
+        if (!includeFields) continue;
         for (const auto& field : item.second.fields) {
             const std::string fieldName = item.first + "." + field.first;
             const std::size_t missing = item.second.records - field.second;
             const double coverage = item.second.records == 0
                 ? 0.0
-                : static_cast<double>(field.second) * 100.0 / static_cast<double>(item.second.records);
+                : static_cast<double>(field.second) * 100.0 /
+                    static_cast<double>(item.second.records);
             std::ostringstream fieldDetail;
             fieldDetail << "present=" << field.second << " missing=" << missing
-                        << " coverage=" << std::fixed << std::setprecision(1) << coverage << "%";
+                        << " coverage=" << std::fixed << std::setprecision(1)
+                        << coverage << "%";
             graph.node(nodeId("field", fieldName), field.first, "field", fieldDetail.str());
             graph.edge(nodeId("fact", item.first), nodeId("field", fieldName), "field");
         }
     }
-
-    for (const auto& method : methods) graph.node(nodeId("method", method), method, "method");
-    for (const auto& global : globals) graph.node(nodeId("global", global), global, "global");
-    for (const auto& import : imports) graph.node(nodeId("library", import), import, "library");
-    for (const auto& unresolved : unresolvedImports) {
-        graph.node(nodeId("library", unresolved), unresolved, "library", "source not resolved; may be native");
+    if (includeExecution) for (const auto& method : impl_->methods) {
+        graph.node(nodeId("method", method), method, "method");
+    }
+    if (includeExecution) for (const auto& global : impl_->globals) {
+        graph.node(nodeId("global", global), global, "global");
+    }
+    if (includeExecution) for (const auto& import : impl_->imports) {
+        graph.node(nodeId("library", import), import, "library");
+    }
+    if (includeExecution) for (const auto& unresolved : unresolvedImports) {
+        graph.node(
+            nodeId("library", unresolved),
+            unresolved,
+            "library",
+            "source not resolved; may be native");
     }
 
-    for (const auto& clause : program.clauses) {
-        if (clause->isFact()) {
-            if (!clause->parentName.empty()) {
-                graph.edge(
-                    nodeId("fact", clause->head.name),
-                    nodeId("fact", clause->parentName),
-                    "extends");
-            }
-            continue;
-        }
-
-        const std::string from = nodeId("method", clause->head.name);
-        auto addCall = [&](const std::string& name) {
-            const std::string kind = classify(name);
-            graph.node(nodeId(kind, name), name, kind);
-            graph.edge(from, nodeId(kind, name), "calls");
-        };
-        for (const auto& goal : clause->body) visitGoal(goal, addCall);
-        for (const auto& branch : clause->fallbackBranches) {
-            for (const auto& goal : branch) visitGoal(goal, addCall);
-        }
-    }
-
-    for (const auto& global : program.globals) {
-        visitExpr(global->expr, [&](const std::string& name) {
-            const std::string kind = classify(name);
-            graph.node(nodeId(kind, name), name, kind);
-            graph.edge(nodeId("global", global->name), nodeId(kind, name), "references");
-        });
+    for (const auto& reference : impl_->references) {
+        const std::string& from = std::get<0>(reference);
+        const std::string& targetName = std::get<1>(reference);
+        const std::string& label = std::get<2>(reference);
+        if (!includeExecution && label != "extends") continue;
+        const std::string kind = label == "extends" ? "fact" : classify(targetName);
+        graph.node(nodeId(kind, targetName), targetName, kind);
+        graph.edge(from, nodeId(kind, targetName), label);
     }
 
     std::ostringstream out;
-    out << "{\"nodes\":[" << graph.nodes.str()
+    const char* mode = type == DiagramType::Er ? "er" :
+        (type == DiagramType::Graph ? "graph" : "schema");
+    out << "{\"schemaVersion\":2,\"mode\":\"" << mode << "\",\"summary\":{"
+        << "\"factTypes\":" << impl_->facts.size() << ","
+        << "\"methods\":" << impl_->methods.size() << ","
+        << "\"globals\":" << impl_->globals.size() << "},"
+        << "\"nodes\":[" << graph.nodes.str()
         << "],\"edges\":[" << graph.edges.str() << "]}";
     return out.str();
+}
+
+std::string graphJson(const Program& program,
+                      const std::vector<std::string>& unresolvedImports) {
+    SchemaGraphAccumulator accumulator;
+    for (const auto& import : program.imports) accumulator.consume(import);
+    for (const auto& global : program.globals) accumulator.consume(global);
+    for (const auto& clause : program.clauses) accumulator.consume(clause);
+    return accumulator.json(DiagramType::Schema, unresolvedImports);
 }
 
 std::string graphJsonEnvelope(const std::string& json) {
