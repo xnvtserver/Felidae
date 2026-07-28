@@ -56,6 +56,7 @@ enum class BuiltinId {
     ConsoleWriteLine,
     ConsoleWrite,
     SystemPrint,
+    SystemPrintf,
 
     FileReadFile,
     FileReadLines,

@@ -143,6 +143,10 @@ Token Lexer::readString() {
                 case 'n': text.push_back('\n'); break;
                 case 't': text.push_back('\t'); break;
                 case 'r': text.push_back('\r'); break;
+                case 'b': text.push_back('\b'); break;
+                case 'f': text.push_back('\f'); break;
+                case 'v': text.push_back('\v'); break;
+                case '0': text.push_back('\0'); break;
                 case '"': text.push_back('"'); break;
                 case '\\': text.push_back('\\'); break;
                 default: text.push_back(esc); break;
