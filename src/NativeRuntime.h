@@ -19,6 +19,7 @@ struct NativeLibrary {
 
 struct NativeCapabilities {
     bool needsFactSnapshot = false;
+    bool needsFactHierarchy = false;
     bool pure = false;
     bool threadSafe = false;
     bool supportsBatch = false;

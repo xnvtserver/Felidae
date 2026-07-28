@@ -1,7 +1,8 @@
 import ("db", "flibrary", "system.flibrary.set")
 
 # Set mathematics is implemented by the independent native_modules/set package.
-# Inputs are materialized arrays. Use db.all(type: "FactType") to resolve facts.
+# Arrays remain supported for interop.  FactSelection inputs are accepted by
+# the runtime; cardinality is evaluated directly against the selection cursor.
 
 Set.union(sets: array) =>
     return (system_library_loader(module: "set", function: "union", args: {sets: sets}))

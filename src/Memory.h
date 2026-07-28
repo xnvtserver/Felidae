@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AST.h"
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -11,6 +12,10 @@
 namespace Felidae {
 
 struct FactRecord {
+    // Fact ids are append-only and never reused.  Vector positions are an
+    // implementation detail; retaining this id makes source reloads,
+    // selections and future external stores independent of compaction.
+    std::uint64_t id = 0;
     std::string type;
     SymbolId typeId = 0;
     std::string parentType;
@@ -18,6 +23,15 @@ struct FactRecord {
     std::shared_ptr<MapExpr> value;
     std::filesystem::path origin;
     std::size_t stableHash = 0;
+    bool active = true;
+};
+
+struct FactMemoryStats {
+    std::size_t activeFacts = 0;
+    std::size_t tombstonedFacts = 0;
+    std::size_t relations = 0;
+    std::size_t snapshots = 0;
+    std::uint64_t generation = 0;
 };
 
 class FactMemory {
@@ -30,6 +44,19 @@ public:
 
     const std::vector<FactRecord>& facts() const;
     const FactRecord& fact(size_t index) const;
+    bool isActive(size_t index) const;
+    std::vector<size_t> activeFactIndexes() const;
+    std::uint64_t generation() const;
+    FactMemoryStats stats() const;
+    // A selection captures an immutable logical view.  It remains valid
+    // until explicitly released by the runtime/library owner.
+    std::uint64_t captureSnapshot();
+    bool releaseSnapshot(std::uint64_t snapshotGeneration);
+    std::vector<size_t> selectionIndexes(const std::string& type,
+                                         const std::string& property = {},
+                                         const std::shared_ptr<Expr>& value = nullptr,
+                                         std::uint64_t snapshotGeneration = 0) const;
+    const FactRecord& snapshotFact(std::uint64_t snapshotGeneration, size_t index) const;
 
     size_t addFact(std::string type,
                    std::string parentType,
@@ -51,6 +78,9 @@ public:
                                                    const std::string& property,
                                                    SymbolId propertyId,
                                                    const std::shared_ptr<Expr>& value);
+    // Prefer the automatic, relation-aware invalidation performed by the
+    // mutation API.  This remains for callers that intentionally replace a
+    // whole logical store.
     void invalidateCaches();
 
 private:
@@ -74,25 +104,49 @@ private:
     };
 
     struct Data {
+        struct Relation {
+            SymbolId typeId = 0;
+            std::string type;
+            std::uint64_t generation = 0;
+            std::vector<size_t> rows;
+            // These columns mirror the logical fact fields.  The MapExpr is
+            // retained only for source fidelity and interop; fact matching
+            // and index planning use SymbolId-indexed relation metadata.
+            std::unordered_map<SymbolId, std::vector<size_t>> rowsByField;
+            std::unordered_map<SymbolId,
+                std::unordered_map<std::size_t, std::vector<size_t>>> equalityIndexes;
+        };
+
         std::vector<FactRecord> facts;
+        std::uint64_t nextFactId = 1;
+        std::uint64_t generation = 1;
         std::unordered_map<SymbolId, std::vector<size_t>> factsByType;
         std::unordered_map<std::filesystem::path, std::vector<size_t>> factsByOrigin;
-        std::unordered_map<SymbolId, std::unordered_map<std::size_t, std::vector<size_t>>> factsByPropertyValue;
         std::unordered_map<std::string, std::string> parentOf;
         std::unordered_map<std::string, std::filesystem::path> parentOrigin;
         std::unordered_map<SymbolId, std::vector<SymbolId>> childrenByParent;
         std::unordered_map<SymbolId, std::vector<std::string>> typeNamesById;
+        std::unordered_map<SymbolId, Relation> relations;
     };
 
     std::shared_ptr<Data> data_;
+    std::unordered_map<std::uint64_t, std::shared_ptr<const Data>> snapshots_;
     std::unordered_map<SymbolId, std::unordered_map<std::string, std::vector<size_t>>> compatibleFactCache_;
     std::unordered_map<PropertyQueryKey, std::vector<size_t>, PropertyQueryKeyHash> propertyQueryCache_;
 
     static bool literalIndexKey(const std::shared_ptr<Expr>& value, std::string& out);
     static bool literalIndexHash(const std::shared_ptr<Expr>& value, std::size_t& out);
     static std::size_t stableExprHash(const std::shared_ptr<Expr>& value);
+    static bool isCompatibleTypeInData(const Data& data,
+                                       const std::string& actual,
+                                       const std::string& expected);
+    const Data& dataForSnapshot(std::uint64_t snapshotGeneration) const;
     void ensureUnique();
     void indexFact(size_t index);
+    void deactivateFact(size_t index);
+    void compactInactiveIfSafe();
+    void invalidateCachesForFact(const FactRecord& fact);
+    void invalidateCachesForType(const std::string& type, SymbolId typeId);
     void rememberTypeName(SymbolId id, const std::string& name);
     void rebuildIndexes();
 };

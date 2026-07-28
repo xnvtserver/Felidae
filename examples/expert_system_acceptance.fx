@@ -1,5 +1,5 @@
 # Exact rules and uncertain evidence are intentionally separate.
-import ("db", "fact.fx")
+import ("db", "fact.fx", "reasoning")
 
 Person(name: "Asha", status: "active", risk: 2)
 Person(name: "Bala", status: "active", risk: 8)
@@ -36,4 +36,15 @@ main() =>
         {source: "recent_income_signal", probability: 0.9, weight: 2},
         {source: "missing_document_signal", probability: 0.2, weight: 1}
     ])
-    return {exact_asha: exactAsha, exact_bala: exactBala, evidence_only: uncertain}
+    eligibility := reasoning.contrary(positive: "eligible", negative: "ineligible")
+    # A manual safety rule is intentionally explicit.  The resolver reports
+    # both proof paths rather than allowing either rule or evidence to win
+    # silently.
+    safetyHold := reasoning.exact(
+        conclusion: "ineligible",
+        proved: true,
+        rule: "manual_safety_hold",
+        sources: ["Asha"]
+    )
+    conflict := reasoning.assess(contrary: eligibility, positive: exactAsha, negative: safetyHold)
+    return {exact_asha: exactAsha, exact_bala: exactBala, exact_conflict: conflict, evidence_only: uncertain}

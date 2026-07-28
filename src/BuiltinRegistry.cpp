@@ -66,6 +66,7 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::DbExists, "db:exists", BuiltinEffect::ReadsExternalState},
         {BuiltinId::DbSelect, "db:select", BuiltinEffect::Pure},
         {BuiltinId::DbMaterialize, "db:materialize", BuiltinEffect::Pure},
+        {BuiltinId::DbRelease, "db:release", BuiltinEffect::WritesExternalState},
         {BuiltinId::DbSync, "db:sync", BuiltinEffect::WritesExternalState},
         {BuiltinId::JsonObject, "json:object", BuiltinEffect::Pure},
         {BuiltinId::JsonParse, "json:parse", BuiltinEffect::Pure},

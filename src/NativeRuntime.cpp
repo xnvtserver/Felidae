@@ -27,11 +27,32 @@ std::string lowerText(std::string text) {
 
 NativeCapabilities nativeCapabilitiesFor(const std::string& moduleName,
                                          const std::string& functionName) {
-    (void)functionName;
     NativeCapabilities capabilities;
     capabilities.threadSafe = true;
-    if (moduleName == "fact" || moduleName == "fact_analysis") {
-        capabilities.needsFactSnapshot = true;
+    // Most fact functions compare the values supplied by the caller and do
+    // not need the complete runtime store.  Restrict implicit store access to
+    // the small hierarchy/statistics surface that explicitly operates on the
+    // declared fact graph.
+    const bool factGraphFunction =
+        functionName == "system:flibrary:fact:common_ancestor" ||
+        functionName == "system:flibrary:fact:direct_relation" ||
+        functionName == "system:flibrary:fact:is_ancestor" ||
+        functionName == "system:flibrary:fact:is_descendant" ||
+        functionName == "system:flibrary:fact:ancestor_closure" ||
+        functionName == "system:flibrary:fact:descendant_closure" ||
+        functionName == "system:flibrary:fact:shortest_path" ||
+        functionName == "system:flibrary:fact:path_similarity" ||
+        functionName == "system:flibrary:fact:wu_palmer_similarity" ||
+        functionName == "system:flibrary:fact:resnik_similarity" ||
+        functionName == "system:flibrary:fact:lin_similarity" ||
+        functionName == "system:flibrary:fact:frequency_statistics";
+    if (moduleName == "fact" && factGraphFunction) {
+        // Hierarchy algorithms need only the declared type graph, not every
+        // record in the fact store.  frequency_statistics is the one graph
+        // API whose documented operation counts records when no explicit
+        // corpus is supplied.
+        capabilities.needsFactHierarchy = functionName != "system:flibrary:fact:frequency_statistics";
+        capabilities.needsFactSnapshot = functionName == "system:flibrary:fact:frequency_statistics";
     } else if (moduleName == "wordnet") {
         // The WordNet native package builds its lexical graph from Felidae
         // facts. Send only its declared graph records, not an unrelated

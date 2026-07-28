@@ -809,13 +809,26 @@ std::string factCompareResponse(const Json& args) {
 
 std::map<std::string, std::string> parentMapFromFacts(const Json& args) {
     std::map<std::string, std::string> parents;
+    // The interpreter supplies the compact declared hierarchy for runtime
+    // graph operations.  Prefer an explicit caller corpus when present so
+    // standalone/native usage retains its existing deterministic behavior.
     const Json* facts = field(args, "facts");
     if (!facts) facts = field(args, "__facts");
-    if (!facts || facts->kind != Json::Array) return parents;
-    for (const auto& item : facts->items) {
-        const std::string type = factTypeOf(item);
-        const std::string parent = parentTypeOf(item);
-        if (!type.empty() && !parent.empty()) parents[type] = parent;
+    if (facts && facts->kind == Json::Array) {
+        for (const auto& item : facts->items) {
+            const std::string type = factTypeOf(item);
+            const std::string parent = parentTypeOf(item);
+            if (!type.empty() && !parent.empty()) parents[type] = parent;
+        }
+        return parents;
+    }
+    const Json* hierarchy = field(args, "__parents");
+    if (hierarchy && hierarchy->kind == Json::Object) {
+        for (const auto& entry : hierarchy->fields) {
+            if (entry.second.kind == Json::String && !entry.first.empty() && !entry.second.text.empty()) {
+                parents[entry.first] = entry.second.text;
+            }
+        }
     }
     return parents;
 }
