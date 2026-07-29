@@ -65,7 +65,6 @@ public:
     FactMemory(FactMemory&&) noexcept = default;
     FactMemory& operator=(FactMemory&&) noexcept = default;
 
-    const std::vector<FactRecord>& facts() const;
     const FactRecord& fact(size_t index) const;
     std::vector<Arg> factArguments(size_t index) const;
     bool isActive(size_t index) const;
@@ -106,6 +105,8 @@ public:
                    const std::string& parent,
                    std::filesystem::path origin);
     const std::unordered_map<std::string, std::string>& parents() const;
+    std::vector<std::string> parentsOf(const std::string& child) const;
+    std::vector<std::pair<std::string, std::string>> hierarchyEdges() const;
     const std::unordered_map<std::string, std::filesystem::path>& parentOrigins() const;
     std::vector<size_t> factIndexesFromOrigin(const std::filesystem::path& origin) const;
     bool hasOrigin(const std::filesystem::path& origin) const;
@@ -142,8 +143,77 @@ private:
         std::size_t operator()(const PropertyQueryKey& key) const;
     };
 
+    // Copying a store catalog must not copy its fact rows.  The catalog keeps
+    // a small directory of fixed-size immutable batches; a writer detaches
+    // only the batch it appends to or changes.  Snapshot catalogs retain the
+    // previous batch pointers, so row positions remain valid for their full
+    // lifetime.
+    struct FactRows {
+        static constexpr std::size_t BatchSize = 1024;
+
+        std::vector<std::shared_ptr<std::vector<FactRecord>>> batches;
+        std::size_t count = 0;
+
+        std::size_t size() const { return count; }
+        const FactRecord& at(std::size_t index) const;
+        FactRecord& mutableAt(std::size_t index);
+        FactRecord& append(FactRecord record);
+    };
+
+    // Fact ids are monotonic, so a paged directory is both cheaper than a
+    // hash table and naturally copy-on-write at page granularity.  It maps a
+    // stable FactId to the row position visible in this catalog generation.
+    struct FactIdDirectory {
+        static constexpr std::size_t PageSize = 1024;
+        static constexpr std::size_t Missing = static_cast<std::size_t>(-1);
+
+        std::vector<std::shared_ptr<std::vector<std::size_t>>> pages;
+
+        std::optional<std::size_t> find(std::uint64_t id) const;
+        void assign(std::uint64_t id, std::size_t row);
+        void clear() { pages.clear(); }
+    };
+
+    struct AttachmentData {
+        std::unordered_map<std::uint64_t, std::vector<FactDependency>> dependenciesBySource;
+        std::unordered_map<std::uint64_t, std::vector<FactRelationship>> relationshipsBySource;
+        std::unordered_map<std::uint64_t, std::vector<FactRelationship>> relationshipsByTarget;
+    };
+
     struct Data {
         struct Relation {
+            struct ValueList {
+                std::shared_ptr<const Expr> first;
+                std::vector<std::shared_ptr<const Expr>> additional;
+
+                void append(std::shared_ptr<const Expr> value) {
+                    if (!first) first = std::move(value);
+                    else additional.push_back(std::move(value));
+                }
+                std::size_t size() const { return (first ? 1U : 0U) + additional.size(); }
+                template <typename Callback>
+                void forEach(const Callback& callback) const {
+                    if (first) callback(first);
+                    for (const auto& value : additional) callback(value);
+                }
+            };
+
+            struct RowList {
+                static constexpr std::size_t Missing = static_cast<std::size_t>(-1);
+                std::size_t first = Missing;
+                std::vector<std::size_t> additional;
+
+                void append(std::size_t row) {
+                    if (first == Missing) first = row;
+                    else additional.push_back(row);
+                }
+                template <typename Callback>
+                void forEach(const Callback& callback) const {
+                    if (first != Missing) callback(first);
+                    for (std::size_t row : additional) callback(row);
+                }
+            };
+
             SymbolId typeId = 0;
             std::string type;
             std::uint64_t generation = 0;
@@ -157,25 +227,27 @@ private:
             // Typed immutable field values by row. Indexed query candidates
             // are verified here instead of scanning their MapExpr payload.
             std::unordered_map<SymbolId,
-                std::unordered_map<size_t, std::vector<std::shared_ptr<const Expr>>>> valuesByRow;
+                std::unordered_map<size_t, ValueList>> valuesByRow;
             std::unordered_map<SymbolId,
-                std::unordered_map<std::size_t, std::vector<size_t>>> equalityIndexes;
+                std::unordered_map<std::size_t, RowList>> equalityIndexes;
         };
 
-        std::vector<FactRecord> facts;
+        FactRows facts;
         std::uint64_t nextFactId = 1;
         std::uint64_t generation = 1;
-        std::unordered_map<SymbolId, std::vector<size_t>> factsByType;
-        std::unordered_map<std::uint64_t, size_t> factIndexById;
-        std::unordered_map<std::filesystem::path, std::vector<size_t>> factsByOrigin;
+        FactIdDirectory factIndexById;
+        std::unordered_map<std::filesystem::path, std::shared_ptr<std::vector<size_t>>> factsByOrigin;
         std::unordered_map<std::string, std::string> parentOf;
         std::unordered_map<std::string, std::filesystem::path> parentOrigin;
+        std::unordered_map<std::string, std::vector<std::string>> additionalParentsOf;
+        std::unordered_map<std::string, std::filesystem::path> additionalParentOrigins;
         std::unordered_map<SymbolId, std::vector<SymbolId>> childrenByParent;
         std::unordered_map<SymbolId, std::vector<std::string>> typeNamesById;
-        std::unordered_map<SymbolId, Relation> relations;
-        std::unordered_map<std::uint64_t, std::vector<FactDependency>> dependenciesBySource;
-        std::unordered_map<std::uint64_t, std::vector<FactRelationship>> relationshipsBySource;
-        std::unordered_map<std::uint64_t, std::vector<FactRelationship>> relationshipsByTarget;
+        // Relation roots are independently copy-on-write.  Publishing a
+        // change to one fact type keeps every other relation's columns and
+        // indexes shared with existing snapshots.
+        std::unordered_map<SymbolId, std::shared_ptr<Relation>> relations;
+        std::shared_ptr<AttachmentData> attachments = std::make_shared<AttachmentData>();
     };
 
     std::shared_ptr<Data> data_;
@@ -194,6 +266,8 @@ private:
                                        const std::string& expected);
     const Data& dataForSnapshot(std::uint64_t snapshotGeneration) const;
     void ensureUnique();
+    void ensureAttachmentsUnique();
+    Data::Relation& writableRelation(SymbolId typeId);
     void indexFact(size_t index);
     void deactivateFact(size_t index);
     void compactInactiveIfSafe();

@@ -211,7 +211,19 @@ void SchemaGraphAccumulator::consume(const std::shared_ptr<Statement>& statement
             if (!argument.name.empty()) fieldsInRecord.insert(argument.name);
         }
         for (const auto& field : fieldsInRecord) ++profile.fields[field];
-        if (!clause->parentName.empty()) {
+        // A fact may extend more than one direct parent.  parentName is only
+        // the compatibility view for older callers; using it here would make
+        // ER and graph diagrams silently omit every secondary inheritance
+        // edge.
+        if (!clause->parentNames.empty()) {
+            for (const auto& parentName : clause->parentNames) {
+                impl_->facts.try_emplace(parentName);
+                impl_->references.emplace(
+                    "fact:" + clause->head.name,
+                    parentName,
+                    "extends");
+            }
+        } else if (!clause->parentName.empty()) {
             impl_->facts.try_emplace(clause->parentName);
             impl_->references.emplace(
                 "fact:" + clause->head.name,

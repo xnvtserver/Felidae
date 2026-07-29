@@ -176,17 +176,23 @@ Program parseProgramText(std::string text) {
     return parser.parseProgram();
 }
 
-void parseProgramFileChunks(const fs::path& path,
-                            const std::function<void(Program&&)>& consume,
-                            std::size_t statementsPerChunk) {
-    if (statementsPerChunk == 0) statementsPerChunk = 1;
+void parseProgramFileStatements(
+    const fs::path& path,
+    const std::function<void(std::shared_ptr<Statement>)>& consume) {
     const fs::path normalized = resolveProgramEntryPath(path);
     std::ifstream input(normalized, std::ios::binary);
     if (!input) throw std::runtime_error("Cannot open file: " + normalized.string());
     Lexer lexer(input);
     Parser parser(lexer);
+    parser.parseProgram(consume);
+}
+
+void parseProgramFileChunks(const fs::path& path,
+                            const std::function<void(Program&&)>& consume,
+                            std::size_t statementsPerChunk) {
+    if (statementsPerChunk == 0) statementsPerChunk = 1;
     Program chunk;
-    parser.parseProgram([&](std::shared_ptr<Statement> statement) {
+    parseProgramFileStatements(path, [&](std::shared_ptr<Statement> statement) {
         chunk.addStatement(std::move(statement));
         if (chunk.statements.size() >= statementsPerChunk) {
             consume(std::move(chunk));
@@ -205,13 +211,31 @@ void loadProgramRoot(const fs::path& file,
                      const std::function<void(const Program&)>& afterChunk) {
     fs::path normalized = resolveProgramEntryPath(file);
     fs::path baseDir = normalized.parent_path();
-    parseProgramFileChunks(normalized, [&](Program&& program) {
-        for (const auto& imp : program.imports) {
-            for (const auto& path : imp->paths) interpreter.addImport(baseDir, path);
+    interpreter.beginModuleTransaction();
+    try {
+        if (afterChunk) {
+            parseProgramFileChunks(normalized, [&](Program&& program) {
+                for (const auto& imp : program.imports) {
+                    for (const auto& path : imp->paths) interpreter.addImport(baseDir, path);
+                }
+                interpreter.addProgram(program);
+                afterChunk(program);
+            });
+        } else {
+            parseProgramFileStatements(normalized, [&](std::shared_ptr<Statement> statement) {
+                if (statement->kind() == StatementKind::Import) {
+                    const auto import = std::static_pointer_cast<ImportStmt>(statement);
+                    for (const auto& path : import->paths) interpreter.addImport(baseDir, path);
+                    return;
+                }
+                interpreter.addStreamedStatement(std::move(statement));
+            });
         }
-        interpreter.addProgram(program);
-        if (afterChunk) afterChunk(program);
-    });
+        interpreter.commitModuleTransaction();
+    } catch (...) {
+        interpreter.rollbackModuleTransaction();
+        throw;
+    }
 }
 
 void loadProgramRoot(const fs::path& file,
@@ -220,12 +244,19 @@ void loadProgramRoot(const fs::path& file,
     fs::path normalized = fs::absolute(file).lexically_normal();
     fs::path baseDir = normalized.parent_path();
 
-    for (const auto& imp : program.imports) {
-        for (const auto& path : imp->paths) {
-            interpreter.addImport(baseDir, path);
+    interpreter.beginModuleTransaction();
+    try {
+        for (const auto& imp : program.imports) {
+            for (const auto& path : imp->paths) {
+                interpreter.addImport(baseDir, path);
+            }
         }
+        interpreter.addProgram(program);
+        interpreter.commitModuleTransaction();
+    } catch (...) {
+        interpreter.rollbackModuleTransaction();
+        throw;
     }
-    interpreter.addProgram(program);
 }
 
 std::vector<std::string> listCoreLibraries(const fs::path& startDir) {

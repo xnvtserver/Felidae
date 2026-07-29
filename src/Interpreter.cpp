@@ -32,9 +32,15 @@ constexpr size_t kMaxCachedEnvFrames = 4096;
 constexpr size_t kHotMethodPrepareThreshold = 2;
 // A non-tail call expands through solver, value evaluation, and unification
 // frames. Keep this deliberately below the platform stack danger zone until
-// every non-tail continuation is represented by the iterative frame machine.
-// Tail calls unwind through TailCallSignal and are not limited by this guard.
-constexpr size_t kMaxNativeMethodCallDepth = 4;
+// Tail calls unwind through TailCallSignal. Non-tail calls still use the
+// native stack until the method-aware frame engine lands, so this deliberately
+// conservative bound turns excessive recursion into a Felidae error first.
+// Relational recursion is scheduled on solveIterative's work stack.  Methods
+// still have a small native continuation boundary, so keep a conservative
+// hard ceiling rather than allowing user recursion to consume the process
+// stack. This is intentionally independent from the iterative goal limit.
+constexpr size_t kMaxNativeMethodCallDepth = 8;
+constexpr size_t kMaxNativeGoalFrameDepth = 256;
 
 class CounterScope {
 public:
@@ -297,22 +303,6 @@ static bool exprContainsLiteral(const std::shared_ptr<Expr>& haystack, const std
     return false;
 }
 
-static void appendFactEntry(std::vector<MapEntry>& entries, const std::string& key, std::shared_ptr<Expr> value) {
-    for (auto& entry : entries) {
-        if (entry.key != key) continue;
-        if (auto array = std::dynamic_pointer_cast<ArrayExpr>(entry.value)) {
-            array->items.push_back(std::move(value));
-        } else {
-            std::vector<std::shared_ptr<Expr>> items;
-            items.push_back(entry.value);
-            items.push_back(std::move(value));
-            entry.value = std::make_shared<ArrayExpr>(std::move(items));
-        }
-        return;
-    }
-    entries.push_back(MapEntry{key, std::move(value)});
-}
-
 static bool isMethodTruthTupleWithFalse(const std::shared_ptr<Expr>& expr) {
     auto tuple = std::dynamic_pointer_cast<TermExpr>(expr);
     if (!tuple || tuple->builtinId != BuiltinId::FnTuple || tuple->args.empty()) return false;
@@ -418,6 +408,87 @@ static bool isBareModuleImport(const std::string& pattern) {
     fs::path raw(pattern);
     if (raw.is_absolute() || raw.has_parent_path() || raw.has_extension()) return false;
     return pattern.find('*') == std::string::npos;
+}
+
+static bool validateNativePackageRegistry(const fs::path& libraryFile,
+                                          const NativeModuleManifest& manifest,
+                                          std::string& error) {
+    const fs::path registryFile = sourceRootFromBase(libraryFile.parent_path()) / "core" / "package.fx";
+    if (!fs::is_regular_file(registryFile)) {
+        error = "missing authoritative package registry '" + registryFile.string() + "'";
+        return false;
+    }
+    try {
+        std::ifstream input(registryFile);
+        Lexer lexer(input);
+        Parser parser(lexer);
+        const Program registry = parser.parseProgram();
+        for (const auto& statement : registry.statements) {
+            if (statement->kind() != StatementKind::Clause) continue;
+            const auto package = std::static_pointer_cast<ClauseStmt>(statement);
+            if (!package->isFact() || package->head.name != "NativePackage") continue;
+            const auto argument = [&](const char* name) -> std::shared_ptr<Expr> {
+                for (const auto& arg : package->head.args) {
+                    if (arg.name == name) return arg.value;
+                }
+                return {};
+            };
+            const auto name = std::dynamic_pointer_cast<StringExpr>(argument("name"));
+            const auto wrapper = std::dynamic_pointer_cast<StringExpr>(argument("wrapper"));
+            const auto declaration = std::dynamic_pointer_cast<StringExpr>(argument("declaration"));
+            const auto abi = std::dynamic_pointer_cast<NumberExpr>(argument("abi"));
+            const auto requiredManifest = std::dynamic_pointer_cast<BoolExpr>(argument("manifest"));
+            if (!name || !abi || !requiredManifest || name->value != manifest.moduleName) continue;
+            if (!requiredManifest->value || abi->value != static_cast<double>(manifest.abiVersion)) {
+                error = "registry contract does not permit manifest ABI " + std::to_string(manifest.abiVersion) +
+                    " for package '" + manifest.moduleName + "'";
+                return false;
+            }
+            const fs::path root = sourceRootFromBase(registryFile.parent_path());
+            if (!wrapper || !declaration || wrapper->value.empty() || declaration->value.empty() ||
+                !fs::is_regular_file(root / wrapper->value) ||
+                !fs::is_regular_file(root / declaration->value)) {
+                error = "registry wrapper/declaration files are invalid for package '" + manifest.moduleName + "'";
+                return false;
+            }
+            std::unordered_set<std::string> allowed;
+            if (const auto capabilities = std::dynamic_pointer_cast<ArrayExpr>(argument("capabilities"))) {
+                for (const auto& item : capabilities->items) {
+                    const auto capability = std::dynamic_pointer_cast<StringExpr>(item);
+                    if (!capability) {
+                        error = "registry capabilities must be strings for package '" + manifest.moduleName + "'";
+                        return false;
+                    }
+                    allowed.insert(capability->value);
+                }
+            }
+            const auto requireAllowed = [&](bool enabled, const char* capability) -> bool {
+                if (!enabled || allowed.count(capability)) return true;
+                error = "manifest capability '" + std::string(capability) +
+                    " is not approved for package '" + manifest.moduleName + "'";
+                return false;
+            };
+            const auto validateContract = [&](const NativeContract& contract) -> bool {
+                const auto& caps = contract.capabilities;
+                return requireAllowed(caps.pure, "pure") &&
+                    requireAllowed(caps.threadSafe, "thread_safe") &&
+                    requireAllowed(caps.supportsBatch, "batch") &&
+                    requireAllowed(caps.acceptsFactSelections, "fact_selections") &&
+                    requireAllowed(caps.needsFactSnapshot, "fact_snapshot") &&
+                    requireAllowed(caps.needsFactHierarchy, "fact_hierarchy");
+            };
+            if (!validateContract(manifest.defaultContract)) return false;
+            for (const auto& function : manifest.functions) {
+                if (!validateContract(function.second)) return false;
+            }
+            return true;
+        }
+        error = "package '" + manifest.moduleName + "' is not allowlisted";
+        return false;
+    } catch (const std::exception& ex) {
+        error = "cannot read package registry: " + std::string(ex.what());
+        return false;
+    }
 }
 
 static fs::path resolveCoreImport(const fs::path& baseDir, const std::string& pattern) {
@@ -619,6 +690,68 @@ void Interpreter::closeNativeLibraries() {
     nativeLibraryPaths_.clear();
 }
 
+void Interpreter::beginModuleTransaction() {
+    if (moduleTransaction_) {
+        throw InterpreterError("Nested module transactions are not supported");
+    }
+    auto transaction = std::make_unique<ModuleTransactionState>();
+    // Clause objects are immutable and shared; the bucket topology is not.
+    // Keep an independent bucket table for rollback so normal streamed
+    // registration does not invalidate live ClauseList pointers through COW.
+    transaction->clauses = std::make_shared<ClauseTable>(*clauses_);
+    transaction->autoEntryCalls = autoEntryCalls_;
+    transaction->memory = memory_;
+    transaction->globals = globals_;
+    transaction->referencesBySource = referencesBySource_;
+    transaction->nextReferenceAttachmentId = nextReferenceAttachmentId_;
+    transaction->nextReferenceCreationOrder = nextReferenceCreationOrder_;
+    transaction->referenceEvaluationGeneration = referenceEvaluationGeneration_;
+    transaction->loadedFiles = loadedFiles_;
+    transaction->packageDiscoveryAttempts = packageDiscoveryAttempts_;
+    transaction->clauseOrigins = clauseOrigins_;
+    transaction->programGeneration = programGeneration_;
+    transaction->moduleLoads = moduleLoads_;
+    transaction->cacheInvalidationDepth = cacheInvalidationDepth_;
+    transaction->pendingCacheInvalidation = pendingCacheInvalidation_;
+    moduleTransaction_ = std::move(transaction);
+}
+
+void Interpreter::commitModuleTransaction() {
+    if (!moduleTransaction_) {
+        throw InterpreterError("No module transaction is active");
+    }
+    moduleTransaction_.reset();
+    // The staged clause catalog can have moved buckets while it was being
+    // populated. These caches retain raw clause pointers, so publish only
+    // after dropping all staging-era lookup/preparation entries.
+    clauseLookupCache_.clear();
+    methodRuntimeCache_.clear();
+}
+
+void Interpreter::rollbackModuleTransaction() {
+    if (!moduleTransaction_) return;
+    const ModuleTransactionState& transaction = *moduleTransaction_;
+    clauses_ = transaction.clauses;
+    autoEntryCalls_ = transaction.autoEntryCalls;
+    memory_ = transaction.memory;
+    globals_ = transaction.globals;
+    referencesBySource_ = transaction.referencesBySource;
+    nextReferenceAttachmentId_ = transaction.nextReferenceAttachmentId;
+    nextReferenceCreationOrder_ = transaction.nextReferenceCreationOrder;
+    referenceEvaluationGeneration_ = transaction.referenceEvaluationGeneration;
+    loadedFiles_ = transaction.loadedFiles;
+    packageDiscoveryAttempts_ = transaction.packageDiscoveryAttempts;
+    clauseOrigins_ = transaction.clauseOrigins;
+    programGeneration_ = transaction.programGeneration;
+    moduleLoads_ = transaction.moduleLoads;
+    cacheInvalidationDepth_ = transaction.cacheInvalidationDepth;
+    pendingCacheInvalidation_ = transaction.pendingCacheInvalidation;
+    moduleTransaction_.reset();
+    // Plans can hold pointers into the staged clause table, so restore them
+    // only through the normal cache boundary after the roots are replaced.
+    clearCachesNow();
+}
+
 void Interpreter::joinThreads() {
     std::vector<std::shared_ptr<ThreadTask>> tasks;
     {
@@ -768,48 +901,188 @@ void Interpreter::loadNativeLibrary(const std::filesystem::path& file) {
     }
     auto call = reinterpret_cast<NativeCallFn>(findSharedLibrarySymbol(handle, "felidae_native_call"));
     auto free = reinterpret_cast<NativeFreeFn>(findSharedLibrarySymbol(handle, "felidae_native_free"));
-    if (!call || !free) {
+    auto manifestFn = reinterpret_cast<NativeManifestFn>(findSharedLibrarySymbol(handle, "felidae_native_manifest_v1"));
+    if (!call || !free || !manifestFn) {
         closeSharedLibrary(handle);
         throw InterpreterError("Native module library '" + normalized.string() +
-                               "' must export felidae_native_call and felidae_native_free");
+                               "' must export felidae_native_call, felidae_native_free, and felidae_native_manifest_v1");
     }
-    nativeLibraries_.push_back(NativeLibrary{normalized, nativeModuleNameFromPath(normalized), handle, call, free});
+    const char* rawManifest = manifestFn();
+    if (!rawManifest) {
+        closeSharedLibrary(handle);
+        throw InterpreterError("Native module library '" + normalized.string() + "' returned a null manifest");
+    }
+    NativeModuleManifest manifest;
+    std::string manifestError;
+    if (!parseNativeModuleManifest(rawManifest, manifest, manifestError)) {
+        closeSharedLibrary(handle);
+        throw InterpreterError("Native module library '" + normalized.string() +
+                               "' has an invalid manifest: " + manifestError);
+    }
+    if (!validateNativePackageRegistry(normalized, manifest, manifestError)) {
+        closeSharedLibrary(handle);
+        throw InterpreterError("Native module library '" + normalized.string() +
+                               "' is not approved by core/package.fx: " + manifestError);
+    }
+    const std::string expectedModule = nativeModuleNameFromPath(normalized);
+    if (manifest.moduleName != expectedModule) {
+        closeSharedLibrary(handle);
+        throw InterpreterError("Native module manifest names '" + manifest.moduleName +
+                               "' but library path resolves to '" + expectedModule + "'");
+    }
+    nativeLibraries_.push_back(NativeLibrary{normalized, manifest.moduleName, handle, call, free, std::move(manifest)});
     nativeLibraryPaths_.insert(normalized);
 }
 
 void Interpreter::addProgram(const Program& program) {
+    validateNegationStratification(program);
     beginCacheInvalidationBatch();
-    for (const auto& statement : program.statements) {
-        switch (statement->kind()) {
-            case StatementKind::Import:
-                break;
-            case StatementKind::Clause: {
-                auto clause = std::static_pointer_cast<ClauseStmt>(statement);
-                if (clause->clauseKind == ClauseKind::EntryCall) {
-                    autoEntryCalls_.push_back(clause->head);
+    try {
+        for (const auto& statement : program.statements) {
+            switch (statement->kind()) {
+                case StatementKind::Import:
+                    break;
+                case StatementKind::Clause: {
+                    auto clause = std::static_pointer_cast<ClauseStmt>(statement);
+                    if (clause->clauseKind == ClauseKind::EntryCall) {
+                        autoEntryCalls_.push_back(clause->head);
+                        break;
+                    }
+                    addClause(clause);
                     break;
                 }
-                addClause(clause);
-                break;
+                case StatementKind::GlobalBinding: {
+                    auto binding = std::static_pointer_cast<GlobalBindingStmt>(statement);
+                    if (globals_.count(binding->name) || findClauses(binding->name, symbolIdForName(binding->name))) {
+                        throw InterpreterError("Global '" + binding->name + "' is already defined and immutable");
+                    }
+                    Env env;
+                    std::shared_ptr<Expr> value;
+                    if (!evalExprValue(binding->expr, env, value)) {
+                        throw InterpreterError("Cannot evaluate global binding '" + binding->name + "'");
+                    }
+                    globals_.bind(binding->name, value, currentLoadingFile_);
+                    Call head(binding->name, std::vector<Arg>{{"value", value->clone()}});
+                    addClause(std::make_shared<ClauseStmt>(std::move(head), std::vector<std::shared_ptr<Goal>>{}));
+                    break;
+                }
             }
-            case StatementKind::GlobalBinding: {
-                auto binding = std::static_pointer_cast<GlobalBindingStmt>(statement);
-                if (globals_.count(binding->name) || findClauses(binding->name, symbolIdForName(binding->name))) {
-                    throw InterpreterError("Global '" + binding->name + "' is already defined and immutable");
-                }
-                Env env;
-                std::shared_ptr<Expr> value;
-                if (!evalExprValue(binding->expr, env, value)) {
-                    throw InterpreterError("Cannot evaluate global binding '" + binding->name + "'");
-                }
-                globals_.bind(binding->name, value, currentLoadingFile_);
-                Call head(binding->name, std::vector<Arg>{{"value", value->clone()}});
-                addClause(std::make_shared<ClauseStmt>(std::move(head), std::vector<std::shared_ptr<Goal>>{}));
-                break;
+        }
+    } catch (...) {
+        endCacheInvalidationBatch();
+        throw;
+    }
+    endCacheInvalidationBatch();
+}
+
+void Interpreter::addStreamedStatement(std::shared_ptr<Statement> statement) {
+    if (!statement || statement->kind() == StatementKind::Import) return;
+    if (statement->kind() == StatementKind::Clause) {
+        // Keep statement alive for the validated rule path below. Moving it
+        // into the cast made non-fact clauses become null before they were
+        // wrapped in the singleton Program.
+        auto clause = std::static_pointer_cast<ClauseStmt>(statement);
+        if (clause->clauseKind == ClauseKind::EntryCall) {
+            autoEntryCalls_.push_back(clause->head);
+            return;
+        }
+        // Facts cannot introduce rule dependency edges, globals, or method
+        // behavior. Register them directly while parsing so a large fact
+        // module does not allocate one temporary Program per fact.
+        if (clause->isFact()) {
+            addClause(std::move(clause));
+            return;
+        }
+    }
+
+    // Rule/global registration retains the established validation path. In a
+    // module transaction an error restores all roots, including facts already
+    // streamed before this statement.
+    Program singleton;
+    singleton.addStatement(std::move(statement));
+    addProgram(singleton);
+}
+
+void Interpreter::validateNegationStratification(const Program& program) const {
+    // Fact-only streaming chunks cannot add rule-dependency edges.  Skipping
+    // them is essential for large fact imports: otherwise every chunk would
+    // rescan all prior facts merely to rebuild an empty rule graph.
+    bool containsRelationalRule = false;
+    for (const auto& statement : program.statements) {
+        if (statement->kind() != StatementKind::Clause) continue;
+        const auto clause = std::static_pointer_cast<ClauseStmt>(statement);
+        if (!clause->isFact() && !isMethodClause(*clause)) {
+            containsRelationalRule = true;
+            break;
+        }
+    }
+    if (!containsRelationalRule) return;
+
+    struct Edge {
+        std::string target;
+        bool negative = false;
+    };
+    std::unordered_map<std::string, std::vector<Edge>> graph;
+
+    const auto collectGoals = [&](const auto& self,
+                                  const std::string& source,
+                                  const std::vector<std::shared_ptr<Goal>>& goals) -> void {
+        for (const auto& goal : goals) {
+            if (auto call = std::dynamic_pointer_cast<CallGoal>(goal)) {
+                graph[source].push_back(Edge{call->call.name, false});
+            } else if (auto negated = std::dynamic_pointer_cast<NotGoal>(goal)) {
+                graph[source].push_back(Edge{negated->call.name, true});
+            } else if (auto group = std::dynamic_pointer_cast<GroupGoal>(goal)) {
+                self(self, source, group->goals);
+            } else if (auto disjunction = std::dynamic_pointer_cast<OrGoal>(goal)) {
+                for (const auto& branch : disjunction->branches) self(self, source, branch);
+            } else if (auto conditional = std::dynamic_pointer_cast<IfGoal>(goal)) {
+                self(self, source, std::vector<std::shared_ptr<Goal>>{conditional->condition});
+                self(self, source, conditional->thenBranch);
+                self(self, source, conditional->elseBranch);
+            }
+        }
+    };
+    const auto addClause = [&](const std::shared_ptr<ClauseStmt>& clause) {
+        if (!clause || clause->isFact() || isMethodClause(*clause)) return;
+        auto& edges = graph[clause->head.name];
+        (void)edges;
+        collectGoals(collectGoals, clause->head.name, clause->body);
+        for (const auto& branch : clause->fallbackBranches) collectGoals(collectGoals, clause->head.name, branch);
+    };
+
+    for (const auto& bucket : *clauses_) {
+        for (const auto& nameBucket : bucket.second) {
+            for (const auto& clause : nameBucket.clauses) addClause(clause);
+        }
+    }
+    for (const auto& statement : program.statements) {
+        if (statement->kind() != StatementKind::Clause) continue;
+        addClause(std::static_pointer_cast<ClauseStmt>(statement));
+    }
+
+    const auto reaches = [&](const auto& self,
+                             const std::string& current,
+                             const std::string& target,
+                             std::unordered_set<std::string>& visited) -> bool {
+        if (current == target) return true;
+        if (!visited.insert(current).second) return false;
+        const auto edges = graph.find(current);
+        if (edges == graph.end()) return false;
+        for (const auto& edge : edges->second) {
+            if (self(self, edge.target, target, visited)) return true;
+        }
+        return false;
+    };
+    for (const auto& node : graph) {
+        for (const auto& edge : node.second) {
+            if (!edge.negative) continue;
+            std::unordered_set<std::string> visited;
+            if (reaches(reaches, edge.target, node.first, visited)) {
+                throw InterpreterError("Unstratified negative dependency cycle involving '" + node.first + "'");
             }
         }
     }
-    endCacheInvalidationBatch();
 }
 
 void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
@@ -820,10 +1093,13 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
     clauseLookupCache_.erase(clauseName);
     ++programGeneration_;
     if (clause->isFact() && globals_.count(clause->head.name) == 0) {
-        auto factMap = factToMap(*clause, clause->parentName);
+        auto factMap = factToMap(*clause);
         memory_.addFact(clause->head.name, clause->parentName, factMap, currentLoadingFile_);
-        if (!clause->parentName.empty() && !memory_.parents().count(clause->head.name)) {
-            memory_.setParent(clause->head.name, clause->parentName, currentLoadingFile_);
+        const auto& declaredParents = clause->parentNames.empty()
+            ? std::vector<std::string>{clause->parentName}
+            : clause->parentNames;
+        for (const auto& parent : declaredParents) {
+            if (!parent.empty()) memory_.setParent(clause->head.name, parent, currentLoadingFile_);
         }
         return;
     }
@@ -969,8 +1245,7 @@ void Interpreter::solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals
                                  size_t depth) {
     try {
         {
-            EnvFrame frame = envFramePool_.acquireMove(std::move(env));
-            solveRecursiveFrame(goals, 0, frame.get(), out, maxSolutions, depth);
+            solveIterative(goals, std::move(env), out, maxSolutions, depth);
         }
         if (depth == 0) collectExecutionGarbage();
     } catch (...) {
@@ -979,30 +1254,209 @@ void Interpreter::solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals
     }
 }
 
+void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals,
+                                 Env env,
+                                 std::vector<Solution>& out,
+                                 size_t maxSolutions,
+                                 size_t depth) {
+    struct WorkFrame {
+        std::shared_ptr<std::vector<std::shared_ptr<Goal>>> goals;
+        size_t goalIndex = 0;
+        Env env;
+        size_t depth = 0;
+    };
+    auto root = std::make_shared<std::vector<std::shared_ptr<Goal>>>(goals);
+    std::vector<WorkFrame> work;
+    work.push_back(WorkFrame{std::move(root), 0, std::move(env), depth});
+
+    auto combinedGoals = [](const std::vector<std::shared_ptr<Goal>>& prefix,
+                            const std::vector<std::shared_ptr<Goal>>& suffix,
+                            size_t suffixStart) {
+        auto combined = std::make_shared<std::vector<std::shared_ptr<Goal>>>();
+        combined->reserve(prefix.size() + suffix.size() - suffixStart);
+        combined->insert(combined->end(), prefix.begin(), prefix.end());
+        combined->insert(combined->end(), suffix.begin() + static_cast<std::ptrdiff_t>(suffixStart), suffix.end());
+        return combined;
+    };
+
+    while (!work.empty() && out.size() < maxSolutions) {
+        WorkFrame frame = std::move(work.back());
+        work.pop_back();
+        if (frame.depth > kMaxNativeGoalFrameDepth) {
+            throw InterpreterError("Maximum recursion depth reached");
+        }
+        if (frame.goalIndex >= frame.goals->size()) {
+            ++solutionMaterializations_;
+            out.push_back(Solution{std::move(frame.env)});
+            continue;
+        }
+
+        const auto& goal = (*frame.goals)[frame.goalIndex];
+        const size_t nextGoalIndex = frame.goalIndex + 1;
+        const auto continueFrame = [&](Env nextEnv) {
+            work.push_back(WorkFrame{frame.goals, nextGoalIndex, std::move(nextEnv), frame.depth});
+        };
+
+        switch (goal->kind()) {
+            case GoalKind::Assign: {
+                const auto assign = std::static_pointer_cast<AssignGoal>(goal);
+                if (solveAssignGoal(*assign, frame.env)) continueFrame(std::move(frame.env));
+                continue;
+            }
+            case GoalKind::MultiAssign: {
+                const auto assign = std::static_pointer_cast<MultiAssignGoal>(goal);
+                if (solveMultiAssignGoal(*assign, frame.env)) continueFrame(std::move(frame.env));
+                continue;
+            }
+            case GoalKind::Binary: {
+                const auto binary = std::static_pointer_cast<BinaryGoal>(goal);
+                if (solveBinaryGoal(*binary, frame.env)) continueFrame(std::move(frame.env));
+                continue;
+            }
+            case GoalKind::Where: {
+                const auto where = std::static_pointer_cast<WhereGoal>(goal);
+                if (solveWhereGoal(*where, frame.env)) continueFrame(std::move(frame.env));
+                continue;
+            }
+            case GoalKind::Return: {
+                const auto returned = std::static_pointer_cast<ReturnGoal>(goal);
+                if (solveReturnGoal(*returned, frame.env)) continueFrame(std::move(frame.env));
+                continue;
+            }
+            case GoalKind::Not: {
+                const auto negated = std::static_pointer_cast<NotGoal>(goal);
+                if (solveNotGoal(*negated, frame.env, frame.depth + 1)) continueFrame(std::move(frame.env));
+                continue;
+            }
+            case GoalKind::Group: {
+                const auto group = std::static_pointer_cast<GroupGoal>(goal);
+                work.push_back(WorkFrame{combinedGoals(group->goals, *frame.goals, nextGoalIndex),
+                                         0, std::move(frame.env), frame.depth + 1});
+                continue;
+            }
+            case GoalKind::Or: {
+                const auto disjunction = std::static_pointer_cast<OrGoal>(goal);
+                for (auto branch = disjunction->branches.rbegin(); branch != disjunction->branches.rend(); ++branch) {
+                    work.push_back(WorkFrame{combinedGoals(*branch, *frame.goals, nextGoalIndex),
+                                             0, cloneEnv(frame.env), frame.depth + 1});
+                }
+                continue;
+            }
+            case GoalKind::If: {
+                const auto conditional = std::static_pointer_cast<IfGoal>(goal);
+                std::vector<Solution> conditionSolutions;
+                solveRecursive({conditional->condition}, cloneEnv(frame.env), conditionSolutions, 1, frame.depth + 1);
+                const auto& branch = conditionSolutions.empty()
+                    ? conditional->elseBranch : conditional->thenBranch;
+                Env branchEnv = conditionSolutions.empty()
+                    ? std::move(frame.env) : std::move(conditionSolutions.front().env);
+                work.push_back(WorkFrame{combinedGoals(branch, *frame.goals, nextGoalIndex),
+                                         0, std::move(branchEnv), frame.depth + 1});
+                continue;
+            }
+            case GoalKind::Call:
+                break;
+        }
+
+        const auto callGoal = std::static_pointer_cast<CallGoal>(goal);
+        auto clauses = findClauses(callGoal->call.name, callGoal->call.nameId);
+        if (!clauses && ensurePredicateLoaded(callGoal->call.name)) {
+            clauses = findClauses(callGoal->call.name, callGoal->call.nameId);
+        }
+        std::vector<WorkFrame> continuations;
+        const bool preferLocalClause = clauses && !nativeDeclarationFor(callGoal->call.name);
+        if (!preferLocalClause) {
+            Env builtinEnv = cloneEnv(frame.env);
+            if (solveBuiltin(callGoal->call, builtinEnv)) {
+                continuations.push_back(WorkFrame{frame.goals, nextGoalIndex,
+                                                  std::move(builtinEnv), frame.depth + 1});
+            }
+        }
+        if (clauses) {
+            for (const auto& originalClause : *clauses) {
+                ++clauseAttempts_;
+                if (isMethodClause(*originalClause)) {
+                    std::vector<Solution> methodSolutions;
+                    solveMethodCall(callGoal->call, originalClause, cloneEnv(frame.env),
+                                    methodSolutions, maxSolutions - out.size(), frame.depth + 1);
+                    for (auto& solution : methodSolutions) {
+                        continuations.push_back(WorkFrame{frame.goals, nextGoalIndex,
+                                                          std::move(solution.env), frame.depth + 1});
+                    }
+                    continue;
+                }
+                const auto clause = standardizeApart(originalClause);
+                for (auto& nextEnv : unifyCallAlternatives(callGoal->call, clause->head, frame.env)) {
+                    continuations.push_back(WorkFrame{
+                        combinedGoals(clause->body, *frame.goals, nextGoalIndex),
+                        0, std::move(nextEnv), frame.depth + 1});
+                }
+            }
+        }
+        // Prefer a grounded relation-local equality index before building a
+        // complete compatible-type candidate vector. The latter is useful for
+        // scans and inheritance, but allocating it first makes a cold exact
+        // lookup pay O(relation size) work even when its index has one row.
+        const std::vector<size_t>* factCandidates = nullptr;
+        for (const auto& arg : callGoal->call.args) {
+            if (arg.name.empty()) continue;
+            std::shared_ptr<Expr> resolved;
+            if (!evalExprValue(arg.value, frame.env, resolved) || !isGroundLiteral(resolved)) continue;
+            const auto& indexed = memory_.propertyFactIndexes(callGoal->call.name, callGoal->call.nameId,
+                                                                arg.name, arg.nameId, resolved);
+            if (!factCandidates || indexed.size() < factCandidates->size()) factCandidates = &indexed;
+        }
+        if (!factCandidates) {
+            factCandidates = &memory_.compatibleFactIndexes(callGoal->call.name, callGoal->call.nameId);
+        }
+        for (size_t factIndex : *factCandidates) {
+            ++factCandidates_;
+            Call factHead(callGoal->call.name, {});
+            factHead.args = memory_.factArguments(factIndex);
+            for (auto& nextEnv : unifyCallAlternatives(callGoal->call, factHead, frame.env)) {
+                continuations.push_back(WorkFrame{frame.goals, nextGoalIndex,
+                                                  std::move(nextEnv), frame.depth + 1});
+            }
+        }
+        for (auto continuation = continuations.rbegin(); continuation != continuations.rend(); ++continuation) {
+            work.push_back(std::move(*continuation));
+        }
+    }
+}
+
+/* Retired recursive evaluator. solveIterative is the sole active goal path.
 void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& goals,
                                       size_t goalIndex,
                                       Env& env,
                                       std::vector<Solution>& out,
                                       size_t maxSolutions,
                                       size_t depth) {
-    if (out.size() >= maxSolutions) return;
-    if (depth > 10000) throw InterpreterError("Maximum recursion depth reached");
+    // Advance deterministic statements in this frame.  A long method body
+    // used to consume one native C++ frame per assignment/condition even
+    // though it had no backtracking point.  Branching and calls still create
+    // continuations below; those are the next part of the iterative-frame
+    // migration.
+    for (;;) {
+        if (out.size() >= maxSolutions) return;
+        if (depth > kMaxNativeGoalFrameDepth) {
+            throw InterpreterError("Maximum recursion depth reached");
+        }
 
-    if (goalIndex >= goals.size()) {
-        ++solutionMaterializations_;
-        out.push_back(Solution{cloneEnv(env)});
-        return;
-    }
+        if (goalIndex >= goals.size()) {
+            ++solutionMaterializations_;
+            out.push_back(Solution{cloneEnv(env)});
+            return;
+        }
 
-    const auto& first = goals[goalIndex];
-    const size_t nextGoalIndex = goalIndex + 1;
+        const auto& first = goals[goalIndex];
+        const size_t nextGoalIndex = goalIndex + 1;
 
-    auto appendRemainingGoals = [&](std::vector<std::shared_ptr<Goal>>& target) {
-        target.reserve(target.size() + goals.size() - nextGoalIndex);
-        for (size_t i = nextGoalIndex; i < goals.size(); ++i) target.push_back(goals[i]);
-    };
+        auto appendRemainingGoals = [&](std::vector<std::shared_ptr<Goal>>& target) {
+            target.reserve(target.size() + goals.size() - nextGoalIndex);
+            for (size_t i = nextGoalIndex; i < goals.size(); ++i) target.push_back(goals[i]);
+        };
 
-    switch (first->kind()) {
+        switch (first->kind()) {
         case GoalKind::Group: {
             auto groupGoal = std::static_pointer_cast<GroupGoal>(first);
             std::vector<std::shared_ptr<Goal>> combined;
@@ -1052,42 +1506,48 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
         case GoalKind::Assign: {
             auto assign = std::static_pointer_cast<AssignGoal>(first);
             if (solveAssignGoal(*assign, env)) {
-                solveRecursiveFrame(goals, nextGoalIndex, env, out, maxSolutions, depth + 1);
+                goalIndex = nextGoalIndex;
+                continue;
             }
             return;
         }
         case GoalKind::MultiAssign: {
             auto multiAssign = std::static_pointer_cast<MultiAssignGoal>(first);
             if (solveMultiAssignGoal(*multiAssign, env)) {
-                solveRecursiveFrame(goals, nextGoalIndex, env, out, maxSolutions, depth + 1);
+                goalIndex = nextGoalIndex;
+                continue;
             }
             return;
         }
         case GoalKind::Binary: {
             auto bin = std::static_pointer_cast<BinaryGoal>(first);
             if (solveBinaryGoal(*bin, env)) {
-                solveRecursiveFrame(goals, nextGoalIndex, env, out, maxSolutions, depth + 1);
+                goalIndex = nextGoalIndex;
+                continue;
             }
             return;
         }
         case GoalKind::Where: {
             auto where = std::static_pointer_cast<WhereGoal>(first);
             if (solveWhereGoal(*where, env)) {
-                solveRecursiveFrame(goals, nextGoalIndex, env, out, maxSolutions, depth + 1);
+                goalIndex = nextGoalIndex;
+                continue;
             }
             return;
         }
         case GoalKind::Return: {
             auto ret = std::static_pointer_cast<ReturnGoal>(first);
             if (solveReturnGoal(*ret, env)) {
-                solveRecursiveFrame(goals, nextGoalIndex, env, out, maxSolutions, depth + 1);
+                goalIndex = nextGoalIndex;
+                continue;
             }
             return;
         }
         case GoalKind::Not: {
             auto notGoal = std::static_pointer_cast<NotGoal>(first);
             if (solveNotGoal(*notGoal, env, depth + 1)) {
-                solveRecursiveFrame(goals, nextGoalIndex, env, out, maxSolutions, depth + 1);
+                goalIndex = nextGoalIndex;
+                continue;
             }
             return;
         }
@@ -1124,7 +1584,7 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
                 if (out.size() >= maxSolutions) return;
                 continue;
             }
-            auto clause = standardizeApart(*originalClause);
+            auto clause = standardizeApart(originalClause);
             for (auto& nextEnv : unifyCallAlternatives(callGoal->call, clause->head, env)) {
                 std::vector<std::shared_ptr<Goal>> combined;
                 combined.reserve(clause->body.size() + goals.size() - nextGoalIndex);
@@ -1162,8 +1622,11 @@ void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& 
             if (out.size() >= maxSolutions) return;
         }
     }
+    return;
+    }
 }
 
+*/
 bool Interpreter::solveNotGoal(const NotGoal& goal, Env& env, size_t depth) {
     // Negation-as-failure is safe only after every argument has been bound by
     // preceding positive goals.  This avoids an accidental "not exists" scan
@@ -1656,14 +2119,12 @@ const std::vector<std::string>& Interpreter::typeAncestry(const std::string& typ
     if (cached != typeAncestryCache_.end()) return cached->second;
     std::vector<std::string> result;
     std::set<std::string> seen;
-    std::string current = type;
-    while (!current.empty()) {
-        if (!seen.insert(current).second) {
-            throw InterpreterError("Inheritance cycle detected while resolving '" + type + "'");
-        }
+    std::vector<std::string> pending{type};
+    for (size_t index = 0; index < pending.size(); ++index) {
+        const std::string current = pending[index];
+        if (!seen.insert(current).second) continue;
         result.push_back(current);
-        const auto parent = memory_.parents().find(current);
-        current = parent == memory_.parents().end() ? std::string{} : parent->second;
+        for (const auto& parent : memory_.parentsOf(current)) pending.push_back(parent);
     }
     // Fact is the implicit base family. It may own source membership methods,
     // but it is deliberately excluded from target comparison dispatch so a
@@ -3056,8 +3517,12 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
     // selected record only to count it defeats laziness.  Keep the public
     // Set.cardinality API unchanged and answer this one selection-native
     // operation directly from its immutable snapshot.
-    if (genericLibraryLoader && moduleName == "set" &&
-        nativeFunctionName == "system:flibrary:set:cardinality" && loaderArgs) {
+    // The contract, not a module-name branch, decides whether a lazy cursor
+    // has a native-free cardinality implementation.
+    // A library manifest is authoritative.  Before the library has been
+    // loaded there is intentionally no module-name policy to infer here.
+    const NativeContract requestedNativeContract{};
+    if (genericLibraryLoader && requestedNativeContract.capabilities.selectionCardinality && loaderArgs) {
         const auto setsEntry = std::find_if(
             loaderArgs->entries.begin(), loaderArgs->entries.end(),
             [](const MapEntry& entry) { return entry.key == "sets"; });
@@ -3131,10 +3596,9 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
     }
 
     validateNativeCallTypes(call, *declaration, env);
-
-    const bool factNativePreflight = nativeFunctionName.rfind("system:flibrary:fact:", 0) == 0;
-    const bool factAnalysisNativePreflight = nativeFunctionName.rfind("system:flibrary:fact_analysis:", 0) == 0;
-    if (factNativePreflight || factAnalysisNativePreflight) {
+    const NativeContract& nativeContract =
+        library->manifest.contractFor(nativeFunctionName);
+    if (!nativeContract.argumentConstraints.empty()) {
         auto valueFor = [&](const std::string& name, size_t index) -> std::shared_ptr<Expr> {
             if (genericLibraryLoader && loaderArgs) {
                 for (const auto& entry : loaderArgs->entries) {
@@ -3151,10 +3615,6 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
             if (!evalExprValue(arg->value, env, value)) return {};
             return value;
         };
-        auto stringValueFor = [&](const std::string& name, size_t index, std::string& out) -> bool {
-            auto value = valueFor(name, index);
-            return value && argAsString(value, out);
-        };
         auto numberValueFor = [&](const std::string& name, size_t index, double& out) -> bool {
             auto value = valueFor(name, index);
             if (!value) return false;
@@ -3163,103 +3623,82 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
             out = number->value;
             return true;
         };
-        auto requireOption = [&](const std::string& name,
-                                 size_t index,
-                                 const std::set<std::string>& allowed,
-                                 bool required) {
-            auto value = valueFor(name, index);
+        auto validateConstraint = [&](const NativeArgumentConstraint& constraint) {
+            const auto value = valueFor(constraint.name, constraint.positionalIndex);
             if (!value) {
-                if (required) throw InterpreterError("FactConfigError: missing '" + name + "' before calling native library");
+                if (constraint.required) {
+                    throw InterpreterError("FactConfigError: missing '" + constraint.name + "' before calling native library");
+                }
                 return;
             }
-            std::string text;
-            if (!argAsString(value, text)) {
-                throw InterpreterError("FactConfigError: '" + name + "' expects a string before calling native library");
-            }
-            if (!allowed.count(text)) {
-                throw InterpreterError("FactConfigError: unsupported " + name + " '" + text + "' before calling native library");
-            }
-        };
-        auto requireThreshold = [&](const std::string& name, size_t index, bool required) {
-            auto value = valueFor(name, index);
-            if (!value) {
-                if (required) throw InterpreterError("FactConfigError: missing '" + name + "' before calling native library");
-                return;
-            }
-            double number = 0.0;
-            if (!numberValueFor(name, index, number) || !std::isfinite(number)) {
-                throw InterpreterError("FactConfigError: '" + name + "' expects a finite number before calling native library");
-            }
-            if (number < 0.0 || number > 1.0) {
-                throw InterpreterError("FactConfigError: '" + name + "' must be between 0 and 1 before calling native library");
-            }
-        };
-        auto requirePositiveLimit = [&](const std::string& name, size_t index) {
-            auto value = valueFor(name, index);
-            if (!value) return;
-            double number = 0.0;
-            if (!numberValueFor(name, index, number) || !std::isfinite(number) || number < 1.0) {
-                throw InterpreterError("FactConfigError: '" + name + "' must be a positive finite number before calling native library");
-            }
-        };
-        auto requireStringArray = [&](const std::string& name, size_t index) {
-            auto value = valueFor(name, index);
-            if (!value) return;
-            auto array = std::dynamic_pointer_cast<ArrayExpr>(value);
-            if (!array) {
-                throw InterpreterError("FactConfigError: '" + name + "' expects an array of strings before calling native library");
-            }
-            for (const auto& item : array->items) {
-                auto text = std::dynamic_pointer_cast<StringExpr>(item);
-                if (!text || text->value.empty()) {
-                    throw InterpreterError("FactConfigError: '" + name + "' expects non-empty string field names before calling native library");
+            switch (constraint.kind) {
+                case NativeArgumentConstraintKind::StringOption: {
+                    std::string text;
+                    if (!argAsString(value, text)) {
+                        throw InterpreterError("FactConfigError: '" + constraint.name + "' expects a string before calling native library");
+                    }
+                    if (std::find(constraint.allowedValues.begin(), constraint.allowedValues.end(), text) ==
+                        constraint.allowedValues.end()) {
+                        throw InterpreterError("FactConfigError: unsupported " + constraint.name + " '" + text + "' before calling native library");
+                    }
+                    return;
+                }
+                case NativeArgumentConstraintKind::UnitInterval:
+                case NativeArgumentConstraintKind::PositiveFinite: {
+                    double number = 0.0;
+                    const bool valid = numberValueFor(constraint.name, constraint.positionalIndex, number) &&
+                        std::isfinite(number) &&
+                        (constraint.kind != NativeArgumentConstraintKind::UnitInterval ||
+                         (number >= 0.0 && number <= 1.0)) &&
+                        (constraint.kind != NativeArgumentConstraintKind::PositiveFinite || number >= 1.0);
+                    if (!valid) {
+                        throw InterpreterError(constraint.kind == NativeArgumentConstraintKind::UnitInterval
+                            ? ("FactConfigError: '" + constraint.name + "' must be between 0 and 1 before calling native library")
+                            : ("FactConfigError: '" + constraint.name + "' must be a positive finite number before calling native library"));
+                    }
+                    return;
+                }
+                case NativeArgumentConstraintKind::StringArray: {
+                    const auto array = std::dynamic_pointer_cast<ArrayExpr>(value);
+                    if (!array) {
+                        throw InterpreterError("FactConfigError: '" + constraint.name + "' expects an array of strings before calling native library");
+                    }
+                    for (const auto& item : array->items) {
+                        const auto text = std::dynamic_pointer_cast<StringExpr>(item);
+                        if (!text || text->value.empty()) {
+                            throw InterpreterError("FactConfigError: '" + constraint.name + "' expects non-empty string field names before calling native library");
+                        }
+                    }
+                    return;
+                }
+                case NativeArgumentConstraintKind::BooleanText: {
+                    if (std::dynamic_pointer_cast<BoolExpr>(value)) return;
+                    std::string text;
+                    if (!argAsString(value, text) || (text != "true" && text != "false")) {
+                        throw InterpreterError("FactConfigError: '" + constraint.name + "' expects \"true\" or \"false\" before calling native library");
+                    }
+                    return;
                 }
             }
         };
-
-        if (factNativePreflight) {
-            requireOption("algorithm", 2, {"exact_recursive", "structural", "semantic_recursive", "semantic_pattern", "relationship_aware"}, false);
-            requireOption("lexical_algorithm", 3, {"path", "wup", "wu_palmer", "Wu-Palmer", "Wu Palmer", "resnik", "jiang_conrath", "Jiang-Conrath", "Jiang Conrath", "lin", "edit", "Leacock-Chodorow", "Leacock–Chodorow", "Leacock Chodorow", "leacock_chodorow", "lch"}, false);
-            requireOption("field_alignment", 4, {"exact", "semantic"}, false);
-            requireOption("collection_mode", 5, {"auto", "ordered", "unordered"}, false);
-            requireOption("missing_field_policy", 6, {"penalize", "ignore"}, false);
-            requireOption("mode", 2, {"exact", "semantic"}, false);
-            requireThreshold("threshold", 7, false);
-            requirePositiveLimit("maximum_depth", 8);
-            requirePositiveLimit("maximum_fields", 9);
-            std::string explain;
-            if (stringValueFor("explain", 10, explain) && explain != "true" && explain != "false") {
-                throw InterpreterError("FactConfigError: 'explain' expects \"true\" or \"false\" before calling native library");
-            }
+        for (const auto& constraint : nativeContract.argumentConstraints) {
+            validateConstraint(constraint);
         }
-        if (factAnalysisNativePreflight) {
-            if (nativeFunctionName == "system:flibrary:fact_analysis:find_nearest" ||
-                nativeFunctionName == "system:flibrary:fact_analysis:find_nearest_where") {
-                requirePositiveLimit("count", 2);
-                if (nativeFunctionName == "system:flibrary:fact_analysis:find_nearest_where") {
-                    requireStringArray("required_fields", 3);
-                }
-            } else if (nativeFunctionName == "system:flibrary:fact_analysis:cluster_facts") {
-                requireStringArray("features", 1);
-                requirePositiveLimit("clusters", 2);
-            } else if (nativeFunctionName == "system:flibrary:fact_analysis:discover_associations") {
-                requireThreshold("min_support", 1, false);
-            } else if (nativeFunctionName == "system:flibrary:fact_analysis:profile_facts") {
-                requireStringArray("features", 1);
-            } else if (nativeFunctionName == "system:flibrary:fact_analysis:train_decision_tree") {
-                requireStringArray("features", 2);
-            }
+
+        #if 0 // Replaced by native manifest argument_constraints.
+        if (false) {
+            requireOption("lexical_algorithm", 3, {"path", "wup", "wu_palmer", "Wu-Palmer", "Wu Palmer", "resnik", "jiang_conrath", "Jiang-Conrath", "Jiang Conrath", "lin", "edit", "Leacock-Chodorow", "Leacock–Chodorow", "Leacock Chodorow", "leacock_chodorow", "lch"}, false);
         }
     }
 
+        #endif
+    }
     const auto serializationStart = std::chrono::steady_clock::now();
     std::ostringstream json;
     json << "{";
     bool first = true;
     std::vector<const Arg*> outputArgs;
-    const bool selectionAwareNative =
-        library->moduleName == "set" || library->moduleName == "group" ||
-        library->moduleName == "fact_analysis";
+    const bool selectionAwareNative = nativeContract.capabilities.acceptsFactSelections;
     std::function<std::shared_ptr<Expr>(const std::shared_ptr<Expr>&)> materializeNativeValue;
     materializeNativeValue = [&](const std::shared_ptr<Expr>& value) -> std::shared_ptr<Expr> {
         if (!selectionAwareNative || !value) return value;
@@ -3303,8 +3742,7 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
             json << "\"" << jsonEscape(key) << "\":" << exprToJson(value);
         }
     }
-    const NativeCapabilities capabilities =
-        nativeCapabilitiesFor(library->moduleName, nativeFunctionName);
+    const NativeCapabilities& capabilities = nativeContract.capabilities;
     bool callerProvidedFacts = false;
     if (genericLibraryLoader && loaderArgs) {
         callerProvidedFacts = std::any_of(
@@ -3346,11 +3784,18 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
         if (!first) json << ",";
         json << "\"__parents\":{";
         bool firstParent = true;
-        for (const auto& relation : memory_.parents()) {
+        std::set<std::string> emittedChildren;
+        for (const auto& relation : memory_.hierarchyEdges()) {
+            if (!emittedChildren.insert(relation.first).second) continue;
             if (!firstParent) json << ",";
             firstParent = false;
-            json << "\"" << jsonEscape(relation.first) << "\":\""
-                 << jsonEscape(relation.second) << "\"";
+            const auto parents = memory_.parentsOf(relation.first);
+            json << "\"" << jsonEscape(relation.first) << "\":[";
+            for (size_t index = 0; index < parents.size(); ++index) {
+                if (index) json << ",";
+                json << "\"" << jsonEscape(parents[index]) << "\"";
+            }
+            json << "]";
         }
         json << "}";
     }
@@ -3517,10 +3962,6 @@ bool Interpreter::evalCallAsValue(const TermExpr& term, const Env& env, std::sha
                 currentEnv = std::move(signal.env);
             }
         }
-        // The rollback snapshot can force `clauses_` copy-on-write. This cache
-        // stores raw ClauseList pointers, so it cannot retain entries into the
-        // pre-publication table after a successful transaction.
-        clauseLookupCache_.clear();
     } catch (...) {
         --valueCallTrampolineDepth_;
         throw;
@@ -5145,7 +5586,72 @@ std::string Interpreter::exprToString(const std::shared_ptr<Expr>& expr, const E
     return resolved->debug();
 }
 
-std::shared_ptr<ClauseStmt> Interpreter::standardizeApart(const ClauseStmt& clause) {
+std::shared_ptr<ClauseStmt> Interpreter::standardizeApart(const std::shared_ptr<ClauseStmt>& originalClause) {
+    const ClauseStmt& clause = *originalClause;
+    const auto goalNeedsRename = [&](const auto& self, const std::shared_ptr<Goal>& goal) -> bool {
+        switch (goal->kind()) {
+            case GoalKind::Call:
+                for (const auto& arg : std::static_pointer_cast<CallGoal>(goal)->call.args) {
+                    if (exprNeedsRename(arg.value)) return true;
+                }
+                return false;
+            case GoalKind::Not:
+                for (const auto& arg : std::static_pointer_cast<NotGoal>(goal)->call.args) {
+                    if (exprNeedsRename(arg.value)) return true;
+                }
+                return false;
+            case GoalKind::Assign:
+            case GoalKind::MultiAssign:
+                return true;
+            case GoalKind::Binary: {
+                const auto binary = std::static_pointer_cast<BinaryGoal>(goal);
+                return exprNeedsRename(binary->left) || exprNeedsRename(binary->right);
+            }
+            case GoalKind::Where:
+                return self(self, std::static_pointer_cast<WhereGoal>(goal)->condition);
+            case GoalKind::Return:
+                for (const auto& field : std::static_pointer_cast<ReturnGoal>(goal)->fields) {
+                    if (exprNeedsRename(field.value)) return true;
+                }
+                return false;
+            case GoalKind::Group:
+                for (const auto& nested : std::static_pointer_cast<GroupGoal>(goal)->goals) {
+                    if (self(self, nested)) return true;
+                }
+                return false;
+            case GoalKind::Or:
+                for (const auto& branch : std::static_pointer_cast<OrGoal>(goal)->branches) {
+                    for (const auto& nested : branch) if (self(self, nested)) return true;
+                }
+                return false;
+            case GoalKind::If: {
+                const auto conditional = std::static_pointer_cast<IfGoal>(goal);
+                if (self(self, conditional->condition)) return true;
+                for (const auto& nested : conditional->thenBranch) if (self(self, nested)) return true;
+                for (const auto& nested : conditional->elseBranch) if (self(self, nested)) return true;
+                return false;
+            }
+        }
+        return true;
+    };
+    bool needsRename = false;
+    for (const auto& arg : clause.head.args) {
+        if (exprNeedsRename(arg.value)) { needsRename = true; break; }
+    }
+    if (!needsRename) {
+        for (const auto& goal : clause.body) {
+            if (goalNeedsRename(goalNeedsRename, goal)) { needsRename = true; break; }
+        }
+    }
+    if (!needsRename) {
+        for (const auto& branch : clause.fallbackBranches) {
+            for (const auto& goal : branch) {
+                if (goalNeedsRename(goalNeedsRename, goal)) { needsRename = true; break; }
+            }
+            if (needsRename) break;
+        }
+    }
+    if (!needsRename) return originalClause;
     ++standardizedClauses_;
     std::string prefix = makeRenameSymbolPrefix(++renameCounter_);
     Call head;
@@ -5174,7 +5680,7 @@ std::shared_ptr<ClauseStmt> Interpreter::standardizeApart(const ClauseStmt& clau
     }
     return std::make_shared<ClauseStmt>(
         std::move(head),
-        clause.parentName,
+        clause.parentNames,
         std::move(body),
         std::move(fallbackBranches),
         clause.emptyDeclaration,
@@ -5274,6 +5780,7 @@ std::shared_ptr<Goal> Interpreter::renameGoal(const std::shared_ptr<Goal>& goal,
 
 std::shared_ptr<Expr> Interpreter::renameExpr(const std::shared_ptr<Expr>& expr, const std::string& prefix) {
     if (!expr) return nullptr;
+    if (!exprNeedsRename(expr)) return expr;
     switch (expr->kind()) {
         case ExprKind::String:
         case ExprKind::Number:
@@ -5335,6 +5842,44 @@ std::shared_ptr<Expr> Interpreter::renameExpr(const std::shared_ptr<Expr>& expr,
             renameExpr(pipeline->right, prefix));
     }
     return expr;
+}
+
+bool Interpreter::exprNeedsRename(const std::shared_ptr<Expr>& expr) const {
+    if (!expr) return false;
+    if (auto variable = std::dynamic_pointer_cast<VarExpr>(expr)) {
+        return variable->nameId != InternalSymbol::SystemResultId && globals_.count(variable->name) == 0;
+    }
+    if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
+        for (const auto& arg : term->args) {
+            if (exprNeedsRename(arg.value)) return true;
+        }
+        return false;
+    }
+    if (auto array = std::dynamic_pointer_cast<ArrayExpr>(expr)) {
+        for (const auto& item : array->items) {
+            if (exprNeedsRename(item)) return true;
+        }
+        return false;
+    }
+    if (auto map = std::dynamic_pointer_cast<MapExpr>(expr)) {
+        for (const auto& entry : map->entries) {
+            if (exprNeedsRename(entry.value)) return true;
+        }
+        return false;
+    }
+    if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
+        return exprNeedsRename(access->target);
+    }
+    if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
+        return exprNeedsRename(binary->left) || exprNeedsRename(binary->right);
+    }
+    if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
+        return exprNeedsRename(pipeline->left) || exprNeedsRename(pipeline->right);
+    }
+    // Lambda parameter names are invocation-local even when their current
+    // source/body happens not to mention another ordinary variable.
+    if (std::dynamic_pointer_cast<LambdaExpr>(expr)) return true;
+    return false;
 }
 
 bool Interpreter::isSameVariable(const std::shared_ptr<Expr>& a, const std::shared_ptr<Expr>& b) const {
@@ -5503,42 +6048,56 @@ const std::vector<Interpreter::MethodParamPlan>* Interpreter::hotMethodParamPlan
     return &info.params;
 }
 
-std::shared_ptr<MapExpr> Interpreter::factToMap(const ClauseStmt& clause, const std::string& parentType) {
+std::shared_ptr<MapExpr> Interpreter::factToMap(const ClauseStmt& clause) {
     std::vector<MapEntry> entries;
-    if (!parentType.empty()) {
-        std::set<std::string> seen;
-        std::string current = parentType;
-        while (!current.empty()) {
-            if (seen.count(current)) {
-                throw InterpreterError("Inheritance cycle detected for " + clause.head.name);
+    const auto parentNames = clause.parentNames.empty()
+        ? std::vector<std::string>{clause.parentName}
+        : clause.parentNames;
+    std::set<std::string> childFields;
+    for (const auto& arg : clause.head.args) childFields.insert(arg.name);
+    for (const auto& parentType : parentNames) {
+        if (parentType.empty()) continue;
+        const auto parentIndexes = memory_.compatibleFactIndexes(parentType);
+        const auto parent = std::find_if(parentIndexes.begin(), parentIndexes.end(), [&](size_t index) {
+            const auto& fact = memory_.fact(index);
+            return fact.type == parentType && fact.active;
+        });
+        if (parent == parentIndexes.end()) {
+            throw InterpreterError("Unknown parent fact/type '" + parentType + "'");
+        }
+        for (const auto& inherited : memory_.fact(*parent).value->entries) {
+            if (inherited.key == internalSymbolString(InternalSymbolKind::Type) ||
+                inherited.key == internalSymbolString(InternalSymbolKind::Parent)) {
+                continue;
             }
-            seen.insert(current);
-            const auto parentIndexes = memory_.compatibleFactIndexes(current);
-            auto parent = std::find_if(parentIndexes.begin(), parentIndexes.end(), [&](size_t index) {
-                const auto& fact = memory_.fact(index);
-                return fact.type == current && fact.active;
+            const auto existing = std::find_if(entries.begin(), entries.end(), [&](const MapEntry& entry) {
+                return entry.keyId == inherited.keyId && entry.key == inherited.key;
             });
-            if (parent == parentIndexes.end()) {
-                throw InterpreterError("Unknown parent fact/type '" + current + "'");
+            if (existing == entries.end()) {
+                entries.push_back(MapEntry{inherited.key, inherited.value->clone()});
+            } else if (!exprEqualsLiteral(existing->value, inherited.value) &&
+                       !childFields.count(inherited.key)) {
+                throw InterpreterError(
+                    "Ambiguous inherited field '" + inherited.key + "' for " + clause.head.name +
+                    "; provide an explicit value in the child fact");
             }
-            entries = cloneEntries(memory_.fact(*parent).value->entries);
-            current.clear();
         }
     }
     upsertEntry(entries, internalSymbolString(InternalSymbolKind::Type), std::make_shared<StringExpr>(clause.head.name));
-    if (!parentType.empty()) upsertEntry(entries, internalSymbolString(InternalSymbolKind::Parent), std::make_shared<StringExpr>(parentType));
+    if (!parentNames.empty() && !parentNames.front().empty()) {
+        upsertEntry(entries, internalSymbolString(InternalSymbolKind::Parent),
+                    std::make_shared<StringExpr>(parentNames.front()));
+    }
     Env env;
-    std::set<std::string> childFields;
     for (const auto& arg : clause.head.args) {
         std::shared_ptr<Expr> value;
         if (!evalExprValue(arg.value, env, value)) {
             throw InterpreterError("Cannot evaluate fact field '" + arg.name + "' for " + clause.head.name);
         }
-        if (!childFields.insert(arg.name).second || parentType.empty()) {
-            appendFactEntry(entries, arg.name, value->clone());
-        } else {
-            upsertEntry(entries, arg.name, value->clone());
-        }
+        // Explicit child fields always override inherited values.  This also
+        // supplies the required disambiguation for two parents that expose
+        // the same field with different values.
+        upsertEntry(entries, arg.name, value->clone());
     }
     return std::make_shared<MapExpr>(std::move(entries));
 }
@@ -5662,7 +6221,12 @@ void Interpreter::removeClauseBucket(const std::string& name, SymbolId nameId) {
 }
 
 void Interpreter::ensureClauseTableUnique() {
-    if (clauses_.use_count() != 1) clauses_ = std::make_shared<ClauseTable>(*clauses_);
+    if (clauses_.use_count() != 1) {
+        clauses_ = std::make_shared<ClauseTable>(*clauses_);
+        // Lookup entries hold ClauseList pointers. Copy-on-write publication
+        // changes their owning table, so no cached pointer may survive it.
+        clauseLookupCache_.clear();
+    }
 }
 
 std::string Interpreter::solveCacheKey(const std::vector<std::shared_ptr<Goal>>& goals,
@@ -5775,6 +6339,8 @@ bool Interpreter::ensurePredicateLoaded(const std::string& predicate) {
 void Interpreter::loadProgramFile(const std::filesystem::path& file) {
     fs::path normalized = fs::absolute(file).lexically_normal();
     if (loadedFiles_.count(normalized)) return;
+    const bool ownsTransaction = !moduleTransaction_;
+    if (ownsTransaction) beginModuleTransaction();
     loadedFiles_.insert(normalized);
     ++moduleLoads_;
 
@@ -5782,15 +6348,19 @@ void Interpreter::loadProgramFile(const std::filesystem::path& file) {
     fs::path previous = currentLoadingFile_;
     currentLoadingFile_ = normalized;
     try {
-        parseProgramFileChunks(normalized, [&](Program&& program) {
-            for (const auto& imp : program.imports) {
-                for (const auto& path : imp->paths) addImport(baseDir, path);
+        parseProgramFileStatements(normalized, [&](std::shared_ptr<Statement> statement) {
+            if (statement->kind() == StatementKind::Import) {
+                const auto import = std::static_pointer_cast<ImportStmt>(statement);
+                for (const auto& path : import->paths) addImport(baseDir, path);
+                return;
             }
-            addProgram(program);
+            addStreamedStatement(std::move(statement));
         });
         currentLoadingFile_ = previous;
+        if (ownsTransaction) commitModuleTransaction();
     } catch (...) {
         currentLoadingFile_ = previous;
+        if (ownsTransaction) rollbackModuleTransaction();
         throw;
     }
 }
@@ -5861,7 +6431,7 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
             staged.push_back(StagedFact{
                 clause->head.name,
                 clause->parentName,
-                factToMap(*clause, clause->parentName)});
+                factToMap(*clause)});
         }
     });
 

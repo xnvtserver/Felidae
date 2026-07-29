@@ -18,6 +18,9 @@ void parseProgramFileChunks(
     const std::filesystem::path& path,
     const std::function<void(Program&&)>& consume,
     std::size_t statementsPerChunk = 1);
+void parseProgramFileStatements(
+    const std::filesystem::path& path,
+    const std::function<void(std::shared_ptr<Statement>)>& consume);
 std::string readSourceFile(const std::filesystem::path& path);
 void readSourceLines(const std::filesystem::path& path,
                      const std::function<void(const std::string&)>& onLine);

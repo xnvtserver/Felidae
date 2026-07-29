@@ -30,8 +30,18 @@ public:
     ~Interpreter();
 
     void addProgram(const Program& program);
+    // Fast registration boundary for a parser that emits one statement at a
+    // time. Facts do not need a transient Program/AST container; rules and
+    // globals still use addProgram so complete validation remains identical.
+    void addStreamedStatement(std::shared_ptr<Statement> statement);
     void addClause(std::shared_ptr<ClauseStmt> clause);
     void addImport(const std::filesystem::path& baseDir, const std::string& pattern);
+    // Streaming module publication is transactional: callers may register
+    // statements one at a time and either publish the complete module or
+    // restore the previous immutable roots without retaining a module AST.
+    void beginModuleTransaction();
+    void commitModuleTransaction();
+    void rollbackModuleTransaction();
 
     std::vector<Solution> solve(const std::vector<std::shared_ptr<Goal>>& queryGoals,
                                 size_t maxSolutions = 1000);
@@ -123,7 +133,26 @@ private:
     };
     using ClauseTable = std::unordered_map<SymbolId, std::vector<ClauseBucket>>;
 
+    struct ModuleTransactionState {
+        std::shared_ptr<ClauseTable> clauses;
+        std::vector<Call> autoEntryCalls;
+        FactMemory memory;
+        GlobalEnv globals;
+        std::unordered_map<std::uint64_t, std::vector<ReferenceAttachment>> referencesBySource;
+        std::uint64_t nextReferenceAttachmentId = 1;
+        std::size_t nextReferenceCreationOrder = 0;
+        std::uint64_t referenceEvaluationGeneration = 0;
+        std::set<std::filesystem::path> loadedFiles;
+        std::unordered_set<std::string> packageDiscoveryAttempts;
+        std::unordered_map<const ClauseStmt*, std::filesystem::path> clauseOrigins;
+        std::uint64_t programGeneration = 1;
+        std::size_t moduleLoads = 0;
+        std::size_t cacheInvalidationDepth = 0;
+        bool pendingCacheInvalidation = false;
+    };
+
     std::shared_ptr<ClauseTable> clauses_ = std::make_shared<ClauseTable>();
+    std::unique_ptr<ModuleTransactionState> moduleTransaction_;
     std::vector<Call> autoEntryCalls_;
     FactMemory memory_;
     GlobalEnv globals_;
@@ -183,13 +212,11 @@ private:
                         std::vector<Solution>& out,
                         size_t maxSolutions,
                         size_t depth);
-    void solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& goals,
-                             size_t goalIndex,
-                             Env& env,
-                             std::vector<Solution>& out,
-                             size_t maxSolutions,
-                             size_t depth);
-
+    void solveIterative(const std::vector<std::shared_ptr<Goal>>& goals,
+                        Env env,
+                        std::vector<Solution>& out,
+                        size_t maxSolutions,
+                        size_t depth);
     bool solveAssignGoal(const AssignGoal& goal, Env& env);
     bool solveMultiAssignGoal(const MultiAssignGoal& goal, Env& env);
     bool solveBinaryGoal(const BinaryGoal& goal, Env& env);
@@ -261,7 +288,10 @@ private:
     void endCacheInvalidationBatch();
     void clearCachesNow();
 
-    std::shared_ptr<ClauseStmt> standardizeApart(const ClauseStmt& clause);
+    void validateNegationStratification(const Program& program) const;
+
+    std::shared_ptr<ClauseStmt> standardizeApart(const std::shared_ptr<ClauseStmt>& clause);
+    bool exprNeedsRename(const std::shared_ptr<Expr>& expr) const;
     Call renameCall(const Call& call, const std::string& prefix);
     std::shared_ptr<Goal> renameGoal(const std::shared_ptr<Goal>& goal, const std::string& prefix);
     std::shared_ptr<Expr> renameExpr(const std::shared_ptr<Expr>& expr, const std::string& prefix);
@@ -276,7 +306,7 @@ private:
     MethodParamPlan makeMethodParamPlan(const Arg& param) const;
     std::vector<MethodParamPlan> buildMethodParamPlan(const ClauseStmt& clause) const;
     const std::vector<MethodParamPlan>* hotMethodParamPlan(const std::shared_ptr<ClauseStmt>& clause);
-    std::shared_ptr<MapExpr> factToMap(const ClauseStmt& clause, const std::string& parentType);
+    std::shared_ptr<MapExpr> factToMap(const ClauseStmt& clause);
     std::shared_ptr<ArrayExpr> materializeFactSelection(const std::shared_ptr<Expr>& selection);
     const std::vector<std::string>& typeAncestry(const std::string& type) const;
     std::vector<std::shared_ptr<Expr>> valuesForLambdaSource(const std::shared_ptr<Expr>& source, const Env& env);

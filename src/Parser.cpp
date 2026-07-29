@@ -270,10 +270,13 @@ std::shared_ptr<ImportStmt> Parser::parseImport() {
 
 std::shared_ptr<ClauseStmt> Parser::parseClause() {
     std::string name = parseQualifiedName();
-    std::string parentName;
+    std::vector<std::string> parentNames;
     if (check(TokenType::Extend)) {
         advance();
-        parentName = consume(TokenType::Ident, "Expected parent fact/type name after extend").text;
+        parentNames.push_back(consume(TokenType::Ident, "Expected parent fact/type name after extend").text);
+        while (match(TokenType::Comma)) {
+            parentNames.push_back(consume(TokenType::Ident, "Expected parent fact/type name after ',' in extend list").text);
+        }
     }
     Call head = parseCallFromName(std::move(name), false);
     knownTypes_.insert(head.name);
@@ -325,7 +328,7 @@ std::shared_ptr<ClauseStmt> Parser::parseClause() {
     }
     return std::make_shared<ClauseStmt>(
         std::move(head),
-        std::move(parentName),
+        std::move(parentNames),
         std::move(body),
         std::move(fallbackBranches),
         emptyDeclaration,
@@ -677,7 +680,12 @@ std::vector<std::shared_ptr<Goal>> Parser::parseGoalConjunction() {
                     cursor += 2;
                 }
                 if (hasToken(cursor) && tokenAt(cursor).type == TokenType::Extend) {
-                    cursor += 2;
+                    ++cursor;
+                    if (hasToken(cursor) && isNameStartToken(tokenAt(cursor).type)) ++cursor;
+                    while (hasToken(cursor + 1) && tokenAt(cursor).type == TokenType::Comma &&
+                           isNameStartToken(tokenAt(cursor + 1).type)) {
+                        cursor += 2;
+                    }
                 }
                 if (hasToken(cursor) && tokenAt(cursor).type == TokenType::LParen) {
                     int depth = 0;
