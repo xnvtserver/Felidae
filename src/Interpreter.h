@@ -57,6 +57,7 @@ public:
     std::shared_ptr<Expr> callAutoEntry();
     std::string valueToString(const std::shared_ptr<Expr>& value) const;
     std::string runtimeMetricsJson() const;
+    void recordStreamedModuleMicros(std::size_t micros);
     std::size_t syncFactSource(const std::filesystem::path& file);
 
 private:
@@ -133,6 +134,41 @@ private:
     };
     using ClauseTable = std::unordered_map<SymbolId, std::vector<ClauseBucket>>;
 
+    struct ProvenanceNode {
+        enum class Kind { Fact, Rule };
+        Kind kind = Kind::Fact;
+        std::uint64_t factId = 0;
+        std::string rule;
+        SourceSpan span;
+        std::vector<std::size_t> parents;
+    };
+    struct TableAnswer {
+        Call call;
+        std::vector<std::size_t> provenance;
+    };
+    struct PredicateTable {
+        std::string name;
+        SymbolId nameId = 0;
+        std::vector<TableAnswer> answers;
+        std::vector<std::size_t> delta;
+        std::unordered_map<std::string, std::size_t> answerByKey;
+    };
+    struct TableEvaluation {
+        SymbolId rootId = 0;
+        std::string rootName;
+        std::uint64_t hierarchyGeneration = 0;
+        std::unordered_map<SymbolId, std::uint64_t> callableGenerations;
+        std::unordered_map<SymbolId, std::uint64_t> relationGenerations;
+        std::unordered_map<SymbolId, PredicateTable> predicates;
+        std::vector<ProvenanceNode> provenance;
+        std::size_t rounds = 0;
+        std::size_t deltaAnswers = 0;
+    };
+    struct TableBinding {
+        Env env;
+        std::vector<std::size_t> provenance;
+    };
+
     struct ModuleTransactionState {
         std::shared_ptr<ClauseTable> clauses;
         std::vector<Call> autoEntryCalls;
@@ -146,9 +182,11 @@ private:
         std::unordered_set<std::string> packageDiscoveryAttempts;
         std::unordered_map<const ClauseStmt*, std::filesystem::path> clauseOrigins;
         std::uint64_t programGeneration = 1;
+        std::unordered_map<SymbolId, std::uint64_t> symbolGenerations;
         std::size_t moduleLoads = 0;
         std::size_t cacheInvalidationDepth = 0;
         bool pendingCacheInvalidation = false;
+        std::unordered_map<SymbolId, std::string> contraries;
     };
 
     std::shared_ptr<ClauseTable> clauses_ = std::make_shared<ClauseTable>();
@@ -171,6 +209,8 @@ private:
     std::uint64_t referenceEvaluationGeneration_ = 0;
     std::unordered_set<std::string> activeReferenceEvaluations_;
     std::unordered_set<std::string> activeNegatedPredicates_;
+    std::unordered_map<SymbolId, std::string> contraries_;
+    std::unordered_map<SymbolId, std::shared_ptr<TableEvaluation>> tableCache_;
     std::set<std::filesystem::path> loadedFiles_;
     std::unordered_set<std::string> packageDiscoveryAttempts_;
     std::unordered_map<const ClauseStmt*, std::filesystem::path> clauseOrigins_;
@@ -183,6 +223,7 @@ private:
     EnvFramePool envFramePool_;
     size_t solveEpoch_ = 0;
     std::uint64_t programGeneration_ = 1;
+    std::unordered_map<SymbolId, std::uint64_t> symbolGenerations_;
     size_t renameCounter_ = 0;
     size_t threadCounter_ = 0;
     size_t cacheInvalidationDepth_ = 0;
@@ -200,12 +241,19 @@ private:
     std::size_t standardizedClauses_ = 0;
     std::size_t moduleLoads_ = 0;
     std::size_t nativeCalls_ = 0;
-    std::size_t nativeFactSnapshotCalls_ = 0;
+    std::size_t nativeFactProjectionCalls_ = 0;
     std::size_t nativeRequestBytes_ = 0;
-    std::size_t nativeFactSnapshotBytes_ = 0;
+    std::size_t nativeFactProjectionBytes_ = 0;
     std::size_t nativeSerializationMicros_ = 0;
+    std::size_t streamedModuleMicros_ = 0;
+    std::size_t factRegistrationMicros_ = 0;
     mutable std::size_t dispatchCacheHits_ = 0;
     mutable std::size_t dispatchCacheMisses_ = 0;
+    std::size_t tableCacheHits_ = 0;
+    std::size_t tableCacheMisses_ = 0;
+    std::size_t tableRounds_ = 0;
+    std::size_t tableDeltaAnswers_ = 0;
+    std::size_t provenanceNodes_ = 0;
 
     void solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals,
                         Env env,
@@ -240,6 +288,19 @@ private:
     bool evalRelationFind(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
     bool evalDependencySatisfied(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
     bool evalFactReferences(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
+    bool evalReasoningBuiltin(const TermExpr& term,
+                              const Env& env,
+                              std::shared_ptr<Expr>& out);
+    bool evalReasoningContrary(const TermExpr& term,
+                               const Env& env,
+                               std::shared_ptr<Expr>& out);
+    bool evalReasoningProve(const TermExpr& term,
+                            const Env& env,
+                            std::shared_ptr<Expr>& out);
+    bool evalReasoningGrade(const TermExpr& term,
+                            const Env& env,
+                            std::shared_ptr<Expr>& out,
+                            const std::shared_ptr<MapExpr>& exact = {});
     bool solveFactAttachment(const Call& call, Env& env);
     bool attachFactReference(const Call& call, Env& env, std::uint64_t sourceFactId);
     std::shared_ptr<ClauseStmt> resolveReferenceCallable(const std::shared_ptr<Expr>& callable,
@@ -289,6 +350,40 @@ private:
     void clearCachesNow();
 
     void validateNegationStratification(const Program& program) const;
+    bool isTableEligiblePredicate(const std::string& name,
+                                  SymbolId nameId,
+                                  std::unordered_set<SymbolId>& visiting,
+                                  std::unordered_set<SymbolId>& checked,
+                                  bool& recursive) const;
+    bool isTableEligibleGoal(const std::shared_ptr<Goal>& goal,
+                             SymbolId root,
+                             std::unordered_set<SymbolId>& visiting,
+                             std::unordered_set<SymbolId>& checked,
+                             bool& recursive) const;
+    std::shared_ptr<TableEvaluation> tableEvaluationFor(
+        const std::string& name,
+        SymbolId nameId,
+        bool requireRecursive);
+    std::shared_ptr<TableEvaluation> buildTableEvaluation(
+        const std::string& name,
+        SymbolId nameId);
+    bool tableEvaluationValid(const TableEvaluation& evaluation) const;
+    bool tableCallAnswers(const Call& call,
+                          const Env& env,
+                          std::vector<TableBinding>& bindings,
+                          std::shared_ptr<TableEvaluation>* evaluation = nullptr,
+                          bool requireRecursive = true);
+    std::vector<TableBinding> evaluateTableGoals(
+        const std::vector<std::shared_ptr<Goal>>& goals,
+        std::vector<TableBinding> inputs,
+        const TableEvaluation& evaluation,
+        std::optional<std::pair<SymbolId, std::size_t>> deltaPivot);
+    std::shared_ptr<MapExpr> materializeDerivationResult(
+        const Call& query,
+        const std::vector<TableBinding>& supporting,
+        const std::vector<TableBinding>& opposing,
+        const std::shared_ptr<TableEvaluation>& positiveEvaluation,
+        const std::shared_ptr<TableEvaluation>& negativeEvaluation) const;
 
     std::shared_ptr<ClauseStmt> standardizeApart(const std::shared_ptr<ClauseStmt>& clause);
     bool exprNeedsRename(const std::shared_ptr<Expr>& expr) const;

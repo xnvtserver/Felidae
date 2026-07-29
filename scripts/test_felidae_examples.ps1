@@ -1,7 +1,8 @@
 param(
     [string]$Exe = "build\felidae.exe",
     [string]$CelidaeExe = "build\celidae.exe",
-    [string]$DebugExe = "build\felidae_debug.exe"
+    [string]$DebugExe = "build\felidae_debug.exe",
+    [switch]$ReadOnly
 )
 
 $ErrorActionPreference = "Continue"
@@ -76,6 +77,8 @@ $negativeTests = @(
     @{ Name = "reject immutable reassignment"; File = "examples\invalid\reassign_immutable.fx"; Query = "? Bad(value: value)"; Expect = "already assigned and immutable" },
     @{ Name = "reject method immutable reassignment"; File = "examples\invalid\method_reassign.fx"; Query = "? BadResult(value: value)"; Expect = "already assigned and immutable" },
     @{ Name = "reject unknown extended parent"; File = "examples\invalid\method_unknown_parent.fx"; Query = "? Employee(name: name)"; Expect = "Unknown parent fact/type" },
+    @{ Name = "reject multiple inheritance cycle"; File = "examples\invalid\multiple_inheritance_cycle.fx"; Query = ""; Expect = "Inheritance cycle: 'Beta' cannot extend 'Alpha'" },
+    @{ Name = "reject ambiguous multiple inheritance field"; File = "examples\invalid\multiple_inheritance_ambiguous_field.fx"; Query = ""; Expect = "Ambiguous inherited field 'domain' for ConflictedFact" },
     @{ Name = "reject unknown call field"; File = "examples\invalid\unknown_call_field.fx"; Query = "? Bad(value: value)"; Expect = "Unknown field 'key' for Employee" },
     @{ Name = "reject unknown head type"; File = "examples\invalid\unknown_head_type.fx"; Query = "? Bad(value: value)"; Expect = "Unknown type annotation 'Name'" },
     @{ Name = "reject stray return after terminator"; File = "examples\invalid\stray_return.fx"; Query = ""; Expect = "'return' is only valid inside a method body" },
@@ -119,6 +122,7 @@ $negativeTests = @(
     @{ Name = "reject reference on unstored receiver"; File = "examples\invalid\reference_unstored_receiver.fx"; Query = ""; Expect = "Cannot evaluate fact field 'by' for references" }
     @{ Name = "reject invalid reference result"; File = "examples\invalid\reference_invalid_result.fx"; Query = ""; Expect = "must return ReferenceResult(result: TypedFact(...))" }
     @{ Name = "reject impure referenced method"; File = "examples\invalid\reference_impure_method.fx"; Query = ""; Expect = "is not pure: uses impure builtin 'system:print'" }
+    @{ Name = "reject invalid reasoning grade"; File = "examples\invalid\reasoning_invalid_grade.fx"; Query = ""; Expect = "Reasoning grades and reliability must be finite values between 0 and 1" }
 )
 
 $falseTests = @(
@@ -160,7 +164,15 @@ $directTests = @(
     @{ Name = "stdlib utilities"; Args = @("examples\stdlib_utilities.fx"); Expect = @('trimmed: "Alice,Engineer,SEA"', 'parts: ["Alice", "Engineer", "SEA"]', 'normalized: "Alice,Engineer,NYC"', 'has_engineer: "true"', 'starts_alice: "true"', 'ends_sea: "true"', 'has_office: "true"', 'office: "SEA"', 'sea_count: 2', 'deleted_count: 2', 'write_status: "ok"', 'second_line: "Engineer"', 'line_count: 3') },
     @{ Name = "insertion sort with typed exception handling"; Args = @("examples\insertion_sort.fx"); Expect = @('sorted: {ok: true, data: [1, 3, 3, 5, 7, 9], error: nil}', 'rejected: {ok: false, data: [], error: {__type: "Exception"', 'kind: "SortLimitExceeded"', 'source: "insertion_sort"') },
     @{ Name = "standard linear and binary search"; Args = @("v2_examples\standard_search_algorithms.fx"); Expect = @("linear_last: 63", "binary_last: 63", "missing: {linear: -1, binary: -1}") },
-    @{ Name = "native set and finite group packages"; Args = @("v2_examples\set_group_native.fx"); Expect = @("union_count: 5", "common_taste_count: 4", "fruit_only_taste_count: 1", "exact_disjoint: true", "has_sweet: true", "same_tastes: true", "fruit_subset: true", "valid: true", "closure: true", "associative: true", "identity: true", "inverse: true") },
+    @{ Name = "explicit logical transformations"; Args = @("examples\logical_transformations.fx"); Expect = @('transformation: "converse"', 'transformation: "contrapositive"', '__type: "Negation"', '__type: "ContradictionEvidence"') },
+    @{ Name = "fact set-theory inclusion exclusion proof"; Args = @("examples\fact_set_theory_proof.fx"); Expect = @('union_cardinality: 4', 'right_hand_side: 4', 'proved: true', 'v2_in_intersection: true', 'a_is_subset_of_union: true', 'union_is_superset_of_a: true') },
+    @{ Name = "generic nested subfact analysis"; Args = @("examples\nested_subfact_analysis.fx"); Expect = @('found: {found: true, depth: 4, path: ["regions", "[1]", "members", "[0]"]}', 'missing: {found: false, depth: nil, path: []}', 'bounded: {found: false, depth: nil, path: []}') },
+    @{ Name = "nested typed fact neighbours"; Args = @("examples\nested_fact_neighbors.fx"); Expect = @('nearest: {count: 3', '__type: "Person", name: "Ravi"', '__type: "Profile", region: "south"', '__type: "Person", name: "Leela"', 'direct: {count: 2') },
+    @{ Name = "multiple inheritance hierarchy selection"; Args = @("examples\multiple_inheritance_hierarchy.fx"); Expect = @('government_count: 3', 'people_count: 3', 'politician_count: 2', 'politician_public_domain: "public"', 'politician_people_category: "being"', '__type: "Politician"', '__type: "Policeman"') },
+    @{ Name = "multiple inheritance fact analysis"; Args = @("examples\multiple_inheritance_fact_analysis.fx"); Expect = @('people_is_ancestor: {matched: "true"', 'government_is_ancestor: {matched: "true"', 'people_is_direct_parent: {matched: "true"') },
+    @{ Name = "fact relation symmetry and asymmetry"; Args = @("examples\fact_relation_properties.fx"); Expect = @('mutual_respect: {pair_count: 2, node_count: 2, reflexive: false, symmetric: true, asymmetric: false, transitive: false}', 'hierarchy: {pair_count: 3, node_count: 3, reflexive: false, symmetric: false, asymmetric: true, transitive: true}') },
+    @{ Name = "input plus knowledge fact derivation"; Args = @("examples\input_knowledge_fact_derivation.fx"); Expect = @('__type: "EligibilityDecision"', 'applicant: {__type: "Applicant", name: "Ravi", region: "south"}', 'status: "approved"', 'score: 82', 'policy: "standard"', 'evidence_count: 3', 'rationale: "score satisfies stored policy"') },
+    @{ Name = "native set and finite group packages"; Args = @("v2_examples\set_group_native.fx"); Expect = @("union_count: 5", "common_taste_count: 4", "fruit_only_taste_count: 1", "exact_disjoint: true", "has_sweet: true", "same_tastes: true", "fruit_subset: true", "valid: true", "closure: true", "associative: true", "identity: true", "inverse: true", "abelian: true", "commutative: true") },
     @{ Name = "web server reusable integration test"; Args = @("examples\web_server_test.fx"); Expect = @('ready: "ok"', 'get: "Hello World"', 'post: "Hello World"', 'put: "Hello World"', 'delete: "Hello World"') },
     @{ Name = "fx self analysis line classifier"; Args = @("examples\fx_self_analysis.fx"); Expect = @('line_count: 23', 'http_call_count: 1', 'missing_language_primitives:', 'string.split', 'method body builtin output binding') },
     @{ Name = "data structure stress"; Args = @("examples\data_structure_stress.fx"); Expect = @('count: 2', 'generated: "ok"', 'name: "Alice"', 'known_gap: "expression array:get is not evaluated yet"') },
@@ -177,7 +189,7 @@ $directTests = @(
     @{ Name = "native fact semantic phase 1"; Args = @("examples\fact_semantic_phase1.fx"); Expect = @('projection: {kind: "fact"', 'node_count:', 'similarity: {score:', 'algorithm: "semantic_recursive"', 'lexical_algorithm: "wu_palmer"', 'difference: {mode: "property_exact"', 'near: {matched:', 'wordnet_internal_service_pending_for_phase_2') },
     @{ Name = "fact semantic unify is explicit"; Args = @("examples\fact_import_keeps_exact_unification.fx"); Expect = @('semantic: {unified:', 'threshold:', 'wordnet_internal_service_pending_for_phase_2') },
     @{ Name = "minimal fact similarity"; Args = @("examples\fact_similarity_minimal.fx"); Expect = @('similar: {score:', 'lexical_algorithm: "leacock_chodorow"', 'propertyMatch: {score:', 'difference: {mode: "property_exact"', 'nearest: {count: 1', 'name: "Ravi"') },
-    @{ Name = "fact reasoning and analysis phase 2"; Args = @("examples\fact_reasoning_phase2.fx"); Expect = @('propertyComparison: {score:', 'mode: "property_exact"', 'semanticSimilarity: {score:', 'lexical_algorithm: "leacock_chodorow"', 'common: {ancestor_type: "Person"', 'path: {reachable:', 'distance: 2', 'evidence: {__type: "DerivationResult"', 'proof_status: "evidence_only"', 'nearest: {count: 1', 'next: {prediction: {__type: "ClimatePrediction"', 'method: "numeric_gini_stump"', 'split: {feature: "humidity"', 'model_fx: "DecisionTreeModel(', 'applied: {prediction: "rainy"', 'decision_route: ["numeric_split_right"]', 'evaluated: {model_type: "decision_tree"', 'accuracy: 1', 'savedModel: "ok"') },
+    @{ Name = "fact reasoning and analysis phase 2"; Args = @("examples\fact_reasoning_phase2.fx"); Expect = @('propertyComparison: {score:', 'mode: "property_exact"', 'semanticSimilarity: {score:', 'lexical_algorithm: "leacock_chodorow"', 'common: {ancestor_type: "Person"', 'path: {reachable:', 'distance: 2', 'evidence: {__type: "DerivationResult"', 'truth_status: "unknown"', 'fuzzy_degree: 0.8', 'nearest: {count: 1', 'next: {prediction: {__type: "ClimatePrediction"', 'method: "numeric_gini_stump"', 'split: {feature: "humidity"', 'model_fx: "DecisionTreeModel(', 'applied: {prediction: "rainy"', 'decision_route: ["numeric_split_right"]', 'evaluated: {model_type: "decision_tree"', 'accuracy: 1', 'savedModel: "ok"') },
     @{ Name = "fact data science boundaries"; Args = @("examples\fact_data_science_boundaries.fx"); Expect = @('floatArithmetic: {sum: 0.3', 'numericStats: {meanWeight:', 'profile: {method: "numeric_fact_profile"', 'clusters: {model_type: "k_means"', 'scaling: "standardized"', 'classified: {prediction: "livestock"', 'predictedWeight: {prediction:', 'goatSheep: {score:', 'method: "fact_property_ancestor"', 'property_score:', 'common_ancestor: "Ruminant"', 'goatWolf: {score:', 'common_ancestor: "CommonFact"', 'nearestLivestock: {count: 2', 'rejected_count: 1', 'generatedSynset: {__type: "RuminantSynset"', 'ancestor: "Ruminant"') },
     @{ Name = "fact comparison scenarios"; Args = @("examples\fact_comparison_scenarios.fx"); Expect = @('employeeSibling: {score:', 'method: "fact_property_ancestor"', 'common_ancestor: "Employee"', 'employeeContractor: {score:', 'common_ancestor: "CommonFact"', 'sensorSibling: {score:', 'common_ancestor: "Sensor"', 'sauceSibling: {score:', 'common_ancestor: "Sauce"', 'personnelRanking: {count: 2', 'rejected_count: 1', 'EmployeeCapabilitySynset', 'SauceFlavorSynset', 'scenarioConfidence:') },
     @{ Name = "fact comparison edge cases"; Args = @("examples\fact_comparison_edge_cases.fx"); Expect = @('propertyNoAncestor: {score:', 'common_ancestor: "CommonFact"', 'ancestorPoorProperties: {score:', 'common_ancestor: "Sensor"', 'missingFieldComparison: {score:', 'exactPropertyComparison: {score:', 'constrained: {count: 2', 'matched_candidate_count: 2', 'rejected_count: 2') },
@@ -191,12 +203,14 @@ $directTests = @(
     @{ Name = "ml fact mining"; Args = @("examples\ml_fact_mining.fx"); Expect = @('profile: {method: "numeric_fact_profile"', 'spendVisitCorrelation: {method: "pearson_fact_correlation"', 'clusters: {model_type: "k_means"', 'method: "k_means_numeric_facts"', 'trained_count: 4', 'associations: {method: "key_value_association_mining"', 'region=south', 'segment=starter', 'model: {model_type: "decision_tree"', 'spendModel: {model_type: "linear_regression"', 'split: {feature: "age"', 'predicted: {prediction: "premium"', 'predictedSpend: {prediction:', 'factPrediction: {prediction: {prediction: "starter"', 'numericPrediction: {prediction: {prediction:', 'savedModel: "ok"', 'savedRegression: "ok"') },
     @{ Name = "ml sensor fact mining"; Args = @("examples\ml_sensor_fact_mining.fx"); Expect = @('profile: {method: "numeric_fact_profile"', 'clusters: {model_type: "k_means"', 'correlation: {method: "pearson_fact_correlation"', 'stateModel: {model_type: "decision_tree"', 'split: {feature: "vibration"', 'newReading: {prediction: "risk"') },
     @{ Name = "ml sales forecast"; Args = @("examples\ml_sales_forecast.fx"); Expect = @('profile: {method: "numeric_fact_profile"', 'visitorRevenue: {method: "pearson_fact_correlation"', 'revenueModel: {model_type: "linear_regression"', 'feature: "visitors"', 'forecast: {prediction:', 'generated: {prediction: {prediction:', 'saved: "ok"') },
-    @{ Name = "cooking expert system"; Args = @("examples\cooking_expert_system.fx"); Expect = @('proposal: {request:', 'predictedDishType: {prediction: "starter"', 'rankedIngredients: {count: 1', 'matched_candidate_count: 1', 'rejected_count: 7', 'required_fields: ["category", "role"]', 'name: "Tomato"', 'important_differences:', 'ingredientFitnessExample: {ingredient: "Tomato"', 'ingredientClusters: {model_type: "k_means"', 'ingredientProfile: {method: "numeric_fact_profile"', 'dishAssociations: {method: "key_value_association_mining"', 'dishType=starter', 'evidence: {__type: "DerivationResult"', 'proof_status: "evidence_only"', 'justification: "The proposal is based on property similarity') },
+    @{ Name = "cooking expert system"; Args = @("examples\cooking_expert_system.fx"); Expect = @('proposal: {request:', 'predictedDishType: {prediction: "starter"', 'rankedIngredients: {count: 1', 'matched_candidate_count: 1', 'rejected_count: 7', 'required_fields: ["category", "role"]', 'name: "Tomato"', 'important_differences:', 'ingredientFitnessExample: {ingredient: "Tomato"', 'ingredientClusters: {model_type: "k_means"', 'ingredientProfile: {method: "numeric_fact_profile"', 'dishAssociations: {method: "key_value_association_mining"', 'dishType=starter', 'evidence: {__type: "DerivationResult"', 'truth_status: "unknown"', 'justification: "The proposal keeps similarity, prediction confidence, and graded evidence explicit and auditable."') },
     @{ Name = "cache import thread stress"; Args = @("examples\cache_thread_import_stress.fx"); Expect = @('start1: "started"', 'start2: "started"', 'start3: "started"', 'count: 12', 'Eve', 'Engineer') },
     @{ Name = "then pipeline direct execution"; Args = @("examples\then_pipeline.fx"); Expect = @('result: 4', 'direct: {seen: 4, tag: "wrapped"}', 'returned: 8', 'compactReturned: 10', 'methodThen: 10', 'methodIfThen: 12', 'methodElseThen: 1', 'nested: {seen: 13, tag: "wrapped"}', 'stopped: nil', 'arithmeticPrecedence: 10', 'conditional: "condition-ok"') },
     @{ Name = "then pipeline command line query"; Args = @("examples\then_pipeline.fx", "? Increment(value: 1) then Double(value: system.result) == 4"); Expect = @("true") },
     @{ Name = "auto system print"; Args = @("examples\system_print.fx"); Expect = @("Felidae system running!", "{}") },
     @{ Name = "system printf formatting"; Args = @("examples\printf_formatting.fx"); Expect = @("Hello Felidae", "Decision: Ava is approved", "Score: 0.92", '"printf complete"') },
+    @{ Name = "four-valued exact and graded reasoning"; Args = @("examples\four_valued_reasoning.fx"); Expect = @('truth_status: "both"', 'truth_status: "proved"', 'truth_status: "disproved"', 'truth_status: "unknown"', 'fuzzy_degree: 0.72', 'opposition_degree: 0.45') },
+    @{ Name = "tabled recursive contradiction reasoning"; Args = @("examples\tabled_exact_reasoning.fx"); Expect = @('truth_status: "both"', 'supporting_rules: ["Reachable"]', 'opposing_rules: ["NotReachable"]', 'fuzzy_degree: 0.736', 'opposition_degree: 0.675') },
     @{ Name = "main returns status value"; Args = @("examples\main_comment_return.fx"); Expect = @("Felidae system running!", '"ok"') },
     @{ Name = "direct no main"; Args = @("examples\family.fx"); Expect = @("Program loaded successfully. No main() method found.", "Use a query argument, add a zero-argument entry call, or run with --repl.") },
     @{ Name = "help"; Args = @("--help"); Expect = @("Felidae Logic Programming Language v0.1.0", ".fx", "Total commands supported: 7", "felidae --repl examples/main.fx", "functional logic language", "______") },
@@ -212,10 +226,11 @@ $debugCheckTests = @(
 $celidaeTests = @(
     @{ Name = "celidae profiles country fact db"; Args = @("examples\data\converted_csv_country.fx", "--inspect-graph"); Expect = @('"detail":"records=249 fields=3"', '"detail":"present=249 missing=0 coverage=100.0%"') },
     @{ Name = "celidae ER diagram excludes execution nodes"; Args = @("examples\data\converted_csv_country.fx", "--json", "--type=er"); Expect = @('"mode":"er"', '"label":"Country","kind":"fact"', '"kind":"field"') },
+    @{ Name = "celidae ER diagram preserves every direct parent"; Args = @("examples\multiple_inheritance_hierarchy.fx", "--json", "--type=er"); Expect = @('"from":"fact:Politician","to":"fact:Government","label":"extends"', '"from":"fact:Politician","to":"fact:People","label":"extends"') },
     @{ Name = "celidae dependency graph excludes ER fields"; Args = @("examples\country_query.fx", "--json", "--type=graph", "--load-imports"); Expect = @('"mode":"graph"', '"label":"IndiaCountry","kind":"method"', '"kind":"library"') },
     @{ Name = "celidae expert graph records fact attachments"; Args = @("examples\expert_intelligence_system.fx", "--json", "--type=graph"); Expect = @('"label":"Fact:depends","kind":"library"', '"label":"Fact:relate","kind":"library"', '"label":"attaches dependency"', '"label":"attaches relationship"') },
     @{ Name = "celidae graph records dynamic reference callables"; Args = @("examples\dynamic_fact_references.fx", "--json", "--type=graph"); Expect = @('"label":"Fact:references","kind":"library"', '"label":"Physics:velocity","kind":"method"', '"label":"references"') },
-    @{ Name = "celidae viewer json loads imported country fact db"; Args = @("examples\country_query.fx", "--visualize-data-json", "--load-imports"); Expect = @("FELIDAE_GRAPH_BEGIN", '"label":"Country","kind":"fact","detail":"records=249 fields=3"', '"label":"IndiaCountry","kind":"method"') },
+    @{ Name = "celidae viewer json loads imported country schema"; Args = @("examples\country_query.fx", "--visualize-data-json", "--load-imports"); Expect = @("FELIDAE_GRAPH_BEGIN", '"mode":"schema"', '"label":"Country","kind":"fact","detail":"records=249 fields=3"', '"truncated":false') },
     @{ Name = "celidae viewer html loads imported country fact db"; Args = @("examples\country_query.fx", "--visualize-data-html", "--load-imports"); Expect = @("<!doctype html>", "Celidae Fact Graph", '"label":"Country","kind":"fact","detail":"records=249 fields=3"') }
 )
 
@@ -227,6 +242,15 @@ $directInputTests = @(
 $replTests = @(
     @{ Name = "repl query global builtin"; File = "examples\direct_main.fx"; Input = "help`nversion`nAdults`ncount(Adults)`n? Person(name: x)`nexit`n"; Expect = @("REPL commands:", "Felidae Logic Programming Language v0.1.0", "Ravi", "1", 'x = "Default"', 'x = "Ravi"', 'x = "Anu"') }
 )
+
+if ($ReadOnly) {
+    # Database/export examples intentionally mutate source-backed fixtures.
+    # Keep a deterministic read-only regression mode for dirty worktrees and
+    # CI review jobs that must not rewrite user data.
+    $directTests = @($directTests | Where-Object {
+        $_.Name -notmatch 'database|fact db|pizza|connection|csv|file operations|streaming file|stdlib utilities'
+    })
+}
 
 $failed = 0
 

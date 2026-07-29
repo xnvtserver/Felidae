@@ -1,6 +1,8 @@
 param(
     [int[]] $Counts = @(10000, 100000, 1000000),
     [int] $RepeatedQueries = 20,
+    [int] $WarmupRuns = 1,
+    [int] $MeasuredRuns = 3,
     [string] $Exe = "",
     [string] $DebugExe = "",
     [string] $CelidaeExe = ""
@@ -13,6 +15,45 @@ $debugExe = if ($DebugExe) { $DebugExe } else { Join-Path $root "build\felidae_d
 $celidaeExe = if ($CelidaeExe) { $CelidaeExe } else { Join-Path $root "build\celidae.exe" }
 if (-not (Test-Path -LiteralPath $exe)) {
     throw "Missing $exe. Run .\build.cmd --configuration production first."
+}
+if ($WarmupRuns -lt 0) { throw "WarmupRuns cannot be negative." }
+if ($MeasuredRuns -lt 1) { throw "MeasuredRuns must be at least one." }
+
+function Get-Distribution {
+    param(
+        [object[]] $Samples,
+        [string] $Property
+    )
+    $values = @($Samples | ForEach-Object { [double]($_.$Property) } |
+        Where-Object { -not [double]::IsNaN($_) } | Sort-Object)
+    if ($values.Count -eq 0) {
+        return [pscustomobject]@{
+            Median = [double]::NaN
+            P95 = [double]::NaN
+            Cv = [double]::NaN
+        }
+    }
+    $middle = [int][math]::Floor($values.Count / 2)
+    $median = if (($values.Count % 2) -eq 0) {
+        ($values[$middle - 1] + $values[$middle]) / 2.0
+    } else {
+        $values[$middle]
+    }
+    $p95Index = [math]::Max(
+        0,
+        [math]::Min($values.Count - 1, [int][math]::Ceiling($values.Count * 0.95) - 1))
+    $mean = ($values | Measure-Object -Average).Average
+    $variance = 0.0
+    foreach ($value in $values) {
+        $difference = $value - $mean
+        $variance += $difference * $difference
+    }
+    $variance /= $values.Count
+    [pscustomobject]@{
+        Median = $median
+        P95 = $values[$p95Index]
+        Cv = if ($mean -eq 0.0) { 0.0 } else { [math]::Sqrt($variance) / $mean }
+    }
 }
 
 function New-LargeFactProgram {
@@ -81,6 +122,8 @@ function Invoke-MeasuredQuery {
         FactCandidates = $metrics.runtime.factCandidates
         EnvCopies = $metrics.runtime.environmentCopies
         Unifications = $metrics.runtime.unificationAttempts
+        StreamedModuleMs = $metrics.runtime.streamedModuleMicros / 1000.0
+        FactRegistrationMs = $metrics.runtime.factRegistrationMicros / 1000.0
     }
 }
 
@@ -131,40 +174,86 @@ $results = foreach ($count in ($Counts | Sort-Object -Unique)) {
     $program = New-LargeFactProgram -Count $count
     try {
         $query = "? LargeFact(id: $($count - 1), group: group)"
-        $measurement = Invoke-MeasuredQuery -Program $program -Query $query -Repeat $RepeatedQueries
-        $debugMeasurement = Invoke-MeasuredTool -Executable $debugExe -Arguments @($program, "--check-json")
-        $celidaeMeasurement = Invoke-MeasuredTool -Executable $celidaeExe -Arguments @($program, "--json")
+        for ($warmup = 0; $warmup -lt $WarmupRuns; $warmup++) {
+            [void](Invoke-MeasuredQuery -Program $program -Query $query -Repeat $RepeatedQueries)
+            [void](Invoke-MeasuredTool -Executable $debugExe -Arguments @($program, "--check-json"))
+            [void](Invoke-MeasuredTool -Executable $celidaeExe -Arguments @($program, "--json"))
+        }
+        $measurements = @()
+        $debugMeasurements = @()
+        $celidaeMeasurements = @()
+        for ($run = 0; $run -lt $MeasuredRuns; $run++) {
+            $measurements += Invoke-MeasuredQuery -Program $program -Query $query -Repeat $RepeatedQueries
+            $debugMeasurements += Invoke-MeasuredTool -Executable $debugExe -Arguments @($program, "--check-json")
+            $celidaeMeasurements += Invoke-MeasuredTool -Executable $celidaeExe -Arguments @($program, "--json")
+        }
+        $load = Get-Distribution $measurements "LoadMs"
+        $firstQuery = Get-Distribution $measurements "FirstQueryMs"
+        $warmQuery = Get-Distribution $measurements "AverageQueryMs"
+        $streamed = Get-Distribution $measurements "StreamedModuleMs"
+        $registration = Get-Distribution $measurements "FactRegistrationMs"
+        $debugTime = Get-Distribution $debugMeasurements "TotalMs"
+        $debugMemory = Get-Distribution $debugMeasurements "PeakMb"
+        $celidaeTime = Get-Distribution $celidaeMeasurements "TotalMs"
+        $celidaeMemory = Get-Distribution $celidaeMeasurements "PeakMb"
+        $measurement = $measurements[0]
         [pscustomobject]@{
             Facts = $count
-            LoadMs = $measurement.LoadMs
-            FirstQueryMs = $measurement.FirstQueryMs
-            QueryAvgMs = $measurement.AverageQueryMs
+            Runs = $MeasuredRuns
+            LoadMs = $load.Median
+            LoadP95Ms = $load.P95
+            LoadCv = $load.Cv
+            FirstQueryMs = $firstQuery.Median
+            FirstQueryP95Ms = $firstQuery.P95
+            FirstQueryCv = $firstQuery.Cv
+            QueryAvgMs = $warmQuery.Median
+            QueryP95Ms = $warmQuery.P95
+            QueryCv = $warmQuery.Cv
             FactCandidates = $measurement.FactCandidates
             EnvCopies = $measurement.EnvCopies
             Unifications = $measurement.Unifications
-            DebugMs = $debugMeasurement.TotalMs
-            DebugPeakMb = $debugMeasurement.PeakMb
-            CelidaeMs = $celidaeMeasurement.TotalMs
-            CelidaePeakMb = $celidaeMeasurement.PeakMb
+            StreamedModuleMs = $streamed.Median
+            FactRegistrationMs = $registration.Median
+            DebugMs = $debugTime.Median
+            DebugP95Ms = $debugTime.P95
+            DebugCv = $debugTime.Cv
+            DebugPeakMb = $debugMemory.P95
+            CelidaeMs = $celidaeTime.Median
+            CelidaeP95Ms = $celidaeTime.P95
+            CelidaeCv = $celidaeTime.Cv
+            CelidaePeakMb = $celidaeMemory.P95
         }
     } finally {
         Remove-Item -LiteralPath $program -Force -ErrorAction SilentlyContinue
     }
 }
 
-"| Facts | Load | First query | Repeated query avg | Fact candidates | Env copies | Unifications | Debugger | Debug RAM | Celidae | Celidae RAM |"
-"|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+"| Facts | Runs | Load median / P95 / CV | Stream parse/register | Fact registration | First query median / P95 / CV | Repeated query median | Fact candidates | Env copies | Unifications | Debugger median / P95 / CV | Debug RAM P95 | Celidae median / P95 / CV | Celidae RAM P95 |"
+"|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
 foreach ($result in $results) {
-    "| {0:N0} | `{1:N2} ms` | `{2:N3} ms` | `{3:N3} ms` | `{4:N0}` | `{5:N0}` | `{6:N0}` | `{7:N2} ms` | `{8:N2} MB` | `{9:N2} ms` | `{10:N2} MB` |" -f `
+    "| {0:N0} | {1:N0} | `{2:N2} / {3:N2} ms / {4:P2}` | `{5:N2} ms` | `{6:N2} ms` | `{7:N3} / {8:N3} ms / {9:P2}` | `{10:N3} ms` | `{11:N0}` | `{12:N0}` | `{13:N0}` | `{14:N2} / {15:N2} ms / {16:P2}` | `{17:N2} MB` | `{18:N2} / {19:N2} ms / {20:P2}` | `{21:N2} MB` |" -f `
         $result.Facts,
+        $result.Runs,
         $result.LoadMs,
+        $result.LoadP95Ms,
+        $result.LoadCv,
+        $result.StreamedModuleMs,
+        $result.FactRegistrationMs,
         $result.FirstQueryMs,
+        $result.FirstQueryP95Ms,
+        $result.FirstQueryCv,
         $result.QueryAvgMs,
         $result.FactCandidates,
         $result.EnvCopies,
         $result.Unifications,
         $result.DebugMs,
+        $result.DebugP95Ms,
+        $result.DebugCv,
         $result.DebugPeakMb,
         $result.CelidaeMs,
+        $result.CelidaeP95Ms,
+        $result.CelidaeCv,
         $result.CelidaePeakMb
 }
+
+"FELIDAE_LARGE_FACT_BENCHMARK_JSON " + ($results | ConvertTo-Json -Compress)

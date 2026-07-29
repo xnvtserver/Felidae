@@ -101,6 +101,17 @@ bool hasInverses(const FiniteOperation& operation, const Value& identity) {
     return true;
 }
 
+bool commutative(const FiniteOperation& operation) {
+    for (const Value& left : operation.members.items) {
+        for (const Value& right : operation.members.items) {
+            const Value* forward = operation.apply(left, right);
+            const Value* reverse = operation.apply(right, left);
+            if (!forward || !reverse || key(*forward) != key(*reverse)) return false;
+        }
+    }
+    return true;
+}
+
 Value dispatch(const std::string& functionName, const Value& args) {
     const size_t separator = functionName.rfind(':');
     const std::string operationName =
@@ -111,19 +122,26 @@ Value dispatch(const std::string& functionName, const Value& args) {
     const bool associativity = associative(operation);
     const bool identityValid = identity && hasIdentity(operation, *identity);
     const bool inverseValid = identity && hasInverses(operation, *identity);
+    const bool commutativity = commutative(operation);
     if (operationName == "closed") return boolean(closure);
     if (operationName == "associative") return boolean(associativity);
     if (operationName == "identity") return boolean(identityValid);
     if (operationName == "inverse") return boolean(inverseValid);
-    if (operationName != "validate") throw std::runtime_error("Unsupported Group native function");
+    if (operationName == "commutative") return boolean(commutativity);
+    if (operationName != "validate" && operationName != "abelian") {
+        throw std::runtime_error("Unsupported Group native function");
+    }
     Value result;
     result.kind = Value::Kind::Object;
-    result.fieldOrder = {"valid", "closure", "associative", "identity", "inverse"};
+    result.fieldOrder = {"valid", "closure", "associative", "identity", "inverse", "commutative", "abelian"};
     result.fields.emplace("closure", boolean(closure));
     result.fields.emplace("associative", boolean(associativity));
     result.fields.emplace("identity", boolean(identityValid));
     result.fields.emplace("inverse", boolean(inverseValid));
-    result.fields.emplace("valid", boolean(closure && associativity && identityValid && inverseValid));
+    result.fields.emplace("commutative", boolean(commutativity));
+    const bool valid = closure && associativity && identityValid && inverseValid;
+    result.fields.emplace("abelian", boolean(valid && commutativity));
+    result.fields.emplace("valid", boolean(valid));
     return result;
 }
 }

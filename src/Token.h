@@ -146,6 +146,11 @@ enum class BuiltinId {
     ProbabilitySample,
     ProbabilityWeightedChoice,
 
+    ReasoningContrary,
+    ReasoningProve,
+    ReasoningGrade,
+    ReasoningDecide,
+
     MlSigmoid,
     MlRelu,
     MlDot,

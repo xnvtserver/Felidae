@@ -139,6 +139,7 @@ static void printAstDiagnostics(const std::vector<AstDiagnostic>& diagnostics) {
     for (const auto& diagnostic : diagnostics) {
         std::cout << "FELIDAE_DIAGNOSTIC "
                   << "severity=" << diagnostic.severity
+                  << " code=" << (diagnostic.code.empty() ? "felidae.ast" : diagnostic.code)
                   << " line=" << diagnostic.line
                   << " column=" << diagnostic.column
                   << " message=" << diagnostic.message << "\n";
@@ -341,29 +342,30 @@ static std::string fileUriToPath(std::string uri) {
 static std::string analyzeTextJson(const fs::path& path, const std::string& text) {
     try {
         constexpr size_t kMaxTextCacheEntries = 128;
-        struct CachedTextProgram {
+        struct CachedTextAnalysis {
             size_t size = 0;
             size_t hash = 0;
             size_t lastUsed = 0;
-            Program program;
             std::vector<AstDiagnostic> diagnostics;
         };
-        static std::unordered_map<std::string, CachedTextProgram> textCache;
+        static std::unordered_map<std::string, CachedTextAnalysis> textCache;
         static size_t textCacheClock = 0;
 
         const auto key = fs::absolute(path).lexically_normal().string();
         const auto hash = std::hash<std::string>{}(text);
-        Program program;
         std::vector<AstDiagnostic> diagnostics;
         auto cached = textCache.find(key);
         if (cached != textCache.end() && cached->second.size == text.size() && cached->second.hash == hash) {
             cached->second.lastUsed = ++textCacheClock;
-            program = cached->second.program;
             diagnostics = cached->second.diagnostics;
         } else {
-            program = Tooling::parseText(text);
+            Program program = Tooling::parseText(text);
             diagnostics = analyzeProgramAst(program);
-            textCache[key] = CachedTextProgram{text.size(), hash, ++textCacheClock, program, diagnostics};
+            for (auto& diagnostic : diagnostics) diagnostic.file = key;
+            // Only compact diagnostics survive this request. Keeping Program here
+            // retained every statement and expression for each open editor file.
+            textCache[key] = CachedTextAnalysis{
+                text.size(), hash, ++textCacheClock, diagnostics};
             if (textCache.size() > kMaxTextCacheEntries) {
                 auto oldest = textCache.end();
                 for (auto it = textCache.begin(); it != textCache.end(); ++it) {
@@ -390,6 +392,8 @@ static std::string analyzeFileJson(const fs::path& path) {
                 analysis.consume(statement);
             });
         auto diagnostics = analysis.finish();
+        const auto file = fs::absolute(path).lexically_normal().string();
+        for (auto& diagnostic : diagnostics) diagnostic.file = file;
         return diagnosticsJson(diagnostics);
     } catch (const std::exception& e) {
         return errorJson(e.what());
@@ -525,6 +529,9 @@ int main(int argc, char** argv) {
                 analysis.consume(statement);
             });
         auto astDiagnostics = analysis.finish();
+        const auto analyzedFile =
+            fs::absolute(*options.programFile).lexically_normal().string();
+        for (auto& diagnostic : astDiagnostics) diagnostic.file = analyzedFile;
         const auto analysisMicros = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - analysisStarted).count();
         if (!dataOutputOnly) {

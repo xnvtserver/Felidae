@@ -5,6 +5,7 @@
 #include "Symbol.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cstdint>
 #include <fstream>
@@ -211,6 +212,7 @@ void loadProgramRoot(const fs::path& file,
                      const std::function<void(const Program&)>& afterChunk) {
     fs::path normalized = resolveProgramEntryPath(file);
     fs::path baseDir = normalized.parent_path();
+    const auto streamStarted = std::chrono::steady_clock::now();
     interpreter.beginModuleTransaction();
     try {
         if (afterChunk) {
@@ -232,6 +234,9 @@ void loadProgramRoot(const fs::path& file,
             });
         }
         interpreter.commitModuleTransaction();
+        interpreter.recordStreamedModuleMicros(static_cast<std::size_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - streamStarted).count()));
     } catch (...) {
         interpreter.rollbackModuleTransaction();
         throw;

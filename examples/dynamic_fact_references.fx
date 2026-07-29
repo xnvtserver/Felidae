@@ -39,8 +39,8 @@ main() =>
         factor: Time(seconds: 5.0)
     )
     defaultsAgain := Fact.references(input: motion)
-    return {
+    return ReferenceEvaluationReport(
         defaults: defaults,
         velocity_at_five: velocityAtFive,
         defaults_again: defaultsAgain
-    }
+    )

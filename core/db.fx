@@ -51,7 +51,7 @@ db.insert(connection: any, data: any) =>
     result := system_library_loader(
         module: "db",
         function: "insertOneFile",
-        args: {rows: [], path: connection.path, type: connection.model, key: "id", data: data}
+        args: {rows: [], path: connection.path, type: connection.model, key: "", data: data}
     )
     return db.operationResult(result: result)
 

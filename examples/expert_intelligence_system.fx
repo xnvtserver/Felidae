@@ -16,46 +16,46 @@ PreferredLoanPolicy extend LoanPolicy(id: "preferred-policy", name: "preferred")
 # Source-owned membership exposes only evidence relevant to the policy.  The
 # policy family owns the final recommendation and can use attached relations.
 Applicant.membership(input: Applicant, against: LoanPolicy) =>
-    return {
+    return ApplicantEvidence(
         applicantId: input.id,
         creditScore: input.creditScore,
         monthlyIncome: input.monthlyIncome,
         employment: input.employment
-    }
+    )
 
 LoanPolicy.compareMembership(context: Fact) =>
     verifiedIncome := Relation.find(input: context.relationships, name: "verified-income")
     if context.membership.creditScore >= 760 then
         if verifiedIncome != nil then
-            return {
+            return LoanDecisionAssessment(
                 state: "approved",
                 rule: "high_credit_with_verified_income",
                 applicantId: context.membership.applicantId,
                 evidence: context.membership,
                 relationship: verifiedIncome
-            }
+            )
         else
-            return {
+            return LoanDecisionAssessment(
                 state: "manual-review",
                 rule: "high_credit_without_income_relationship",
                 applicantId: context.membership.applicantId,
                 evidence: context.membership
-            }
+            )
     else
         if context.membership.creditScore >= 650 then
-            return {
+            return LoanDecisionAssessment(
                 state: "manual-review",
                 rule: "medium_credit",
                 applicantId: context.membership.applicantId,
                 evidence: context.membership
-            }
+            )
         else
-            return {
+            return LoanDecisionAssessment(
                 state: "declined",
                 rule: "low_credit",
                 applicantId: context.membership.applicantId,
                 evidence: context.membership
-            }
+            )
 
 # Presentation is intentionally separate from reasoning. The comparison still
 # retains complete evidence and provenance, while the example prints a report

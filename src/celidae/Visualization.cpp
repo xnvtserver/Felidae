@@ -3,6 +3,7 @@
 #include "BuiltinRegistry.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <iomanip>
 #include <map>
@@ -40,6 +41,17 @@ std::string jsonEscape(const std::string& value) {
 
 std::string nodeId(const std::string& kind, const std::string& name) {
     return kind + ":" + name;
+}
+
+std::string stableEdgeId(const std::string& identity) {
+    std::uint64_t hash = 1469598103934665603ull;
+    for (const unsigned char ch : identity) {
+        hash ^= ch;
+        hash *= 1099511628211ull;
+    }
+    std::ostringstream out;
+    out << "edge:" << std::hex << hash;
+    return out.str();
 }
 
 bool hasSuffix(const std::string& value, const std::string& suffix) {
@@ -99,7 +111,8 @@ struct GraphWriter {
         if (!edgeIds.insert(identity).second) return;
         if (!firstEdge) edges << ",";
         firstEdge = false;
-        edges << "{\"from\":\"" << jsonEscape(from)
+        edges << "{\"id\":\"" << stableEdgeId(identity)
+              << "\",\"from\":\"" << jsonEscape(from)
               << "\",\"to\":\"" << jsonEscape(to)
               << "\",\"label\":\"" << jsonEscape(label) << "\"}";
     }
@@ -288,7 +301,8 @@ std::string SchemaGraphAccumulator::json(
     const std::vector<std::string>& unresolvedImports) const {
     GraphWriter graph;
     const bool includeFields = type != DiagramType::Graph;
-    const bool includeExecution = type != DiagramType::Er;
+    const bool includeExecution = type == DiagramType::Graph;
+    const bool includeImports = type != DiagramType::Er;
     auto classify = [&](const std::string& name) {
         if (impl_->methods.count(name)) return std::string("method");
         if (impl_->facts.count(name)) return std::string("fact");
@@ -330,10 +344,10 @@ std::string SchemaGraphAccumulator::json(
     if (includeExecution) for (const auto& global : impl_->globals) {
         graph.node(nodeId("global", global), global, "global");
     }
-    if (includeExecution) for (const auto& import : impl_->imports) {
+    if (includeImports) for (const auto& import : impl_->imports) {
         graph.node(nodeId("library", import), import, "library");
     }
-    if (includeExecution) for (const auto& unresolved : unresolvedImports) {
+    if (includeImports) for (const auto& unresolved : unresolvedImports) {
         graph.node(
             nodeId("library", unresolved),
             unresolved,
@@ -358,6 +372,8 @@ std::string SchemaGraphAccumulator::json(
         << "\"factTypes\":" << impl_->facts.size() << ","
         << "\"methods\":" << impl_->methods.size() << ","
         << "\"globals\":" << impl_->globals.size() << "},"
+        << "\"truncation\":{\"truncated\":false,\"omittedNodes\":0,"
+           "\"omittedEdges\":0},"
         << "\"nodes\":[" << graph.nodes.str()
         << "],\"edges\":[" << graph.edges.str() << "]}";
     return out.str();

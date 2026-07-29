@@ -17,3 +17,9 @@ Group.identity(set: array, table: array, identity: any) =>
 
 Group.inverse(set: array, table: array, identity: any) =>
     return (system_library_loader(module: "group", function: "inverse", args: {set: set, table: table, identity: identity}))
+
+Group.commutative(set: array, table: array) =>
+    return (system_library_loader(module: "group", function: "commutative", args: {set: set, table: table}))
+
+Group.abelian(set: array, table: array, identity: any) =>
+    return (system_library_loader(module: "group", function: "abelian", args: {set: set, table: table, identity: identity}))

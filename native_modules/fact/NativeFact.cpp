@@ -700,6 +700,164 @@ bool jsonEqual(const Json& left, const Json& right) {
     return jsonText(left) == jsonText(right);
 }
 
+std::string relationPropertiesResponse(const Json& args) {
+    const Json* pairs = field(args, "pairs");
+    if (!pairs || pairs->kind != Json::Array) {
+        return "{\"error\":\"Relation.properties expects pairs as an array of [left, right] values\"}";
+    }
+    if (pairs->items.size() > 2048) {
+        return "{\"error\":\"Relation.properties supports at most 2048 pairs\"}";
+    }
+    struct Edge { std::string left; std::string right; };
+    std::vector<Edge> edges;
+    std::set<std::string> nodes;
+    std::set<std::string> edgeKeys;
+    const auto key = [](const std::string& left, const std::string& right) {
+        return std::to_string(left.size()) + ":" + left + std::to_string(right.size()) + ":" + right;
+    };
+    for (const auto& pair : pairs->items) {
+        if (pair.kind != Json::Array || pair.items.size() != 2) {
+            return "{\"error\":\"Relation.properties requires every pair to contain exactly two values\"}";
+        }
+        const std::string left = jsonText(pair.items[0]);
+        const std::string right = jsonText(pair.items[1]);
+        nodes.insert(left);
+        nodes.insert(right);
+        if (edgeKeys.insert(key(left, right)).second) edges.push_back({left, right});
+    }
+    bool reflexive = true;
+    for (const auto& node : nodes) {
+        if (!edgeKeys.count(key(node, node))) { reflexive = false; break; }
+    }
+    bool symmetric = true;
+    bool asymmetric = true;
+    for (const auto& edge : edges) {
+        const bool reversed = edgeKeys.count(key(edge.right, edge.left)) != 0;
+        if (!reversed) symmetric = false;
+        if (edge.left == edge.right || reversed) asymmetric = false;
+    }
+    bool transitive = true;
+    for (const auto& first : edges) {
+        for (const auto& second : edges) {
+            if (first.right != second.left) continue;
+            if (!edgeKeys.count(key(first.left, second.right))) { transitive = false; break; }
+        }
+        if (!transitive) break;
+    }
+    std::ostringstream out;
+    out << "{\"pair_count\":" << edges.size()
+        << ",\"node_count\":" << nodes.size()
+        << ",\"reflexive\":" << (reflexive ? "true" : "false")
+        << ",\"symmetric\":" << (symmetric ? "true" : "false")
+        << ",\"asymmetric\":" << (asymmetric ? "true" : "false")
+        << ",\"transitive\":" << (transitive ? "true" : "false") << "}";
+    return out.str();
+}
+
+std::string nearestSubfactsResponse(const Json& args) {
+    const Json* input = field(args, "input");
+    if (!input) return "{\"error\":\"fact.nearest_subfacts expects input\"}";
+    const double configuredDepth = requireFiniteNumberOption(args, "maximum_depth", 1.0);
+    if (configuredDepth < 1.0 || configuredDepth > 64.0) {
+        return "{\"error\":\"fact.nearest_subfacts maximum_depth must be between 1 and 64\"}";
+    }
+    const size_t maximumDepth = static_cast<size_t>(configuredDepth);
+    struct Pending { const Json* value; size_t depth; std::vector<std::string> path; };
+    std::vector<Pending> pending{{input, 0, {}}};
+    std::vector<Pending> matches;
+    size_t cursor = 0;
+    while (cursor < pending.size()) {
+        Pending current = std::move(pending[cursor++]);
+        if (current.depth > 0 && factTypeOf(*current.value).size() > 0) {
+            matches.push_back(current);
+            if (matches.size() >= 1024) break;
+        }
+        if (current.depth == maximumDepth) continue;
+        if (current.value->kind == Json::Object) {
+            for (const auto& entry : current.value->fields) {
+                auto path = current.path;
+                path.push_back(entry.first);
+                pending.push_back({&entry.second, current.depth + 1, std::move(path)});
+            }
+        } else if (current.value->kind == Json::Array) {
+            for (size_t index = 0; index < current.value->items.size(); ++index) {
+                auto path = current.path;
+                path.push_back("[" + std::to_string(index) + "]");
+                pending.push_back({&current.value->items[index], current.depth + 1, std::move(path)});
+            }
+        }
+    }
+    std::ostringstream out;
+    out << "{\"count\":" << matches.size() << ",\"neighbors\":[";
+    for (size_t index = 0; index < matches.size(); ++index) {
+        if (index) out << ",";
+        out << "{\"value\":" << jsonText(*matches[index].value)
+            << ",\"depth\":" << matches[index].depth << ",\"path\":[";
+        for (size_t pathIndex = 0; pathIndex < matches[index].path.size(); ++pathIndex) {
+            if (pathIndex) out << ",";
+            out << q(matches[index].path[pathIndex]);
+        }
+        out << "]}";
+    }
+    out << "]}";
+    return out.str();
+}
+
+// Finds a structurally equal value in a fact-shaped value without assuming a
+// schema.  The root is depth zero; object fields and array elements increase
+// the depth by one.  std::map gives object fields a deterministic order and
+// arrays retain source order, so the first matching path is stable.
+std::string containsSubfactResponse(const Json& args) {
+    const Json* input = field(args, "input");
+    const Json* candidate = field(args, "candidate");
+    if (!input || !candidate) {
+        return "{\"error\":\"fact.contains_subfact expects input and candidate\"}";
+    }
+
+    const double configuredDepth = requireFiniteNumberOption(args, "maximum_depth", 32.0);
+    if (configuredDepth < 0.0 || configuredDepth > 256.0) {
+        return "{\"error\":\"fact.contains_subfact maximum_depth must be between 0 and 256\"}";
+    }
+    const size_t maximumDepth = static_cast<size_t>(configuredDepth);
+
+    struct PendingValue {
+        const Json* value;
+        size_t depth;
+        std::vector<std::string> path;
+    };
+    std::vector<PendingValue> pending;
+    pending.push_back({input, 0, {}});
+    size_t cursor = 0;
+    while (cursor < pending.size()) {
+        PendingValue current = std::move(pending[cursor++]);
+        if (jsonEqual(*current.value, *candidate)) {
+            std::ostringstream out;
+            out << "{\"found\":true,\"depth\":" << current.depth << ",\"path\":[";
+            for (size_t i = 0; i < current.path.size(); ++i) {
+                if (i) out << ",";
+                out << q(current.path[i]);
+            }
+            out << "]}";
+            return out.str();
+        }
+        if (current.depth == maximumDepth) continue;
+        if (current.value->kind == Json::Object) {
+            for (const auto& entry : current.value->fields) {
+                auto childPath = current.path;
+                childPath.push_back(entry.first);
+                pending.push_back({&entry.second, current.depth + 1, std::move(childPath)});
+            }
+        } else if (current.value->kind == Json::Array) {
+            for (size_t i = 0; i < current.value->items.size(); ++i) {
+                auto childPath = current.path;
+                childPath.push_back("[" + std::to_string(i) + "]");
+                pending.push_back({&current.value->items[i], current.depth + 1, std::move(childPath)});
+            }
+        }
+    }
+    return "{\"found\":false,\"depth\":null,\"path\":[]}";
+}
+
 std::string propertyCompareResponse(const Json& args) {
     const Json* left = field(args, "fact1");
     const Json* right = field(args, "fact2");
@@ -807,8 +965,16 @@ std::string factCompareResponse(const Json& args) {
     return out.str();
 }
 
-std::map<std::string, std::string> parentMapFromFacts(const Json& args) {
-    std::map<std::string, std::string> parents;
+using ParentGraph = std::map<std::string, std::vector<std::string>>;
+
+void addParentEdge(ParentGraph& parents, const std::string& child, const std::string& parent) {
+    if (child.empty() || parent.empty()) return;
+    auto& values = parents[child];
+    if (std::find(values.begin(), values.end(), parent) == values.end()) values.push_back(parent);
+}
+
+ParentGraph parentMapFromFacts(const Json& args) {
+    ParentGraph parents;
     // The interpreter supplies the compact declared hierarchy for runtime
     // graph operations.  Prefer an explicit caller corpus when present so
     // standalone/native usage retains its existing deterministic behavior.
@@ -818,15 +984,19 @@ std::map<std::string, std::string> parentMapFromFacts(const Json& args) {
         for (const auto& item : facts->items) {
             const std::string type = factTypeOf(item);
             const std::string parent = parentTypeOf(item);
-            if (!type.empty() && !parent.empty()) parents[type] = parent;
+            addParentEdge(parents, type, parent);
         }
         return parents;
     }
     const Json* hierarchy = field(args, "__parents");
     if (hierarchy && hierarchy->kind == Json::Object) {
         for (const auto& entry : hierarchy->fields) {
-            if (entry.second.kind == Json::String && !entry.first.empty() && !entry.second.text.empty()) {
-                parents[entry.first] = entry.second.text;
+            if (entry.second.kind == Json::String) {
+                addParentEdge(parents, entry.first, entry.second.text);
+            } else if (entry.second.kind == Json::Array) {
+                for (const auto& parent : entry.second.items) {
+                    if (parent.kind == Json::String) addParentEdge(parents, entry.first, parent.text);
+                }
             }
         }
     }
@@ -835,20 +1005,21 @@ std::map<std::string, std::string> parentMapFromFacts(const Json& args) {
 
 std::vector<std::string> ancestorChain(const std::string& type,
                                        const std::string& directParent,
-                                       const std::map<std::string, std::string>& parents) {
+                                       const ParentGraph& parents) {
     std::vector<std::string> chain;
     std::set<std::string> seen;
-    std::string current = type;
-    std::string parent = directParent;
-    if (!current.empty()) {
+    std::vector<std::string> pending;
+    if (!type.empty()) pending.push_back(type);
+    for (size_t index = 0; index < pending.size(); ++index) {
+        const std::string current = pending[index];
+        if (!seen.insert(current).second) continue;
         chain.push_back(current);
-        seen.insert(current);
-    }
-    while (!parent.empty() && !seen.count(parent)) {
-        chain.push_back(parent);
-        seen.insert(parent);
-        auto next = parents.find(parent);
-        parent = next == parents.end() ? "" : next->second;
+        const auto next = parents.find(current);
+        if (next != parents.end()) {
+            pending.insert(pending.end(), next->second.begin(), next->second.end());
+        } else if (current == type && !directParent.empty()) {
+            pending.push_back(directParent);
+        }
     }
     return chain;
 }
@@ -856,15 +1027,17 @@ std::vector<std::string> ancestorChain(const std::string& type,
 bool isAncestorType(const std::string& ancestor,
                     const std::string& descendant,
                     const std::string& descendantParent,
-                    const std::map<std::string, std::string>& parents) {
+                    const ParentGraph& parents) {
     if (ancestor.empty() || descendant.empty()) return false;
     auto chain = ancestorChain(descendant, descendantParent, parents);
     return std::find(chain.begin(), chain.end(), ancestor) != chain.end();
 }
 
-std::map<std::string, std::vector<std::string>> childMapFromParents(const std::map<std::string, std::string>& parents) {
+std::map<std::string, std::vector<std::string>> childMapFromParents(const ParentGraph& parents) {
     std::map<std::string, std::vector<std::string>> children;
-    for (const auto& item : parents) children[item.second].push_back(item.first);
+    for (const auto& item : parents) {
+        for (const auto& parent : item.second) children[parent].push_back(item.first);
+    }
     for (auto& item : children) std::sort(item.second.begin(), item.second.end());
     return children;
 }
@@ -898,8 +1071,8 @@ std::vector<std::string> descendantClosure(const std::string& type,
 }
 
 size_t depthOfType(const std::string& type,
-                   const std::map<std::string, std::string>& parents) {
-    auto chain = ancestorChain(type, parents.count(type) ? parents.at(type) : "", parents);
+                   const ParentGraph& parents) {
+    auto chain = ancestorChain(type, "", parents);
     return chain.empty() ? 0 : chain.size();
 }
 
@@ -912,7 +1085,7 @@ std::string nearestCommonType(const std::vector<std::string>& leftChain,
 }
 
 std::map<std::string, size_t> factTypeFrequency(const Json& args,
-                                                const std::map<std::string, std::string>& parents,
+                                                const ParentGraph& parents,
                                                 size_t& total) {
     std::map<std::string, size_t> counts;
     total = 0;
@@ -974,13 +1147,18 @@ std::string directRelationResponse(const Json& args) {
     if (!parent || !child) return "{\"error\":\"fact.direct_relation expects parent and child\"}";
     const std::string parentType = factTypeOf(*parent);
     const std::string childType = factTypeOf(*child);
-    const std::string directParent = parentTypeOf(*child);
-    const bool matched = !parentType.empty() && !childType.empty() && directParent == parentType;
+    const auto parents = parentMapFromFacts(args);
+    std::vector<std::string> directParents;
+    const auto found = parents.find(childType);
+    if (found != parents.end()) directParents = found->second;
+    else if (!parentTypeOf(*child).empty()) directParents.push_back(parentTypeOf(*child));
+    const bool matched = !parentType.empty() && !childType.empty() &&
+        std::find(directParents.begin(), directParents.end(), parentType) != directParents.end();
     std::ostringstream out;
     out << "{\"matched\":" << q(matched ? "true" : "false")
         << ",\"parent\":" << q(parentType)
         << ",\"child\":" << q(childType)
-        << ",\"child_parent\":" << q(directParent)
+        << ",\"child_parent\":" << q(directParents.empty() ? "" : directParents.front())
         << ",\"mode\":\"direct_parent_child\"}";
     return out.str();
 }
@@ -994,7 +1172,7 @@ std::string closureResponse(const Json& args, bool descendants) {
         values = descendantClosure(type, childMapFromParents(parents));
     } else {
         const Json* factValue = field(args, "fact");
-        const std::string directParent = factValue && factValue->kind == Json::Object ? parentTypeOf(*factValue) : (parents.count(type) ? parents.at(type) : "");
+        const std::string directParent = factValue && factValue->kind == Json::Object ? parentTypeOf(*factValue) : "";
         auto chain = ancestorChain(type, directParent, parents);
         if (!chain.empty()) values.assign(chain.begin() + 1, chain.end());
     }
@@ -1290,52 +1468,6 @@ std::string findNearestResponse(const Json& args) {
             << ",\"fact\":" << jsonText(candidates->items[ranked[i].index])
             << ",\"important_differences\":" << ranked[i].differences
             << ",\"reason\":\"" << (requiredFields.empty() ? "highest property similarity" : "required fields matched before property ranking") << "\"}";
-    }
-    out << "]}";
-    return out.str();
-}
-
-std::string aggregateEvidenceResponse(const Json& args) {
-    const Json* evidence = field(args, "evidence");
-    if (!evidence || evidence->kind != Json::Array) return "{\"error\":\"fact.aggregate_evidence expects evidence array\"}";
-    double weighted = 0.0;
-    double weights = 0.0;
-    double supportingWeight = 0.0;
-    double refutingWeight = 0.0;
-    size_t used = 0;
-    std::vector<std::string> sources;
-    for (const auto& item : evidence->items) {
-        const Json* probability = field(item, "probability");
-        if (!probability) probability = field(item, "confidence");
-        if (!probability || probability->kind != Json::Number) continue;
-        double weight = asNumber(field(item, "weight"), 1.0);
-        if (weight < 0.0 || !std::isfinite(weight)) continue;
-        weighted += clamp01(probability->number) * weight;
-        weights += weight;
-        if (clamp01(probability->number) >= 0.5) supportingWeight += weight;
-        else refutingWeight += weight;
-        const std::string source = stringField(item, "source");
-        if (!source.empty()) sources.push_back(source);
-        ++used;
-    }
-    const double confidence = weights <= 0.0 ? 0.0 : weighted / weights;
-    std::ostringstream out;
-    const bool contradictory = supportingWeight > 0.0 && refutingWeight > 0.0;
-    out << "{\"__type\":\"DerivationResult\""
-        << ",\"exact\":false"
-        << ",\"proof_status\":\"evidence_only\""
-        << ",\"probability\":" << confidence
-        << ",\"confidence\":" << confidence
-        << ",\"evidence_count\":" << used
-        << ",\"supporting_weight\":" << supportingWeight
-        << ",\"refuting_weight\":" << refutingWeight
-        << ",\"contradictory\":" << (contradictory ? "true" : "false")
-        << ",\"method\":\"weighted_average\""
-        << ",\"decision\":\"" << (confidence >= 0.5 ? "likely" : "unlikely") << "\""
-        << ",\"evidence_sources\":[";
-    for (size_t i = 0; i < sources.size(); ++i) {
-        if (i) out << ",";
-        out << q(sources[i]);
     }
     out << "]}";
     return out.str();
@@ -2071,6 +2203,9 @@ std::string dispatch(const std::string& function, const Json& args) {
     if (call == "fact:near") return nearResponse(args);
     if (call == "fact:compare_properties") return propertyCompareResponse(args);
     if (call == "fact:property_difference") return propertyDifferenceResponse(args);
+    if (call == "fact:contains_subfact") return containsSubfactResponse(args);
+    if (call == "fact:relation_properties") return relationPropertiesResponse(args);
+    if (call == "fact:nearest_subfacts") return nearestSubfactsResponse(args);
     if (call == "fact:common_ancestor") return commonAncestorResponse(args);
     if (call == "fact:direct_relation") return directRelationResponse(args);
     if (call == "fact:is_ancestor") return ancestryResponse(args, false);
@@ -2084,7 +2219,6 @@ std::string dispatch(const std::string& function, const Json& args) {
     if (call == "fact:lin_similarity") return graphSimilarityResponse(args, "lin");
     if (call == "fact:frequency_statistics") return frequencyStatsResponse(args);
     if (call == "fact:normalize") return normalizeResponse(args);
-    if (call == "fact:aggregate_evidence") return aggregateEvidenceResponse(args);
     if (call == "fact_analysis:find_nearest" || call == "fact_analysis:find_nearest_where") return findNearestResponse(args);
     if (call == "fact_analysis:predict_next") return predictNextResponse(args);
     if (call == "fact_analysis:train_decision_tree") return trainDecisionTreeResponse(args);

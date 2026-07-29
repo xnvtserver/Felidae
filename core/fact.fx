@@ -67,6 +67,25 @@ fact.property_difference(fact1: any, fact2: any) =>
 fact.difference(fact1: any, fact2: any) =>
     return (fact.property_difference(fact1: fact1, fact2: fact2))
 
+# Bounded structural traversal over nested facts, maps, vectors, and arrays.
+# The returned depth is zero for the input itself; path uses field names and
+# array segments such as "[0]".  This is value analysis, not fact-store lookup.
+fact.contains_subfact(input: any, candidate: any, maximum_depth: number) =>
+    return (system_library_loader(module: "fact", function: "contains_subfact", args: {input: input, candidate: candidate, maximum_depth: maximum_depth}))
+
+fact.containsSubfact(input: any, candidate: any, maximumDepth: number) =>
+    return (fact.contains_subfact(input: input, candidate: candidate, maximum_depth: maximumDepth))
+
+# Pair values are compared structurally. This is deliberately separate from
+# .relate(...) attachments and does not create or mutate fact relationships.
+Relation.properties(pairs: array) =>
+    return (system_library_loader(module: "fact", function: "relation_properties", args: {pairs: pairs}))
+
+# Enumerates typed fact values nested inside input in deterministic breadth-
+# first order. The root is excluded; depth/path identify each local neighbor.
+Fact.nearestSubfacts(input: any, maximumDepth: number) =>
+    return (system_library_loader(module: "fact", function: "nearest_subfacts", args: {input: input, maximum_depth: maximumDepth}))
+
 fact.common_ancestor(fact1: any, fact2: any) =>
     return (system_library_loader(module: "fact", function: "common_ancestor", args: {fact1: fact1, fact2: fact2}))
 
@@ -153,12 +172,6 @@ fact.frequencyStatistics(facts: array) =>
 
 fact.normalize(text: string) =>
     return (system_library_loader(module: "fact", function: "normalize", args: {text: text}))
-
-fact.aggregate_evidence(evidence: array) =>
-    return (system_library_loader(module: "fact", function: "aggregate_evidence", args: {evidence: evidence}))
-
-fact.aggregateEvidence(evidence: array) =>
-    return (fact.aggregate_evidence(evidence: evidence))
 
 FactSimilarity(left: any, right: any) =>
     result := fact.check_similarity(fact1: left, fact2: right, algorithm: "semantic_recursive")

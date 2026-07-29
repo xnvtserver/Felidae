@@ -5,6 +5,26 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+option(FELIDAE_ENABLE_SANITIZERS
+    "Build interpreter and tooling with address/undefined-behavior sanitizers" OFF)
+
+function(felidae_enable_sanitizers target)
+    if(NOT FELIDAE_ENABLE_SANITIZERS)
+        return()
+    endif()
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+        target_compile_options(${target} PRIVATE /fsanitize=address /Zi)
+        target_link_options(${target} PRIVATE /INCREMENTAL:NO)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(${target} PRIVATE
+            -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(${target} PRIVATE
+            -fsanitize=address,undefined -fno-omit-frame-pointer)
+    else()
+        message(FATAL_ERROR
+            "FELIDAE_ENABLE_SANITIZERS is unsupported by ${CMAKE_CXX_COMPILER_ID}")
+    endif()
+endfunction()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 8)
     message(FATAL_ERROR "Felidae requires GCC 8 or newer for std::filesystem. Use GCC 8+, Clang 7+, AppleClang 10+, or MSVC 2019+.")
@@ -17,6 +37,7 @@ add_executable(felidae
     src/Lexer.cpp
     src/Parser.cpp
     src/Interpreter.cpp
+    src/ReasoningRuntime.cpp
     src/Env.cpp
     src/Memory.cpp
     src/NativeRuntime.cpp
@@ -31,6 +52,7 @@ target_compile_options(felidae PRIVATE
 if(UNIX AND NOT APPLE)
     target_link_libraries(felidae PRIVATE dl)
 endif()
+felidae_enable_sanitizers(felidae)
 
 set(CELIDAE_SOURCES
     src/celidae/main.cpp
@@ -48,6 +70,7 @@ target_compile_options(celidae PRIVATE
     $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
+felidae_enable_sanitizers(celidae)
 set(FELIDAE_DEBUG_SOURCES
     src/debugger/main.cpp
     src/debugger/AstAnalyzer.cpp
@@ -64,6 +87,7 @@ target_compile_options(felidae_debug PRIVATE
     $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
+felidae_enable_sanitizers(felidae_debug)
 add_library(felidae_smoke SHARED native_modules/smoke/NativeSmoke.cpp)
 set_target_properties(felidae_smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/smoke"
@@ -152,6 +176,32 @@ set_target_properties(qt PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/qt"
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/qt"
 )
+
+# Native packages must declare their identity and capabilities from the DLL
+# itself.  The forced include keeps the ABI export uniform without duplicating
+# a boilerplate function in every package implementation.
+function(felidae_native_manifest target module role)
+    target_compile_definitions(${target} PRIVATE
+        FELIDAE_NATIVE_MANIFEST_MODULE="${module}"
+        FELIDAE_NATIVE_MANIFEST_${role}=1)
+    target_compile_options(${target} PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/FI${CMAKE_SOURCE_DIR}/native_modules/common/NativeManifest.h>
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-include${CMAKE_SOURCE_DIR}/native_modules/common/NativeManifest.h>)
+endfunction()
+
+felidae_native_manifest(felidae_smoke smoke SMOKE)
+felidae_native_manifest(csv csv CSV)
+felidae_native_manifest(db_native db DB)
+felidae_native_manifest(http http HTTP)
+felidae_native_manifest(process process PROCESS)
+felidae_native_manifest(set_native set SET)
+felidae_native_manifest(group_native group GROUP)
+felidae_native_manifest(wordnet wordnet WORDNET)
+felidae_native_manifest(fact fact FACT)
+felidae_native_manifest(fact_analysis fact_analysis FACT_ANALYSIS)
+felidae_native_manifest(plot plot PLOT)
+felidae_native_manifest(gtk gtk GTK)
+felidae_native_manifest(qt qt QT)
 
 find_package(Eigen3 QUIET)
 if(Eigen3_FOUND)
