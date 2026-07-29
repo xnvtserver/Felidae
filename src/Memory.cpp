@@ -25,8 +25,56 @@ FactMemory& FactMemory::operator=(const FactMemory& other) {
     return *this;
 }
 
-const std::vector<FactRecord>& FactMemory::facts() const {
-    return data_->facts;
+const FactRecord& FactMemory::FactRows::at(std::size_t index) const {
+    if (index >= count) throw std::out_of_range("Fact row index out of range");
+    const std::size_t batchIndex = index / BatchSize;
+    const std::size_t offset = index % BatchSize;
+    return batches.at(batchIndex)->at(offset);
+}
+
+FactRecord& FactMemory::FactRows::mutableAt(std::size_t index) {
+    if (index >= count) throw std::out_of_range("Fact row index out of range");
+    const std::size_t batchIndex = index / BatchSize;
+    const std::size_t offset = index % BatchSize;
+    auto& batch = batches.at(batchIndex);
+    if (batch.use_count() != 1) batch = std::make_shared<std::vector<FactRecord>>(*batch);
+    return batch->at(offset);
+}
+
+FactRecord& FactMemory::FactRows::append(FactRecord record) {
+    const std::size_t batchIndex = count / BatchSize;
+    if (batchIndex == batches.size()) {
+        batches.push_back(std::make_shared<std::vector<FactRecord>>());
+    } else if (batches[batchIndex].use_count() != 1) {
+        batches[batchIndex] = std::make_shared<std::vector<FactRecord>>(*batches[batchIndex]);
+    }
+    auto& batch = *batches[batchIndex];
+    batch.push_back(std::move(record));
+    ++count;
+    return batch.back();
+}
+
+std::optional<std::size_t> FactMemory::FactIdDirectory::find(std::uint64_t id) const {
+    if (id == 0) return std::nullopt;
+    const std::size_t pageIndex = static_cast<std::size_t>((id - 1) / PageSize);
+    const std::size_t offset = static_cast<std::size_t>((id - 1) % PageSize);
+    if (pageIndex >= pages.size() || !pages[pageIndex]) return std::nullopt;
+    const std::size_t row = pages[pageIndex]->at(offset);
+    return row == Missing ? std::nullopt : std::optional<std::size_t>(row);
+}
+
+void FactMemory::FactIdDirectory::assign(std::uint64_t id, std::size_t row) {
+    if (id == 0) throw std::invalid_argument("FactId must be non-zero");
+    const std::size_t pageIndex = static_cast<std::size_t>((id - 1) / PageSize);
+    const std::size_t offset = static_cast<std::size_t>((id - 1) % PageSize);
+    if (pageIndex >= pages.size()) pages.resize(pageIndex + 1);
+    auto& page = pages[pageIndex];
+    if (!page) {
+        page = std::make_shared<std::vector<std::size_t>>(PageSize, Missing);
+    } else if (page.use_count() != 1) {
+        page = std::make_shared<std::vector<std::size_t>>(*page);
+    }
+    page->at(offset) = row;
 }
 
 const FactRecord& FactMemory::fact(size_t index) const {
@@ -37,31 +85,31 @@ std::vector<Arg> FactMemory::factArguments(size_t index) const {
     const auto& record = data_->facts.at(index);
     const auto relation = data_->relations.find(record.typeId);
     if (relation == data_->relations.end()) return {};
-    const auto order = relation->second.fieldOrderByRow.find(index);
-    if (order == relation->second.fieldOrderByRow.end()) return {};
+    const auto order = relation->second->fieldOrderByRow.find(index);
+    if (order == relation->second->fieldOrderByRow.end()) return {};
     std::vector<Arg> args;
     for (const SymbolId fieldId : order->second) {
-        const auto name = relation->second.fieldNames.find(fieldId);
-        const auto column = relation->second.valuesByRow.find(fieldId);
-        if (name == relation->second.fieldNames.end() || column == relation->second.valuesByRow.end()) continue;
+        const auto name = relation->second->fieldNames.find(fieldId);
+        const auto column = relation->second->valuesByRow.find(fieldId);
+        if (name == relation->second->fieldNames.end() || column == relation->second->valuesByRow.end()) continue;
         const auto values = column->second.find(index);
         if (values == column->second.end()) continue;
-        for (const auto& value : values->second) {
+        values->second.forEach([&](const std::shared_ptr<const Expr>& value) {
             if (value) args.push_back(Arg{name->second, std::const_pointer_cast<Expr>(value)});
-        }
+        });
     }
     return args;
 }
 
 bool FactMemory::isActive(size_t index) const {
-    return index < data_->facts.size() && data_->facts[index].active;
+    return index < data_->facts.size() && data_->facts.at(index).active;
 }
 
 std::vector<size_t> FactMemory::activeFactIndexes() const {
     std::vector<size_t> indexes;
     indexes.reserve(data_->facts.size());
     for (size_t index = 0; index < data_->facts.size(); ++index) {
-        if (data_->facts[index].active) indexes.push_back(index);
+        if (data_->facts.at(index).active) indexes.push_back(index);
     }
     return indexes;
 }
@@ -69,9 +117,9 @@ std::vector<size_t> FactMemory::activeFactIndexes() const {
 bool FactMemory::hasActiveRelation(const std::string& type, SymbolId typeId) const {
     if (typeId == 0) typeId = symbolIdForName(type);
     const auto relation = data_->relations.find(typeId);
-    if (relation == data_->relations.end() || relation->second.type != type) return false;
-    return std::any_of(relation->second.rows.begin(), relation->second.rows.end(),
-                       [&](size_t index) { return index < data_->facts.size() && data_->facts[index].active; });
+    if (relation == data_->relations.end() || !relation->second || relation->second->type != type) return false;
+    return std::any_of(relation->second->rows.begin(), relation->second->rows.end(),
+                       [&](size_t index) { return index < data_->facts.size() && data_->facts.at(index).active; });
 }
 
 std::uint64_t FactMemory::generation() const {
@@ -83,14 +131,16 @@ FactMemoryStats FactMemory::stats() const {
     result.relations = data_->relations.size();
     result.snapshots = snapshots_.size();
     result.generation = data_->generation;
-    for (const auto& fact : data_->facts) {
+    for (std::size_t index = 0; index < data_->facts.size(); ++index) {
+        const auto& fact = data_->facts.at(index);
         ++result.rowVersions;
         if (fact.active) ++result.activeFacts;
         else ++result.tombstonedFacts;
     }
     for (const auto& entry : data_->relations) {
-        result.relationRows += entry.second.rows.size();
-        for (const auto& column : entry.second.valuesByRow) {
+        if (!entry.second) continue;
+        result.relationRows += entry.second->rows.size();
+        for (const auto& column : entry.second->valuesByRow) {
             for (const auto& row : column.second) result.relationColumnValues += row.second.size();
         }
     }
@@ -151,7 +201,7 @@ std::optional<std::uint64_t> FactMemory::logicalFactId(const std::shared_ptr<Exp
     if (!pattern) return std::nullopt;
     if (pattern->factIdentity != 0) {
         const auto indexed = data_->factIndexById.find(pattern->factIdentity);
-        if (indexed == data_->factIndexById.end() || !data_->facts[indexed->second].active) {
+        if (!indexed || !data_->facts.at(*indexed).active) {
             return std::nullopt;
         }
         return pattern->factIdentity;
@@ -182,7 +232,7 @@ std::optional<std::uint64_t> FactMemory::logicalFactId(const std::shared_ptr<Exp
     if (!hasLiteralPredicate) rows = selectionIndexes(typeValue->value);
     std::optional<std::uint64_t> matched;
     for (size_t index : rows) {
-        const auto& fact = data_->facts[index];
+        const auto& fact = data_->facts.at(index);
         if (!fact.active || !factSatisfiesPattern(*fact.value, *pattern)) continue;
         // A reconstructed map has no durable reference to one of several
         // structurally equal rows.  Refuse to choose arbitrarily: callers can
@@ -195,8 +245,8 @@ std::optional<std::uint64_t> FactMemory::logicalFactId(const std::shared_ptr<Exp
 
 std::shared_ptr<MapExpr> FactMemory::factValueById(std::uint64_t id) const {
     const auto indexed = data_->factIndexById.find(id);
-    if (indexed == data_->factIndexById.end()) return {};
-    const auto& fact = data_->facts[indexed->second];
+    if (!indexed) return {};
+    const auto& fact = data_->facts.at(*indexed);
     if (!fact.active || !fact.value) return {};
     return std::static_pointer_cast<MapExpr>(fact.value->clone());
 }
@@ -204,7 +254,8 @@ std::shared_ptr<MapExpr> FactMemory::factValueById(std::uint64_t id) const {
 bool FactMemory::addDependency(std::uint64_t sourceId, std::shared_ptr<MapExpr> required) {
     if (sourceId == 0 || !required) return false;
     ensureUnique();
-    auto& dependencies = data_->dependenciesBySource[sourceId];
+    ensureAttachmentsUnique();
+    auto& dependencies = data_->attachments->dependenciesBySource[sourceId];
     for (const auto& dependency : dependencies) {
         if (structurallyEqual(dependency.required, required)) return true;
     }
@@ -220,7 +271,8 @@ bool FactMemory::addRelationship(std::uint64_t sourceId,
                                  std::shared_ptr<Expr> confidence) {
     if (sourceId == 0 || targetId == 0 || !relationship) return false;
     ensureUnique();
-    auto& outgoing = data_->relationshipsBySource[sourceId];
+    ensureAttachmentsUnique();
+    auto& outgoing = data_->attachments->relationshipsBySource[sourceId];
     for (const auto& existing : outgoing) {
         if (existing.targetId == targetId &&
             structurallyEqual(existing.relationship, relationship) &&
@@ -231,15 +283,15 @@ bool FactMemory::addRelationship(std::uint64_t sourceId,
     }
     FactRelationship record{sourceId, targetId, std::move(relationship), std::move(degree), std::move(confidence)};
     outgoing.push_back(record);
-    data_->relationshipsByTarget[targetId].push_back(record);
+    data_->attachments->relationshipsByTarget[targetId].push_back(record);
     ++data_->generation;
     return true;
 }
 
 std::vector<std::shared_ptr<MapExpr>> FactMemory::missingDependencies(std::uint64_t sourceId) const {
     std::vector<std::shared_ptr<MapExpr>> missing;
-    const auto found = data_->dependenciesBySource.find(sourceId);
-    if (found == data_->dependenciesBySource.end()) return missing;
+    const auto found = data_->attachments->dependenciesBySource.find(sourceId);
+    if (found == data_->attachments->dependenciesBySource.end()) return missing;
     for (const auto& dependency : found->second) {
         bool satisfied = false;
         std::string requiredType;
@@ -266,7 +318,7 @@ std::vector<std::shared_ptr<MapExpr>> FactMemory::missingDependencies(std::uint6
             candidates = requiredType.empty() ? activeFactIndexes() : selectionIndexes(requiredType);
         }
         for (size_t candidate : candidates) {
-            const auto& fact = data_->facts[candidate];
+            const auto& fact = data_->facts.at(candidate);
             if (fact.active && factSatisfiesPattern(*fact.value, *dependency.required)) {
                 satisfied = true;
                 break;
@@ -282,7 +334,8 @@ std::vector<std::shared_ptr<MapExpr>> FactMemory::missingDependencies(std::uint6
 bool FactMemory::hasDependencyCycle(std::uint64_t sourceId) const {
     std::unordered_map<std::uint64_t, const FactRecord*> byId;
     byId.reserve(data_->facts.size());
-    for (const auto& fact : data_->facts) {
+    for (std::size_t index = 0; index < data_->facts.size(); ++index) {
+        const auto& fact = data_->facts.at(index);
         if (fact.active) byId.emplace(fact.id, &fact);
     }
     std::unordered_set<std::uint64_t> visiting;
@@ -293,8 +346,8 @@ bool FactMemory::hasDependencyCycle(std::uint64_t sourceId) const {
             visiting.erase(current);
             return false;
         }
-        const auto dependencies = data_->dependenciesBySource.find(current);
-        if (dependencies != data_->dependenciesBySource.end()) {
+        const auto dependencies = data_->attachments->dependenciesBySource.find(current);
+        if (dependencies != data_->attachments->dependenciesBySource.end()) {
             for (const auto& dependency : dependencies->second) {
                 for (const auto& candidate : byId) {
                     if (factSatisfiesPattern(*candidate.second->value, *dependency.required) &&
@@ -313,12 +366,12 @@ bool FactMemory::hasDependencyCycle(std::uint64_t sourceId) const {
 
 std::vector<FactRelationship> FactMemory::relationshipsFor(std::uint64_t factId) const {
     std::vector<FactRelationship> result;
-    const auto outgoing = data_->relationshipsBySource.find(factId);
-    if (outgoing != data_->relationshipsBySource.end()) {
+    const auto outgoing = data_->attachments->relationshipsBySource.find(factId);
+    if (outgoing != data_->attachments->relationshipsBySource.end()) {
         result.insert(result.end(), outgoing->second.begin(), outgoing->second.end());
     }
-    const auto incoming = data_->relationshipsByTarget.find(factId);
-    if (incoming != data_->relationshipsByTarget.end()) {
+    const auto incoming = data_->attachments->relationshipsByTarget.find(factId);
+    if (incoming != data_->attachments->relationshipsByTarget.end()) {
         result.insert(result.end(), incoming->second.begin(), incoming->second.end());
     }
     return result;
@@ -346,40 +399,45 @@ std::vector<size_t> FactMemory::selectionIndexes(const std::string& type,
 
         const auto relation = store.relations.find(current);
         if (relation != store.relations.end()) {
-            const std::vector<size_t>* candidates = &relation->second.rows;
+            const Data::Relation::RowList* indexedCandidates = nullptr;
+            const std::vector<size_t>* candidates = &relation->second->rows;
             if (useEqualityIndex) {
-                const auto column = relation->second.equalityIndexes.find(propertyId);
-                if (column == relation->second.equalityIndexes.end()) candidates = nullptr;
+                const auto column = relation->second->equalityIndexes.find(propertyId);
+                if (column == relation->second->equalityIndexes.end()) candidates = nullptr;
                 else {
                     const auto matches = column->second.find(valueHash);
-                    candidates = matches == column->second.end() ? nullptr : &matches->second;
+                    if (matches == column->second.end()) candidates = nullptr;
+                    else {
+                        candidates = nullptr;
+                        indexedCandidates = &matches->second;
+                    }
                 }
             }
-            if (candidates) {
-                for (size_t index : *candidates) {
-                    if (index >= store.facts.size()) continue;
-                    const auto& fact = store.facts[index];
-                    if (!fact.active || !isCompatibleTypeInData(store, fact.type, type)) continue;
+            const auto visitCandidate = [&](size_t index) {
+                    if (index >= store.facts.size()) return;
+                    const auto& fact = store.facts.at(index);
+                    if (!fact.active || !isCompatibleTypeInData(store, fact.type, type)) return;
                     if (!property.empty()) {
-                        const auto column = relation->second.valuesByRow.find(propertyId);
-                        if (column == relation->second.valuesByRow.end()) continue;
+                        const auto column = relation->second->valuesByRow.find(propertyId);
+                        if (column == relation->second->valuesByRow.end()) return;
                         const auto rowValues = column->second.find(index);
-                        if (rowValues == column->second.end()) continue;
+                        if (rowValues == column->second.end()) return;
                         bool exact = !value;
-                        for (const auto& item : rowValues->second) {
+                        rowValues->second.forEach([&](const std::shared_ptr<const Expr>& item) {
+                            if (exact) return;
                             std::string left;
                             std::string right;
                             if (static_cast<bool>(item) && (!value || (literalIndexKey(std::const_pointer_cast<Expr>(item), left) &&
                                 literalIndexKey(value, right) && left == right))) {
                                 exact = true;
-                                break;
                             }
-                        }
-                        if (!exact) continue;
+                        });
+                        if (!exact) return;
                     }
                     if (seenRows.insert(index).second) result.push_back(index);
-                }
-            }
+            };
+            if (indexedCandidates) indexedCandidates->forEach(visitCandidate);
+            else if (candidates) for (size_t index : *candidates) visitCandidate(index);
         }
         const auto children = store.childrenByParent.find(current);
         if (children != store.childrenByParent.end()) {
@@ -400,7 +458,7 @@ size_t FactMemory::addFact(std::string type,
     ensureUnique();
     const std::uint64_t factId = logicalId ? *logicalId : data_->nextFactId++;
     if (logicalId && *logicalId >= data_->nextFactId) data_->nextFactId = *logicalId + 1;
-    data_->facts.push_back(FactRecord{
+    auto& record = data_->facts.append(FactRecord{
         factId,
         std::move(type),
         typeId,
@@ -413,21 +471,28 @@ size_t FactMemory::addFact(std::string type,
         data_->generation + 1,
         true});
     const size_t index = data_->facts.size() - 1;
-    data_->facts[index].value->factIdentity = data_->facts[index].id;
-    data_->facts[index].stableHash = stableExprHash(data_->facts[index].value);
+    record.value->factIdentity = record.id;
+    record.stableHash = stableExprHash(record.value);
     indexFact(index);
     ++data_->generation;
-    invalidateCachesForFact(data_->facts[index]);
+    invalidateCachesForFact(record);
     return index;
 }
 
 void FactMemory::setParent(const std::string& child, const std::string& parent) {
+    if (child.empty() || parent.empty()) return;
     ensureUnique();
+    const auto existing = parentsOf(child);
+    if (std::find(existing.begin(), existing.end(), parent) != existing.end()) return;
+    if (child == parent || isCompatibleType(parent, child)) {
+        throw std::invalid_argument("Inheritance cycle: '" + child + "' cannot extend '" + parent + "'");
+    }
     const SymbolId childId = symbolIdForName(child);
     const SymbolId parentId = symbolIdForName(parent);
     rememberTypeName(childId, child);
     rememberTypeName(parentId, parent);
-    data_->parentOf[child] = parent;
+    if (!data_->parentOf.count(child)) data_->parentOf[child] = parent;
+    else data_->additionalParentsOf[child].push_back(parent);
     auto& children = data_->childrenByParent[parentId];
     if (std::find(children.begin(), children.end(), childId) == children.end()) {
         children.push_back(childId);
@@ -443,11 +508,33 @@ void FactMemory::setParent(const std::string& child,
                            const std::string& parent,
                            std::filesystem::path origin) {
     setParent(child, parent);
-    if (!origin.empty()) data_->parentOrigin[child] = std::move(origin);
+    if (origin.empty()) return;
+    if (data_->parentOf[child] == parent) data_->parentOrigin[child] = std::move(origin);
+    else data_->additionalParentOrigins[child + "\x1f" + parent] = std::move(origin);
 }
 
 const std::unordered_map<std::string, std::string>& FactMemory::parents() const {
     return data_->parentOf;
+}
+
+std::vector<std::string> FactMemory::parentsOf(const std::string& child) const {
+    std::vector<std::string> result;
+    const auto primary = data_->parentOf.find(child);
+    if (primary != data_->parentOf.end()) result.push_back(primary->second);
+    const auto additional = data_->additionalParentsOf.find(child);
+    if (additional != data_->additionalParentsOf.end()) {
+        result.insert(result.end(), additional->second.begin(), additional->second.end());
+    }
+    return result;
+}
+
+std::vector<std::pair<std::string, std::string>> FactMemory::hierarchyEdges() const {
+    std::vector<std::pair<std::string, std::string>> result;
+    for (const auto& entry : data_->parentOf) result.emplace_back(entry.first, entry.second);
+    for (const auto& entry : data_->additionalParentsOf) {
+        for (const auto& parent : entry.second) result.emplace_back(entry.first, parent);
+    }
+    return result;
 }
 
 const std::unordered_map<std::string, std::filesystem::path>& FactMemory::parentOrigins() const {
@@ -456,8 +543,8 @@ const std::unordered_map<std::string, std::filesystem::path>& FactMemory::parent
 
 std::vector<size_t> FactMemory::factIndexesFromOrigin(const std::filesystem::path& origin) const {
     auto found = data_->factsByOrigin.find(origin);
-    if (found == data_->factsByOrigin.end()) return {};
-    return found->second;
+    if (found == data_->factsByOrigin.end() || !found->second) return {};
+    return *found->second;
 }
 
 bool FactMemory::hasOrigin(const std::filesystem::path& origin) const {
@@ -472,13 +559,46 @@ void FactMemory::removeOrigin(const std::filesystem::path& origin) {
         // Rows are immutable once published.  Removing a source marks its
         // rows inactive, preserving stable ids held by any live selection.
         // New facts from a sync are appended as a new generation.
-        for (size_t index : found->second) deactivateFact(index);
+        for (size_t index : *found->second) deactivateFact(index);
         data_->factsByOrigin.erase(found);
+    }
+    for (auto it = data_->additionalParentOrigins.begin(); it != data_->additionalParentOrigins.end();) {
+        if (it->second == origin) {
+            const std::string edge = it->first;
+            const size_t separator = edge.find('\x1f');
+            if (separator != std::string::npos) {
+                const std::string child = edge.substr(0, separator);
+                const std::string parent = edge.substr(separator + 1);
+                auto additional = data_->additionalParentsOf.find(child);
+                if (additional != data_->additionalParentsOf.end()) {
+                    auto& values = additional->second;
+                    values.erase(std::remove(values.begin(), values.end(), parent), values.end());
+                    if (values.empty()) data_->additionalParentsOf.erase(additional);
+                }
+            }
+            it = data_->additionalParentOrigins.erase(it);
+        } else {
+            ++it;
+        }
     }
     for (auto it = data_->parentOrigin.begin(); it != data_->parentOrigin.end();) {
         if (it->second == origin) {
-            data_->parentOf.erase(it->first);
+            const std::string child = it->first;
+            data_->parentOf.erase(child);
             it = data_->parentOrigin.erase(it);
+            const auto additional = data_->additionalParentsOf.find(child);
+            if (additional != data_->additionalParentsOf.end() && !additional->second.empty()) {
+                const std::string promoted = additional->second.front();
+                additional->second.erase(additional->second.begin());
+                data_->parentOf[child] = promoted;
+                const std::string key = child + "\x1f" + promoted;
+                const auto promotedOrigin = data_->additionalParentOrigins.find(key);
+                if (promotedOrigin != data_->additionalParentOrigins.end()) {
+                    data_->parentOrigin[child] = promotedOrigin->second;
+                    data_->additionalParentOrigins.erase(promotedOrigin);
+                }
+                if (additional->second.empty()) data_->additionalParentsOf.erase(additional);
+            }
         } else {
             ++it;
         }
@@ -488,6 +608,12 @@ void FactMemory::removeOrigin(const std::filesystem::path& origin) {
         const SymbolId childId = symbolIdForName(entry.first);
         const SymbolId parentId = symbolIdForName(entry.second);
         data_->childrenByParent[parentId].push_back(childId);
+    }
+    for (const auto& entry : data_->additionalParentsOf) {
+        const SymbolId childId = symbolIdForName(entry.first);
+        for (const auto& parent : entry.second) {
+            data_->childrenByParent[symbolIdForName(parent)].push_back(childId);
+        }
     }
     ++data_->generation;
     invalidateCaches();
@@ -504,14 +630,24 @@ bool FactMemory::isCompatibleTypeInData(const Data& data,
     if (expected == "Fact") return !actual.empty();
     if (actual == expected) return true;
     std::set<std::string> seen;
-    std::string current = actual;
-    while (!current.empty() && !seen.count(current)) {
-        seen.insert(current);
-        std::string parent;
-        auto parentIt = data.parentOf.find(current);
-        if (parentIt != data.parentOf.end()) parent = parentIt->second;
-        if (parent == expected) return true;
-        current = parent;
+    std::vector<std::string> pending{actual};
+    for (size_t index = 0; index < pending.size(); ++index) {
+        // Copy before appending parents: vector growth must not invalidate the
+        // current node while multi-parent traversal is expanding its frontier.
+        const std::string current = pending[index];
+        if (!seen.insert(current).second) continue;
+        const auto primary = data.parentOf.find(current);
+        if (primary != data.parentOf.end()) {
+            if (primary->second == expected) return true;
+            pending.push_back(primary->second);
+        }
+        const auto additional = data.additionalParentsOf.find(current);
+        if (additional != data.additionalParentsOf.end()) {
+            for (const auto& parent : additional->second) {
+                if (parent == expected) return true;
+                pending.push_back(parent);
+            }
+        }
     }
     return false;
 }
@@ -533,11 +669,11 @@ const std::vector<size_t>& FactMemory::compatibleFactIndexes(const std::string& 
         pending.pop_front();
         if (!seenTypes.insert(current).second) continue;
 
-        auto direct = data_->factsByType.find(current);
-        if (direct != data_->factsByType.end()) {
-            for (size_t index : direct->second) {
+        const auto direct = data_->relations.find(current);
+        if (direct != data_->relations.end() && direct->second) {
+            for (size_t index : direct->second->rows) {
                 if (!isActive(index)) continue;
-                if (isCompatibleType(data_->facts[index].type, type)) {
+                if (isCompatibleType(data_->facts.at(index).type, type)) {
                     indexes.push_back(index);
                 }
             }
@@ -584,28 +720,28 @@ const std::vector<size_t>& FactMemory::propertyFactIndexes(
         if (!seenTypes.insert(current).second) continue;
         auto relation = data_->relations.find(current);
         if (relation != data_->relations.end()) {
-            const auto field = relation->second.equalityIndexes.find(propertyId);
-            if (field != relation->second.equalityIndexes.end()) {
+            const auto field = relation->second->equalityIndexes.find(propertyId);
+            if (field != relation->second->equalityIndexes.end()) {
                 const auto matches = field->second.find(valueHash);
                 if (matches != field->second.end()) {
-                    for (size_t index : matches->second) {
-                        if (!isActive(index)) continue;
-                        const auto& fact = data_->facts[index];
-                        if (!isCompatibleType(fact.type, type)) continue;
+                    matches->second.forEach([&](size_t index) {
+                        if (!isActive(index)) return;
+                        const auto& fact = data_->facts.at(index);
+                        if (!isCompatibleType(fact.type, type)) return;
                         bool exactProperty = false;
-                        const auto column = relation->second.valuesByRow.find(propertyId);
-                        if (column == relation->second.valuesByRow.end()) continue;
+                        const auto column = relation->second->valuesByRow.find(propertyId);
+                        if (column == relation->second->valuesByRow.end()) return;
                         const auto rowValues = column->second.find(index);
-                        if (rowValues == column->second.end()) continue;
-                        for (const auto& item : rowValues->second) {
+                        if (rowValues == column->second.end()) return;
+                        rowValues->second.forEach([&](const std::shared_ptr<const Expr>& item) {
+                            if (exactProperty) return;
                             std::string indexedKey;
                             if (static_cast<bool>(item) && literalIndexKey(std::const_pointer_cast<Expr>(item), indexedKey) && indexedKey == valueKey) {
                                 exactProperty = true;
-                                break;
                             }
-                        }
+                        });
                         if (exactProperty && seenIndexes.insert(index).second) indexes.push_back(index);
-                    }
+                    });
                 }
             }
         }
@@ -624,13 +760,12 @@ void FactMemory::invalidateCaches() {
 }
 
 void FactMemory::rebuildIndexes() {
-    data_->factsByType.clear();
     data_->factIndexById.clear();
     data_->factsByOrigin.clear();
     data_->typeNamesById.clear();
     data_->relations.clear();
     for (size_t index = 0; index < data_->facts.size(); ++index) {
-        if (data_->facts[index].active) indexFact(index);
+        if (data_->facts.at(index).active) indexFact(index);
     }
     data_->childrenByParent.clear();
     for (const auto& entry : data_->parentOf) {
@@ -639,6 +774,14 @@ void FactMemory::rebuildIndexes() {
         rememberTypeName(childId, entry.first);
         rememberTypeName(parentId, entry.second);
         data_->childrenByParent[parentId].push_back(childId);
+    }
+    for (const auto& entry : data_->additionalParentsOf) {
+        const SymbolId childId = symbolIdForName(entry.first);
+        for (const auto& parent : entry.second) {
+            const SymbolId parentId = symbolIdForName(parent);
+            rememberTypeName(parentId, parent);
+            data_->childrenByParent[parentId].push_back(childId);
+        }
     }
     invalidateCaches();
 }
@@ -748,17 +891,21 @@ void FactMemory::rememberTypeName(SymbolId id, const std::string& name) {
 }
 
 void FactMemory::indexFact(size_t index) {
-    auto& fact = data_->facts[index];
+    auto& fact = data_->facts.mutableAt(index);
     if (!fact.active || !fact.value) return;
     if (fact.typeId == 0) fact.typeId = symbolIdForName(fact.type);
     if (fact.parentTypeId == 0 && !fact.parentType.empty()) {
         fact.parentTypeId = symbolIdForName(fact.parentType);
     }
     rememberTypeName(fact.typeId, fact.type);
-    data_->factIndexById[fact.id] = index;
-    data_->factsByType[fact.typeId].push_back(index);
-    if (!fact.origin.empty()) data_->factsByOrigin[fact.origin].push_back(index);
-    auto& relation = data_->relations[fact.typeId];
+    data_->factIndexById.assign(fact.id, index);
+    if (!fact.origin.empty()) {
+        auto& rows = data_->factsByOrigin[fact.origin];
+        if (!rows) rows = std::make_shared<std::vector<size_t>>();
+        else if (rows.use_count() != 1) rows = std::make_shared<std::vector<size_t>>(*rows);
+        rows->push_back(index);
+    }
+    auto& relation = writableRelation(fact.typeId);
     if (relation.type.empty()) {
         relation.typeId = fact.typeId;
         relation.type = fact.type;
@@ -777,10 +924,10 @@ void FactMemory::indexFact(size_t index) {
             items.push_back(entry.value);
         }
         for (const auto& item : items) {
-            relation.valuesByRow[entry.keyId][index].push_back(item);
+            relation.valuesByRow[entry.keyId][index].append(item);
             std::size_t valueHash = 0;
             if (literalIndexHash(item, valueHash)) {
-                relation.equalityIndexes[entry.keyId][valueHash].push_back(index);
+                relation.equalityIndexes[entry.keyId][valueHash].append(index);
             }
         }
     }
@@ -788,7 +935,7 @@ void FactMemory::indexFact(size_t index) {
 
 void FactMemory::deactivateFact(size_t index) {
     if (!isActive(index)) return;
-    FactRecord& fact = data_->facts[index];
+    FactRecord& fact = data_->facts.mutableAt(index);
     invalidateCachesForFact(fact);
     fact.active = false;
 }
@@ -798,19 +945,22 @@ void FactMemory::compactInactiveIfSafe() {
     // compact while a snapshot is retained; db.release makes that lifetime
     // explicit for callers that keep long-lived selections.
     if (!snapshots_.empty()) return;
-    const auto tombstones = static_cast<std::size_t>(std::count_if(
-        data_->facts.begin(), data_->facts.end(),
-        [](const FactRecord& fact) { return !fact.active; }));
+    std::size_t tombstones = 0;
+    for (std::size_t index = 0; index < data_->facts.size(); ++index) {
+        if (!data_->facts.at(index).active) ++tombstones;
+    }
     if (tombstones == 0) return;
     constexpr std::size_t MinTombstonesBeforeCompaction = 128;
     if (tombstones < MinTombstonesBeforeCompaction &&
         tombstones * 2 < data_->facts.size()) return;
 
     ensureUnique();
-    data_->facts.erase(
-        std::remove_if(data_->facts.begin(), data_->facts.end(),
-                       [](const FactRecord& fact) { return !fact.active; }),
-        data_->facts.end());
+    FactRows compacted;
+    for (std::size_t index = 0; index < data_->facts.size(); ++index) {
+        const auto& fact = data_->facts.at(index);
+        if (fact.active) compacted.append(fact);
+    }
+    data_->facts = std::move(compacted);
     ++data_->generation;
     rebuildIndexes();
 }
@@ -862,6 +1012,24 @@ void FactMemory::invalidateCachesForType(const std::string& type, SymbolId typeI
 
 void FactMemory::ensureUnique() {
     if (data_.use_count() != 1) data_ = std::make_shared<Data>(*data_);
+}
+
+void FactMemory::ensureAttachmentsUnique() {
+    if (!data_->attachments) {
+        data_->attachments = std::make_shared<AttachmentData>();
+    } else if (data_->attachments.use_count() != 1) {
+        data_->attachments = std::make_shared<AttachmentData>(*data_->attachments);
+    }
+}
+
+FactMemory::Data::Relation& FactMemory::writableRelation(SymbolId typeId) {
+    auto& relation = data_->relations[typeId];
+    if (!relation) {
+        relation = std::make_shared<Data::Relation>();
+    } else if (relation.use_count() != 1) {
+        relation = std::make_shared<Data::Relation>(*relation);
+    }
+    return *relation;
 }
 
 } // namespace Felidae

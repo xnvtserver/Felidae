@@ -1,7 +1,11 @@
 #include "NativeRuntime.h"
 
+#include "../native_modules/common/NativeJson.h"
+
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <limits>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -25,51 +29,162 @@ std::string lowerText(std::string text) {
 
 } // namespace
 
-NativeCapabilities nativeCapabilitiesFor(const std::string& moduleName,
-                                         const std::string& functionName) {
-    NativeCapabilities capabilities;
-    capabilities.threadSafe = true;
-    // Most fact functions compare the values supplied by the caller and do
-    // not need the complete runtime store.  Restrict implicit store access to
-    // the small hierarchy/statistics surface that explicitly operates on the
-    // declared fact graph.
-    const bool factGraphFunction =
-        functionName == "system:flibrary:fact:common_ancestor" ||
-        functionName == "system:flibrary:fact:direct_relation" ||
-        functionName == "system:flibrary:fact:is_ancestor" ||
-        functionName == "system:flibrary:fact:is_descendant" ||
-        functionName == "system:flibrary:fact:ancestor_closure" ||
-        functionName == "system:flibrary:fact:descendant_closure" ||
-        functionName == "system:flibrary:fact:shortest_path" ||
-        functionName == "system:flibrary:fact:path_similarity" ||
-        functionName == "system:flibrary:fact:wu_palmer_similarity" ||
-        functionName == "system:flibrary:fact:resnik_similarity" ||
-        functionName == "system:flibrary:fact:lin_similarity" ||
-        functionName == "system:flibrary:fact:frequency_statistics";
-    if (moduleName == "fact" && factGraphFunction) {
-        // Hierarchy algorithms need only the declared type graph, not every
-        // record in the fact store.  frequency_statistics is the one graph
-        // API whose documented operation counts records when no explicit
-        // corpus is supplied.
-        capabilities.needsFactHierarchy = functionName != "system:flibrary:fact:frequency_statistics";
-        capabilities.needsFactSnapshot = functionName == "system:flibrary:fact:frequency_statistics";
-    } else if (moduleName == "wordnet") {
-        // The WordNet native package builds its lexical graph from Felidae
-        // facts. Send only its declared graph records, not an unrelated
-        // application-wide snapshot.
-        capabilities.needsFactSnapshot = true;
-        capabilities.pure = true;
-        capabilities.requestedFactTypes = {
-            "Synset", "Lemma", "Sense", "Gloss", "Example", "Hypernym",
-            "SimilarTo", "Antonym", "MorphException", "ConceptFrequency"};
-    } else if (moduleName == "set" || moduleName == "group" ||
-               moduleName == "csv") {
-        capabilities.pure = true;
-        capabilities.supportsBatch = moduleName == "set" || moduleName == "group";
+const NativeContract& NativeModuleManifest::contractFor(const std::string& functionName) const {
+    const auto exact = functions.find(functionName);
+    if (exact != functions.end()) return exact->second;
+    const size_t separator = functionName.rfind(':');
+    if (separator != std::string::npos) {
+        const auto shortName = functions.find(functionName.substr(separator + 1));
+        if (shortName != functions.end()) return shortName->second;
     }
-    return capabilities;
+    return defaultContract;
 }
 
+bool parseNativeModuleManifest(const std::string& json,
+                               NativeModuleManifest& manifest,
+                               std::string& error) {
+    using Felidae::NativeJson::Value;
+    size_t position = 0;
+    Value root;
+    if (!Felidae::NativeJson::parseValue(json, position, root)) {
+        error = "invalid JSON";
+        return false;
+    }
+    Felidae::NativeJson::skipWhitespace(json, position);
+    if (position != json.size() || root.kind != Value::Kind::Object) {
+        error = "manifest must be one JSON object";
+        return false;
+    }
+    const auto field = [](const Value& object, const char* name) -> const Value* {
+        const auto it = object.fields.find(name);
+        return it == object.fields.end() ? nullptr : &it->second;
+    };
+    const auto text = [&](const Value& object, const char* name, std::string& out) -> bool {
+        const Value* value = field(object, name);
+        if (!value || value->kind != Value::Kind::String || value->text.empty()) return false;
+        out = value->text;
+        return true;
+    };
+    const Value* schema = field(root, "schema_version");
+    const Value* abi = field(root, "abi_version");
+    std::string module;
+    if (!schema || schema->kind != Value::Kind::Number || schema->number != 1.0 ||
+        !abi || abi->kind != Value::Kind::Number || abi->number != 1.0 ||
+        !text(root, "module", module)) {
+        error = "manifest requires schema_version 1, abi_version 1, and a module name";
+        return false;
+    }
+
+    const auto parseContract = [&](const Value* object, NativeContract& contract) -> bool {
+        if (!object) return true;
+        if (object->kind != Value::Kind::Object) return false;
+        const auto boolean = [&](const char* name, bool& target) -> bool {
+            const Value* value = field(*object, name);
+            if (!value) return true;
+            if (value->kind != Value::Kind::Bool) return false;
+            target = value->boolean;
+            return true;
+        };
+        auto& capabilities = contract.capabilities;
+        if (!boolean("pure", capabilities.pure) ||
+            !boolean("thread_safe", capabilities.threadSafe) ||
+            !boolean("supports_batch", capabilities.supportsBatch) ||
+            !boolean("accepts_fact_selections", capabilities.acceptsFactSelections) ||
+            !boolean("selection_cardinality", capabilities.selectionCardinality) ||
+            !boolean("needs_fact_snapshot", capabilities.needsFactSnapshot) ||
+            !boolean("needs_fact_hierarchy", capabilities.needsFactHierarchy)) {
+            return false;
+        }
+        const Value* types = field(*object, "requested_fact_types");
+        if (types) {
+            if (types->kind != Value::Kind::Array) return false;
+            capabilities.requestedFactTypes.clear();
+            capabilities.requestedFactTypes.reserve(types->items.size());
+            for (const Value& item : types->items) {
+                if (item.kind != Value::Kind::String || item.text.empty()) return false;
+                capabilities.requestedFactTypes.push_back(item.text);
+            }
+        }
+        const Value* constraints = field(*object, "argument_constraints");
+        if (constraints) {
+            if (constraints->kind != Value::Kind::Array) return false;
+            contract.argumentConstraints.clear();
+            contract.argumentConstraints.reserve(constraints->items.size());
+            for (const Value& item : constraints->items) {
+                if (item.kind != Value::Kind::Object) return false;
+                std::string name;
+                std::string kind;
+                const Value* index = field(item, "index");
+                if (!text(item, "name", name) || !text(item, "kind", kind) ||
+                    !index || index->kind != Value::Kind::Number ||
+                    index->number < 0.0 || index->number > static_cast<double>(std::numeric_limits<size_t>::max()) ||
+                    std::floor(index->number) != index->number) {
+                    return false;
+                }
+                NativeArgumentConstraint constraint;
+                constraint.name = std::move(name);
+                constraint.positionalIndex = static_cast<size_t>(index->number);
+                if (kind == "string_option") constraint.kind = NativeArgumentConstraintKind::StringOption;
+                else if (kind == "unit_interval") constraint.kind = NativeArgumentConstraintKind::UnitInterval;
+                else if (kind == "positive_finite") constraint.kind = NativeArgumentConstraintKind::PositiveFinite;
+                else if (kind == "string_array") constraint.kind = NativeArgumentConstraintKind::StringArray;
+                else if (kind == "boolean_text") constraint.kind = NativeArgumentConstraintKind::BooleanText;
+                else return false;
+                const Value* required = field(item, "required");
+                if (required) {
+                    if (required->kind != Value::Kind::Bool) return false;
+                    constraint.required = required->boolean;
+                }
+                const Value* values = field(item, "values");
+                if (values) {
+                    if (values->kind != Value::Kind::Array) return false;
+                    constraint.allowedValues.reserve(values->items.size());
+                    for (const Value& value : values->items) {
+                        if (value.kind != Value::Kind::String || value.text.empty()) return false;
+                        constraint.allowedValues.push_back(value.text);
+                    }
+                }
+                if (constraint.kind == NativeArgumentConstraintKind::StringOption &&
+                    constraint.allowedValues.empty()) return false;
+                contract.argumentConstraints.push_back(std::move(constraint));
+            }
+        }
+        return true;
+    };
+
+    NativeModuleManifest parsed;
+    parsed.moduleName = std::move(module);
+    parsed.abiVersion = 1;
+    if (!parseContract(field(root, "capabilities"), parsed.defaultContract)) {
+        error = "invalid capabilities";
+        return false;
+    }
+    const Value* functions = field(root, "functions");
+    if (functions) {
+        if (functions->kind != Value::Kind::Object) {
+            error = "functions must be an object";
+            return false;
+        }
+        for (const auto& item : functions->fields) {
+            if (item.first.empty()) {
+                error = "function name cannot be empty";
+                return false;
+            }
+            NativeContract contract = parsed.defaultContract;
+            if (!parseContract(&item.second, contract)) {
+                error = "invalid function contract for '" + item.first + "'";
+                return false;
+            }
+            parsed.functions.emplace(item.first, std::move(contract));
+        }
+    }
+    manifest = std::move(parsed);
+    return true;
+}
+
+#if 0 // Obsolete hard-coded native option contract; manifests own this metadata.
+        option("lexical_algorithm", 3, {"path", "wup", "wu_palmer", "Wu-Palmer", "Wu Palmer", "resnik", "jiang_conrath", "Jiang-Conrath", "Jiang Conrath", "lin", "edit", "Leacock-Chodorow", "Leacockâ€“Chodorow", "Leacock Chodorow", "leacock_chodorow", "lch"});
+#endif
 std::vector<std::string> nativeLibraryFileNames(const std::string& moduleName) {
 #if defined(_WIN32)
     return {moduleName + ".dll", "felidae_" + moduleName + ".dll"};

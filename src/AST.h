@@ -657,7 +657,9 @@ public:
           clauseKind(this->body.empty() ? ClauseKind::Fact : ClauseKind::Rule) {}
     ClauseStmt(Call head, std::string parentName, std::vector<std::shared_ptr<Goal>> body)
         : head(std::move(head)), parentName(std::move(parentName)), body(std::move(body)),
-          clauseKind(this->body.empty() ? ClauseKind::Fact : ClauseKind::Rule) {}
+          clauseKind(this->body.empty() ? ClauseKind::Fact : ClauseKind::Rule) {
+        if (!this->parentName.empty()) parentNames.push_back(this->parentName);
+    }
     ClauseStmt(Call head,
                std::string parentName,
                std::vector<std::shared_ptr<Goal>> body,
@@ -666,10 +668,27 @@ public:
                ClauseKind clauseKind = ClauseKind::Rule)
         : head(std::move(head)), parentName(std::move(parentName)), body(std::move(body)),
           fallbackBranches(std::move(fallbackBranches)), emptyDeclaration(emptyDeclaration),
-          clauseKind(clauseKind) {}
+          clauseKind(clauseKind) {
+        if (!this->parentName.empty()) parentNames.push_back(this->parentName);
+    }
+    ClauseStmt(Call head,
+               std::vector<std::string> parentNames,
+               std::vector<std::shared_ptr<Goal>> body,
+               std::vector<std::vector<std::shared_ptr<Goal>>> fallbackBranches,
+               bool emptyDeclaration = false,
+               ClauseKind clauseKind = ClauseKind::Rule)
+        : head(std::move(head)), parentNames(std::move(parentNames)), body(std::move(body)),
+          fallbackBranches(std::move(fallbackBranches)), emptyDeclaration(emptyDeclaration),
+          clauseKind(clauseKind) {
+        if (!this->parentNames.empty()) parentName = this->parentNames.front();
+    }
 
     Call head;
+    // parentName is retained as the primary-parent compatibility view. All
+    // hierarchy traversal uses parentNames, which preserves every declared
+    // direct parent in source order.
     std::string parentName;
+    std::vector<std::string> parentNames;
     std::vector<std::shared_ptr<Goal>> body; // empty body without => () means fact
     std::vector<std::vector<std::shared_ptr<Goal>>> fallbackBranches;
     bool emptyDeclaration = false;
@@ -681,7 +700,13 @@ public:
     std::string debug() const override {
         std::ostringstream oss;
         oss << head.name;
-        if (!parentName.empty()) oss << " extend " << parentName;
+        if (!parentNames.empty()) {
+            oss << " extend ";
+            for (size_t i = 0; i < parentNames.size(); ++i) {
+                if (i) oss << ", ";
+                oss << parentNames[i];
+            }
+        } else if (!parentName.empty()) oss << " extend " << parentName;
         oss << "(";
         for (size_t i = 0; i < head.args.size(); ++i) {
             if (i) oss << ", ";
