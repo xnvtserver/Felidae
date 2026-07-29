@@ -23,7 +23,8 @@ enum class ExprKind {
     Binary,
     Pipeline,
     Term,
-    Lambda
+    Lambda,
+    FactSelection
 };
 
 enum class GoalKind {
@@ -53,10 +54,29 @@ enum class ClauseKind {
     EntryCall
 };
 
+struct SourceSpan {
+    int startLine = 1;
+    int startColumn = 1;
+    int endLine = 1;
+    int endColumn = 1;
+
+    bool valid() const {
+        return startLine > 0 && startColumn > 0 &&
+               endLine >= startLine &&
+               (endLine != startLine || endColumn >= startColumn);
+    }
+};
+
 class AstNode {
 public:
     virtual ~AstNode() = default;
     virtual std::string debug() const = 0;
+
+    // The parser assigns compact positional metadata as soon as a node is
+    // completed. Source text remains owned by the lexer/editor, so retaining
+    // an AST node never pins a complete input buffer.
+    SourceSpan sourceSpan;
+    std::uint64_t nodeId = 0;
 };
 
 class Expr : public AstNode {
@@ -200,6 +220,50 @@ public:
         }
         oss << "}";
         return oss.str();
+    }
+};
+
+// Runtime-only lazy fact query. It deliberately is not a MapExpr: user map
+// operations cannot mutate or counterfeit its snapshot/cursor metadata.
+class FactSelectionExpr final : public Expr {
+public:
+    FactSelectionExpr(std::string factType,
+                      std::uint64_t snapshotGeneration,
+                      std::string field = {},
+                      std::shared_ptr<Expr> equals = nullptr)
+        : factType(std::move(factType)),
+          factTypeId(symbolIdForName(this->factType)),
+          snapshotGeneration(snapshotGeneration),
+          field(std::move(field)),
+          fieldId(this->field.empty() ? 0 : symbolIdForName(this->field)),
+          equals(std::move(equals)) {}
+
+    std::string factType;
+    SymbolId factTypeId = 0;
+    std::uint64_t snapshotGeneration = 0;
+    std::string field;
+    SymbolId fieldId = 0;
+    std::shared_ptr<Expr> equals;
+
+    ExprKind kind() const override { return ExprKind::FactSelection; }
+    std::shared_ptr<Expr> clone() const override {
+        return std::make_shared<FactSelectionExpr>(
+            factType,
+            snapshotGeneration,
+            field,
+            equals ? equals->clone() : nullptr);
+    }
+    std::string debug() const override {
+        std::ostringstream out;
+        out << "{__type: \"FactSelection\", fact_type: \""
+            << factType << "\", source: \"memory\", snapshot_generation: "
+            << snapshotGeneration;
+        if (!field.empty()) {
+            out << ", field: \"" << field << "\"";
+            if (equals) out << ", equals: " << equals->debug();
+        }
+        out << "}";
+        return out.str();
     }
 };
 

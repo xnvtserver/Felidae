@@ -36,6 +36,7 @@ private:
     std::set<std::string> methodPredicates_;
     size_t pos_ = 0;
     size_t anonymousCounter_ = 0;
+    std::uint64_t nodeCounter_ = 0;
 
     void ensureToken(size_t index) const;
     const Token& tokenAt(size_t index) const;
@@ -52,6 +53,9 @@ private:
     bool isGoalListTerminator() const;
     void rejectUnsupportedToken(const Token& token) const;
     bool checkElse() const;
+    void stampNode(const std::shared_ptr<AstNode>& node,
+                   int startLine,
+                   int startColumn);
 
     std::shared_ptr<Statement> parseStatement();
     std::shared_ptr<ImportStmt> parseImport();

@@ -1,6 +1,7 @@
 #include "Memory.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -81,22 +82,172 @@ const FactRecord& FactMemory::fact(size_t index) const {
     return data_->facts.at(index);
 }
 
+std::shared_ptr<MapExpr> FactMemory::materializeFact(
+    const Data& store,
+    std::size_t index) const {
+    const auto& record = store.facts.at(index);
+    const auto relation = store.relations.find(record.typeId);
+    if (relation == store.relations.end() || !relation->second) return {};
+    const auto& root = *relation->second;
+    if (record.relationOrdinal >= root.fieldOrderOffsets.size() ||
+        record.relationOrdinal >= root.fieldOrderCounts.size()) return {};
+
+    std::vector<MapEntry> entries;
+    entries.emplace_back(
+        internalSymbolString(InternalSymbolKind::Type),
+        std::make_shared<StringExpr>(record.type));
+    if (!record.parentType.empty()) {
+        entries.emplace_back(
+            internalSymbolString(InternalSymbolKind::Parent),
+            std::make_shared<StringExpr>(record.parentType));
+    }
+
+    const std::size_t offset = root.fieldOrderOffsets[record.relationOrdinal];
+    const std::size_t count = root.fieldOrderCounts[record.relationOrdinal];
+    std::unordered_map<SymbolId, std::size_t> consumed;
+    entries.reserve(entries.size() + count);
+    for (std::size_t position = 0; position < count; ++position) {
+        const std::size_t orderIndex = offset + position;
+        const SymbolId fieldId = root.fieldOrder[orderIndex];
+        const auto name = root.fieldNames.find(fieldId);
+        const auto column = root.columns.find(fieldId);
+        if (name == root.fieldNames.end() || column == root.columns.end()) continue;
+        const std::size_t first = consumed[fieldId];
+        const std::size_t valueCount =
+            orderIndex < root.fieldValueCounts.size()
+                ? root.fieldValueCounts[orderIndex] : 1;
+        std::vector<std::shared_ptr<Expr>> values;
+        values.reserve(valueCount);
+        std::size_t current = 0;
+        column->second.forRow(index, [&](const std::shared_ptr<const Expr>& value) {
+            if (current >= first && current < first + valueCount && value) {
+                values.push_back(std::const_pointer_cast<Expr>(value)->clone());
+            }
+            ++current;
+        });
+        consumed[fieldId] += valueCount;
+        const bool wasArray =
+            orderIndex < root.fieldArrayFlags.size() &&
+            root.fieldArrayFlags[orderIndex] != 0;
+        if (wasArray) {
+            entries.emplace_back(name->second, std::make_shared<ArrayExpr>(std::move(values)));
+        } else if (!values.empty()) {
+            entries.emplace_back(name->second, std::move(values.front()));
+        }
+    }
+
+    // Inherited values are a resolved view, never duplicated into the child
+    // relation. The first active row of each declared parent remains the
+    // language's type-default fact, matching the prior constructor behavior.
+    std::vector<std::string> parentTypes;
+    const auto primaryParent = store.parentOf.find(record.type);
+    if (primaryParent != store.parentOf.end()) {
+        parentTypes.push_back(primaryParent->second);
+    } else if (!record.parentType.empty()) {
+        parentTypes.push_back(record.parentType);
+    }
+    const auto additionalParents =
+        store.additionalParentsOf.find(record.type);
+    if (additionalParents != store.additionalParentsOf.end()) {
+        parentTypes.insert(
+            parentTypes.end(),
+            additionalParents->second.begin(),
+            additionalParents->second.end());
+    }
+    for (const auto& parentType : parentTypes) {
+        const SymbolId parentId = symbolIdForName(parentType);
+        const auto parentRelation = store.relations.find(parentId);
+        if (parentRelation == store.relations.end() ||
+            !parentRelation->second) continue;
+        const auto parentRow = std::find_if(
+            parentRelation->second->rows.begin(),
+            parentRelation->second->rows.end(),
+            [&](const std::size_t candidate) {
+                return candidate < store.facts.size() &&
+                    store.facts.at(candidate).active &&
+                    store.facts.at(candidate).type == parentType;
+            });
+        if (parentRow == parentRelation->second->rows.end()) continue;
+        const auto parent = materializeFact(store, *parentRow);
+        if (!parent) continue;
+        for (const auto& inherited : parent->entries) {
+            if (inherited.keyId == InternalSymbol::TypeId ||
+                inherited.keyId == InternalSymbol::ParentId) continue;
+            const auto existing = std::find_if(
+                entries.begin(), entries.end(),
+                [&](const MapEntry& entry) {
+                    return entry.keyId == inherited.keyId &&
+                           entry.key == inherited.key;
+                });
+            if (existing == entries.end()) {
+                entries.emplace_back(
+                    inherited.key, inherited.value->clone());
+            }
+        }
+    }
+    auto result = std::make_shared<MapExpr>(std::move(entries));
+    result->factIdentity = record.id;
+    return result;
+}
+
+std::shared_ptr<MapExpr> FactMemory::factValue(
+    size_t index,
+    std::uint64_t snapshotGeneration) const {
+    return materializeFact(dataForSnapshot(snapshotGeneration), index);
+}
+
 std::vector<Arg> FactMemory::factArguments(size_t index) const {
     const auto& record = data_->facts.at(index);
+    if (!record.parentType.empty() ||
+        data_->parentOf.count(record.type) != 0 ||
+        data_->additionalParentsOf.count(record.type) != 0) {
+        const auto resolved = materializeFact(*data_, index);
+        std::vector<Arg> args;
+        if (!resolved) return args;
+        for (const auto& entry : resolved->entries) {
+            if (entry.keyId == InternalSymbol::TypeId ||
+                entry.keyId == InternalSymbol::ParentId) continue;
+            if (const auto array =
+                    std::dynamic_pointer_cast<ArrayExpr>(entry.value)) {
+                for (const auto& item : array->items) {
+                    args.emplace_back(entry.key, item);
+                }
+            } else {
+                args.emplace_back(entry.key, entry.value);
+            }
+        }
+        return args;
+    }
     const auto relation = data_->relations.find(record.typeId);
-    if (relation == data_->relations.end()) return {};
-    const auto order = relation->second->fieldOrderByRow.find(index);
-    if (order == relation->second->fieldOrderByRow.end()) return {};
+    if (relation == data_->relations.end() || !relation->second ||
+        record.relationOrdinal >= relation->second->fieldOrderOffsets.size() ||
+        record.relationOrdinal >= relation->second->fieldOrderCounts.size()) return {};
+    const std::size_t offset =
+        relation->second->fieldOrderOffsets[record.relationOrdinal];
+    const std::size_t count =
+        relation->second->fieldOrderCounts[record.relationOrdinal];
     std::vector<Arg> args;
-    for (const SymbolId fieldId : order->second) {
+    args.reserve(count);
+    std::unordered_map<SymbolId, std::size_t> consumed;
+    for (std::size_t position = 0; position < count; ++position) {
+        const std::size_t orderIndex = offset + position;
+        const SymbolId fieldId = relation->second->fieldOrder[orderIndex];
         const auto name = relation->second->fieldNames.find(fieldId);
-        const auto column = relation->second->valuesByRow.find(fieldId);
-        if (name == relation->second->fieldNames.end() || column == relation->second->valuesByRow.end()) continue;
-        const auto values = column->second.find(index);
-        if (values == column->second.end()) continue;
-        values->second.forEach([&](const std::shared_ptr<const Expr>& value) {
-            if (value) args.push_back(Arg{name->second, std::const_pointer_cast<Expr>(value)});
+        const auto column = relation->second->columns.find(fieldId);
+        if (name == relation->second->fieldNames.end() ||
+            column == relation->second->columns.end()) continue;
+        const std::size_t first = consumed[fieldId];
+        const std::size_t valueCount =
+            orderIndex < relation->second->fieldValueCounts.size()
+                ? relation->second->fieldValueCounts[orderIndex] : 1;
+        std::size_t current = 0;
+        column->second.forRow(index, [&](const std::shared_ptr<const Expr>& value) {
+            if (current >= first && current < first + valueCount && value) {
+                args.push_back(Arg{name->second, std::const_pointer_cast<Expr>(value)});
+            }
+            ++current;
         });
+        consumed[fieldId] += valueCount;
     }
     return args;
 }
@@ -126,11 +277,27 @@ std::uint64_t FactMemory::generation() const {
     return data_->generation;
 }
 
+std::uint64_t FactMemory::relationGeneration(
+    const std::string& type,
+    SymbolId typeId) const {
+    if (typeId == 0) typeId = symbolIdForName(type);
+    const auto relation = data_->relations.find(typeId);
+    if (relation == data_->relations.end() || !relation->second ||
+        relation->second->type != type) return 0;
+    return relation->second->generation;
+}
+
+std::uint64_t FactMemory::hierarchyGeneration() const {
+    return data_->hierarchyGeneration;
+}
+
 FactMemoryStats FactMemory::stats() const {
     FactMemoryStats result;
     result.relations = data_->relations.size();
     result.snapshots = snapshots_.size();
     result.generation = data_->generation;
+    result.adaptiveEqualityIndexes = adaptiveEqualityIndexes_;
+    result.adaptiveIndexBuildMicros = adaptiveIndexBuildMicros_;
     for (std::size_t index = 0; index < data_->facts.size(); ++index) {
         const auto& fact = data_->facts.at(index);
         ++result.rowVersions;
@@ -140,9 +307,12 @@ FactMemoryStats FactMemory::stats() const {
     for (const auto& entry : data_->relations) {
         if (!entry.second) continue;
         result.relationRows += entry.second->rows.size();
-        for (const auto& column : entry.second->valuesByRow) {
-            for (const auto& row : column.second) result.relationColumnValues += row.second.size();
+        for (const auto& column : entry.second->columns) {
+            result.relationColumnValues += column.second.values.size();
         }
+    }
+    if (data_->valueArena) {
+        result.internedValues = data_->valueArena->valueCount;
     }
     return result;
 }
@@ -176,9 +346,51 @@ const FactRecord& FactMemory::snapshotFact(std::uint64_t snapshotGeneration, siz
 bool FactMemory::structurallyEqual(const std::shared_ptr<Expr>& left,
                                    const std::shared_ptr<Expr>& right) {
     if (!left || !right || left->kind() != right->kind()) return false;
-    // Expr::debug is canonical for literals, arrays and maps in the current
-    // AST.  It is intentionally used only to match an attachment target at
-    // mutation time; query execution continues to use relation indexes.
+    if (const auto l = std::dynamic_pointer_cast<StringExpr>(left)) {
+        return l->value == std::static_pointer_cast<StringExpr>(right)->value;
+    }
+    if (const auto l = std::dynamic_pointer_cast<NumberExpr>(left)) {
+        return l->value == std::static_pointer_cast<NumberExpr>(right)->value;
+    }
+    if (const auto l = std::dynamic_pointer_cast<BoolExpr>(left)) {
+        return l->value == std::static_pointer_cast<BoolExpr>(right)->value;
+    }
+    if (std::dynamic_pointer_cast<NilExpr>(left)) return true;
+    if (const auto l = std::dynamic_pointer_cast<ArrayExpr>(left)) {
+        const auto r = std::static_pointer_cast<ArrayExpr>(right);
+        if (l->items.size() != r->items.size()) return false;
+        for (std::size_t index = 0; index < l->items.size(); ++index) {
+            if (!structurallyEqual(l->items[index], r->items[index])) return false;
+        }
+        return true;
+    }
+    if (const auto l = std::dynamic_pointer_cast<MapExpr>(left)) {
+        const auto r = std::static_pointer_cast<MapExpr>(right);
+        if (l->entries.size() != r->entries.size()) return false;
+        for (const auto& wanted : l->entries) {
+            const auto found = std::find_if(
+                r->entries.begin(), r->entries.end(),
+                [&](const MapEntry& item) {
+                    return wanted.keyId == item.keyId &&
+                           wanted.key == item.key;
+                });
+            if (found == r->entries.end() ||
+                !structurallyEqual(wanted.value, found->value)) return false;
+        }
+        return true;
+    }
+    if (const auto l = std::dynamic_pointer_cast<TermExpr>(left)) {
+        const auto r = std::static_pointer_cast<TermExpr>(right);
+        if (l->nameId != r->nameId || l->name != r->name ||
+            l->args.size() != r->args.size()) return false;
+        for (std::size_t index = 0; index < l->args.size(); ++index) {
+            if (l->args[index].nameId != r->args[index].nameId ||
+                l->args[index].name != r->args[index].name ||
+                !structurallyEqual(
+                    l->args[index].value, r->args[index].value)) return false;
+        }
+        return true;
+    }
     return left->debug() == right->debug();
 }
 
@@ -233,7 +445,9 @@ std::optional<std::uint64_t> FactMemory::logicalFactId(const std::shared_ptr<Exp
     std::optional<std::uint64_t> matched;
     for (size_t index : rows) {
         const auto& fact = data_->facts.at(index);
-        if (!fact.active || !factSatisfiesPattern(*fact.value, *pattern)) continue;
+        if (!fact.active) continue;
+        const auto materialized = materializeFact(*data_, index);
+        if (!materialized || !factSatisfiesPattern(*materialized, *pattern)) continue;
         // A reconstructed map has no durable reference to one of several
         // structurally equal rows.  Refuse to choose arbitrarily: callers can
         // obtain a fact through Fact.all/select, which carries this hidden id.
@@ -247,8 +461,8 @@ std::shared_ptr<MapExpr> FactMemory::factValueById(std::uint64_t id) const {
     const auto indexed = data_->factIndexById.find(id);
     if (!indexed) return {};
     const auto& fact = data_->facts.at(*indexed);
-    if (!fact.active || !fact.value) return {};
-    return std::static_pointer_cast<MapExpr>(fact.value->clone());
+    if (!fact.active) return {};
+    return materializeFact(*data_, *indexed);
 }
 
 bool FactMemory::addDependency(std::uint64_t sourceId, std::shared_ptr<MapExpr> required) {
@@ -319,7 +533,10 @@ std::vector<std::shared_ptr<MapExpr>> FactMemory::missingDependencies(std::uint6
         }
         for (size_t candidate : candidates) {
             const auto& fact = data_->facts.at(candidate);
-            if (fact.active && factSatisfiesPattern(*fact.value, *dependency.required)) {
+            const auto materialized =
+                fact.active ? materializeFact(*data_, candidate) : nullptr;
+            if (materialized &&
+                factSatisfiesPattern(*materialized, *dependency.required)) {
                 satisfied = true;
                 break;
             }
@@ -350,7 +567,11 @@ bool FactMemory::hasDependencyCycle(std::uint64_t sourceId) const {
         if (dependencies != data_->attachments->dependenciesBySource.end()) {
             for (const auto& dependency : dependencies->second) {
                 for (const auto& candidate : byId) {
-                    if (factSatisfiesPattern(*candidate.second->value, *dependency.required) &&
+                    const auto row = data_->factIndexById.find(candidate.first);
+                    const auto materialized =
+                        row ? materializeFact(*data_, *row) : nullptr;
+                    if (materialized &&
+                        factSatisfiesPattern(*materialized, *dependency.required) &&
                         visit(candidate.first)) {
                         return true;
                     }
@@ -399,17 +620,76 @@ std::vector<size_t> FactMemory::selectionIndexes(const std::string& type,
 
         const auto relation = store.relations.find(current);
         if (relation != store.relations.end()) {
-            const Data::Relation::RowList* indexedCandidates = nullptr;
+            std::optional<Data::Relation::RowList> indexedCandidates;
             const std::vector<size_t>* candidates = &relation->second->rows;
             if (useEqualityIndex) {
-                const auto column = relation->second->equalityIndexes.find(propertyId);
-                if (column == relation->second->equalityIndexes.end()) candidates = nullptr;
+                const auto column = relation->second->columns.find(propertyId);
+                const bool inheritsFields =
+                    store.parentOf.count(relation->second->type) != 0 ||
+                    store.additionalParentsOf.count(
+                        relation->second->type) != 0;
+                if (column == relation->second->columns.end() ||
+                    inheritsFields) {
+                    // A missing direct column can still resolve through the
+                    // hierarchy. Likewise, an index over explicit overrides
+                    // cannot exclude rows that inherit the requested value.
+                    candidates = &relation->second->rows;
+                }
                 else {
-                    const auto matches = column->second.find(valueHash);
-                    if (matches == column->second.end()) candidates = nullptr;
-                    else {
-                        candidates = nullptr;
-                        indexedCandidates = &matches->second;
+                    const auto started = std::chrono::steady_clock::now();
+                    const auto equality = column->second.equalityIndex;
+                    std::lock_guard<std::mutex> lock(equality->mutex);
+                    ++equality->queryCount;
+                    // A one-off analytical predicate is cheaper as a compact
+                    // column scan. Build the retained equality index only
+                    // after repeated demand demonstrates reuse.
+                    constexpr std::size_t EqualityIndexBuildThreshold = 3;
+                    if (!equality->built &&
+                        equality->queryCount >= EqualityIndexBuildThreshold) {
+                        for (std::size_t offset = 0;
+                             offset < column->second.values.size();
+                             ++offset) {
+                            std::size_t hash = 0;
+                            const auto& item = column->second.values[offset];
+                            if (item && literalIndexHash(
+                                    std::const_pointer_cast<Expr>(item), hash)) {
+                                equality->rowsByHash[hash].append(
+                                    column->second.rows[offset]);
+                            }
+                        }
+                        equality->built = true;
+                        ++adaptiveEqualityIndexes_;
+                        adaptiveIndexBuildMicros_ += static_cast<std::size_t>(
+                            std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now() - started).count());
+                    }
+                    if (equality->built) {
+                        const auto matches =
+                            equality->rowsByHash.find(valueHash);
+                        if (matches == equality->rowsByHash.end()) {
+                            candidates = nullptr;
+                        } else {
+                            indexedCandidates = matches->second;
+                        }
+                    } else {
+                        // A cold equality query still scans the compact column,
+                        // not every relation row followed by a binary search
+                        // back into that column.  The latter turns an O(n)
+                        // cold lookup into O(n log n) and dominated million-row
+                        // startup queries.
+                        Data::Relation::RowList matches;
+                        for (std::size_t offset = 0;
+                             offset < column->second.values.size();
+                             ++offset) {
+                            std::size_t hash = 0;
+                            const auto& item = column->second.values[offset];
+                            if (item && literalIndexHash(
+                                    std::const_pointer_cast<Expr>(item), hash) &&
+                                hash == valueHash) {
+                                matches.append(column->second.rows[offset]);
+                            }
+                        }
+                        indexedCandidates = std::move(matches);
                     }
                 }
             }
@@ -418,20 +698,34 @@ std::vector<size_t> FactMemory::selectionIndexes(const std::string& type,
                     const auto& fact = store.facts.at(index);
                     if (!fact.active || !isCompatibleTypeInData(store, fact.type, type)) return;
                     if (!property.empty()) {
-                        const auto column = relation->second->valuesByRow.find(propertyId);
-                        if (column == relation->second->valuesByRow.end()) return;
-                        const auto rowValues = column->second.find(index);
-                        if (rowValues == column->second.end()) return;
+                        const auto column = relation->second->columns.find(propertyId);
                         bool exact = !value;
-                        rowValues->second.forEach([&](const std::shared_ptr<const Expr>& item) {
-                            if (exact) return;
-                            std::string left;
-                            std::string right;
-                            if (static_cast<bool>(item) && (!value || (literalIndexKey(std::const_pointer_cast<Expr>(item), left) &&
-                                literalIndexKey(value, right) && left == right))) {
-                                exact = true;
+                        if (column != relation->second->columns.end()) {
+                            column->second.forRow(index, [&](const std::shared_ptr<const Expr>& item) {
+                                if (exact) return;
+                                if (static_cast<bool>(item) &&
+                                    (!value || structurallyEqual(
+                                        std::const_pointer_cast<Expr>(item), value))) {
+                                    exact = true;
+                                }
+                            });
+                        }
+                        if (!exact) {
+                            const auto resolved =
+                                materializeFact(store, index);
+                            if (resolved) {
+                                const auto field = std::find_if(
+                                    resolved->entries.begin(),
+                                    resolved->entries.end(),
+                                    [&](const MapEntry& entry) {
+                                        return entry.keyId == propertyId &&
+                                               entry.key == property;
+                                    });
+                                exact = field != resolved->entries.end() &&
+                                    (!value || structurallyEqual(
+                                        field->value, value));
                             }
-                        });
+                        }
                         if (!exact) return;
                     }
                     if (seenRows.insert(index).second) result.push_back(index);
@@ -453,8 +747,10 @@ size_t FactMemory::addFact(std::string type,
                            std::filesystem::path origin,
                            std::optional<std::uint64_t> logicalId,
                            std::uint64_t rowVersion) {
+    if (!value) throw std::invalid_argument("Fact value cannot be null");
     const SymbolId typeId = symbolIdForName(type);
     const SymbolId parentTypeId = parentType.empty() ? 0 : symbolIdForName(parentType);
+    const std::size_t structuralHash = stableExprHash(value);
     ensureUnique();
     const std::uint64_t factId = logicalId ? *logicalId : data_->nextFactId++;
     if (logicalId && *logicalId >= data_->nextFactId) data_->nextFactId = *logicalId + 1;
@@ -464,18 +760,17 @@ size_t FactMemory::addFact(std::string type,
         typeId,
         std::move(parentType),
         parentTypeId,
-        std::move(value),
         std::move(origin),
-        0,
+        structuralHash,
         rowVersion,
         data_->generation + 1,
+        0,
         true});
     const size_t index = data_->facts.size() - 1;
-    record.value->factIdentity = record.id;
-    record.stableHash = stableExprHash(record.value);
-    indexFact(index);
+    value->factIdentity = record.id;
+    indexFact(index, value);
     ++data_->generation;
-    invalidateCachesForFact(record);
+    invalidateCachesForFact(record, value);
     return index;
 }
 
@@ -497,6 +792,7 @@ void FactMemory::setParent(const std::string& child, const std::string& parent) 
     if (std::find(children.begin(), children.end(), childId) == children.end()) {
         children.push_back(childId);
     }
+    ++data_->hierarchyGeneration;
     ++data_->generation;
     // A parent declaration changes which rows match both type and property
     // queries.  The child fact may have been registered before this edge was
@@ -616,6 +912,7 @@ void FactMemory::removeOrigin(const std::filesystem::path& origin) {
         }
     }
     ++data_->generation;
+    ++data_->hierarchyGeneration;
     invalidateCaches();
     compactInactiveIfSafe();
 }
@@ -696,8 +993,8 @@ const std::vector<size_t>& FactMemory::propertyFactIndexes(
     static const std::vector<size_t> empty;
     std::string valueKey;
     if (!literalIndexKey(value, valueKey)) return empty;
-    std::size_t valueHash = 0;
-    if (!literalIndexHash(value, valueHash)) return empty;
+    std::size_t ignoredHash = 0;
+    if (!literalIndexHash(value, ignoredHash)) return empty;
     if (typeId == 0) typeId = symbolIdForName(type);
     if (propertyId == 0) propertyId = symbolIdForName(property);
 
@@ -705,51 +1002,10 @@ const std::vector<size_t>& FactMemory::propertyFactIndexes(
     auto cached = propertyQueryCache_.find(queryKey);
     if (cached != propertyQueryCache_.end()) return cached->second;
 
-    std::vector<size_t> indexes;
-    std::unordered_set<size_t> seenIndexes;
-    // Read relation-local equality indexes instead of scanning a global
-    // property bucket.  This keeps a query limited to the selected type and
-    // its declared descendants, which is important for high-cardinality
-    // analytical stores where field names are reused by many fact types.
-    std::deque<SymbolId> pending;
-    std::unordered_set<SymbolId> seenTypes;
-    pending.push_back(typeId);
-    while (!pending.empty()) {
-        const SymbolId current = pending.front();
-        pending.pop_front();
-        if (!seenTypes.insert(current).second) continue;
-        auto relation = data_->relations.find(current);
-        if (relation != data_->relations.end()) {
-            const auto field = relation->second->equalityIndexes.find(propertyId);
-            if (field != relation->second->equalityIndexes.end()) {
-                const auto matches = field->second.find(valueHash);
-                if (matches != field->second.end()) {
-                    matches->second.forEach([&](size_t index) {
-                        if (!isActive(index)) return;
-                        const auto& fact = data_->facts.at(index);
-                        if (!isCompatibleType(fact.type, type)) return;
-                        bool exactProperty = false;
-                        const auto column = relation->second->valuesByRow.find(propertyId);
-                        if (column == relation->second->valuesByRow.end()) return;
-                        const auto rowValues = column->second.find(index);
-                        if (rowValues == column->second.end()) return;
-                        rowValues->second.forEach([&](const std::shared_ptr<const Expr>& item) {
-                            if (exactProperty) return;
-                            std::string indexedKey;
-                            if (static_cast<bool>(item) && literalIndexKey(std::const_pointer_cast<Expr>(item), indexedKey) && indexedKey == valueKey) {
-                                exactProperty = true;
-                            }
-                        });
-                        if (exactProperty && seenIndexes.insert(index).second) indexes.push_back(index);
-                    });
-                }
-            }
-        }
-        auto children = data_->childrenByParent.find(current);
-        if (children != data_->childrenByParent.end()) {
-            for (SymbolId child : children->second) pending.push_back(child);
-        }
-    }
+    // selectionIndexes owns adaptive index construction and structural
+    // confirmation. Keep this cache as the stable query-plan result only.
+    std::vector<size_t> indexes =
+        selectionIndexes(type, property, value);
     auto inserted = propertyQueryCache_.emplace(std::move(queryKey), std::move(indexes));
     return inserted.first->second;
 }
@@ -759,13 +1015,16 @@ void FactMemory::invalidateCaches() {
     propertyQueryCache_.clear();
 }
 
-void FactMemory::rebuildIndexes() {
+void FactMemory::rebuildIndexes(
+    const std::vector<std::shared_ptr<MapExpr>>& values) {
     data_->factIndexById.clear();
     data_->factsByOrigin.clear();
     data_->typeNamesById.clear();
     data_->relations.clear();
     for (size_t index = 0; index < data_->facts.size(); ++index) {
-        if (data_->facts.at(index).active) indexFact(index);
+        if (data_->facts.at(index).active && index < values.size()) {
+            indexFact(index, values[index]);
+        }
     }
     data_->childrenByParent.clear();
     for (const auto& entry : data_->parentOf) {
@@ -890,9 +1149,35 @@ void FactMemory::rememberTypeName(SymbolId id, const std::string& name) {
     if (std::find(names.begin(), names.end(), name) == names.end()) names.push_back(name);
 }
 
-void FactMemory::indexFact(size_t index) {
+std::shared_ptr<const Expr> FactMemory::internValue(
+    const std::shared_ptr<Expr>& value) {
+    if (!value) return {};
+    // Numeric columns in analytical stores are commonly high-cardinality
+    // measures and identifiers. Hash-consing those values adds a hash-table
+    // node and lock/search work without producing sharing.
+    if (value->kind() == ExprKind::Number) {
+        return std::shared_ptr<const Expr>(value->clone());
+    }
+    if (!data_->valueArena) data_->valueArena = std::make_shared<Data::ValueArena>();
+    const std::size_t hash = stableExprHash(value);
+    auto& candidates = data_->valueArena->valuesByHash[hash];
+    for (const auto& candidate : candidates) {
+        if (candidate && structurallyEqual(
+                std::const_pointer_cast<Expr>(candidate), value)) {
+            return candidate;
+        }
+    }
+    auto stored = std::shared_ptr<const Expr>(value->clone());
+    candidates.push_back(stored);
+    ++data_->valueArena->valueCount;
+    return stored;
+}
+
+void FactMemory::indexFact(
+    size_t index,
+    const std::shared_ptr<MapExpr>& value) {
     auto& fact = data_->facts.mutableAt(index);
-    if (!fact.active || !fact.value) return;
+    if (!fact.active || !value) return;
     if (fact.typeId == 0) fact.typeId = symbolIdForName(fact.type);
     if (fact.parentTypeId == 0 && !fact.parentType.empty()) {
         fact.parentTypeId = symbolIdForName(fact.parentType);
@@ -910,33 +1195,83 @@ void FactMemory::indexFact(size_t index) {
         relation.typeId = fact.typeId;
         relation.type = fact.type;
     }
-    relation.generation = data_->generation;
+    relation.generation = data_->generation + 1;
+    fact.relationOrdinal = relation.rows.size();
     relation.rows.push_back(index);
-    for (const auto& entry : fact.value->entries) {
+    relation.fieldOrderOffsets.push_back(relation.fieldOrder.size());
+    std::size_t visibleFieldCount = 0;
+    for (const auto& entry : value->entries) {
         if (entry.keyId == InternalSymbol::TypeId || entry.keyId == InternalSymbol::ParentId) continue;
-        relation.rowsByField[entry.keyId].push_back(index);
+        ++visibleFieldCount;
         relation.fieldNames.emplace(entry.keyId, entry.key);
-        relation.fieldOrderByRow[index].push_back(entry.keyId);
+        relation.fieldOrder.push_back(entry.keyId);
         std::vector<std::shared_ptr<Expr>> items;
-        if (auto array = std::dynamic_pointer_cast<ArrayExpr>(entry.value)) {
+        const auto array = std::dynamic_pointer_cast<ArrayExpr>(entry.value);
+        if (array) {
             items = array->items;
         } else {
             items.push_back(entry.value);
         }
+        relation.fieldValueCounts.push_back(items.size());
+        relation.fieldArrayFlags.push_back(array ? 1U : 0U);
+        auto& column = relation.columns[entry.keyId];
+        const std::size_t presenceWord = fact.relationOrdinal / 64;
+        if (column.presence.size() <= presenceWord) {
+            column.presence.resize(presenceWord + 1, 0);
+        }
+        column.presence[presenceWord] |=
+            std::uint64_t{1} << (fact.relationOrdinal % 64);
         for (const auto& item : items) {
-            relation.valuesByRow[entry.keyId][index].append(item);
-            std::size_t valueHash = 0;
-            if (literalIndexHash(item, valueHash)) {
-                relation.equalityIndexes[entry.keyId][valueHash].append(index);
+            const auto stored = internValue(item);
+            column.rows.push_back(index);
+            column.values.push_back(stored);
+            const auto observedKind = [&]() {
+                if (!stored) return Data::Relation::ColumnKind::Empty;
+                switch (stored->kind()) {
+                    case ExprKind::String: return Data::Relation::ColumnKind::String;
+                    case ExprKind::Number: return Data::Relation::ColumnKind::Number;
+                    case ExprKind::Bool: return Data::Relation::ColumnKind::Bool;
+                    case ExprKind::Nil: return Data::Relation::ColumnKind::Nil;
+                    default: return Data::Relation::ColumnKind::Structured;
+                }
+            }();
+            if (column.kind == Data::Relation::ColumnKind::Empty) {
+                column.kind = observedKind;
+            } else if (observedKind != Data::Relation::ColumnKind::Empty &&
+                       column.kind != observedKind) {
+                column.kind = Data::Relation::ColumnKind::Mixed;
+            }
+            if (column.equalityIndex &&
+                column.equalityIndex.use_count() != 1) {
+                auto detached =
+                    std::make_shared<Data::Relation::FieldColumn::EqualityIndex>();
+                {
+                    std::lock_guard<std::mutex> lock(
+                        column.equalityIndex->mutex);
+                    detached->built = column.equalityIndex->built;
+                    detached->queryCount =
+                        column.equalityIndex->queryCount;
+                    detached->rowsByHash =
+                        column.equalityIndex->rowsByHash;
+                }
+                column.equalityIndex = std::move(detached);
+            }
+            if (column.equalityIndex && column.equalityIndex->built) {
+                std::size_t valueHash = 0;
+                if (literalIndexHash(
+                        std::const_pointer_cast<Expr>(stored), valueHash)) {
+                    column.equalityIndex->rowsByHash[valueHash].append(index);
+                }
             }
         }
     }
+    relation.fieldOrderCounts.push_back(visibleFieldCount);
 }
 
 void FactMemory::deactivateFact(size_t index) {
     if (!isActive(index)) return;
     FactRecord& fact = data_->facts.mutableAt(index);
-    invalidateCachesForFact(fact);
+    invalidateCachesForFact(fact, materializeFact(*data_, index));
     fact.active = false;
 }
 
@@ -956,16 +1291,23 @@ void FactMemory::compactInactiveIfSafe() {
 
     ensureUnique();
     FactRows compacted;
+    std::vector<std::shared_ptr<MapExpr>> compactedValues;
+    compactedValues.reserve(data_->facts.size() - tombstones);
     for (std::size_t index = 0; index < data_->facts.size(); ++index) {
         const auto& fact = data_->facts.at(index);
-        if (fact.active) compacted.append(fact);
+        if (fact.active) {
+            compactedValues.push_back(materializeFact(*data_, index));
+            compacted.append(fact);
+        }
     }
     data_->facts = std::move(compacted);
     ++data_->generation;
-    rebuildIndexes();
+    rebuildIndexes(compactedValues);
 }
 
-void FactMemory::invalidateCachesForFact(const FactRecord& fact) {
+void FactMemory::invalidateCachesForFact(
+    const FactRecord& fact,
+    const std::shared_ptr<MapExpr>& value) {
     invalidateCachesForType(fact.type, fact.typeId);
 
     // Property selections are precise enough to invalidate only queries for
@@ -973,19 +1315,19 @@ void FactMemory::invalidateCachesForFact(const FactRecord& fact) {
     // remain reusable across fact registrations.
     for (auto cache = propertyQueryCache_.begin(); cache != propertyQueryCache_.end();) {
         const auto& key = cache->first;
-        if (!isCompatibleType(fact.type, key.type) || !fact.value) {
+        if (!isCompatibleType(fact.type, key.type) || !value) {
             ++cache;
             continue;
         }
         bool matches = false;
-        for (const auto& entry : fact.value->entries) {
+        for (const auto& entry : value->entries) {
             if (entry.keyId != key.propertyId) continue;
             std::vector<std::shared_ptr<Expr>> values;
             if (auto array = std::dynamic_pointer_cast<ArrayExpr>(entry.value)) values = array->items;
             else values.push_back(entry.value);
-            for (const auto& value : values) {
+            for (const auto& itemValue : values) {
                 std::string literal;
-                if (literalIndexKey(value, literal) && literal == key.value) {
+                if (literalIndexKey(itemValue, literal) && literal == key.value) {
                     matches = true;
                     break;
                 }

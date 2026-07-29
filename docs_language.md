@@ -660,15 +660,63 @@ Run/Query execution. `celidae.exe --lsp` starts the native JSON-RPC language
 server for clients that want a long-lived diagnostics process.
 `felidae_debug.exe` is kept as a legacy compatibility name.
 
-Celidae enables an in-memory AST cache for repeated diagnostics, debugger, and
-visualization requests. Cached file ASTs are keyed by normalized path, file size,
-and modification time, so unchanged imports can be reused across repeated
-checks. Unsaved LSP document text is cached by URI, length, and content hash.
+Celidae caches compact diagnostic and statement summaries for repeated
+diagnostics, debugger, and visualization requests. It does not retain a complete
+project AST for unchanged files. Cached summaries are keyed by normalized path,
+file identity, and content identity; unsaved LSP diagnostics are keyed by URI,
+length, and content hash.
 The normal `felidae.exe` interpreter keeps this cache disabled for now; batch
 data-analysis optimization should layer query/fact indexes and visualization
 profile caches on top of the runtime once profiling identifies the hot paths.
 Source and file reads use a pre-sized read for normal files and a chunked
 streaming read for files larger than 10 MB.
+
+## Exact and graded reasoning
+
+Felidae keeps exact Datalog truth separate from advisory reasoning. Register
+explicit opposites and ask for an auditable proof:
+
+```felidae
+Reasoning.contrary(positive: "Eligible", negative: "Ineligible")
+result := Reasoning.prove(query: Eligible(name: "Ravi"))
+```
+
+`Reasoning.prove` returns a `DerivationResult` whose `truth_status` is
+`"proved"`, `"disproved"`, `"both"`, or `"unknown"`. Absence of proof is
+unknown; it is not explicit disproval. Supporting and opposing fact identities,
+rule spans, contradictions, and the explanation path remain available for
+auditing. Pure recursive predicates use tabled evaluation; `not Predicate(...)`
+is stratified negation-as-failure, requires its variables to be bound, and does
+not create contrary evidence.
+
+Advisory evidence is explicit:
+
+```felidae
+evidence := [
+    Evidence(source: "policy", degree: 0.9, reliability: 0.8, polarity: "support"),
+    Evidence(source: "risk", degree: 0.6, reliability: 0.7, polarity: "oppose")
+]
+decision := Reasoning.decide(
+    query: Eligible(name: "Ravi"),
+    evidence: evidence,
+    profile: ReasoningProfile(
+        conjunction: "minimum",
+        disjunction: "maximum",
+        evidence_aggregation: "maximum",
+        negation: "one_minus"
+    )
+)
+```
+
+Grades and reliability must be finite values from zero through one. Supporting
+and opposing evidence are preserved rather than averaged away. Fuzzy degree,
+confidence, probability, and similarity are separate fields and never change
+the exact truth status automatically.
+
+`Fact.select(...)` returns a lazy, snapshot-bound `FactSelection`.
+`Fact.materialize(...)` is the explicit conversion to an array. Ordinary
+in-memory reasoning needs no `db.fx` import; `db.fx` is reserved for explicit
+`.fx` source connection, mutation, save/sync, and materialization workflows.
 
 ## Visual Data Analysis
 

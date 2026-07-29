@@ -91,7 +91,7 @@ bool parseNativeModuleManifest(const std::string& json,
             !boolean("supports_batch", capabilities.supportsBatch) ||
             !boolean("accepts_fact_selections", capabilities.acceptsFactSelections) ||
             !boolean("selection_cardinality", capabilities.selectionCardinality) ||
-            !boolean("needs_fact_snapshot", capabilities.needsFactSnapshot) ||
+            !boolean("needs_fact_projection", capabilities.needsFactProjection) ||
             !boolean("needs_fact_hierarchy", capabilities.needsFactHierarchy)) {
             return false;
         }
@@ -104,6 +104,33 @@ bool parseNativeModuleManifest(const std::string& json,
                 if (item.kind != Value::Kind::String || item.text.empty()) return false;
                 capabilities.requestedFactTypes.push_back(item.text);
             }
+        }
+        const Value* fields = field(*object, "requested_fact_fields");
+        if (fields) {
+            if (fields->kind != Value::Kind::Array) return false;
+            capabilities.requestedFactFields.clear();
+            capabilities.requestedFactFields.reserve(fields->items.size());
+            for (const Value& item : fields->items) {
+                if (item.kind != Value::Kind::String || item.text.empty()) return false;
+                capabilities.requestedFactFields.push_back(item.text);
+            }
+        }
+        const Value* maximumRows = field(*object, "maximum_projected_rows");
+        if (maximumRows) {
+            if (maximumRows->kind != Value::Kind::Number ||
+                maximumRows->number < 0.0 ||
+                maximumRows->number >
+                    static_cast<double>(std::numeric_limits<std::size_t>::max()) ||
+                std::floor(maximumRows->number) != maximumRows->number) {
+                return false;
+            }
+            capabilities.maximumProjectedRows =
+                static_cast<std::size_t>(maximumRows->number);
+        }
+        if (capabilities.needsFactProjection &&
+            (capabilities.requestedFactTypes.empty() ||
+             capabilities.maximumProjectedRows == 0)) {
+            return false;
         }
         const Value* constraints = field(*object, "argument_constraints");
         if (constraints) {

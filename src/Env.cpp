@@ -10,12 +10,9 @@ constexpr std::size_t kMaxPooledEnvBuckets = 4096;
 }
 
 Env cloneEnv(const Env& env) {
-    Env cloned;
-    cloned.reserve(env.size());
-    for (const auto& entry : env) {
-        cloned[entry.first] = entry.second ? entry.second->clone() : nullptr;
-    }
-    return cloned;
+    // Runtime values are immutable. A branch needs its own binding directory,
+    // not deep copies of every bound value graph.
+    return env;
 }
 
 std::shared_ptr<Expr> findEnvValue(const Env& env, const std::string& name) {
@@ -30,7 +27,7 @@ std::shared_ptr<Expr> findReturnValue(const Env& env) {
 
 bool bindEnvValue(Env& env, const std::string& name, const std::shared_ptr<Expr>& value) {
     if (!value) return false;
-    env[name] = value->clone();
+    env[name] = value;
     return true;
 }
 
@@ -70,17 +67,17 @@ void GlobalEnv::bind(const std::string& name,
                      const std::shared_ptr<Expr>& value,
                      std::filesystem::path origin) {
     values_[name] = value ? value->clone() : nullptr;
-    if (!origin.empty()) origins_[name] = std::move(origin);
+    if (!origin.empty()) origins_[symbolIdForName(name)] = std::move(origin);
 }
 
 void GlobalEnv::setOrigin(const std::string& name, std::filesystem::path origin) {
     if (origin.empty()) return;
-    origins_[name] = std::move(origin);
+    origins_[symbolIdForName(name)] = std::move(origin);
 }
 
 void GlobalEnv::erase(const std::string& name) {
     values_.erase(name);
-    origins_.erase(name);
+    origins_.erase(symbolIdForName(name));
 }
 
 void GlobalEnv::eraseOrigin(const std::filesystem::path& origin) {

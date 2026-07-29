@@ -1,27 +1,17 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <vector>
 
 namespace Felidae {
 
 using SymbolId = std::uint64_t;
-
-inline SymbolId hashSymbol(std::string_view text) {
-    auto hash = static_cast<SymbolId>(std::hash<std::string_view>{}(text));
-    if (hash > 0 && hash < 1024) hash += 1024;
-    return hash == 0 ? 1ULL : hash;
-}
-
-inline SymbolId hashSymbol(const std::string& text) {
-    return hashSymbol(std::string_view(text));
-}
-
-inline SymbolId hashSymbol(const char* text) {
-    return hashSymbol(std::string_view(text ? text : ""));
-}
 
 namespace InternalSymbol {
 inline constexpr SymbolId TypeId = 1;
@@ -57,6 +47,56 @@ inline std::string internalSymbolString(InternalSymbolKind kind) {
     return std::string(internalSymbolName(kind));
 }
 
+// Identifier hashes are not identities: two different names are allowed to
+// have the same hash.  The old implementation used std::hash directly as a
+// SymbolId and therefore had to retain and compare strings throughout every
+// hot lookup to defend against collisions.  This process-wide interner gives
+// every spelling one canonical, collision-free id while keeping source text
+// on AST nodes for diagnostics and serialization.
+class SymbolInterner {
+public:
+    SymbolId intern(std::string_view name) {
+        if (name.empty()) return 0;
+        const std::string key(name);
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto found = ids_.find(key);
+        if (found != ids_.end()) return found->second;
+        const SymbolId id = nextId_++;
+        ids_.emplace(key, id);
+        names_.push_back(key);
+        return id;
+    }
+
+    std::string name(SymbolId id) const {
+        if (id == 0) return {};
+        if (id < 1024) {
+            switch (id) {
+                case InternalSymbol::TypeId: return "__type";
+                case InternalSymbol::ParentId: return "__parent";
+                case InternalSymbol::ReturnId: return "__return";
+                case InternalSymbol::SystemId: return "system";
+                case InternalSymbol::ResultId: return "result";
+                case InternalSymbol::SystemResultId: return "system:result";
+                default: return {};
+            }
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        const std::size_t index = static_cast<std::size_t>(id - 1024);
+        return index < names_.size() ? names_[index] : std::string{};
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::unordered_map<std::string, SymbolId> ids_;
+    std::vector<std::string> names_;
+    SymbolId nextId_ = 1024;
+};
+
+inline SymbolInterner& symbolInterner() {
+    static SymbolInterner interner;
+    return interner;
+}
+
 inline SymbolId symbolIdForName(std::string_view name) {
     if (name == internalSymbolName(InternalSymbolKind::Type)) return InternalSymbol::TypeId;
     if (name == internalSymbolName(InternalSymbolKind::Parent)) return InternalSymbol::ParentId;
@@ -64,7 +104,25 @@ inline SymbolId symbolIdForName(std::string_view name) {
     if (name == internalSymbolName(InternalSymbolKind::System)) return InternalSymbol::SystemId;
     if (name == internalSymbolName(InternalSymbolKind::Result)) return InternalSymbol::ResultId;
     if (name == internalSymbolName(InternalSymbolKind::SystemResult)) return InternalSymbol::SystemResultId;
-    return hashSymbol(name);
+    // Parsing fact-heavy sources repeatedly sees the same small set of type
+    // and field identifiers. Avoid taking the process-wide interner mutex for
+    // every occurrence while still confirming the spelling on hash collision.
+    struct LocalEntry {
+        std::size_t hash = 0;
+        std::string spelling;
+        SymbolId id = 0;
+    };
+    thread_local std::array<LocalEntry, 64> local{};
+    const std::size_t hash = std::hash<std::string_view>{}(name);
+    auto& entry = local[hash % local.size()];
+    if (entry.id != 0 && entry.hash == hash && entry.spelling == name) {
+        return entry.id;
+    }
+    const SymbolId id = symbolInterner().intern(name);
+    entry.hash = hash;
+    entry.spelling.assign(name.data(), name.size());
+    entry.id = id;
+    return id;
 }
 
 inline SymbolId symbolIdForName(const std::string& name) {
@@ -73,6 +131,10 @@ inline SymbolId symbolIdForName(const std::string& name) {
 
 inline SymbolId symbolIdForName(const char* name) {
     return symbolIdForName(std::string_view(name ? name : ""));
+}
+
+inline std::string symbolNameForId(SymbolId id) {
+    return symbolInterner().name(id);
 }
 
 inline std::string makeAnonymousSymbolName(std::size_t id) {

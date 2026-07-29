@@ -148,6 +148,24 @@ static std::vector<std::shared_ptr<Expr>> termArgs(const std::shared_ptr<Expr>& 
 
 static std::shared_ptr<Expr> findMapValue(const std::shared_ptr<Expr>& expr,
                                           const std::string& key) {
+    if (auto selection = std::dynamic_pointer_cast<FactSelectionExpr>(expr)) {
+        if (key == internalSymbolName(InternalSymbolKind::Type)) {
+            return std::make_shared<StringExpr>("FactSelection");
+        }
+        if (key == "fact_type") {
+            return std::make_shared<StringExpr>(selection->factType);
+        }
+        if (key == "source") return std::make_shared<StringExpr>("memory");
+        if (key == "snapshot_generation") {
+            return std::make_shared<NumberExpr>(
+                static_cast<double>(selection->snapshotGeneration));
+        }
+        if (key == "field" && !selection->field.empty()) {
+            return std::make_shared<StringExpr>(selection->field);
+        }
+        if (key == "equals") return selection->equals;
+        return {};
+    }
     const SymbolId keyId = symbolIdForName(key);
     if (auto m = std::dynamic_pointer_cast<MapExpr>(expr)) {
         for (const auto& entry : m->entries) {
@@ -474,7 +492,7 @@ static bool validateNativePackageRegistry(const fs::path& libraryFile,
                     requireAllowed(caps.threadSafe, "thread_safe") &&
                     requireAllowed(caps.supportsBatch, "batch") &&
                     requireAllowed(caps.acceptsFactSelections, "fact_selections") &&
-                    requireAllowed(caps.needsFactSnapshot, "fact_snapshot") &&
+                    requireAllowed(caps.needsFactProjection, "fact_projection") &&
                     requireAllowed(caps.needsFactHierarchy, "fact_hierarchy");
             };
             if (!validateContract(manifest.defaultContract)) return false;
@@ -505,6 +523,22 @@ static std::string exprToJson(const std::shared_ptr<Expr>& expr) {
         return out.str();
     }
     if (std::dynamic_pointer_cast<NilExpr>(expr)) return "null";
+    if (auto selection =
+            std::dynamic_pointer_cast<FactSelectionExpr>(expr)) {
+        std::ostringstream out;
+        out << "{\"__type\":\"FactSelection\",\"fact_type\":\""
+            << jsonEscape(selection->factType)
+            << "\",\"source\":\"memory\",\"snapshot_generation\":"
+            << selection->snapshotGeneration;
+        if (!selection->field.empty()) {
+            out << ",\"field\":\"" << jsonEscape(selection->field) << "\"";
+            if (selection->equals) {
+                out << ",\"equals\":" << exprToJson(selection->equals);
+            }
+        }
+        out << "}";
+        return out.str();
+    }
     if (auto a = std::dynamic_pointer_cast<ArrayExpr>(expr)) {
         std::ostringstream out;
         out << "[";
@@ -710,9 +744,11 @@ void Interpreter::beginModuleTransaction() {
     transaction->packageDiscoveryAttempts = packageDiscoveryAttempts_;
     transaction->clauseOrigins = clauseOrigins_;
     transaction->programGeneration = programGeneration_;
+    transaction->symbolGenerations = symbolGenerations_;
     transaction->moduleLoads = moduleLoads_;
     transaction->cacheInvalidationDepth = cacheInvalidationDepth_;
     transaction->pendingCacheInvalidation = pendingCacheInvalidation_;
+    transaction->contraries = contraries_;
     moduleTransaction_ = std::move(transaction);
 }
 
@@ -743,9 +779,11 @@ void Interpreter::rollbackModuleTransaction() {
     packageDiscoveryAttempts_ = transaction.packageDiscoveryAttempts;
     clauseOrigins_ = transaction.clauseOrigins;
     programGeneration_ = transaction.programGeneration;
+    symbolGenerations_ = transaction.symbolGenerations;
     moduleLoads_ = transaction.moduleLoads;
     cacheInvalidationDepth_ = transaction.cacheInvalidationDepth;
     pendingCacheInvalidation_ = transaction.pendingCacheInvalidation;
+    contraries_ = transaction.contraries;
     moduleTransaction_.reset();
     // Plans can hold pointers into the staged clause table, so restore them
     // only through the normal cache boundary after the roots are replaced.
@@ -812,6 +850,7 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
     auto packageDiscoveryAttemptsSnapshot = packageDiscoveryAttempts_;
     auto currentLoadingFileSnapshot = currentLoadingFile_;
     auto nativeLibraryPathsSnapshot = nativeLibraryPaths_;
+    auto contrariesSnapshot = contraries_;
     auto functionName = task->functionName;
 
     task->worker = std::thread([this,
@@ -824,7 +863,8 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
                                 packageDiscoveryAttemptsSnapshot =
                                     std::move(packageDiscoveryAttemptsSnapshot),
                                 currentLoadingFileSnapshot = std::move(currentLoadingFileSnapshot),
-                                nativeLibraryPathsSnapshot = std::move(nativeLibraryPathsSnapshot)]() mutable {
+                                nativeLibraryPathsSnapshot = std::move(nativeLibraryPathsSnapshot),
+                                contrariesSnapshot = std::move(contrariesSnapshot)]() mutable {
         try {
             Interpreter child;
             child.clauses_ = std::move(clausesSnapshot);
@@ -833,6 +873,7 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
             child.loadedFiles_ = std::move(loadedFilesSnapshot);
             child.packageDiscoveryAttempts_ = std::move(packageDiscoveryAttemptsSnapshot);
             child.currentLoadingFile_ = std::move(currentLoadingFileSnapshot);
+            child.contraries_ = std::move(contrariesSnapshot);
             for (const auto& nativePath : nativeLibraryPathsSnapshot) {
                 child.loadNativeLibrary(nativePath);
             }
@@ -1087,12 +1128,8 @@ void Interpreter::validateNegationStratification(const Program& program) const {
 
 void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
     const std::string clauseName = clause->head.name;
-    // Clause lookup plans are the only plans invalidated by an ordinary
-    // registration. Query results are generation-keyed, and relation indexes
-    // are invalidated by FactMemory at relation scope.
-    clauseLookupCache_.erase(clauseName);
-    ++programGeneration_;
     if (clause->isFact() && globals_.count(clause->head.name) == 0) {
+        const auto registrationStarted = std::chrono::steady_clock::now();
         auto factMap = factToMap(*clause);
         memory_.addFact(clause->head.name, clause->parentName, factMap, currentLoadingFile_);
         const auto& declaredParents = clause->parentNames.empty()
@@ -1101,8 +1138,19 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
         for (const auto& parent : declaredParents) {
             if (!parent.empty()) memory_.setParent(clause->head.name, parent, currentLoadingFile_);
         }
+        factRegistrationMicros_ += static_cast<std::size_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - registrationStarted).count());
         return;
     }
+    // Fact publication advances its relation generation, not the program
+    // generation. Only executable declarations invalidate dispatch/table
+    // plans for their symbol.
+    clauseLookupCache_.erase(clauseName);
+    ++programGeneration_;
+    ++symbolGenerations_[clause->head.nameId == 0
+        ? symbolIdForName(clauseName)
+        : clause->head.nameId];
     if (!currentLoadingFile_.empty()) {
         clauseOrigins_[clause.get()] = currentLoadingFile_;
     }
@@ -1363,6 +1411,24 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
         if (!clauses && ensurePredicateLoaded(callGoal->call.name)) {
             clauses = findClauses(callGoal->call.name, callGoal->call.nameId);
         }
+        std::vector<TableBinding> tableBindings;
+        if (tableCallAnswers(
+                callGoal->call,
+                frame.env,
+                tableBindings,
+                nullptr,
+                true)) {
+            for (auto binding = tableBindings.rbegin();
+                 binding != tableBindings.rend();
+                 ++binding) {
+                work.push_back(WorkFrame{
+                    frame.goals,
+                    nextGoalIndex,
+                    std::move(binding->env),
+                    frame.depth + 1});
+            }
+            continue;
+        }
         std::vector<WorkFrame> continuations;
         const bool preferLocalClause = clauses && !nativeDeclarationFor(callGoal->call.name);
         if (!preferLocalClause) {
@@ -1424,209 +1490,6 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
     }
 }
 
-/* Retired recursive evaluator. solveIterative is the sole active goal path.
-void Interpreter::solveRecursiveFrame(const std::vector<std::shared_ptr<Goal>>& goals,
-                                      size_t goalIndex,
-                                      Env& env,
-                                      std::vector<Solution>& out,
-                                      size_t maxSolutions,
-                                      size_t depth) {
-    // Advance deterministic statements in this frame.  A long method body
-    // used to consume one native C++ frame per assignment/condition even
-    // though it had no backtracking point.  Branching and calls still create
-    // continuations below; those are the next part of the iterative-frame
-    // migration.
-    for (;;) {
-        if (out.size() >= maxSolutions) return;
-        if (depth > kMaxNativeGoalFrameDepth) {
-            throw InterpreterError("Maximum recursion depth reached");
-        }
-
-        if (goalIndex >= goals.size()) {
-            ++solutionMaterializations_;
-            out.push_back(Solution{cloneEnv(env)});
-            return;
-        }
-
-        const auto& first = goals[goalIndex];
-        const size_t nextGoalIndex = goalIndex + 1;
-
-        auto appendRemainingGoals = [&](std::vector<std::shared_ptr<Goal>>& target) {
-            target.reserve(target.size() + goals.size() - nextGoalIndex);
-            for (size_t i = nextGoalIndex; i < goals.size(); ++i) target.push_back(goals[i]);
-        };
-
-        switch (first->kind()) {
-        case GoalKind::Group: {
-            auto groupGoal = std::static_pointer_cast<GroupGoal>(first);
-            std::vector<std::shared_ptr<Goal>> combined;
-            combined.reserve(groupGoal->goals.size() + goals.size() - nextGoalIndex);
-            for (const auto& g : groupGoal->goals) combined.push_back(g);
-            appendRemainingGoals(combined);
-            solveRecursiveFrame(combined, 0, env, out, maxSolutions, depth + 1);
-            return;
-        }
-        case GoalKind::Or: {
-            auto orGoal = std::static_pointer_cast<OrGoal>(first);
-            for (const auto& branch : orGoal->branches) {
-                std::vector<std::shared_ptr<Goal>> combined;
-                combined.reserve(branch.size() + goals.size() - nextGoalIndex);
-                for (const auto& g : branch) combined.push_back(g);
-                appendRemainingGoals(combined);
-                EnvFrame branchEnv = envFramePool_.acquireCopy(env);
-                solveRecursiveFrame(combined, 0, branchEnv.get(), out, maxSolutions, depth + 1);
-                if (out.size() >= maxSolutions) return;
-            }
-            return;
-        }
-        case GoalKind::If: {
-            auto ifGoal = std::static_pointer_cast<IfGoal>(first);
-            std::vector<Solution> conditionSolutions;
-            {
-                EnvFrame conditionEnv = envFramePool_.acquireCopy(env);
-                std::vector<std::shared_ptr<Goal>> conditionGoal{ifGoal->condition};
-                solveRecursiveFrame(conditionGoal, 0, conditionEnv.get(), conditionSolutions, 1, depth + 1);
-            }
-
-            const auto& selectedBranch = conditionSolutions.empty() ? ifGoal->elseBranch : ifGoal->thenBranch;
-            std::vector<std::shared_ptr<Goal>> combined;
-            combined.reserve(selectedBranch.size() + goals.size() - nextGoalIndex);
-            for (const auto& g : selectedBranch) combined.push_back(g);
-            appendRemainingGoals(combined);
-
-            if (conditionSolutions.empty()) {
-                EnvFrame branchEnv = envFramePool_.acquireCopy(env);
-                solveRecursiveFrame(combined, 0, branchEnv.get(), out, maxSolutions, depth + 1);
-            } else {
-                EnvFrame branchEnv = envFramePool_.acquireMove(std::move(conditionSolutions.front().env));
-                solveRecursiveFrame(combined, 0, branchEnv.get(), out, maxSolutions, depth + 1);
-            }
-            return;
-        }
-        case GoalKind::Assign: {
-            auto assign = std::static_pointer_cast<AssignGoal>(first);
-            if (solveAssignGoal(*assign, env)) {
-                goalIndex = nextGoalIndex;
-                continue;
-            }
-            return;
-        }
-        case GoalKind::MultiAssign: {
-            auto multiAssign = std::static_pointer_cast<MultiAssignGoal>(first);
-            if (solveMultiAssignGoal(*multiAssign, env)) {
-                goalIndex = nextGoalIndex;
-                continue;
-            }
-            return;
-        }
-        case GoalKind::Binary: {
-            auto bin = std::static_pointer_cast<BinaryGoal>(first);
-            if (solveBinaryGoal(*bin, env)) {
-                goalIndex = nextGoalIndex;
-                continue;
-            }
-            return;
-        }
-        case GoalKind::Where: {
-            auto where = std::static_pointer_cast<WhereGoal>(first);
-            if (solveWhereGoal(*where, env)) {
-                goalIndex = nextGoalIndex;
-                continue;
-            }
-            return;
-        }
-        case GoalKind::Return: {
-            auto ret = std::static_pointer_cast<ReturnGoal>(first);
-            if (solveReturnGoal(*ret, env)) {
-                goalIndex = nextGoalIndex;
-                continue;
-            }
-            return;
-        }
-        case GoalKind::Not: {
-            auto notGoal = std::static_pointer_cast<NotGoal>(first);
-            if (solveNotGoal(*notGoal, env, depth + 1)) {
-                goalIndex = nextGoalIndex;
-                continue;
-            }
-            return;
-        }
-        case GoalKind::Call:
-            break;
-    }
-
-    auto callGoal = std::static_pointer_cast<CallGoal>(first);
-
-    auto clauses = findClauses(callGoal->call.name, callGoal->call.nameId);
-    if (!clauses && ensurePredicateLoaded(callGoal->call.name)) {
-        clauses = findClauses(callGoal->call.name, callGoal->call.nameId);
-    }
-    const bool preferLocalClause = clauses && !nativeDeclarationFor(callGoal->call.name);
-    if (!preferLocalClause) {
-        EnvFrame builtinEnv = envFramePool_.acquireCopy(env);
-        if (solveBuiltin(callGoal->call, builtinEnv.get())) {
-            solveRecursiveFrame(goals, nextGoalIndex, builtinEnv.get(), out, maxSolutions, depth + 1);
-            if (out.size() >= maxSolutions) return;
-        }
-    }
-    if (clauses) {
-
-        for (const auto& originalClause : *clauses) {
-            ++clauseAttempts_;
-            if (isMethodClause(*originalClause)) {
-                std::vector<Solution> methodSolutions;
-                solveMethodCall(callGoal->call, originalClause, env, methodSolutions, maxSolutions, depth + 1);
-                for (auto& solution : methodSolutions) {
-                    EnvFrame methodEnv = envFramePool_.acquireMove(std::move(solution.env));
-                    solveRecursiveFrame(goals, nextGoalIndex, methodEnv.get(), out, maxSolutions, depth + 1);
-                    if (out.size() >= maxSolutions) return;
-                }
-                if (out.size() >= maxSolutions) return;
-                continue;
-            }
-            auto clause = standardizeApart(originalClause);
-            for (auto& nextEnv : unifyCallAlternatives(callGoal->call, clause->head, env)) {
-                std::vector<std::shared_ptr<Goal>> combined;
-                combined.reserve(clause->body.size() + goals.size() - nextGoalIndex);
-                for (const auto& g : clause->body) combined.push_back(g);
-                appendRemainingGoals(combined);
-
-                EnvFrame unifiedEnv = envFramePool_.acquireMove(std::move(nextEnv));
-                solveRecursiveFrame(combined, 0, unifiedEnv.get(), out, maxSolutions, depth + 1);
-                if (out.size() >= maxSolutions) return;
-            }
-        }
-    }
-
-    const auto* factCandidates =
-        &memory_.compatibleFactIndexes(callGoal->call.name, callGoal->call.nameId);
-    for (const auto& arg : callGoal->call.args) {
-        if (arg.name.empty()) continue;
-        std::shared_ptr<Expr> resolved;
-        if (!evalExprValue(arg.value, env, resolved) || !isGroundLiteral(resolved)) continue;
-        const auto& indexed = memory_.propertyFactIndexes(
-            callGoal->call.name,
-            callGoal->call.nameId,
-            arg.name,
-            arg.nameId,
-            resolved);
-        if (indexed.size() < factCandidates->size()) factCandidates = &indexed;
-    }
-    for (size_t factIndex : *factCandidates) {
-        ++factCandidates_;
-        Call factHead(callGoal->call.name, {});
-        factHead.args = memory_.factArguments(factIndex);
-        for (auto& nextEnv : unifyCallAlternatives(callGoal->call, factHead, env)) {
-            EnvFrame factEnv = envFramePool_.acquireMove(std::move(nextEnv));
-            solveRecursiveFrame(goals, nextGoalIndex, factEnv.get(), out, maxSolutions, depth + 1);
-            if (out.size() >= maxSolutions) return;
-        }
-    }
-    return;
-    }
-}
-
-*/
 bool Interpreter::solveNotGoal(const NotGoal& goal, Env& env, size_t depth) {
     // Negation-as-failure is safe only after every argument has been bound by
     // preceding positive goals.  This avoids an accidental "not exists" scan
@@ -2916,6 +2779,28 @@ bool Interpreter::evalRelationCompare(const Call& call,
 }
 
 bool Interpreter::solveBuiltin(const Call& call, Env& env) {
+    if (call.builtinId == BuiltinId::ReasoningContrary ||
+        call.builtinId == BuiltinId::ReasoningProve ||
+        call.builtinId == BuiltinId::ReasoningGrade ||
+        call.builtinId == BuiltinId::ReasoningDecide) {
+        TermExpr term(call.name, {}, call.builtinId);
+        term.nameId = call.nameId;
+        for (const auto& argument : call.args) {
+            term.args.emplace_back(
+                argument.name,
+                argument.value ? argument.value->clone()
+                               : std::make_shared<NilExpr>());
+        }
+        std::shared_ptr<Expr> result;
+        if (!evalReasoningBuiltin(term, env, result)) return false;
+        env[InternalSymbol::ReturnId] = result;
+        for (const auto& argument : call.args) {
+            if ((argument.name == "result" ||
+                 argument.name == "out") &&
+                !unifyExpr(argument.value, result, env)) return false;
+        }
+        return true;
+    }
     if (call.builtinId == BuiltinId::RelationCompare) {
         std::shared_ptr<Expr> result;
         if (!evalRelationCompare(call, env, result)) return false;
@@ -3512,54 +3397,6 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
         }
     }
 
-    // Cardinality is the most common set operation in analytical programs.
-    // A FactSelection already owns an indexed cursor, so serializing every
-    // selected record only to count it defeats laziness.  Keep the public
-    // Set.cardinality API unchanged and answer this one selection-native
-    // operation directly from its immutable snapshot.
-    // The contract, not a module-name branch, decides whether a lazy cursor
-    // has a native-free cardinality implementation.
-    // A library manifest is authoritative.  Before the library has been
-    // loaded there is intentionally no module-name policy to infer here.
-    const NativeContract requestedNativeContract{};
-    if (genericLibraryLoader && requestedNativeContract.capabilities.selectionCardinality && loaderArgs) {
-        const auto setsEntry = std::find_if(
-            loaderArgs->entries.begin(), loaderArgs->entries.end(),
-            [](const MapEntry& entry) { return entry.key == "sets"; });
-        if (setsEntry != loaderArgs->entries.end()) {
-            std::shared_ptr<Expr> setsValue;
-            if (!evalExprValue(setsEntry->value, env, setsValue)) return false;
-            const auto sets = std::dynamic_pointer_cast<ArrayExpr>(setsValue);
-            if (sets && sets->items.size() == 1) {
-                const auto selection = sets->items.front();
-                const auto kind = std::dynamic_pointer_cast<StringExpr>(
-                    findMapValue(selection, internalSymbolString(InternalSymbolKind::Type)));
-                const auto type = std::dynamic_pointer_cast<StringExpr>(findMapValue(selection, "fact_type"));
-                if (kind && kind->value == "FactSelection" && type) {
-                    std::string field;
-                    std::shared_ptr<Expr> equals;
-                    if (const auto fieldValue = std::dynamic_pointer_cast<StringExpr>(findMapValue(selection, "field"))) {
-                        field = fieldValue->value;
-                        equals = findMapValue(selection, "equals");
-                    }
-                    std::uint64_t snapshot = 0;
-                    if (const auto generation = std::dynamic_pointer_cast<NumberExpr>(
-                            findMapValue(selection, "snapshot_generation"))) {
-                        snapshot = static_cast<std::uint64_t>(generation->value);
-                    }
-                    const auto indexes = memory_.selectionIndexes(
-                        type->value,
-                        field,
-                        equals && isGroundLiteral(equals) ? equals : nullptr,
-                        snapshot);
-                    env[internalSymbolString(InternalSymbolKind::Return)] =
-                        std::make_shared<NumberExpr>(static_cast<double>(indexes.size()));
-                    return true;
-                }
-            }
-        }
-    }
-
     const NativeLibrary* library = nullptr;
     for (const auto& candidate : nativeLibraries_) {
         if (candidate.moduleName == moduleName) {
@@ -3702,9 +3539,9 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
     std::function<std::shared_ptr<Expr>(const std::shared_ptr<Expr>&)> materializeNativeValue;
     materializeNativeValue = [&](const std::shared_ptr<Expr>& value) -> std::shared_ptr<Expr> {
         if (!selectionAwareNative || !value) return value;
-        if (std::dynamic_pointer_cast<StringExpr>(
-                findMapValue(value, internalSymbolString(InternalSymbolKind::Type))) &&
-            std::dynamic_pointer_cast<StringExpr>(findMapValue(value, "fact_type"))) {
+        const auto kind = std::dynamic_pointer_cast<StringExpr>(
+            findMapValue(value, internalSymbolString(InternalSymbolKind::Type)));
+        if (kind && kind->value == "FactSelection") {
             return materializeFactSelection(value);
         }
         if (auto array = std::dynamic_pointer_cast<ArrayExpr>(value)) {
@@ -3753,32 +3590,60 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
             call.args.begin(), call.args.end(),
             [](const Arg& arg) { return arg.name == "facts"; });
     }
-    if (capabilities.needsFactSnapshot && !callerProvidedFacts) {
+    if (capabilities.needsFactProjection && !callerProvidedFacts) {
         if (!first) json << ",";
-        const std::streampos snapshotStart = json.tellp();
+        first = false;
+        const std::streampos projectionStart = json.tellp();
         json << "\"__facts\":[";
         bool firstFact = true;
-        for (const size_t factIndex : memory_.activeFactIndexes()) {
-            const auto& fact = memory_.fact(factIndex);
-            if (!fact.value) continue;
-            if (!capabilities.requestedFactTypes.empty() &&
-                std::find(
-                    capabilities.requestedFactTypes.begin(),
-                    capabilities.requestedFactTypes.end(),
-                    fact.type) == capabilities.requestedFactTypes.end()) {
-                continue;
+        std::size_t projectedRows = 0;
+        std::unordered_set<std::size_t> projectedIndexes;
+        for (const auto& requestedType : capabilities.requestedFactTypes) {
+            for (const size_t factIndex :
+                 memory_.selectionIndexes(requestedType)) {
+                if (!projectedIndexes.insert(factIndex).second) continue;
+                if (projectedRows >= capabilities.maximumProjectedRows) {
+                    throw InterpreterError(
+                        "NativeProjectionLimit: native function '" +
+                        nativeFunctionName + "' requested more than " +
+                        std::to_string(capabilities.maximumProjectedRows) +
+                        " fact rows");
+                }
+                const auto value = memory_.factValue(factIndex);
+                if (!value) continue;
+                std::shared_ptr<MapExpr> projected = value;
+                if (!capabilities.requestedFactFields.empty()) {
+                    std::vector<MapEntry> fields;
+                    fields.reserve(
+                        capabilities.requestedFactFields.size() + 1);
+                    for (const auto& entry : value->entries) {
+                        if (entry.key ==
+                                internalSymbolString(
+                                    InternalSymbolKind::Type) ||
+                            std::find(
+                                capabilities.requestedFactFields.begin(),
+                                capabilities.requestedFactFields.end(),
+                                entry.key) !=
+                                capabilities.requestedFactFields.end()) {
+                            fields.push_back(entry);
+                        }
+                    }
+                    projected =
+                        std::make_shared<MapExpr>(std::move(fields));
+                }
+                if (!firstFact) json << ",";
+                firstFact = false;
+                json << exprToJson(projected);
+                ++projectedRows;
             }
-            if (!firstFact) json << ",";
-            firstFact = false;
-            json << exprToJson(fact.value);
         }
         json << "]";
-        const std::streampos snapshotEnd = json.tellp();
-        if (snapshotStart >= 0 && snapshotEnd >= snapshotStart) {
-            nativeFactSnapshotBytes_ +=
-                static_cast<std::size_t>(snapshotEnd - snapshotStart);
+        const std::streampos projectionEnd = json.tellp();
+        if (projectionStart >= 0 && projectionEnd >= projectionStart) {
+            nativeFactProjectionBytes_ +=
+                static_cast<std::size_t>(projectionEnd - projectionStart);
         }
-        ++nativeFactSnapshotCalls_;
+        ++nativeFactProjectionCalls_;
     }
     if (capabilities.needsFactHierarchy && !callerProvidedFacts) {
         if (!first) json << ",";
@@ -3855,6 +3720,15 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
 }
 
 bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out) {
+    if (term.builtinId == BuiltinId::ReasoningContrary ||
+        term.builtinId == BuiltinId::ReasoningProve ||
+        term.builtinId == BuiltinId::ReasoningGrade ||
+        term.builtinId == BuiltinId::ReasoningDecide) {
+        // Reasoning.prove/decide must receive the predicate syntax itself;
+        // evaluating that term first would execute it and discard proof
+        // identity. The reasoning runtime resolves only its query arguments.
+        return evalReasoningBuiltin(term, env, out);
+    }
     std::vector<std::shared_ptr<Expr>> args;
     args.reserve(term.args.size());
     for (const auto& arg : term.args) {
@@ -4685,28 +4559,27 @@ bool Interpreter::evalCallAsValueOnce(
         auto matchingFacts = [&]() {
             std::vector<std::shared_ptr<Expr>> rows;
             for (size_t factIndex : memory_.compatibleFactIndexes(typeName)) {
-                rows.push_back(memory_.fact(factIndex).value->clone());
+                if (const auto value = memory_.factValue(factIndex)) {
+                    rows.push_back(value);
+                }
             }
             return rows;
         };
 
         if (op == "select") {
-            std::vector<MapEntry> entries;
-            entries.push_back(MapEntry{internalSymbolString(InternalSymbolKind::Type), std::make_shared<StringExpr>("FactSelection")});
-            entries.push_back(MapEntry{"fact_type", std::make_shared<StringExpr>(typeName)});
-            entries.push_back(MapEntry{"source", std::make_shared<StringExpr>("memory")});
-            entries.push_back(MapEntry{"snapshot_generation",
-                std::make_shared<NumberExpr>(static_cast<double>(memory_.captureSnapshot()))});
+            std::string field;
+            std::shared_ptr<Expr> expected;
             if (term.args.size() > 1) {
-                const std::string field = requireNamedString({"field", "key"}, 1, "field");
-                std::shared_ptr<Expr> expected;
+                field = requireNamedString({"field", "key"}, 1, "field");
                 if (!evalNamed("equals", 2, expected) && !evalNamed("value", 2, expected)) {
                     throw InterpreterError("Fact.select expects argument 'equals'");
                 }
-                entries.push_back(MapEntry{"field", std::make_shared<StringExpr>(field)});
-                entries.push_back(MapEntry{"equals", expected->clone()});
             }
-            out = std::make_shared<MapExpr>(std::move(entries));
+            out = std::make_shared<FactSelectionExpr>(
+                typeName,
+                memory_.captureSnapshot(),
+                std::move(field),
+                expected ? expected->clone() : nullptr);
             return true;
         }
 
@@ -6050,6 +5923,7 @@ const std::vector<Interpreter::MethodParamPlan>* Interpreter::hotMethodParamPlan
 
 std::shared_ptr<MapExpr> Interpreter::factToMap(const ClauseStmt& clause) {
     std::vector<MapEntry> entries;
+    std::vector<MapEntry> inheritedFields;
     const auto parentNames = clause.parentNames.empty()
         ? std::vector<std::string>{clause.parentName}
         : clause.parentNames;
@@ -6065,16 +5939,20 @@ std::shared_ptr<MapExpr> Interpreter::factToMap(const ClauseStmt& clause) {
         if (parent == parentIndexes.end()) {
             throw InterpreterError("Unknown parent fact/type '" + parentType + "'");
         }
-        for (const auto& inherited : memory_.fact(*parent).value->entries) {
+        const auto parentValue = memory_.factValue(*parent);
+        if (!parentValue) {
+            throw InterpreterError("Cannot materialize parent fact/type '" + parentType + "'");
+        }
+        for (const auto& inherited : parentValue->entries) {
             if (inherited.key == internalSymbolString(InternalSymbolKind::Type) ||
                 inherited.key == internalSymbolString(InternalSymbolKind::Parent)) {
                 continue;
             }
-            const auto existing = std::find_if(entries.begin(), entries.end(), [&](const MapEntry& entry) {
+            const auto existing = std::find_if(inheritedFields.begin(), inheritedFields.end(), [&](const MapEntry& entry) {
                 return entry.keyId == inherited.keyId && entry.key == inherited.key;
             });
-            if (existing == entries.end()) {
-                entries.push_back(MapEntry{inherited.key, inherited.value->clone()});
+            if (existing == inheritedFields.end()) {
+                inheritedFields.push_back(MapEntry{inherited.key, inherited.value->clone()});
             } else if (!exprEqualsLiteral(existing->value, inherited.value) &&
                        !childFields.count(inherited.key)) {
                 throw InterpreterError(
@@ -6113,7 +5991,7 @@ std::vector<std::shared_ptr<Expr>> Interpreter::valuesForLambdaSource(const std:
         ensurePredicateLoaded(typeName->value);
         std::vector<std::shared_ptr<Expr>> values;
         for (size_t factIndex : memory_.compatibleFactIndexes(typeName->value)) {
-            values.push_back(memory_.fact(factIndex).value);
+            if (const auto value = memory_.factValue(factIndex)) values.push_back(value);
         }
         return values;
     }
@@ -6130,7 +6008,7 @@ std::vector<std::shared_ptr<Expr>> Interpreter::valuesForLambdaSource(const std:
         ensurePredicateLoaded(var->name);
         std::vector<std::shared_ptr<Expr>> values;
         for (size_t factIndex : memory_.compatibleFactIndexes(var->name)) {
-            values.push_back(memory_.fact(factIndex).value);
+            if (const auto value = memory_.factValue(factIndex)) values.push_back(value);
         }
         return values;
     }
@@ -6249,9 +6127,6 @@ std::size_t Interpreter::estimateCachedSolutionsBytes(
     bytes += solutions.capacity() * sizeof(Solution);
     for (const auto& solution : solutions) {
         bytes += solution.env.size() * sizeof(Env::value_type);
-        for (const auto& binding : solution.env) {
-            bytes += binding.first.capacity();
-        }
     }
     return bytes;
 }
@@ -6316,6 +6191,7 @@ void Interpreter::clearCachesNow() {
     clauseLookupCache_.clear();
     typeAncestryCache_.clear();
     comparisonDispatchCache_.clear();
+    tableCache_.clear();
 }
 
 bool Interpreter::ensurePredicateLoaded(const std::string& predicate) {
@@ -6348,6 +6224,7 @@ void Interpreter::loadProgramFile(const std::filesystem::path& file) {
     fs::path previous = currentLoadingFile_;
     currentLoadingFile_ = normalized;
     try {
+        const auto streamStarted = std::chrono::steady_clock::now();
         parseProgramFileStatements(normalized, [&](std::shared_ptr<Statement> statement) {
             if (statement->kind() == StatementKind::Import) {
                 const auto import = std::static_pointer_cast<ImportStmt>(statement);
@@ -6356,6 +6233,9 @@ void Interpreter::loadProgramFile(const std::filesystem::path& file) {
             }
             addStreamedStatement(std::move(statement));
         });
+        streamedModuleMicros_ += static_cast<std::size_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - streamStarted).count());
         currentLoadingFile_ = previous;
         if (ownsTransaction) commitModuleTransaction();
     } catch (...) {
@@ -6367,6 +6247,25 @@ void Interpreter::loadProgramFile(const std::filesystem::path& file) {
 
 std::shared_ptr<ArrayExpr> Interpreter::materializeFactSelection(
     const std::shared_ptr<Expr>& selection) {
+    if (const auto lazy =
+            std::dynamic_pointer_cast<FactSelectionExpr>(selection)) {
+        const auto indexes = memory_.selectionIndexes(
+            lazy->factType,
+            lazy->field,
+            lazy->equals && isGroundLiteral(lazy->equals)
+                ? lazy->equals : nullptr,
+            lazy->snapshotGeneration);
+        std::vector<std::shared_ptr<Expr>> rows;
+        rows.reserve(indexes.size());
+        for (const auto index : indexes) {
+            const auto fact =
+                memory_.factValue(index, lazy->snapshotGeneration);
+            if (!fact) continue;
+            ++factCandidates_;
+            rows.push_back(fact);
+        }
+        return std::make_shared<ArrayExpr>(std::move(rows));
+    }
     const auto kind = std::dynamic_pointer_cast<StringExpr>(
         findMapValue(selection, internalSymbolString(InternalSymbolKind::Type)));
     const auto selectedType = std::dynamic_pointer_cast<StringExpr>(findMapValue(selection, "fact_type"));
@@ -6395,13 +6294,14 @@ std::shared_ptr<ArrayExpr> Interpreter::materializeFactSelection(
     std::vector<std::shared_ptr<Expr>> rows;
     rows.reserve(indexes.size());
     for (const auto index : indexes) {
-        const auto& fact = memory_.snapshotFact(snapshotGeneration, index);
+        const auto fact = memory_.factValue(index, snapshotGeneration);
+        if (!fact) continue;
         if (!field.empty()) {
-            const auto actual = findMapValue(fact.value, field);
+            const auto actual = findMapValue(fact, field);
             if (!actual || !equals || !exprContainsLiteral(actual, equals)) continue;
         }
         ++factCandidates_;
-        rows.push_back(fact.value->clone());
+        rows.push_back(fact);
     }
     return std::make_shared<ArrayExpr>(std::move(rows));
 }
@@ -6451,9 +6351,11 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
     };
     for (const size_t index : memory_.factIndexesFromOrigin(normalized)) {
         const auto& fact = memory_.fact(index);
-        if (!fact.active || !fact.value) continue;
+        if (!fact.active) continue;
+        const auto value = memory_.factValue(index);
+        if (!value) continue;
         ExistingFact existing{fact.id, fact.rowVersion};
-        existingByValue[structuralSourceKey(fact.type, fact.value)].push_back(existing);
+        existingByValue[structuralSourceKey(fact.type, value)].push_back(existing);
     }
     std::unordered_set<std::uint64_t> reusedIds;
 
@@ -6513,12 +6415,19 @@ std::string Interpreter::runtimeMetricsJson() const {
         << "\"standardizedClauses\":" << standardizedClauses_ << ","
         << "\"moduleLoads\":" << moduleLoads_ << ","
         << "\"nativeCalls\":" << nativeCalls_ << ","
-        << "\"nativeFactSnapshotCalls\":" << nativeFactSnapshotCalls_ << ","
+        << "\"nativeFactProjectionCalls\":" << nativeFactProjectionCalls_ << ","
         << "\"nativeRequestBytes\":" << nativeRequestBytes_ << ","
-        << "\"nativeFactSnapshotBytes\":" << nativeFactSnapshotBytes_ << ","
+        << "\"nativeFactProjectionBytes\":" << nativeFactProjectionBytes_ << ","
         << "\"nativeSerializationMicros\":" << nativeSerializationMicros_ << ","
+        << "\"streamedModuleMicros\":" << streamedModuleMicros_ << ","
+        << "\"factRegistrationMicros\":" << factRegistrationMicros_ << ","
         << "\"dispatchCacheHits\":" << dispatchCacheHits_ << ","
         << "\"dispatchCacheMisses\":" << dispatchCacheMisses_ << ","
+        << "\"tableCacheHits\":" << tableCacheHits_ << ","
+        << "\"tableCacheMisses\":" << tableCacheMisses_ << ","
+        << "\"tableRounds\":" << tableRounds_ << ","
+        << "\"tableDeltaAnswers\":" << tableDeltaAnswers_ << ","
+        << "\"provenanceNodes\":" << provenanceNodes_ << ","
         << "\"factStoreGeneration\":" << factStats.generation << ","
         << "\"activeFacts\":" << factStats.activeFacts << ","
         << "\"tombstonedFacts\":" << factStats.tombstonedFacts << ","
@@ -6526,9 +6435,16 @@ std::string Interpreter::runtimeMetricsJson() const {
         << "\"factRelations\":" << factStats.relations << ","
         << "\"relationRows\":" << factStats.relationRows << ","
         << "\"relationColumnValues\":" << factStats.relationColumnValues << ","
+        << "\"internedValues\":" << factStats.internedValues << ","
+        << "\"adaptiveEqualityIndexes\":" << factStats.adaptiveEqualityIndexes << ","
+        << "\"adaptiveIndexBuildMicros\":" << factStats.adaptiveIndexBuildMicros << ","
         << "\"liveFactSnapshots\":" << factStats.snapshots
         << "}";
     return out.str();
+}
+
+void Interpreter::recordStreamedModuleMicros(std::size_t micros) {
+    streamedModuleMicros_ += micros;
 }
 
 std::vector<std::filesystem::path> Interpreter::expandImportPattern(const std::filesystem::path& baseDir,
@@ -6629,9 +6545,20 @@ std::filesystem::path Interpreter::resolveNativeImport(const std::filesystem::pa
         moduleName = pattern.substr(moduleStart, moduleEnd == std::string::npos ? std::string::npos : moduleEnd - moduleStart);
     }
     if (!moduleName.empty() && moduleName.find('*') == std::string::npos) {
+#if defined(NDEBUG)
+        constexpr const char* nativeConfiguration = "Release";
+#else
+        constexpr const char* nativeConfiguration = "Debug";
+#endif
         for (const auto& fileName : nativeLibraryFileNames(moduleName)) {
             addCandidate(baseDir / fileName);
+            addCandidate(
+                baseDir / "native_modules" / moduleName /
+                nativeConfiguration / fileName);
             addCandidate(baseDir / "native_modules" / moduleName / fileName);
+            addCandidate(
+                root / "native_modules" / moduleName /
+                nativeConfiguration / fileName);
             addCandidate(root / "native_modules" / moduleName / fileName);
             addCandidate(root / "modules" / moduleName / fileName);
         }

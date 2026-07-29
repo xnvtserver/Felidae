@@ -70,9 +70,9 @@ ExplainDishProposal(request: any) =>
     profile := ml.profile_facts(facts: ingredients, features: ["sweetness", "acidity", "umami", "heat", "cookMinutes"])
     clusters := ml.cluster_facts(facts: ingredients, features: ["sweetness", "acidity", "umami", "heat", "cookMinutes"], clusters: 3)
     associations := ml.discover_associations(facts: DishTrainingFacts(), min_support: 0.5)
-    evidence := fact.aggregateEvidence(evidence: [
-        {source: "tomato_base_property_fit", probability: tomatoFitness.score, weight: 3},
-        {source: "dish_type_classifier", probability: dishClass.prediction.confidence, weight: 2}
+    evidence := Reasoning.grade(evidence: [
+        Evidence(source: "tomato_base_property_fit", degree: tomatoFitness.score, reliability: 1.0, polarity: "support"),
+        Evidence(source: "dish_type_classifier", degree: dishClass.prediction.confidence, reliability: 1.0, polarity: "support")
     ])
     return (
         request: request,
@@ -84,7 +84,7 @@ ExplainDishProposal(request: any) =>
         ingredientProfile: profile,
         dishAssociations: associations,
         evidence: evidence,
-        justification: "The proposal is based on property similarity, key-value differences, learned dish type, ingredient clusters, and weighted evidence."
+        justification: "The proposal keeps similarity, prediction confidence, and graded evidence explicit and auditable."
     )
 
 ProposeDish(meal: string, cookMinutes: number, sweetness: number, acidity: number, umami: number, heat: number, preferredCategory: string, maxIngredientMinutes: number, ingredientRole: string) =>

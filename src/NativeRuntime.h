@@ -13,7 +13,7 @@ using NativeFreeFn = void (*)(char*);
 using NativeManifestFn = const char* (*)();
 
 struct NativeCapabilities {
-    bool needsFactSnapshot = false;
+    bool needsFactProjection = false;
     bool needsFactHierarchy = false;
     bool pure = false;
     bool threadSafe = false;
@@ -26,6 +26,8 @@ struct NativeCapabilities {
     // materializing the selected facts for the native boundary.
     bool selectionCardinality = false;
     std::vector<std::string> requestedFactTypes;
+    std::vector<std::string> requestedFactFields;
+    std::size_t maximumProjectedRows = 0;
 };
 
 enum class NativeArgumentConstraintKind {

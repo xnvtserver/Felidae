@@ -2,6 +2,7 @@
 #include "Symbol.h"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <map>
 #include <set>
@@ -53,6 +54,14 @@ void collectExprUses(const std::shared_ptr<Expr>& expr,
         addVarUse(var->name, vars);
     } else if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
         calls.insert(term->name);
+        if (term->name == "Reasoning:contrary") {
+            for (const auto& arg : term->args) {
+                if (arg.name != "positive" && arg.name != "negative") continue;
+                if (auto predicate = std::dynamic_pointer_cast<StringExpr>(arg.value)) {
+                    calls.insert(predicate->value);
+                }
+            }
+        }
         if (term->name == "thread:createThread") {
             for (const auto& arg : term->args) {
                 if (arg.name != "function" && arg.name != "name") continue;
@@ -148,34 +157,58 @@ void collectAssignedNames(const std::vector<std::shared_ptr<Goal>>& goals,
     }
 }
 
+AstDiagnostic diagnosticFor(const AstNode* node,
+                            std::string severity,
+                            std::string code,
+                            std::string message) {
+    SourceSpan span;
+    if (node && node->sourceSpan.valid()) span = node->sourceSpan;
+    return AstDiagnostic{
+        std::move(severity),
+        std::move(message),
+        span.startLine,
+        span.startColumn,
+        span.endLine,
+        span.endColumn,
+        std::move(code),
+        ""};
+}
+
+AstDiagnostic diagnosticForSpan(const SourceSpan& span,
+                                std::string severity,
+                                std::string code,
+                                std::string message) {
+    return AstDiagnostic{
+        std::move(severity),
+        std::move(message),
+        span.startLine,
+        span.startColumn,
+        span.endLine,
+        span.endColumn,
+        std::move(code),
+        ""};
+}
+
 void collectGlobalAssignmentCollisions(const std::vector<std::shared_ptr<Goal>>& goals,
                                        const std::set<std::string>& globals,
                                        std::vector<AstDiagnostic>& diagnostics) {
     for (const auto& goal : goals) {
         if (auto assign = std::dynamic_pointer_cast<AssignGoal>(goal)) {
             if (globals.count(assign->name)) {
-                diagnostics.push_back(AstDiagnostic{
+                diagnostics.push_back(diagnosticFor(
+                    assign.get(),
                     "error",
-                    "Variable '" + assign->name + "' is already assigned and immutable.",
-                    1,
-                    1,
-                    1,
-                    1,
-                    "",
-                    ""});
+                    "felidae.immutable.global_reassignment",
+                    "Variable '" + assign->name + "' is already assigned and immutable."));
             }
         } else if (auto multi = std::dynamic_pointer_cast<MultiAssignGoal>(goal)) {
             for (const auto& target : multi->targets) {
                 if (globals.count(target.name)) {
-                    diagnostics.push_back(AstDiagnostic{
+                    diagnostics.push_back(diagnosticFor(
+                        multi.get(),
                         "error",
-                        "Variable '" + target.name + "' is already assigned and immutable.",
-                        1,
-                        1,
-                        1,
-                        1,
-                        "",
-                        ""});
+                        "felidae.immutable.global_reassignment",
+                        "Variable '" + target.name + "' is already assigned and immutable."));
                 }
             }
         } else if (auto group = std::dynamic_pointer_cast<GroupGoal>(goal)) {
@@ -205,8 +238,12 @@ std::string factSignature(const ClauseStmt& clause) {
     return out.str();
 }
 
-void warn(std::vector<AstDiagnostic>& diagnostics, std::string message) {
-    diagnostics.push_back(AstDiagnostic{"warning", std::move(message), 1, 1, 1, 1, "", ""});
+void warn(std::vector<AstDiagnostic>& diagnostics,
+          const AstNode* node,
+          std::string code,
+          std::string message) {
+    diagnostics.push_back(diagnosticFor(
+        node, "warning", std::move(code), std::move(message)));
 }
 
 void collectDiscardedExpressions(const std::vector<std::shared_ptr<Goal>>& goals,
@@ -215,6 +252,8 @@ void collectDiscardedExpressions(const std::vector<std::shared_ptr<Goal>>& goals
     for (const auto& goal : goals) {
         if (auto binary = std::dynamic_pointer_cast<BinaryGoal>(goal)) {
             warn(diagnostics,
+                 binary.get(),
+                 "felidae.expression.discarded",
                  "Raw expression '" + binary->debug() + "' in method '" + method +
                  "' has no result consumer. Use it in where/if, assign or return it, "
                  "or pass it to a call such as system.print.");
@@ -238,15 +277,145 @@ void collectDiscardedExpressions(const std::vector<std::shared_ptr<Goal>>& goals
     }
 }
 
+void validateReasoningExpr(const std::shared_ptr<Expr>& expr,
+                           const AstNode* owner,
+                           std::vector<AstDiagnostic>& diagnostics) {
+    if (!expr) return;
+    if (const auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
+        if (term->name == "Evidence" ||
+            term->name == "FuzzyMembership") {
+            for (const auto& argument : term->args) {
+                if (argument.name == "probability" ||
+                    argument.name == "similarity") {
+                    diagnostics.push_back(diagnosticFor(
+                        owner,
+                        "error",
+                        "felidae.reasoning.dimension_conflation",
+                        term->name + " uses '" + argument.name +
+                            "' as membership evidence. Keep probability, "
+                            "similarity, and fuzzy degree in separate fields."));
+                }
+                if (argument.name != "degree" &&
+                    argument.name != "reliability") continue;
+                const auto number =
+                    std::dynamic_pointer_cast<NumberExpr>(argument.value);
+                if (number &&
+                    (!std::isfinite(number->value) ||
+                     number->value < 0.0 ||
+                     number->value > 1.0)) {
+                    diagnostics.push_back(diagnosticFor(
+                        owner,
+                        "error",
+                        "felidae.reasoning.invalid_grade",
+                        term->name + " '" + argument.name +
+                            "' must be between 0 and 1."));
+                }
+            }
+        } else if (term->name == "Fact:materialize" ||
+                   term->name == "db:materialize") {
+            diagnostics.push_back(diagnosticFor(
+                owner,
+                "warning",
+                "felidae.selection.hidden_materialization",
+                "Materializing a FactSelection here creates an eager array; "
+                "keep the selection lazy unless an interop boundary requires it."));
+        }
+        for (const auto& argument : term->args) {
+            validateReasoningExpr(argument.value, owner, diagnostics);
+        }
+        return;
+    }
+    if (const auto array = std::dynamic_pointer_cast<ArrayExpr>(expr)) {
+        for (const auto& item : array->items) {
+            validateReasoningExpr(item, owner, diagnostics);
+        }
+    } else if (const auto map = std::dynamic_pointer_cast<MapExpr>(expr)) {
+        for (const auto& entry : map->entries) {
+            validateReasoningExpr(entry.value, owner, diagnostics);
+        }
+    } else if (const auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
+        validateReasoningExpr(binary->left, owner, diagnostics);
+        validateReasoningExpr(binary->right, owner, diagnostics);
+    } else if (const auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
+        validateReasoningExpr(pipeline->left, owner, diagnostics);
+        validateReasoningExpr(pipeline->right, owner, diagnostics);
+    } else if (const auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
+        validateReasoningExpr(access->target, owner, diagnostics);
+    } else if (const auto lambda = std::dynamic_pointer_cast<LambdaExpr>(expr)) {
+        validateReasoningExpr(lambda->source, owner, diagnostics);
+        validateReasoningExpr(lambda->body, owner, diagnostics);
+        validateReasoningExpr(lambda->right, owner, diagnostics);
+    }
+}
+
+void validateReasoningGoals(const std::vector<std::shared_ptr<Goal>>& goals,
+                            std::vector<AstDiagnostic>& diagnostics) {
+    for (const auto& goal : goals) {
+        if (!goal) continue;
+        if (const auto call = std::dynamic_pointer_cast<CallGoal>(goal)) {
+            for (const auto& argument : call->call.args) {
+                validateReasoningExpr(argument.value, goal.get(), diagnostics);
+            }
+        } else if (const auto assignment =
+                       std::dynamic_pointer_cast<AssignGoal>(goal)) {
+            validateReasoningExpr(
+                assignment->expr, goal.get(), diagnostics);
+        } else if (const auto multiAssignment =
+                       std::dynamic_pointer_cast<MultiAssignGoal>(goal)) {
+            validateReasoningExpr(
+                multiAssignment->expr, goal.get(), diagnostics);
+        } else if (const auto binary =
+                       std::dynamic_pointer_cast<BinaryGoal>(goal)) {
+            validateReasoningExpr(binary->left, goal.get(), diagnostics);
+            validateReasoningExpr(binary->right, goal.get(), diagnostics);
+        } else if (const auto returned =
+                       std::dynamic_pointer_cast<ReturnGoal>(goal)) {
+            for (const auto& field : returned->fields) {
+                validateReasoningExpr(field.value, goal.get(), diagnostics);
+            }
+        } else if (const auto group =
+                       std::dynamic_pointer_cast<GroupGoal>(goal)) {
+            validateReasoningGoals(group->goals, diagnostics);
+        } else if (const auto alternatives =
+                       std::dynamic_pointer_cast<OrGoal>(goal)) {
+            for (const auto& branch : alternatives->branches) {
+                validateReasoningGoals(branch, diagnostics);
+            }
+        } else if (const auto conditional =
+                       std::dynamic_pointer_cast<IfGoal>(goal)) {
+            validateReasoningGoals(
+                {conditional->condition}, diagnostics);
+            validateReasoningGoals(
+                conditional->thenBranch, diagnostics);
+            validateReasoningGoals(
+                conditional->elseBranch, diagnostics);
+        } else if (const auto where =
+                       std::dynamic_pointer_cast<WhereGoal>(goal)) {
+            validateReasoningGoals({where->condition}, diagnostics);
+        }
+    }
+}
+
 } // namespace
 
 struct AstAnalysisSession::Impl {
+    static constexpr std::size_t MaxExactDuplicateFacts = 10000;
+
+    struct DefinitionSummary {
+        size_t count = 0;
+        SourceSpan span;
+    };
+
     std::vector<AstDiagnostic> diagnostics;
-    std::map<std::string, size_t> methodDefinitions;
-    std::map<std::string, size_t> factDefinitions;
+    std::map<std::string, DefinitionSummary> methodDefinitions;
+    std::map<std::string, DefinitionSummary> factDefinitions;
     std::set<std::string> globals;
+    std::map<std::string, SourceSpan> globalSpans;
     std::set<std::string> calls;
-    std::unordered_set<std::size_t> factSignatureHashes;
+    std::unordered_set<std::string> factSignatures;
+    std::size_t factsSeen = 0;
+    bool duplicateCheckTruncated = false;
+    SourceSpan duplicateCheckSpan;
 };
 
 AstAnalysisSession::AstAnalysisSession() : impl_(std::make_unique<Impl>()) {}
@@ -255,8 +424,17 @@ AstAnalysisSession::AstAnalysisSession(AstAnalysisSession&&) noexcept = default;
 AstAnalysisSession& AstAnalysisSession::operator=(AstAnalysisSession&&) noexcept = default;
 
 void AstAnalysisSession::consume(const std::shared_ptr<Statement>& stmt) {
+    if (!stmt) {
+        impl_->diagnostics.push_back(diagnosticFor(
+            nullptr,
+            "error",
+            "felidae.parser.null_statement",
+            "Parser produced an invalid empty statement."));
+        return;
+    }
     if (auto binding = std::dynamic_pointer_cast<GlobalBindingStmt>(stmt)) {
         impl_->globals.insert(binding->name);
+        impl_->globalSpans[binding->name] = binding->sourceSpan;
         std::set<std::string> vars;
         collectExprUses(binding->expr, vars, impl_->calls);
         return;
@@ -266,27 +444,40 @@ void AstAnalysisSession::consume(const std::shared_ptr<Statement>& stmt) {
     if (!clause) return;
 
     if (clause->isFact()) {
-        impl_->factDefinitions[clause->head.name]++;
-        const std::size_t signatureHash =
-            std::hash<std::string>{}(factSignature(*clause));
-        if (!impl_->factSignatureHashes.insert(signatureHash).second) {
-            warn(
-                impl_->diagnostics,
-                "Duplicate fact declaration for '" + clause->head.name + "'.");
+        auto& definition = impl_->factDefinitions[clause->head.name];
+        ++definition.count;
+        definition.span = clause->sourceSpan;
+        ++impl_->factsSeen;
+        if (impl_->factsSeen <= Impl::MaxExactDuplicateFacts) {
+            const std::string signature = factSignature(*clause);
+            if (!impl_->factSignatures.insert(signature).second) {
+                warn(
+                    impl_->diagnostics,
+                    clause.get(),
+                    "felidae.fact.duplicate",
+                    "Duplicate fact declaration for '" + clause->head.name + "'.");
+            }
+        } else {
+            impl_->duplicateCheckTruncated = true;
+            impl_->duplicateCheckSpan = clause->sourceSpan;
         }
         return;
     }
 
-    impl_->methodDefinitions[clause->head.name]++;
+    auto& definition = impl_->methodDefinitions[clause->head.name];
+    ++definition.count;
+    definition.span = clause->sourceSpan;
     collectGlobalAssignmentCollisions(
         clause->body, impl_->globals, impl_->diagnostics);
     collectDiscardedExpressions(
         clause->body, clause->head.name, impl_->diagnostics);
+    validateReasoningGoals(clause->body, impl_->diagnostics);
     for (const auto& branch : clause->fallbackBranches) {
         collectGlobalAssignmentCollisions(
             branch, impl_->globals, impl_->diagnostics);
         collectDiscardedExpressions(
             branch, clause->head.name, impl_->diagnostics);
+        validateReasoningGoals(branch, impl_->diagnostics);
     }
     std::set<std::string> declared;
     std::set<std::string> used;
@@ -314,6 +505,8 @@ void AstAnalysisSession::consume(const std::shared_ptr<Statement>& stmt) {
         if (!used.count(name)) {
             warn(
                 impl_->diagnostics,
+                clause.get(),
+                "felidae.variable.unused",
                 "Variable '" + name + "' is declared but never used in method '" +
                     clause->head.name + "'.");
         }
@@ -321,26 +514,43 @@ void AstAnalysisSession::consume(const std::shared_ptr<Statement>& stmt) {
 }
 
 std::vector<AstDiagnostic> AstAnalysisSession::finish() {
+    if (impl_->duplicateCheckTruncated) {
+        impl_->diagnostics.push_back(diagnosticForSpan(
+            impl_->duplicateCheckSpan,
+            "warning",
+            "felidae.analysis.duplicate_check_bounded",
+            "Exact duplicate-fact diagnostics were bounded after " +
+                std::to_string(Impl::MaxExactDuplicateFacts) +
+                " facts to keep streaming analysis memory bounded."));
+    }
     for (const auto& item : impl_->methodDefinitions) {
         if (item.first != "main" && !impl_->calls.count(item.first)) {
-            warn(
-                impl_->diagnostics,
-                "Method '" + item.first + "' is defined but not called in this file.");
+            impl_->diagnostics.push_back(diagnosticForSpan(
+                item.second.span,
+                "warning",
+                "felidae.method.unused",
+                "Method '" + item.first +
+                    "' is defined but not called in this file."));
         }
     }
     for (const auto& item : impl_->globals) {
         if (!impl_->calls.count(item)) {
-            warn(
-                impl_->diagnostics,
-                "Global '" + item + "' is defined but not referenced in this file.");
+            impl_->diagnostics.push_back(diagnosticForSpan(
+                impl_->globalSpans[item],
+                "warning",
+                "felidae.global.unused",
+                "Global '" + item +
+                    "' is defined but not referenced in this file."));
         }
     }
     for (const auto& item : impl_->factDefinitions) {
         if (!impl_->calls.count(item.first)) {
-            warn(
-                impl_->diagnostics,
+            impl_->diagnostics.push_back(diagnosticForSpan(
+                item.second.span,
+                "warning",
+                "felidae.fact.unused",
                 "Fact type '" + item.first +
-                    "' is declared but not referenced in this file.");
+                    "' is declared but not referenced in this file."));
         }
     }
     return std::move(impl_->diagnostics);

@@ -15,9 +15,9 @@ main() =>
     common := fact.commonAncestor(fact1: employee, fact2: student)
     ancestor := fact.isAncestor(ancestor: person, descendant: employee)
     path := fact.shortestPath(fact1: employee, fact2: student)
-    evidence := fact.aggregateEvidence(evidence: [
-        {source: "rule.humidity", probability: 0.8, weight: 2},
-        {source: "rule.temperature", probability: 0.6, weight: 1}
+    evidence := Reasoning.grade(evidence: [
+        Evidence(source: "rule.humidity", degree: 0.8, reliability: 1.0, polarity: "support"),
+        Evidence(source: "rule.temperature", degree: 0.6, reliability: 1.0, polarity: "support")
     ])
     nearest := fact_analysis.nearestFacts(input: employee, candidates: [employee2, student], count: 1)
     next := fact_analysis.predictNext(facts: [

@@ -15,10 +15,12 @@ main() =>
 
     inserted := db.insert(
         connection: connection,
+        key: "id",
         data: {id: 1, name: "original", status: "created", preserved: "yes"}
     )
     duplicate := db.insert(
         connection: connection,
+        key: "id",
         data: {id: 1, name: "duplicate", status: "created", preserved: "no"}
     )
     duplicateCheck := exception.from(value: duplicate.data, error: duplicate.error)

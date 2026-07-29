@@ -10,7 +10,57 @@
 
 namespace Felidae {
 
-using Env = std::unordered_map<std::string, std::shared_ptr<Expr>>;
+// Runtime bindings are keyed by collision-free SymbolId rather than repeated
+// heap strings. Source spellings stay on AST nodes; binding lookup converts a
+// spelling once through the shared symbol interner.
+class Env {
+public:
+    using Map = std::unordered_map<SymbolId, std::shared_ptr<Expr>>;
+    using key_type = Map::key_type;
+    using mapped_type = Map::mapped_type;
+    using value_type = Map::value_type;
+    using iterator = Map::iterator;
+    using const_iterator = Map::const_iterator;
+
+    Env() = default;
+    Env(const Env&) = default;
+    Env(Env&&) noexcept = default;
+    Env& operator=(const Env&) = default;
+    Env& operator=(Env&&) noexcept = default;
+
+    std::size_t count(const std::string& name) const {
+        return values_.count(symbolIdForName(name));
+    }
+    iterator find(const std::string& name) {
+        return values_.find(symbolIdForName(name));
+    }
+    const_iterator find(const std::string& name) const {
+        return values_.find(symbolIdForName(name));
+    }
+    iterator find(SymbolId id) { return values_.find(id); }
+    const_iterator find(SymbolId id) const { return values_.find(id); }
+    iterator begin() { return values_.begin(); }
+    const_iterator begin() const { return values_.begin(); }
+    iterator end() { return values_.end(); }
+    const_iterator end() const { return values_.end(); }
+    std::shared_ptr<Expr>& operator[](const std::string& name) {
+        return values_[symbolIdForName(name)];
+    }
+    std::shared_ptr<Expr>& operator[](SymbolId id) { return values_[id]; }
+    std::size_t erase(const std::string& name) {
+        return values_.erase(symbolIdForName(name));
+    }
+    std::size_t erase(SymbolId id) { return values_.erase(id); }
+    void clear() { values_.clear(); }
+    void reserve(std::size_t size) { values_.reserve(size); }
+    template <typename Iterator>
+    void insert(Iterator begin, Iterator end) { values_.insert(begin, end); }
+    std::size_t size() const { return values_.size(); }
+    std::size_t bucket_count() const { return values_.bucket_count(); }
+
+private:
+    Map values_;
+};
 
 class GlobalEnv {
 public:
@@ -37,7 +87,7 @@ public:
 
 private:
     Map values_;
-    std::unordered_map<std::string, std::filesystem::path> origins_;
+    std::unordered_map<SymbolId, std::filesystem::path> origins_;
 };
 
 struct Solution {

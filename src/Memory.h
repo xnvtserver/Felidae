@@ -1,9 +1,11 @@
 #pragma once
 
 #include "AST.h"
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -21,13 +23,15 @@ struct FactRecord {
     SymbolId typeId = 0;
     std::string parentType;
     SymbolId parentTypeId = 0;
-    std::shared_ptr<MapExpr> value;
     std::filesystem::path origin;
     std::size_t stableHash = 0;
     // Logical identity and physical row version are intentionally separate.
     // Updating a fact retains id and publishes a later immutable row version.
     std::uint64_t rowVersion = 1;
     std::uint64_t visibleGeneration = 0;
+    // Stable position inside the immutable relation root. This is distinct
+    // from the global row index and lets column access remain contiguous.
+    std::size_t relationOrdinal = 0;
     bool active = true;
 };
 
@@ -38,6 +42,9 @@ struct FactMemoryStats {
     std::size_t snapshots = 0;
     std::size_t relationRows = 0;
     std::size_t relationColumnValues = 0;
+    std::size_t internedValues = 0;
+    std::size_t adaptiveEqualityIndexes = 0;
+    std::size_t adaptiveIndexBuildMicros = 0;
     std::size_t rowVersions = 0;
     std::uint64_t generation = 0;
 };
@@ -66,11 +73,16 @@ public:
     FactMemory& operator=(FactMemory&&) noexcept = default;
 
     const FactRecord& fact(size_t index) const;
+    std::shared_ptr<MapExpr> factValue(size_t index,
+                                       std::uint64_t snapshotGeneration = 0) const;
     std::vector<Arg> factArguments(size_t index) const;
     bool isActive(size_t index) const;
     std::vector<size_t> activeFactIndexes() const;
     bool hasActiveRelation(const std::string& type, SymbolId typeId = 0) const;
     std::uint64_t generation() const;
+    std::uint64_t relationGeneration(const std::string& type,
+                                     SymbolId typeId = 0) const;
+    std::uint64_t hierarchyGeneration() const;
     FactMemoryStats stats() const;
     // A selection captures an immutable logical view.  It remains valid
     // until explicitly released by the runtime/library owner.
@@ -181,23 +193,13 @@ private:
     };
 
     struct Data {
+        struct ValueArena {
+            std::unordered_map<std::size_t,
+                std::vector<std::shared_ptr<const Expr>>> valuesByHash;
+            std::size_t valueCount = 0;
+        };
+
         struct Relation {
-            struct ValueList {
-                std::shared_ptr<const Expr> first;
-                std::vector<std::shared_ptr<const Expr>> additional;
-
-                void append(std::shared_ptr<const Expr> value) {
-                    if (!first) first = std::move(value);
-                    else additional.push_back(std::move(value));
-                }
-                std::size_t size() const { return (first ? 1U : 0U) + additional.size(); }
-                template <typename Callback>
-                void forEach(const Callback& callback) const {
-                    if (first) callback(first);
-                    for (const auto& value : additional) callback(value);
-                }
-            };
-
             struct RowList {
                 static constexpr std::size_t Missing = static_cast<std::size_t>(-1);
                 std::size_t first = Missing;
@@ -214,27 +216,73 @@ private:
                 }
             };
 
+            enum class ColumnKind : std::uint8_t {
+                Empty,
+                String,
+                Number,
+                Bool,
+                Nil,
+                Structured,
+                Mixed
+            };
+
+            struct FieldColumn {
+                struct EqualityIndex {
+                    std::mutex mutex;
+                    bool built = false;
+                    std::size_t queryCount = 0;
+                    std::unordered_map<std::size_t, RowList> rowsByHash;
+                };
+
+                ColumnKind kind = ColumnKind::Empty;
+                // Rows are append ordered. Repeated field values (including
+                // array projections) repeat the row index and occupy adjacent
+                // positions, so lookup is a cache-friendly equal range.
+                std::vector<std::size_t> rows;
+                std::vector<std::shared_ptr<const Expr>> values;
+                std::vector<std::uint64_t> presence;
+                // This derived cache is built only after a query demonstrates
+                // demand. It is separate from immutable column data and is
+                // detached before a changed relation updates a warm index.
+                std::shared_ptr<EqualityIndex> equalityIndex =
+                    std::make_shared<EqualityIndex>();
+
+                template <typename Callback>
+                void forRow(std::size_t row, const Callback& callback) const {
+                    const auto begin = std::lower_bound(rows.begin(), rows.end(), row);
+                    for (auto current = begin; current != rows.end() && *current == row; ++current) {
+                        const auto offset = static_cast<std::size_t>(current - rows.begin());
+                        callback(values[offset]);
+                    }
+                }
+
+                bool present(std::size_t relationOrdinal) const {
+                    const std::size_t word = relationOrdinal / 64;
+                    const std::size_t bit = relationOrdinal % 64;
+                    return word < presence.size() &&
+                           (presence[word] & (std::uint64_t{1} << bit)) != 0;
+                }
+            };
+
             SymbolId typeId = 0;
             std::string type;
             std::uint64_t generation = 0;
             std::vector<size_t> rows;
-            // These columns mirror the logical fact fields.  The MapExpr is
-            // retained only for source fidelity and interop; fact matching
-            // and index planning use SymbolId-indexed relation metadata.
-            std::unordered_map<SymbolId, std::vector<size_t>> rowsByField;
             std::unordered_map<SymbolId, std::string> fieldNames;
-            std::unordered_map<size_t, std::vector<SymbolId>> fieldOrderByRow;
-            // Typed immutable field values by row. Indexed query candidates
-            // are verified here instead of scanning their MapExpr payload.
-            std::unordered_map<SymbolId,
-                std::unordered_map<size_t, ValueList>> valuesByRow;
-            std::unordered_map<SymbolId,
-                std::unordered_map<std::size_t, RowList>> equalityIndexes;
+            std::unordered_map<SymbolId, FieldColumn> columns;
+            // Source field order is kept in one relation-local packed vector.
+            // Each row stores only an offset/count pair.
+            std::vector<std::size_t> fieldOrderOffsets;
+            std::vector<std::size_t> fieldOrderCounts;
+            std::vector<SymbolId> fieldOrder;
+            std::vector<std::size_t> fieldValueCounts;
+            std::vector<std::uint8_t> fieldArrayFlags;
         };
 
         FactRows facts;
         std::uint64_t nextFactId = 1;
         std::uint64_t generation = 1;
+        std::uint64_t hierarchyGeneration = 1;
         FactIdDirectory factIndexById;
         std::unordered_map<std::filesystem::path, std::shared_ptr<std::vector<size_t>>> factsByOrigin;
         std::unordered_map<std::string, std::string> parentOf;
@@ -248,12 +296,15 @@ private:
         // indexes shared with existing snapshots.
         std::unordered_map<SymbolId, std::shared_ptr<Relation>> relations;
         std::shared_ptr<AttachmentData> attachments = std::make_shared<AttachmentData>();
+        std::shared_ptr<ValueArena> valueArena = std::make_shared<ValueArena>();
     };
 
     std::shared_ptr<Data> data_;
     std::unordered_map<std::uint64_t, std::shared_ptr<const Data>> snapshots_;
     std::unordered_map<SymbolId, std::unordered_map<std::string, std::vector<size_t>>> compatibleFactCache_;
     std::unordered_map<PropertyQueryKey, std::vector<size_t>, PropertyQueryKeyHash> propertyQueryCache_;
+    mutable std::size_t adaptiveEqualityIndexes_ = 0;
+    mutable std::size_t adaptiveIndexBuildMicros_ = 0;
 
     static bool literalIndexKey(const std::shared_ptr<Expr>& value, std::string& out);
     static bool literalIndexHash(const std::shared_ptr<Expr>& value, std::size_t& out);
@@ -267,14 +318,17 @@ private:
     const Data& dataForSnapshot(std::uint64_t snapshotGeneration) const;
     void ensureUnique();
     void ensureAttachmentsUnique();
+    std::shared_ptr<const Expr> internValue(const std::shared_ptr<Expr>& value);
+    std::shared_ptr<MapExpr> materializeFact(const Data& store, std::size_t index) const;
     Data::Relation& writableRelation(SymbolId typeId);
-    void indexFact(size_t index);
+    void indexFact(size_t index, const std::shared_ptr<MapExpr>& value);
     void deactivateFact(size_t index);
     void compactInactiveIfSafe();
-    void invalidateCachesForFact(const FactRecord& fact);
+    void invalidateCachesForFact(const FactRecord& fact,
+                                 const std::shared_ptr<MapExpr>& value = {});
     void invalidateCachesForType(const std::string& type, SymbolId typeId);
     void rememberTypeName(SymbolId id, const std::string& name);
-    void rebuildIndexes();
+    void rebuildIndexes(const std::vector<std::shared_ptr<MapExpr>>& values);
 };
 
 } // namespace Felidae

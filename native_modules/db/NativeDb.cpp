@@ -573,24 +573,37 @@ Value dispatch(const std::string& function, const Value& args) {
     if (operation == "insertOneFile") {
         const fs::path path(fieldAs(args, "path", Value::Kind::String).text);
         const std::string type = trimmed(fieldAs(args, "type", Value::Kind::String).text);
-        const std::string key = fieldAs(args, "key", Value::Kind::String).text;
         const Value& data = fieldAs(args, "data", Value::Kind::Object);
-        const auto identity = data.fields.find(key);
-        if (identity == data.fields.end()) throw std::runtime_error("db.insertOne data is missing key '" + key + "'");
-        std::lock_guard<std::mutex> lock(databaseMutex);
-        DatabaseFileLock fileLock(path);
-        const std::string existing = readDatabaseFile(path);
-        Value current = loadModelFacts(existing, type);
-        for (const auto& row : current.items) {
-            const auto found = row.fields.find(key);
-            if (found != row.fields.end() && equal(found->second, identity->second)) {
-                return mutationResult(1, 0, 0, 0, row, stringValue("DuplicateKey"));
+        std::string key;
+        if (const auto keyValue = args.fields.find("key"); keyValue != args.fields.end()) {
+            if (keyValue->second.kind != Value::Kind::String) {
+                throw std::runtime_error("db.insertOne key must be a string when supplied");
             }
+            key = keyValue->second.text;
         }
         Value stored = data;
         if (stored.fields.find("__type") == stored.fields.end()) {
             stored.fieldOrder.insert(stored.fieldOrder.begin(), "__type");
             stored.fields.emplace("__type", stringValue(type));
+        }
+        const auto identity = key.empty() ? stored.fields.end() : stored.fields.find(key);
+        if (!key.empty() && identity == stored.fields.end()) {
+            throw std::runtime_error("db.insertOne data is missing key '" + key + "'");
+        }
+        std::lock_guard<std::mutex> lock(databaseMutex);
+        DatabaseFileLock fileLock(path);
+        const std::string existing = readDatabaseFile(path);
+        Value current = loadModelFacts(existing, type);
+        for (const auto& row : current.items) {
+            const bool duplicate = key.empty()
+                ? equal(row, stored)
+                : ([&] {
+                    const auto found = row.fields.find(key);
+                    return found != row.fields.end() && equal(found->second, identity->second);
+                }());
+            if (duplicate) {
+                return mutationResult(1, 0, 0, 0, row, stringValue("DuplicateKey"));
+            }
         }
         // Insert appends one serialized fact and preserves every existing
         // source span. No model-wide regeneration occurs here.

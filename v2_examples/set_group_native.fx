@@ -27,6 +27,16 @@ main() =>
         ],
         identity: 0
     )
+    abelianValidation := Group.abelian(
+        set: [0, 1],
+        table: [
+            {left: 0, right: 0, result: 0},
+            {left: 0, right: 1, result: 1},
+            {left: 1, right: 0, result: 1},
+            {left: 1, right: 1, result: 0}
+        ],
+        identity: 0
+    )
     return (
         union_count: count(allFood),
         common_taste_count: count(commonTaste),
@@ -35,5 +45,7 @@ main() =>
         has_sweet: hasSweet,
         same_tastes: sameTasteValues,
         fruit_subset: fruitSubset,
-        group: groupValidation
+        group: groupValidation,
+        abelian: abelianValidation.abelian,
+        commutative: abelianValidation.commutative
     )

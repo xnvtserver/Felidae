@@ -157,6 +157,19 @@ bool Parser::checkElse() const {
     return check(TokenType::Else);
 }
 
+void Parser::stampNode(const std::shared_ptr<AstNode>& node,
+                       int startLine,
+                       int startColumn) {
+    if (!node) return;
+    const Token& end = pos_ > 0 ? previous() : peek();
+    node->sourceSpan = SourceSpan{
+        startLine,
+        startColumn,
+        end.line,
+        end.column + static_cast<int>(end.text.size())};
+    node->nodeId = ++nodeCounter_;
+}
+
 const Token& Parser::consume(TokenType type, const std::string& message) {
     if (check(type)) return advance();
     std::ostringstream oss;
@@ -220,6 +233,8 @@ std::shared_ptr<Expr> Parser::parseExpressionText() {
 }
 
 std::shared_ptr<Statement> Parser::parseStatement() {
+    const int startLine = peek().line;
+    const int startColumn = peek().column;
     ensureToken(pos_ + 3);
     if (isAssignmentToChain(tokens_, pos_, {"system", "result"})) {
         throw ParserError("system.result is read-only and can only be read inside a then pipeline");
@@ -231,13 +246,22 @@ std::shared_ptr<Statement> Parser::parseStatement() {
     if (check(TokenType::Where)) {
         throw ParserError("'where' is only valid inside a method body.");
     }
-    if (check(TokenType::Import)) return parseImport();
+    std::shared_ptr<Statement> statement;
+    if (check(TokenType::Import)) {
+        statement = parseImport();
+        stampNode(statement, startLine, startColumn);
+        return statement;
+    }
     if (check(TokenType::Ident) &&
         hasToken(pos_ + 1) &&
         tokenAt(pos_ + 1).type == TokenType::Bind) {
-        return parseGlobalBinding();
+        statement = parseGlobalBinding();
+        stampNode(statement, startLine, startColumn);
+        return statement;
     }
-    return parseClause();
+    statement = parseClause();
+    stampNode(statement, startLine, startColumn);
+    return statement;
 }
 
 std::shared_ptr<ImportStmt> Parser::parseImport() {
@@ -530,12 +554,18 @@ std::shared_ptr<Goal> Parser::parseIfGoal() {
 }
 
 std::shared_ptr<Goal> Parser::parseGoal() {
+    const int startLine = peek().line;
+    const int startColumn = peek().column;
+    const auto finish = [&](std::shared_ptr<Goal> goal) {
+        stampNode(goal, startLine, startColumn);
+        return goal;
+    };
     ensureToken(pos_ + 8);
     if (isAssignmentToChain(tokens_, pos_, {"system", "result"})) {
         throw ParserError("system.result is read-only and can only be read inside a then pipeline");
     }
     if (check(TokenType::If)) {
-        return parseIfGoal();
+        return finish(parseIfGoal());
     }
     if (match(TokenType::Not)) {
         size_t lookahead = pos_;
@@ -545,13 +575,13 @@ std::shared_ptr<Goal> Parser::parseGoal() {
         if (!hasToken(lookahead) || tokenAt(lookahead).type != TokenType::LParen) {
             throw ParserError("Expected predicate call after 'not'");
         }
-        return std::make_shared<NotGoal>(parseCall(false));
+        return finish(std::make_shared<NotGoal>(parseCall(false)));
     }
     if (match(TokenType::LParen)) {
         auto grouped = parseGoalList();
         consume(TokenType::RParen, "Expected ')' after grouped goals");
-        if (grouped.size() == 1) return grouped.front();
-        return std::make_shared<GroupGoal>(std::move(grouped));
+        if (grouped.size() == 1) return finish(grouped.front());
+        return finish(std::make_shared<GroupGoal>(std::move(grouped)));
     }
 
     if (check(TokenType::Where)) {
@@ -562,8 +592,8 @@ std::shared_ptr<Goal> Parser::parseGoal() {
         }
         TokenType op = advance().type;
         auto right = parseExpr();
-        return std::make_shared<WhereGoal>(
-            std::make_shared<BinaryGoal>(std::move(left), std::move(op), std::move(right)));
+        return finish(std::make_shared<WhereGoal>(
+            std::make_shared<BinaryGoal>(std::move(left), std::move(op), std::move(right))));
     }
 
     if (check(TokenType::Return)) {
@@ -575,13 +605,13 @@ std::shared_ptr<Goal> Parser::parseGoal() {
         } else if (!check(TokenType::Newline) && !isAtEnd() && !checkElse()) {
             fields.push_back(Arg{"", parseExpr()});
         }
-        return std::make_shared<ReturnGoal>(std::move(fields));
+        return finish(std::make_shared<ReturnGoal>(std::move(fields)));
     }
 
     if (isMultiAssignmentStart()) {
         auto targets = parseAssignmentTargets();
         consume(TokenType::Bind, "Expected ':=' after assignment targets");
-        return std::make_shared<MultiAssignGoal>(std::move(targets), parseExpr());
+        return finish(std::make_shared<MultiAssignGoal>(std::move(targets), parseExpr()));
     }
 
     if (check(TokenType::Ident) &&
@@ -589,7 +619,7 @@ std::shared_ptr<Goal> Parser::parseGoal() {
         tokenAt(pos_ + 1).type == TokenType::Bind) {
         std::string name = advance().text;
         consume(TokenType::Bind, "Expected ':=' after assignment variable");
-        return std::make_shared<AssignGoal>(std::move(name), parseExpr());
+        return finish(std::make_shared<AssignGoal>(std::move(name), parseExpr()));
     }
 
     // A goal can be a predicate call or an expression comparison.
@@ -604,10 +634,10 @@ std::shared_ptr<Goal> Parser::parseGoal() {
         if (isComparison(peek().type)) {
             TokenType op = advance().type;
             auto right = parseExpr();
-            return std::make_shared<BinaryGoal>(std::move(expr), std::move(op), std::move(right));
+            return finish(std::make_shared<BinaryGoal>(std::move(expr), std::move(op), std::move(right)));
         }
         pos_ = saved;
-        return std::make_shared<CallGoal>(parseCall(false));
+        return finish(std::make_shared<CallGoal>(parseCall(false)));
     }
 
     auto left = parseExpr();
@@ -616,7 +646,7 @@ std::shared_ptr<Goal> Parser::parseGoal() {
     }
     TokenType op = advance().type;
     auto right = parseExpr();
-    return std::make_shared<BinaryGoal>(std::move(left), std::move(op), std::move(right));
+    return finish(std::make_shared<BinaryGoal>(std::move(left), std::move(op), std::move(right)));
 }
 
 bool Parser::isMultiAssignmentStart() const {

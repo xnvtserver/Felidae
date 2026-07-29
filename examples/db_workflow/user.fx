@@ -18,6 +18,20 @@ User(
     status: "active",
     email: "bob@example.test"
 )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 User(
     id: 21,
     name: "Mira",
