@@ -3,6 +3,9 @@ build/
 build-clang/
 *.exe
 *.obj
+# Native module linker export files (including nested package folders)
+native_modules/**/*.exp
+# Linker export files generated anywhere else in the project
 *.exp
 *.lock
 *.o
