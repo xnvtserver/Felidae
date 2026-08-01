@@ -319,5 +319,33 @@
       "${1:score} := ml.dot(left: [${2:1, 2, 3}], right: [${3:4, 5, 6}])"
     ],
     "description": "Compute a native dot product"
+  },
+  "Fact Query All": {
+    "prefix": "factall",
+    "body": [
+      "${1:rows} := Fact.all(type: \"${2:TypeName}\")"
+    ],
+    "description": "Read every currently loaded fact of a type from the in-memory fact store"
+  },
+  "Fact Query Find": {
+    "prefix": "factfind",
+    "body": [
+      "${1:rows} := Fact.find(type: \"${2:TypeName}\", field: \"${3:field}\", equals: ${4:value})"
+    ],
+    "description": "Read facts of a type whose field equals a value from the in-memory fact store"
+  },
+  "Fact Query First": {
+    "prefix": "factfirst",
+    "body": [
+      "${1:row} := Fact.first(type: \"${2:TypeName}\", field: \"${3:field}\", equals: ${4:value})"
+    ],
+    "description": "Read the first fact of a type whose field equals a value from the in-memory fact store"
+  },
+  "Probability Function": {
+    "prefix": "probfn",
+    "body": [
+      "${1:value} := probability.${2|mean,variance,stddev,normalize,entropy,sample|}(data: ${3:values})"
+    ],
+    "description": "Call a native Felidae probability/statistics function"
   }
 }

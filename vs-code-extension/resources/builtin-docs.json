@@ -1,0 +1,632 @@
+{
+  "then": {
+    "heading": "then",
+    "description": "Pipes one expression into the next expression from left to right. The right side can read the previous successful step through system.result.",
+    "example": "score := Load() then Normalize(input: system.result) then Rank(input: system.result)"
+  },
+  "system:result": {
+    "heading": "system.result",
+    "description": "Read-only value for the previous successful step inside the right side of a then pipeline. It is unavailable outside that pipeline scope.",
+    "example": "result := StepOne() then StepTwo(input: system.result)"
+  },
+  "lambda": {
+    "heading": "lambda",
+    "description": "Filters or maps an array/fact collection with a local immutable item variable.",
+    "example": "Adults := lambda(Person, p => p.age >= 18)"
+  },
+  "ParseDoc": {
+    "heading": "ParseDoc",
+    "description": "Demo parser function used by method-style examples to map document text.",
+    "example": "parsed := lambda(docs, d => ParseDoc(d.doc))"
+  },
+  "count": {
+    "heading": "count",
+    "description": "Returns the number of items in an array or fact/type collection.",
+    "example": "count(Adults)"
+  },
+  "average": {
+    "heading": "average",
+    "description": "Returns the average of a numeric array.",
+    "example": "average(lambda(Person, p => p.age))"
+  },
+  "sort": {
+    "heading": "sort",
+    "description": "Sorts an array of numbers or strings.",
+    "example": "sort(lambda(Person, p => p.name))"
+  },
+  "search": {
+    "heading": "search",
+    "description": "Filters strings in an array using substring matching.",
+    "example": "search(lambda(Person, p => p.name), \"Ra\")"
+  },
+  "contains": {
+    "heading": "contains",
+    "description": "Checks a string substring or array membership.",
+    "example": "contains(\"Ravi\", \"Ra\")"
+  },
+  "lower": {
+    "heading": "lower",
+    "description": "Converts a string to lowercase.",
+    "example": "lower(\"HELLO\")"
+  },
+  "upper": {
+    "heading": "upper",
+    "description": "Converts a string to uppercase.",
+    "example": "upper(\"hello\")"
+  },
+  "length": {
+    "heading": "length",
+    "description": "Returns the length of a string or array.",
+    "example": "length(\"hello\")"
+  },
+  "throw": {
+    "heading": "throw",
+    "description": "Signals an exception reason. With target:, routes the message to a handler rule.",
+    "example": "throw(msg: \"thrown from module a\", target: DivideFailureHandler)"
+  },
+  "type": {
+    "heading": "type",
+    "description": "Reads the concrete fact/type name from a map value that carries runtime type metadata.",
+    "example": "type(value: employee, name: TypeName)"
+  },
+  "instanceof": {
+    "heading": "instanceof",
+    "description": "Succeeds when a value is an instance of the requested fact/type, including parents declared with extend.",
+    "example": "instanceof(value: employee, type: Person)"
+  },
+  "Fact:all": {
+    "heading": "Fact.all",
+    "description": "Returns every currently loaded fact of the requested type as an array of rows.",
+    "example": "rows := Fact.all(type: \"Customer\")"
+  },
+  "Fact:find": {
+    "heading": "Fact.find",
+    "description": "Returns rows of the requested type whose field equals the given value.",
+    "example": "rows := Fact.find(type: \"Customer\", field: \"city\", equals: \"SEA\")"
+  },
+  "Fact:first": {
+    "heading": "Fact.first",
+    "description": "Returns the first row of the requested type whose field equals the given value.",
+    "example": "row := Fact.first(type: \"Customer\", field: \"name\", equals: \"Ada\")"
+  },
+  "Fact:count": {
+    "heading": "Fact.count",
+    "description": "Returns the number of currently loaded facts of the requested type.",
+    "example": "total := Fact.count(type: \"Customer\")"
+  },
+  "Fact:types": {
+    "heading": "Fact.types",
+    "description": "Returns an array of every fact type name currently loaded, including declared parent types.",
+    "example": "types := Fact.types()"
+  },
+  "Fact:fields": {
+    "heading": "Fact.fields",
+    "description": "Returns an array of the field names used across facts of the requested type.",
+    "example": "fields := Fact.fields(type: \"Customer\")"
+  },
+  "Fact:exists": {
+    "heading": "Fact.exists",
+    "description": "Returns true when at least one fact of the requested type has a field equal to the given value.",
+    "example": "found := Fact.exists(type: \"Customer\", field: \"name\", equals: \"Ada\")"
+  },
+  "Fact:select": {
+    "heading": "Fact.select",
+    "description": "Captures a snapshot FactSelection over the requested type for later Fact.materialize or Fact.release.",
+    "example": "selection := Fact.select(type: \"Customer\", field: \"status\", equals: \"active\")"
+  },
+  "math:add": {
+    "heading": "math.add",
+    "description": "Adds two numbers and unifies the result with the output argument.",
+    "example": "math.add(lhs: 2, rhs: 3, result: total)"
+  },
+  "math:sub": {
+    "heading": "math.sub",
+    "description": "Subtracts right from left and unifies the result with the output argument.",
+    "example": "math.sub(lhs: 5, rhs: 2, result: result)"
+  },
+  "math:mul": {
+    "heading": "math.mul",
+    "description": "Multiplies two numbers and unifies the result with the output argument.",
+    "example": "math.mul(lhs: 2, rhs: 3, result: result)"
+  },
+  "math:div": {
+    "heading": "math.div",
+    "description": "Divides left by right and unifies the result with the output argument.",
+    "example": "math.div(lhs: 10, rhs: 2, result: result)"
+  },
+  "math:mod": {
+    "heading": "math.mod",
+    "description": "Computes the numeric remainder and unifies it with the output argument.",
+    "example": "math.mod(lhs: 10, rhs: 3, result: result)"
+  },
+  "probability:mean": {
+    "heading": "probability.mean",
+    "description": "Returns the arithmetic mean of a numeric array.",
+    "example": "average := probability.mean(data: [2, 4, 6])"
+  },
+  "probability:variance": {
+    "heading": "probability.variance",
+    "description": "Returns the variance of a numeric array.",
+    "example": "spread := probability.variance(data: values)"
+  },
+  "probability:stddev": {
+    "heading": "probability.stddev",
+    "description": "Returns the standard deviation of a numeric array.",
+    "example": "spread := probability.stddev(data: values)"
+  },
+  "probability:normalize": {
+    "heading": "probability.normalize",
+    "description": "Scales a numeric array so its values sum to 1, producing a probability distribution.",
+    "example": "distribution := probability.normalize(data: values)"
+  },
+  "probability:entropy": {
+    "heading": "probability.entropy",
+    "description": "Returns the Shannon entropy of a probability distribution array.",
+    "example": "spread := probability.entropy(data: distribution)"
+  },
+  "probability:covariance": {
+    "heading": "probability.covariance",
+    "description": "Returns the covariance between two numeric arrays of equal length.",
+    "example": "value := probability.covariance(left: xs, right: ys)"
+  },
+  "probability:correlation": {
+    "heading": "probability.correlation",
+    "description": "Returns the Pearson correlation coefficient between two numeric arrays of equal length.",
+    "example": "value := probability.correlation(left: xs, right: ys)"
+  },
+  "probability:bernoulli": {
+    "heading": "probability.bernoulli",
+    "description": "Samples a Bernoulli trial with success probability p, returning 1 or 0.",
+    "example": "outcome := probability.bernoulli(p: 0.5)"
+  },
+  "probability:binomialPmf": {
+    "heading": "probability.binomialPmf",
+    "description": "Returns the binomial probability mass function value for the given trials, successes, and success probability.",
+    "example": "value := probability.binomialPmf(trials: 10, successes: 4, p: 0.5)"
+  },
+  "probability:binomialCdf": {
+    "heading": "probability.binomialCdf",
+    "description": "Returns the binomial cumulative distribution function value for the given trials, successes, and success probability.",
+    "example": "value := probability.binomialCdf(trials: 10, successes: 4, p: 0.5)"
+  },
+  "probability:poissonPmf": {
+    "heading": "probability.poissonPmf",
+    "description": "Returns the Poisson probability mass function value for the given rate and event count.",
+    "example": "value := probability.poissonPmf(lambda: 3, events: 2)"
+  },
+  "probability:poissonCdf": {
+    "heading": "probability.poissonCdf",
+    "description": "Returns the Poisson cumulative distribution function value for the given rate and event count.",
+    "example": "value := probability.poissonCdf(lambda: 3, events: 2)"
+  },
+  "probability:normalPdf": {
+    "heading": "probability.normalPdf",
+    "description": "Returns the normal distribution probability density at x for the given mean and standard deviation.",
+    "example": "value := probability.normalPdf(x: 1, mean: 0, stddev: 1)"
+  },
+  "probability:normalCdf": {
+    "heading": "probability.normalCdf",
+    "description": "Returns the normal distribution cumulative probability at x for the given mean and standard deviation.",
+    "example": "value := probability.normalCdf(x: 1, mean: 0, stddev: 1)"
+  },
+  "probability:uniformPdf": {
+    "heading": "probability.uniformPdf",
+    "description": "Returns the uniform distribution probability density at x within the given min/max range.",
+    "example": "value := probability.uniformPdf(x: 5, min: 0, max: 10)"
+  },
+  "probability:uniformCdf": {
+    "heading": "probability.uniformCdf",
+    "description": "Returns the uniform distribution cumulative probability at x within the given min/max range.",
+    "example": "value := probability.uniformCdf(x: 5, min: 0, max: 10)"
+  },
+  "probability:sample": {
+    "heading": "probability.sample",
+    "description": "Returns one value chosen uniformly at random from the array.",
+    "example": "value := probability.sample(data: values)"
+  },
+  "probability:weightedChoice": {
+    "heading": "probability.weightedChoice",
+    "description": "Returns one value chosen at random from the array, weighted by the parallel weights array.",
+    "example": "value := probability.weightedChoice(data: values, weights: weights)"
+  },
+  "str:len": {
+    "heading": "str.len",
+    "description": "Unifies the output argument with the length of a string.",
+    "example": "str.len(data: \"hello\", equals: size)"
+  },
+  "str:contains": {
+    "heading": "str.contains",
+    "description": "Succeeds when the string contains the requested substring.",
+    "example": "str.contains(data: \"hello\", needle: \"ell\")"
+  },
+  "str:concat": {
+    "heading": "str.concat",
+    "description": "Concatenates two strings and unifies the result with the output argument.",
+    "example": "str.concat(left: \"hello\", right: \" world\", result: text)"
+  },
+  "str:lower": {
+    "heading": "str.lower",
+    "description": "Lowercases a string and unifies the result with the output argument.",
+    "example": "str.lower(data: \"HELLO\", equals: text)"
+  },
+  "str:upper": {
+    "heading": "str.upper",
+    "description": "Uppercases a string and unifies the result with the output argument.",
+    "example": "str.upper(data: \"hello\", equals: text)"
+  },
+  "str:trim": {
+    "heading": "str.trim",
+    "description": "Removes leading and trailing whitespace from a string.",
+    "example": "text := str.trim(data: \"  hello  \")"
+  },
+  "str:split": {
+    "heading": "str.split",
+    "description": "Splits a string by a non-empty delimiter and returns an array of strings.",
+    "example": "parts := str.split(data: \"a,b,c\", delimiter: \",\")"
+  },
+  "str:replace": {
+    "heading": "str.replace",
+    "description": "Replaces all occurrences of a search string with a replacement string.",
+    "example": "text := str.replace(data: \"a-b\", search: \"-\", replacement: \":\")"
+  },
+  "str:startsWith": {
+    "heading": "str.startsWith",
+    "description": "Returns \"true\" when a string starts with the requested prefix.",
+    "example": "ok := str.startsWith(data: \"Alice\", prefix: \"Al\")"
+  },
+  "str:endsWith": {
+    "heading": "str.endsWith",
+    "description": "Returns \"true\" when a string ends with the requested suffix.",
+    "example": "ok := str.endsWith(data: \"Alice\", suffix: \"ice\")"
+  },
+  "array:get": {
+    "heading": "array.get",
+    "description": "Reads an array item by zero-based index and unifies it with the output argument.",
+    "example": "array.get(data: [1, 2, 3], position: 0, access: value)"
+  },
+  "array:len": {
+    "heading": "array.len",
+    "description": "Unifies the output argument with the number of array items.",
+    "example": "array.len(data: [1, 2, 3], access: size)"
+  },
+  "array:push": {
+    "heading": "array.push",
+    "description": "Creates an array with one appended value and unifies it with the output argument.",
+    "example": "array.push(data: [1, 2], value: 3, result: out)"
+  },
+  "fn:array": {
+    "heading": "fn:array",
+    "description": "Creates an immutable Felidae array value from the data argument.",
+    "example": "array1 := fn:array(data: [1, 2, 3, 4])"
+  },
+  "fn:pair": {
+    "heading": "fn:pair",
+    "description": "Creates an immutable pair value with first and last fields.",
+    "example": "pair := fn:pair(first: \"web\", last: 2.0)"
+  },
+  "fn:tuple": {
+    "heading": "fn:tuple",
+    "description": "Creates an immutable tuple-style value from named fields.",
+    "example": "tuple := fn:tuple(first: \"hello\", second: \"world\")"
+  },
+  "pair:first": {
+    "heading": "pair:first",
+    "description": "Unifies the output argument with the first item of a pair.",
+    "example": "pair:first(data: fn:pair(first: \"web\", last: 2), access: key)"
+  },
+  "pair:second": {
+    "heading": "pair:second",
+    "description": "Unifies the output argument with the second item of a pair.",
+    "example": "pair:second(data: fn:pair(first: \"web\", last: 2), access: value)"
+  },
+  "json:parse": {
+    "heading": "json.parse",
+    "description": "Parses JSON text into Felidae map/array values.",
+    "example": "json.parse(data: \"{\\\"name\\\":\\\"Alice\\\"}\", access: object)"
+  },
+  "json:get": {
+    "heading": "json.get",
+    "description": "Reads a key from a JSON/map value and unifies it with the output argument.",
+    "example": "json.get(data: object, key: \"name\", access: value)"
+  },
+  "json:has": {
+    "heading": "json.has",
+    "description": "Returns \"true\" when a JSON/map value contains the requested key.",
+    "example": "ok := json.has(data: object, key: \"name\")"
+  },
+  "json:keys": {
+    "heading": "json.keys",
+    "description": "Returns an array containing the keys of a JSON/map value.",
+    "example": "keys := json.keys(data: object)"
+  },
+  "json:set": {
+    "heading": "json.set",
+    "description": "Returns a copy of a JSON/map value with one key added or replaced.",
+    "example": "next := json.set(data: object, key: \"office\", value: \"SEA\")"
+  },
+  "json:remove": {
+    "heading": "json.remove",
+    "description": "Returns a copy of a JSON/map value without the requested key.",
+    "example": "next := json.remove(data: object, key: \"role\")"
+  },
+  "json:toText": {
+    "heading": "json.toText",
+    "description": "Serializes Felidae values, arrays, maps, and fact-like rows into JSON text.",
+    "example": "jsonText := json.toText(data: rows)"
+  },
+  "csv:parse": {
+    "heading": "csv.parse",
+    "description": "Parses CSV text through the native rapidcsv-backed stdlib and returns an array of row maps.",
+    "example": "rows := csv.parse(data: csvText)"
+  },
+  "csv:toFacts": {
+    "heading": "csv.toFacts",
+    "description": "Parses CSV text and returns typed fact-like row maps carrying the requested __type.",
+    "example": "schools := csv.toFacts(data: csvText, type: \"School\")"
+  },
+  "csv:toText": {
+    "heading": "csv.toText",
+    "description": "Writes an array of row maps back to CSV text through the native rapidcsv-backed stdlib.",
+    "example": "text := csv.toText(data: rows)"
+  },
+  "csv:toFelidaeFacts": {
+    "heading": "csv.toFelidaeFacts",
+    "description": "Converts row maps into Felidae fact declaration text.",
+    "example": "facts := csv.toFelidaeFacts(data: rows, type: \"School\")"
+  },
+  "csv:addRow": {
+    "heading": "csv.addRow",
+    "description": "Returns a copy of a row array with one map row appended.",
+    "example": "rows2 := csv.addRow(data: rows, row: {name: \"Alice\"})"
+  },
+  "csv:findRows": {
+    "heading": "csv.findRows",
+    "description": "Returns rows whose field text equals the requested value.",
+    "example": "sea := csv.findRows(data: rows, key: \"office\", value: \"SEA\")"
+  },
+  "csv:updateRows": {
+    "heading": "csv.updateRows",
+    "description": "Returns rows with matching records patched by a map value.",
+    "example": "rows2 := csv.updateRows(data: rows, key: \"name\", value: \"Bob\", patch: {office: \"SEA\"})"
+  },
+  "csv:deleteRows": {
+    "heading": "csv.deleteRows",
+    "description": "Returns rows excluding records whose field text equals the requested value.",
+    "example": "rows2 := csv.deleteRows(data: rows, key: \"role\", value: \"Manager\")"
+  },
+  "console:readLine": {
+    "heading": "console.readLine",
+    "description": "Reads one line from standard input using the native C++ console implementation.",
+    "example": "line := console.readLine()"
+  },
+  "console:write": {
+    "heading": "console.write",
+    "description": "Writes a value to standard output without a trailing newline.",
+    "example": "status := console.write(value: \"hello\")"
+  },
+  "console:writeLine": {
+    "heading": "console.writeLine",
+    "description": "Writes a value to standard output with a trailing newline.",
+    "example": "status := console.writeLine(value: \"hello\")"
+  },
+  "system:print": {
+    "heading": "system.print",
+    "description": "Prints a value to standard output with a trailing newline. The system library is available automatically.",
+    "example": "status := system.print(value: \"hello\")"
+  },
+  "file:readFile": {
+    "heading": "file.readFile",
+    "description": "Reads a file as text through the native C++ file implementation.",
+    "example": "text := file.readFile(path: \"data.txt\")"
+  },
+  "file:readLines": {
+    "heading": "file.readLines",
+    "description": "Reads a file and returns an immutable array of lines.",
+    "example": "lines := file.readLines(path: \"data.txt\")"
+  },
+  "file:readLine": {
+    "heading": "file.readLine",
+    "description": "Reads a single zero-based line from a file.",
+    "example": "line := file.readLine(path: \"data.txt\", line: 0)"
+  },
+  "file:writeFile": {
+    "heading": "file.writeFile",
+    "description": "Writes text to a file, replacing existing content.",
+    "example": "status := file.writeFile(path: \"data.txt\", data: \"hello\")"
+  },
+  "file:writeLines": {
+    "heading": "file.writeLines",
+    "description": "Writes an array of strings to a file, one line per item.",
+    "example": "status := file.writeLines(path: \"data.txt\", data: [\"a\", \"b\"])"
+  },
+  "file:appendFile": {
+    "heading": "file.appendFile",
+    "description": "Appends text to a file through the native C++ file implementation.",
+    "example": "status := file.appendFile(path: \"data.txt\", data: \"more\")"
+  },
+  "file:exists": {
+    "heading": "file.exists",
+    "description": "Returns \"true\" when a path exists, otherwise \"false\".",
+    "example": "ok := file.exists(path: \"data.txt\")"
+  },
+  "file:deleteFile": {
+    "heading": "file.deleteFile",
+    "description": "Deletes a file and returns \"true\" when a file was removed.",
+    "example": "removed := file.deleteFile(path: \"data.txt\")"
+  },
+  "http:get": {
+    "heading": "http.get",
+    "description": "Fetches a URL through the native cpp-httplib-backed HTTP module.",
+    "example": "body := http.get(url: \"https://example.com\")"
+  },
+  "http:post": {
+    "heading": "http.post",
+    "description": "Sends a POST request through the native cpp-httplib-backed HTTP module.",
+    "example": "body := http.post(url: \"http://127.0.0.1:8080/\", body: \"hello\")"
+  },
+  "http:put": {
+    "heading": "http.put",
+    "description": "Sends a PUT request through the native cpp-httplib-backed HTTP module.",
+    "example": "body := http.put(url: \"http://127.0.0.1:8080/\", body: \"hello\")"
+  },
+  "http:delete": {
+    "heading": "http.delete",
+    "description": "Sends a DELETE request through the native cpp-httplib-backed HTTP module.",
+    "example": "body := http.delete(url: \"http://127.0.0.1:8080/\")"
+  },
+  "http:serveStatic": {
+    "heading": "http.serveStatic",
+    "description": "Starts a blocking local server whose GET, POST, PUT, and DELETE / endpoints return the provided response.",
+    "example": "status := http.serveStatic(host: \"127.0.0.1\", port: 8080, response: \"Hello World\")"
+  },
+  "process:platform": {
+    "heading": "process.platform",
+    "description": "Returns the current OS platform name: windows, linux, macos, or unknown.",
+    "example": "platform := process.platform()"
+  },
+  "process:exec": {
+    "heading": "process.exec",
+    "description": "Runs an explicit shell command and returns captured output. Use only in trusted scripts/tests.",
+    "example": "output := process.exec(command: \"echo hello\")"
+  },
+  "process:sleep": {
+    "heading": "process.sleep",
+    "description": "Sleeps for the provided number of milliseconds.",
+    "example": "ready := process.sleep(milliseconds: 800)"
+  },
+  "math:sqrt": {
+    "heading": "math.sqrt",
+    "description": "Returns the square root of a number.",
+    "example": "root := math.sqrt(value: 81)"
+  },
+  "math:pow": {
+    "heading": "math.pow",
+    "description": "Raises a base number to an exponent.",
+    "example": "value := math.pow(base: 2, exponent: 8)"
+  },
+  "math:sin": {
+    "heading": "math.sin",
+    "description": "Returns the sine of a numeric value.",
+    "example": "value := math.sin(value: angle)"
+  },
+  "math:cos": {
+    "heading": "math.cos",
+    "description": "Returns the cosine of a numeric value.",
+    "example": "value := math.cos(value: angle)"
+  },
+  "math:tan": {
+    "heading": "math.tan",
+    "description": "Returns the tangent of a numeric value.",
+    "example": "value := math.tan(value: angle)"
+  },
+  "math:asin": {
+    "heading": "math.asin",
+    "description": "Returns the arcsine of a numeric value.",
+    "example": "value := math.asin(value: ratio)"
+  },
+  "math:acos": {
+    "heading": "math.acos",
+    "description": "Returns the arccosine of a numeric value.",
+    "example": "value := math.acos(value: ratio)"
+  },
+  "math:atan": {
+    "heading": "math.atan",
+    "description": "Returns the arctangent of a numeric value.",
+    "example": "value := math.atan(value: slope)"
+  },
+  "math:atan2": {
+    "heading": "math.atan2",
+    "description": "Returns the arctangent of y/x using both signs to select the quadrant.",
+    "example": "value := math.atan2(y: y, x: x)"
+  },
+  "math:log": {
+    "heading": "math.log",
+    "description": "Returns the natural logarithm of a number.",
+    "example": "value := math.log(value: 10)"
+  },
+  "math:log10": {
+    "heading": "math.log10",
+    "description": "Returns the base-10 logarithm of a number.",
+    "example": "value := math.log10(value: 100)"
+  },
+  "math:exp": {
+    "heading": "math.exp",
+    "description": "Returns e raised to the provided numeric value.",
+    "example": "value := math.exp(value: 2)"
+  },
+  "math:abs": {
+    "heading": "math.abs",
+    "description": "Returns the absolute value of a number.",
+    "example": "value := math.abs(value: -3)"
+  },
+  "math:floor": {
+    "heading": "math.floor",
+    "description": "Rounds a number down to the nearest integer value.",
+    "example": "value := math.floor(value: 3.9)"
+  },
+  "math:ceil": {
+    "heading": "math.ceil",
+    "description": "Rounds a number up to the nearest integer value.",
+    "example": "value := math.ceil(value: 3.1)"
+  },
+  "math:round": {
+    "heading": "math.round",
+    "description": "Rounds a number to the nearest integer value.",
+    "example": "value := math.round(value: 3.5)"
+  },
+  "math:pi": {
+    "heading": "math.pi",
+    "description": "Returns the pi constant.",
+    "example": "value := math.pi()"
+  },
+  "math:e": {
+    "heading": "math.e",
+    "description": "Returns Euler's number.",
+    "example": "value := math.e()"
+  },
+  "math:random": {
+    "heading": "math.random",
+    "description": "Returns a random floating-point number between min and max.",
+    "example": "value := math.random(min: 0, max: 1)"
+  },
+  "ml:sigmoid": {
+    "heading": "ml.sigmoid",
+    "description": "Applies the sigmoid activation function to one numeric value.",
+    "example": "value := ml.sigmoid(value: 0)"
+  },
+  "ml:relu": {
+    "heading": "ml.relu",
+    "description": "Applies the ReLU activation function to one numeric value.",
+    "example": "value := ml.relu(value: score)"
+  },
+  "ml:dot": {
+    "heading": "ml.dot",
+    "description": "Computes the dot product of two numeric arrays of equal length.",
+    "example": "score := ml.dot(left: [1, 2, 3], right: [4, 5, 6])"
+  },
+  "ml:meanSquaredError": {
+    "heading": "ml.meanSquaredError",
+    "description": "Computes mean squared error for two numeric arrays of equal length.",
+    "example": "loss := ml.meanSquaredError(left: [1, 2], right: [1, 3])"
+  },
+  "thread:createThread": {
+    "heading": "thread.createThread",
+    "description": "Creates a handle for running a method on an independent interpreter snapshot.",
+    "example": "t1 := thread.createThread(function: \"Worker\")"
+  },
+  "thread:start": {
+    "heading": "thread.start",
+    "description": "Starts a Felidae thread handle and returns its lifecycle status.",
+    "example": "status := thread.start(thread: t1)"
+  },
+  "thread:result": {
+    "heading": "thread.result",
+    "description": "Waits for a Felidae thread to finish and returns the worker method result.",
+    "example": "result := thread.result(thread: t1)"
+  },
+  "thread:status": {
+    "heading": "thread.status",
+    "description": "Reads the current status of a Felidae thread handle.",
+    "example": "status := thread.status(thread: t1)"
+  }
+}

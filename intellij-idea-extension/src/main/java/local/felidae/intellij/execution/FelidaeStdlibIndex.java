@@ -13,8 +13,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Caches the set of importable core library names that Celidae itself
- * reports through {@code celidae --list-libraries}.
+ * Caches the set of importable core library names that felidae_debug
+ * reports through {@code felidae_debug --list-libraries}. Celidae owns
+ * fact-relationship visualization only (ER diagrams, graphs, tree diagrams,
+ * statistical views) and has no library-listing flag of its own.
  *
  * The syntax highlighter needs this list synchronously on every keystroke, so
  * it never shells out directly. Instead, {@link #refreshFrom(Path)} is called
@@ -22,7 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * which already runs on a background thread) and the result is cached here.
  * Until a refresh succeeds, {@link #getLibraries()} returns a small built-in
  * default so highlighting still works in a fresh project that has not run
- * Celidae yet.
+ * felidae_debug yet.
  */
 public final class FelidaeStdlibIndex {
 
@@ -32,9 +34,11 @@ public final class FelidaeStdlibIndex {
      * list always comes from Celidae.
      */
     private static final Set<String> DEFAULT_LIBRARIES = Set.of(
-            "array", "console", "csv", "db", "file", "fn", "gtk", "http",
-            "json", "list", "math", "ml", "pair", "plot", "probability",
-            "process", "qt", "str", "system", "thread", "wordnet"
+            "array", "comparison", "console", "csv", "db", "exception", "fact",
+            "fact_analysis", "file", "flibrary", "group", "gtk", "http", "json",
+            "list", "logic", "math", "ml", "package", "plot", "prelude",
+            "probability", "process", "qt", "set", "smoke", "str", "system",
+            "thread", "wordnet"
     );
 
     private static volatile Set<String> libraries = DEFAULT_LIBRARIES;

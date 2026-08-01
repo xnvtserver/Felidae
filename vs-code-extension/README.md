@@ -12,9 +12,12 @@ VS Code support for Felidae `.fx` files.
 - Distinct library-prefix coloring for calls such as `array:get`, `json.get`, `math.pow`, and `system.print`
 - Snippets for `main`, imports, facts, methods, lambdas, returns, core libraries, and named arguments
 - Import links, builtin hover docs, and Go to Definition for facts, methods, and core libraries
+- Completion for stdlib module calls, in-scope variables/globals, imported modules, and named fact/method arguments
+- Outline view and breadcrumbs (Document Symbols) for facts, methods, and globals
+- A quick fix for "Fact type is not implicitly iterable" diagnostics
 - CodeLens actions beside `main(...)`: `Run | Debug | Visualize`
-- Problems diagnostics reported by `felidae_debug --check-json`
-- Debug Console query execution while a Celidae debug session is active
+- Problems diagnostics reported by `felidae_debug --check-json`, debounced while typing
+- Debug Console query execution while a Felidae debug session is active
 - Simulated breakpoints, Step Over, Step In, and Step Out for source navigation
 - Data visualizer using debugger graph snapshots, with SVG export
 
@@ -32,28 +35,42 @@ The extension also sets `*.fx` to the `felidae` language by default. If VS Code 
 
 ## Runtime Validation
 
-The extension does not run separate TypeScript language-error validation. The
-debugger is the source of truth for Problems diagnostics, and the extension
+The extension does not run separate TypeScript language-error validation.
+`felidae_debug` is the source of truth for Problems diagnostics, library/method
+listing, and LSP; Celidae is a separate tool dedicated to fact-relationship
+visualization (ER diagrams, graphs, tree diagrams, statistical views) and has
+no diagnostics or `--check-json`/`--lsp` support of its own. The extension
 calls:
 
 ```powershell
 build\felidae_debug.exe path\to\file.fx --check-json
 ```
 
-Celidae also provides `build\celidae.exe --lsp` for JSON-RPC stdio clients.
-The VS Code extension keeps direct `--check-json` diagnostics to avoid adding a
-second TypeScript validator or an extra client dependency.
+`felidae_debug` also provides `build\felidae_debug.exe --lsp` for JSON-RPC
+stdio clients. The VS Code extension keeps direct `--check-json` diagnostics
+to avoid adding a second TypeScript validator or an extra client dependency.
 
 Runtime diagnostics run when:
 
 - A `.fx` file is opened
 - A `.fx` editor tab becomes active
-- A `.fx` file changes
+- A `.fx` file changes (debounced ~350ms after the last keystroke)
 - A `.fx` file is saved
 - `Run`, `Debug`, or `Run Query` is started
 
-If `celidae.exe` is missing, the Problems panel shows a warning because runtime
-validation is unavailable. Configure the path with:
+If `felidae_debug.exe` is missing, the Problems panel shows a warning because
+runtime validation is unavailable. Configure the path with:
+
+```json
+{
+  "felidae.debugInterpreterPath": "build/felidae_debug.exe"
+}
+```
+
+You can also set `FELIDAE_DEBUG_PATH` to an absolute `felidae_debug`
+executable path.
+
+Celidae's visualizer executable is configured separately:
 
 ```json
 {
@@ -61,11 +78,7 @@ validation is unavailable. Configure the path with:
 }
 ```
 
-You can also set `CELIDAE_PATH` to an absolute Celidae executable path.
-`felidae.debugInterpreterPath` and `FELIDAE_DEBUG_PATH` are still accepted as
-legacy fallbacks.
-
-`build/felidae_debug.exe` remains a legacy fallback for older local builds.
+or `CELIDAE_PATH` for an absolute path. See [Visualize](#visualize) below.
 
 ## Run
 
@@ -98,7 +111,7 @@ Use the `Debug` CodeLens above `main(...)`, or create a launch configuration:
   "request": "launch",
   "name": "Debug Felidae Main",
   "program": "${file}",
-  "interpreterPath": "${workspaceFolder}/build/celidae.exe",
+  "interpreterPath": "${workspaceFolder}/build/felidae_debug.exe",
   "stopOnEntry": true
 }
 ```
@@ -112,16 +125,16 @@ For a query:
   "name": "Debug Felidae Query",
   "program": "${file}",
   "query": "? Engineer(name: name)",
-  "interpreterPath": "${workspaceFolder}/build/celidae.exe",
+  "interpreterPath": "${workspaceFolder}/build/felidae_debug.exe",
   "stopOnEntry": true
 }
 ```
 
-The debug adapter launches `celidae.exe`. Runtime execution stays in C++; source stepping is simulated by the extension so normal execution remains lightweight.
+The debug adapter launches `felidae_debug.exe`. Runtime execution stays in C++; source stepping is simulated by the extension so normal execution remains lightweight.
 
 Supported debug behavior:
 
-- Continue resumes Celidae.
+- Continue resumes the Felidae AST debugger process.
 - Breakpoints are verified on executable Felidae lines.
 - Step Over moves to the next executable source line.
 - Step In jumps to a matching method definition when the current line calls one.
@@ -130,7 +143,7 @@ Supported debug behavior:
 
 ## Debug Console Queries
 
-While a Celidae debug session is active, type a query in the Debug Console:
+While a Felidae debug session is active, type a query in the Debug Console:
 
 ```felidae
 ? Employee(name: name)
@@ -142,7 +155,7 @@ You may omit the leading `?`:
 Employee(name: name)
 ```
 
-The extension runs the query through `celidae --query` against the active program.
+The extension runs the query through `felidae_debug --query` against the active program.
 
 ## Visualize
 

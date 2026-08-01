@@ -208,7 +208,8 @@
   },
   "scripts": {
     "generate:libraries": "node scripts/generate-libraries.js",
-    "precompile": "npm run generate:libraries",
+    "generate:builtin-docs": "node scripts/generate-builtin-docs.js",
+    "precompile": "npm run generate:libraries && npm run generate:builtin-docs",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "node --check out/extension.js"
