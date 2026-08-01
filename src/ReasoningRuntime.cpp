@@ -11,6 +11,17 @@
 
 namespace Felidae {
 
+namespace {
+
+std::shared_ptr<MapExpr> markFact(
+    std::shared_ptr<MapExpr> value,
+    std::string type) {
+    value->factType = std::move(type);
+    return value;
+}
+
+} // namespace
+
 bool Interpreter::isTableEligibleGoal(
     const std::shared_ptr<Goal>& goal,
     SymbolId root,
@@ -589,7 +600,8 @@ std::shared_ptr<MapExpr> callAsFact(const Call& call) {
             argument.value ? argument.value->clone()
                            : std::make_shared<NilExpr>());
     }
-    return std::make_shared<MapExpr>(std::move(entries));
+    return markFact(
+        std::make_shared<MapExpr>(std::move(entries)), call.name);
 }
 
 std::shared_ptr<ArrayExpr> stringArray(
@@ -607,11 +619,11 @@ std::shared_ptr<ArrayExpr> factIdArray(
     std::vector<std::shared_ptr<Expr>> items;
     items.reserve(values.size());
     for (const std::uint64_t value : values) {
-        items.push_back(std::make_shared<MapExpr>(
+        items.push_back(markFact(std::make_shared<MapExpr>(
             std::vector<MapEntry>{
                 {"__type", std::make_shared<StringExpr>("FactReference")},
                 {"fact_id", std::make_shared<StringExpr>(
-                    std::to_string(value))}}));
+                    std::to_string(value))}}), "FactReference"));
     }
     return std::make_shared<ArrayExpr>(std::move(items));
 }
@@ -657,12 +669,12 @@ std::shared_ptr<MapExpr> Interpreter::materializeDerivationResult(
             if (node.kind == ProvenanceNode::Kind::Fact) {
                 result.factIds.insert(node.factId);
                 if (explainedFacts.insert(node.factId).second) {
-                    result.explanation.push_back(std::make_shared<MapExpr>(
+                    result.explanation.push_back(markFact(std::make_shared<MapExpr>(
                     std::vector<MapEntry>{
                         {"__type", std::make_shared<StringExpr>(
                             "FactProvenance")},
                         {"fact_id", std::make_shared<StringExpr>(
-                            std::to_string(node.factId))}}));
+                            std::to_string(node.factId))}}), "FactProvenance"));
                 }
             } else {
                 result.rules.insert(node.rule);
@@ -673,7 +685,7 @@ std::shared_ptr<MapExpr> Interpreter::materializeDerivationResult(
                     node.span.endLine,
                     node.span.endColumn);
                 if (explainedRules.insert(identity).second) {
-                    result.explanation.push_back(std::make_shared<MapExpr>(
+                    result.explanation.push_back(markFact(std::make_shared<MapExpr>(
                     std::vector<MapEntry>{
                         {"__type", std::make_shared<StringExpr>(
                             "RuleProvenance")},
@@ -685,7 +697,7 @@ std::shared_ptr<MapExpr> Interpreter::materializeDerivationResult(
                         {"end_line", std::make_shared<NumberExpr>(
                             node.span.endLine)},
                         {"end_column", std::make_shared<NumberExpr>(
-                            node.span.endColumn)}}));
+                            node.span.endColumn)}}), "RuleProvenance"));
                 }
             }
             pending.insert(
@@ -710,7 +722,7 @@ std::shared_ptr<MapExpr> Interpreter::materializeDerivationResult(
         negative.explanation.begin(),
         negative.explanation.end());
 
-    return std::make_shared<MapExpr>(std::vector<MapEntry>{
+    return markFact(std::make_shared<MapExpr>(std::vector<MapEntry>{
         {"__type", std::make_shared<StringExpr>("DerivationResult")},
         {"conclusion", callAsFact(query)},
         {"truth_status", std::make_shared<StringExpr>(truth)},
@@ -730,7 +742,7 @@ std::shared_ptr<MapExpr> Interpreter::materializeDerivationResult(
         {"opposition_count", std::make_shared<NumberExpr>(
             static_cast<double>(opposing.size()))},
         {"explanation_path", std::make_shared<ArrayExpr>(
-            std::move(explanation))}});
+            std::move(explanation))}}), "DerivationResult");
 }
 
 bool Interpreter::evalReasoningContrary(
@@ -774,11 +786,11 @@ bool Interpreter::evalReasoningContrary(
             "' to '" + existing->second + "'");
     }
     contraries_[positiveId] = negative->value;
-    out = std::make_shared<MapExpr>(std::vector<MapEntry>{
+    out = markFact(std::make_shared<MapExpr>(std::vector<MapEntry>{
         {"__type", std::make_shared<StringExpr>(
             "ContraryRegistration")},
         {"positive", positive->clone()},
-        {"negative", negative->clone()}});
+        {"negative", negative->clone()}}), "ContraryRegistration");
     return true;
 }
 
@@ -925,7 +937,9 @@ bool Interpreter::evalReasoningGrade(
                     if (!evalExprValue(field.value, env, resolved)) return false;
                     fields.emplace_back(field.name, std::move(resolved));
                 }
-                value = std::make_shared<MapExpr>(std::move(fields));
+                value = markFact(
+                    std::make_shared<MapExpr>(std::move(fields)),
+                    conclusion->name);
             }
         }
         if (!value && !evalExprValue(argument.value, env, value)) return false;
@@ -973,7 +987,7 @@ bool Interpreter::evalReasoningGrade(
         requirePolicy("evidence_aggregation", {"maximum"});
         requirePolicy("negation", {"standard", "one_minus"});
     } else {
-        profileValue = std::make_shared<MapExpr>(
+        profileValue = markFact(std::make_shared<MapExpr>(
             std::vector<MapEntry>{
                 {"__type", std::make_shared<StringExpr>(
                     "ReasoningProfile")},
@@ -982,7 +996,8 @@ bool Interpreter::evalReasoningGrade(
                 {"disjunction", std::make_shared<StringExpr>("maximum")},
                 {"evidence_aggregation", std::make_shared<StringExpr>(
                     "maximum")},
-                {"negation", std::make_shared<StringExpr>("one_minus")}});
+                {"negation", std::make_shared<StringExpr>("one_minus")}}),
+            "ReasoningProfile");
     }
 
     std::vector<std::shared_ptr<Expr>> evidenceItems;
@@ -1115,7 +1130,9 @@ bool Interpreter::evalReasoningGrade(
     reasoningSetValue(resultEntries, "profile", profileValue->clone());
     reasoningSetValue(resultEntries, "evidence",
         std::make_shared<ArrayExpr>(evidenceItems));
-    out = std::make_shared<MapExpr>(std::move(resultEntries));
+    out = markFact(
+        std::make_shared<MapExpr>(std::move(resultEntries)),
+        "DerivationResult");
     return true;
 }
 

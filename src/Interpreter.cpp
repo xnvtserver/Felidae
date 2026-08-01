@@ -149,6 +149,15 @@ static std::vector<std::shared_ptr<Expr>> termArgs(const std::shared_ptr<Expr>& 
 
 static std::shared_ptr<Expr> findMapValue(const std::shared_ptr<Expr>& expr,
                                           const std::string& key) {
+    if (const auto ast = std::dynamic_pointer_cast<AstValueExpr>(expr)) {
+        if (key == "text") {
+            return std::make_shared<StringExpr>(ast->sourceText());
+        }
+        if (key == "nodeKind") {
+            return std::make_shared<StringExpr>(ast->nodeKind);
+        }
+        return {};
+    }
     if (auto selection = std::dynamic_pointer_cast<FactSelectionExpr>(expr)) {
         if (key == internalSymbolName(InternalSymbolKind::Type)) {
             return std::make_shared<StringExpr>("FactSelection");
@@ -369,10 +378,9 @@ static bool isMethodTruthTupleWithFalse(const std::shared_ptr<Expr>& expr) {
     auto tuple = std::dynamic_pointer_cast<TermExpr>(expr);
     if (!tuple || tuple->builtinId != BuiltinId::FnTuple || tuple->args.empty()) return false;
     for (const auto& arg : tuple->args) {
-        auto text = std::dynamic_pointer_cast<StringExpr>(arg.value);
-        if (!text) return false;
-        if (text->value != "true" && text->value != "false") return false;
-        if (text->value == "false") return true;
+        const auto value = std::dynamic_pointer_cast<BoolExpr>(arg.value);
+        if (!value) return false;
+        if (!value->value) return true;
     }
     return false;
 }
@@ -461,37 +469,56 @@ static std::string astNodeKind(const std::shared_ptr<AstNode>& node) {
     return "ast";
 }
 
-static bool valueMatchesBuiltinType(const std::shared_ptr<Expr>& value, const std::string& type) {
-    const std::string lowered = lowerText(type);
-    if (lowered == "any") return true;
-    if (lowered == "fact") return static_cast<bool>(std::dynamic_pointer_cast<MapExpr>(value));
-    if (lowered == "number" || lowered == "decimal" || lowered == "double" || lowered == "float") {
-        return static_cast<bool>(std::dynamic_pointer_cast<NumberExpr>(value));
-    }
-    if (lowered == "int") {
-        auto number = std::dynamic_pointer_cast<NumberExpr>(value);
-        return number && std::fabs(number->value - std::round(number->value)) < 1e-12;
-    }
-    if (lowered == "string") {
-        return static_cast<bool>(std::dynamic_pointer_cast<StringExpr>(value));
-    }
-    if (lowered == "array") {
-        std::vector<std::shared_ptr<Expr>> items;
-        return exprAsArray(value, items);
-    }
-    if (lowered == "expr" || lowered == "stmt" || lowered == "stmts") {
-        auto ast = std::dynamic_pointer_cast<AstValueExpr>(value);
-        if (!ast) return false;
-        if (lowered == "expr") return ast->valueKind == AstValueKind::Expression;
-        if (lowered == "stmt") return ast->valueKind == AstValueKind::Statement;
-        return ast->valueKind == AstValueKind::Statements;
-    }
-    if (lowered == "bool" || lowered == "boolean") {
-        if (std::dynamic_pointer_cast<BoolExpr>(value)) return true;
-        auto text = std::dynamic_pointer_cast<StringExpr>(value);
-        return text && (text->value == "true" || text->value == "false");
+static bool valueMatchesBuiltinType(const std::shared_ptr<Expr>& value,
+                                    LanguageTypeId type) {
+    switch (type) {
+        case LanguageTypeId::Any:
+            return true;
+        case LanguageTypeId::Fact: {
+            const auto fact = std::dynamic_pointer_cast<MapExpr>(value);
+            return fact && !fact->factType.empty();
+        }
+        case LanguageTypeId::Number:
+        case LanguageTypeId::Decimal:
+        case LanguageTypeId::Double:
+        case LanguageTypeId::Float:
+            return static_cast<bool>(std::dynamic_pointer_cast<NumberExpr>(value));
+        case LanguageTypeId::Int: {
+            const auto number = std::dynamic_pointer_cast<NumberExpr>(value);
+            return number &&
+                std::fabs(number->value - std::round(number->value)) < 1e-12;
+        }
+        case LanguageTypeId::String:
+            return static_cast<bool>(std::dynamic_pointer_cast<StringExpr>(value));
+        case LanguageTypeId::Array: {
+            std::vector<std::shared_ptr<Expr>> items;
+            return exprAsArray(value, items);
+        }
+        case LanguageTypeId::Expr:
+        case LanguageTypeId::Stmt:
+        case LanguageTypeId::Statements: {
+            const auto ast = std::dynamic_pointer_cast<AstValueExpr>(value);
+            if (!ast) return false;
+            if (type == LanguageTypeId::Expr) {
+                return ast->valueKind == AstValueKind::Expression;
+            }
+            if (type == LanguageTypeId::Stmt) {
+                return ast->valueKind == AstValueKind::Statement;
+            }
+            return ast->valueKind == AstValueKind::Statements;
+        }
+        case LanguageTypeId::Bool:
+        case LanguageTypeId::Boolean:
+            return static_cast<bool>(std::dynamic_pointer_cast<BoolExpr>(value));
+        case LanguageTypeId::Unknown:
+            return false;
     }
     return false;
+}
+
+static bool valueMatchesBuiltinType(const std::shared_ptr<Expr>& value,
+                                    const std::string& type) {
+    return valueMatchesBuiltinType(value, languageTypeIdForName(type));
 }
 
 static double requireNumber(const std::shared_ptr<Expr>& expr, const std::string& fn, const std::string& arg) {
@@ -2033,10 +2060,10 @@ std::shared_ptr<Expr> Interpreter::evaluateGoalTruthTuple(const std::vector<std:
     for (const auto& goal : goals) {
         if (std::dynamic_pointer_cast<ReturnGoal>(goal)) continue;
         const bool ok = evaluateGoalTruth(goal, env);
-        values.push_back(Arg{"value", std::make_shared<StringExpr>(ok ? "true" : "false")});
+        values.push_back(Arg{"value", std::make_shared<BoolExpr>(ok)});
     }
     if (values.empty()) {
-        values.push_back(Arg{"value", std::make_shared<StringExpr>("true")});
+        values.push_back(Arg{"value", std::make_shared<BoolExpr>(true)});
     }
     return std::make_shared<TermExpr>("fn:tuple", std::move(values), BuiltinId::FnTuple);
 }
@@ -2047,10 +2074,10 @@ std::shared_ptr<Expr> Interpreter::executeGoalTruthTuple(const std::vector<std::
     for (const auto& goal : goals) {
         if (std::dynamic_pointer_cast<ReturnGoal>(goal)) continue;
         const bool ok = evaluateGoalTruth(goal, env);
-        values.push_back(Arg{"value", std::make_shared<StringExpr>(ok ? "true" : "false")});
+        values.push_back(Arg{"value", std::make_shared<BoolExpr>(ok)});
     }
     if (values.empty()) {
-        values.push_back(Arg{"value", std::make_shared<StringExpr>("true")});
+        values.push_back(Arg{"value", std::make_shared<BoolExpr>(true)});
     }
     outEnv = std::move(env);
     return std::make_shared<TermExpr>("fn:tuple", std::move(values), BuiltinId::FnTuple);
@@ -2310,6 +2337,55 @@ const std::vector<std::string>& Interpreter::typeAncestry(const std::string& typ
     // generic fallback cannot create a second interpretation path.
     if (type != "Fact") result.push_back("Fact");
     return typeAncestryCache_.emplace(type, std::move(result)).first->second;
+}
+
+const std::unordered_map<std::string, std::size_t>&
+Interpreter::typeAncestorDistances(const std::string& type) const {
+    const auto cached = typeAncestorDistanceCache_.find(type);
+    if (cached != typeAncestorDistanceCache_.end()) return cached->second;
+    std::unordered_map<std::string, std::size_t> distances;
+    std::deque<std::pair<std::string, std::size_t>> pending;
+    pending.emplace_back(type, 0);
+    while (!pending.empty()) {
+        auto [current, distance] = std::move(pending.front());
+        pending.pop_front();
+        const auto existing = distances.find(current);
+        if (existing != distances.end() && existing->second <= distance) continue;
+        distances[current] = distance;
+        const auto parents = memory_.parentsOf(current);
+        if (parents.empty() && current != "Fact") {
+            pending.emplace_back("Fact", distance + 1);
+        } else {
+            for (const auto& parent : parents) {
+                pending.emplace_back(parent, distance + 1);
+            }
+        }
+    }
+    return typeAncestorDistanceCache_.emplace(type, std::move(distances))
+        .first->second;
+}
+
+double Interpreter::typeHierarchyDepth(const std::string& type) const {
+    std::unordered_set<std::string> visiting;
+    std::function<double(const std::string&)> resolve =
+        [&](const std::string& current) -> double {
+            if (current == "Fact") return 0.0;
+            const auto cached = typeHierarchyDepthCache_.find(current);
+            if (cached != typeHierarchyDepthCache_.end()) return cached->second;
+            if (!visiting.insert(current).second) {
+                throw InterpreterError(
+                    "Inheritance cycle detected while comparing fact types");
+            }
+            double parentDepth = 0.0;
+            for (const auto& parent : memory_.parentsOf(current)) {
+                parentDepth = std::max(parentDepth, resolve(parent));
+            }
+            visiting.erase(current);
+            const double depth = parentDepth + 1.0;
+            typeHierarchyDepthCache_.emplace(current, depth);
+            return depth;
+        };
+    return resolve(type);
 }
 
 bool Interpreter::invokeComparisonMethod(const std::shared_ptr<ClauseStmt>& clause,
@@ -2911,7 +2987,9 @@ bool Interpreter::evalRelationCompare(const Call& call,
             {"membership", cloneExprOrNil(membership)},
             {"evidence", cloneExprOrNil(evidence)}};
         if (!reason.empty()) entries.push_back(MapEntry{"reason", std::make_shared<StringExpr>(reason)});
-        return std::make_shared<MapExpr>(std::move(entries));
+        auto result = std::make_shared<MapExpr>(std::move(entries));
+        result->factType = "Comparison";
+        return result;
     };
 
     std::vector<std::shared_ptr<Expr>> missing;
@@ -2982,17 +3060,36 @@ bool Interpreter::evalRelationCompare(const Call& call,
     std::vector<std::shared_ptr<Expr>> missingFields;
     std::vector<std::shared_ptr<Expr>> conflicting;
     std::vector<std::shared_ptr<Expr>> unknown;
+    std::vector<std::shared_ptr<Expr>> propertyEvidence;
     size_t membershipFields = 0;
+    const double propertyImportance = membershipMap->entries.empty()
+        ? 0.0 : 1.0 / static_cast<double>(membershipMap->entries.size());
     for (const auto& field : membershipMap->entries) {
         ++membershipFields;
         const auto targetValue = findMapValue(target, field.key);
+        std::string status;
         if (!targetValue) {
+            status = "missing";
             missingFields.push_back(std::make_shared<StringExpr>(field.key));
         } else if (field.value->debug() == targetValue->debug()) {
+            status = "matched";
             matched.push_back(std::make_shared<StringExpr>(field.key));
         } else {
+            status = "conflicting";
             conflicting.push_back(std::make_shared<StringExpr>(field.key));
         }
+        auto detail = std::make_shared<MapExpr>(std::vector<MapEntry>{
+            {internalSymbolString(InternalSymbolKind::Type),
+                std::make_shared<StringExpr>("PropertyComparisonEvidence")},
+            {"property", std::make_shared<StringExpr>(field.key)},
+            {"status", std::make_shared<StringExpr>(status)},
+            {"source_value", field.value->clone()},
+            {"target_value", cloneExprOrNil(targetValue)},
+            {"importance", std::make_shared<NumberExpr>(propertyImportance)},
+            {"contribution", std::make_shared<NumberExpr>(
+                status == "matched" ? propertyImportance : 0.0)}});
+        detail->factType = "PropertyComparisonEvidence";
+        propertyEvidence.push_back(std::move(detail));
     }
     for (const auto& field : targetMap->entries) {
         if (field.key == internalSymbolString(InternalSymbolKind::Type) ||
@@ -3004,31 +3101,92 @@ bool Interpreter::evalRelationCompare(const Call& call,
     const bool subset = allMatched && !exact;
     const double overlap = membershipFields == 0 ? 0.0 :
         static_cast<double>(matched.size()) / static_cast<double>(membershipFields);
-    std::shared_ptr<Expr> matchedAncestor = std::make_shared<NilExpr>();
-    double ancestorDistance = 0.0;
     bool ancestorContained = memory_.isCompatibleType(sourceType->value, targetType->value);
-    for (size_t sourceIndex = 0; sourceIndex < sourceAncestry.size(); ++sourceIndex) {
-        const auto& ancestor = sourceAncestry[sourceIndex];
-        // Fact is the universal method base, not useful hierarchy evidence.
+    struct AncestorCandidate {
+        std::string type;
+        std::size_t sourceDistance = 0;
+        std::size_t targetDistance = 0;
+        double depth = 0.0;
+        double similarity = 0.0;
+    };
+    std::vector<AncestorCandidate> ancestorCandidates;
+    const auto& sourceDistances = typeAncestorDistances(sourceType->value);
+    const auto& targetDistances = typeAncestorDistances(targetType->value);
+    const double sourceDepth = typeHierarchyDepth(sourceType->value);
+    const double targetDepth = typeHierarchyDepth(targetType->value);
+    const double depthTotal = sourceDepth + targetDepth;
+    for (const auto& [ancestor, sourceDistance] : sourceDistances) {
         if (ancestor == "Fact") continue;
-        const auto targetAncestor = std::find(targetAncestry.begin(), targetAncestry.end(), ancestor);
-        if (targetAncestor == targetAncestry.end()) continue;
-        matchedAncestor = std::make_shared<StringExpr>(ancestor);
-        ancestorDistance = static_cast<double>(sourceIndex +
-            std::distance(targetAncestry.begin(), targetAncestor));
-        break;
+        const auto targetDistance = targetDistances.find(ancestor);
+        if (targetDistance == targetDistances.end()) continue;
+        const double commonDepth = typeHierarchyDepth(ancestor);
+        ancestorCandidates.push_back(AncestorCandidate{
+            ancestor,
+            sourceDistance,
+            targetDistance->second,
+            commonDepth,
+            depthTotal > 0.0 ? (2.0 * commonDepth) / depthTotal : 0.0});
     }
+    std::sort(ancestorCandidates.begin(), ancestorCandidates.end(),
+        [](const AncestorCandidate& left, const AncestorCandidate& right) {
+            if (left.similarity != right.similarity) {
+                return left.similarity > right.similarity;
+            }
+            const auto leftDistance = left.sourceDistance + left.targetDistance;
+            const auto rightDistance = right.sourceDistance + right.targetDistance;
+            if (leftDistance != rightDistance) return leftDistance < rightDistance;
+            return left.type < right.type;
+        });
+    const std::string matchedAncestorName = ancestorCandidates.empty()
+        ? std::string{} : ancestorCandidates.front().type;
+    std::shared_ptr<Expr> matchedAncestor = matchedAncestorName.empty()
+        ? std::shared_ptr<Expr>(std::make_shared<NilExpr>())
+        : std::shared_ptr<Expr>(std::make_shared<StringExpr>(matchedAncestorName));
+    const double ancestorDistance = ancestorCandidates.empty() ? 0.0 :
+        static_cast<double>(ancestorCandidates.front().sourceDistance +
+            ancestorCandidates.front().targetDistance);
+    double ancestorSimilarity = 0.0;
+    if (!ancestorCandidates.empty()) {
+        ancestorSimilarity = ancestorCandidates.front().similarity;
+    }
+    std::vector<std::shared_ptr<Expr>> ancestorEvidence;
+    ancestorEvidence.reserve(ancestorCandidates.size());
+    for (const auto& candidate : ancestorCandidates) {
+        auto detail = std::make_shared<MapExpr>(std::vector<MapEntry>{
+            {internalSymbolString(InternalSymbolKind::Type),
+                std::make_shared<StringExpr>("AncestorComparisonEvidence")},
+            {"ancestor", std::make_shared<StringExpr>(candidate.type)},
+            {"source_distance", std::make_shared<NumberExpr>(
+                static_cast<double>(candidate.sourceDistance))},
+            {"target_distance", std::make_shared<NumberExpr>(
+                static_cast<double>(candidate.targetDistance))},
+            {"depth", std::make_shared<NumberExpr>(candidate.depth)},
+            {"importance", std::make_shared<NumberExpr>(candidate.similarity)}});
+        detail->factType = "AncestorComparisonEvidence";
+        ancestorEvidence.push_back(std::move(detail));
+    }
+    // Both hierarchy and properties are required. A geometric mean prevents
+    // coincidentally equal fields in unrelated fact families from producing
+    // a positive fact-similarity score.
+    const double similarity = std::sqrt(ancestorSimilarity * overlap);
     std::vector<MapEntry> evidenceEntries{
         {"exact", std::make_shared<BoolExpr>(exact)},
         {"subset", std::make_shared<BoolExpr>(subset)},
         {"overlap", std::make_shared<NumberExpr>(overlap)},
+        {"propertySimilarity", std::make_shared<NumberExpr>(overlap)},
+        {"ancestorSimilarity", std::make_shared<NumberExpr>(ancestorSimilarity)},
+        {"similarity", std::make_shared<NumberExpr>(similarity)},
         {"matchedFields", std::make_shared<ArrayExpr>(std::move(matched))},
         {"missingFields", std::make_shared<ArrayExpr>(std::move(missingFields))},
         {"conflictingFields", std::make_shared<ArrayExpr>(std::move(conflicting))},
         {"unknownFields", std::make_shared<ArrayExpr>(std::move(unknown))},
+        {"propertyEvidence", std::make_shared<ArrayExpr>(
+            std::move(propertyEvidence))},
         {"ancestorContained", std::make_shared<BoolExpr>(ancestorContained)},
         {"matchedAncestor", std::move(matchedAncestor)},
-        {"ancestorDistance", std::make_shared<NumberExpr>(ancestorDistance)}};
+        {"ancestorDistance", std::make_shared<NumberExpr>(ancestorDistance)},
+        {"ancestorEvidence", std::make_shared<ArrayExpr>(
+            std::move(ancestorEvidence))}};
     const auto evidence = std::make_shared<MapExpr>(std::move(evidenceEntries));
 
     std::vector<MapEntry> relationshipEntries;
@@ -3056,7 +3214,9 @@ bool Interpreter::evalRelationCompare(const Call& call,
     for (auto& entry : relationshipEntries) relationshipValues.push_back(entry.value);
     std::vector<std::shared_ptr<Expr>> ancestryValues;
     for (const auto& ancestor : targetAncestry) ancestryValues.push_back(std::make_shared<StringExpr>(ancestor));
-    const auto context = std::make_shared<MapExpr>(std::vector<MapEntry>{
+    auto context = std::make_shared<MapExpr>(std::vector<MapEntry>{
+        {internalSymbolString(InternalSymbolKind::Type),
+            std::make_shared<StringExpr>("ComparisonContext")},
         {"source", source->clone()}, {"target", target->clone()},
         {"targetFamily", std::make_shared<StringExpr>(targetFamily)},
         {"membership", membership->clone()}, {"targetFields", target->clone()},
@@ -3064,6 +3224,7 @@ bool Interpreter::evalRelationCompare(const Call& call,
         {"structuralEvidence", evidence->clone()},
         {"relationships", std::make_shared<ArrayExpr>(std::move(relationshipValues))},
         {"dependencyStatus", std::make_shared<StringExpr>("satisfied")}});
+    context->factType = "ComparisonContext";
 
     if (!comparisonClause) {
         if (exact) out = buildResult("exact-member", membership, evidence);
@@ -3090,7 +3251,9 @@ bool Interpreter::evalRelationCompare(const Call& call,
     if (!findMapValue(custom, "targetFamily")) upsertEntry(completed, "targetFamily", std::make_shared<StringExpr>(targetFamily));
     if (!findMapValue(custom, "membership")) upsertEntry(completed, "membership", membership->clone());
     if (!findMapValue(custom, "evidence")) upsertEntry(completed, "evidence", evidence->clone());
-    out = std::make_shared<MapExpr>(std::move(completed));
+    auto result = std::make_shared<MapExpr>(std::move(completed));
+    result->factType = "Comparison";
+    out = std::move(result);
     return true;
 }
 
@@ -3398,7 +3561,8 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
             if (!valueArg({"needle"}, 1, b)) return false;
             std::string needle;
             if (!argAsString(b, needle)) return false;
-            result = std::make_shared<StringExpr>(text.find(needle) != std::string::npos ? "true" : "false");
+            result = std::make_shared<BoolExpr>(
+                text.find(needle) != std::string::npos);
             const Arg* out = namedArg("access");
             if (!out) out = outArg("out", 2);
             return out ? unifyExpr(out->value, result, env) : text.find(needle) != std::string::npos;
@@ -3463,7 +3627,8 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
                 : (needle.size() <= text.size() && text.compare(text.size() - needle.size(), needle.size(), needle) == 0);
             const Arg* out = namedArg("access");
             if (!out) out = outArg("out", 2);
-            return out && unifyExpr(out->value, std::make_shared<StringExpr>(ok ? "true" : "false"), env);
+            return out && unifyExpr(
+                out->value, std::make_shared<BoolExpr>(ok), env);
         }
         for (char& ch : text) {
             ch = static_cast<char>(call.builtinId == BuiltinId::StrLower
@@ -3561,7 +3726,8 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         std::string key;
         if (!argAsString(b, key)) return false;
         if (call.builtinId == BuiltinId::JsonHas) {
-            resultValue = std::make_shared<StringExpr>(findMapValue(a, key) ? "true" : "false");
+            resultValue = std::make_shared<BoolExpr>(
+                static_cast<bool>(findMapValue(a, key)));
             const Arg* out = namedArg("access");
             if (!out) out = outArg("out", 2);
             return out && unifyExpr(out->value, resultValue, env);
@@ -4646,7 +4812,7 @@ bool Interpreter::evalCallAsValueOnce(
             : (builtin == BuiltinId::StrStartsWith
                 ? text.rfind(needle, 0) == 0
                 : (needle.size() <= text.size() && text.compare(text.size() - needle.size(), needle.size(), needle) == 0));
-        out = std::make_shared<StringExpr>(ok ? "true" : "false");
+        out = std::make_shared<BoolExpr>(ok);
         return true;
     }
 
@@ -4745,7 +4911,7 @@ bool Interpreter::evalCallAsValueOnce(
 
     if (builtin == BuiltinId::FileExists) {
         std::string pathText = requireNamedString({"path", "file"}, 0, "path");
-        out = std::make_shared<StringExpr>(fs::exists(fs::path(pathText)) ? "true" : "false");
+        out = std::make_shared<BoolExpr>(fs::exists(fs::path(pathText)));
         return true;
     }
 
@@ -4759,7 +4925,7 @@ bool Interpreter::evalCallAsValueOnce(
         }
         bool removed = fs::remove(target, ec);
         if (ec) throw InterpreterError("file.deleteFile failed: " + ec.message());
-        out = std::make_shared<StringExpr>(removed ? "true" : "false");
+        out = std::make_shared<BoolExpr>(removed);
         return true;
     }
 
@@ -4802,7 +4968,8 @@ bool Interpreter::evalCallAsValueOnce(
         }
         std::string key = requireNamedString({"key"}, 1, "key");
         if (builtin == BuiltinId::JsonHas) {
-            out = std::make_shared<StringExpr>(findMapValue(dataValue, key) ? "true" : "false");
+            out = std::make_shared<BoolExpr>(
+                static_cast<bool>(findMapValue(dataValue, key)));
             return true;
         }
         if (builtin == BuiltinId::JsonSet) {
@@ -5101,7 +5268,7 @@ bool Interpreter::evalCallAsValueOnce(
         if (op == "bernoulli") {
             double p = requireProbability({"p", "probability"}, 0, "p");
             std::bernoulli_distribution dist(p);
-            out = std::make_shared<StringExpr>(dist(rng) ? "true" : "false");
+            out = std::make_shared<BoolExpr>(dist(rng));
             return true;
         }
 
@@ -5402,7 +5569,7 @@ bool Interpreter::evalCallAsValueOnce(
         std::string text;
         if (argAsString(args[0], text)) {
             bool found = text.find(query) != std::string::npos;
-            out = std::make_shared<StringExpr>(found ? "true" : "false");
+            out = std::make_shared<BoolExpr>(found);
             return true;
         }
         auto array = std::dynamic_pointer_cast<ArrayExpr>(args[0]);
@@ -5680,21 +5847,77 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
         throw InterpreterError("No overload implementation is registered for operator pattern " +
                                std::to_string(expression.patternId));
     }
-    const auto valueType = [&](const std::shared_ptr<Expr>& value) -> std::string {
+    struct ResolvedOperatorType {
+        LanguageTypeId languageType = LanguageTypeId::Unknown;
+        SymbolId factTypeId = 0;
+        std::string factType;
+
+        bool known() const {
+            return languageType != LanguageTypeId::Unknown || factTypeId != 0;
+        }
+    };
+    const auto factRuntimeType = [](std::string name) {
+        if (name.empty()) return ResolvedOperatorType{};
+        return ResolvedOperatorType{
+            LanguageTypeId::Unknown, symbolIdForName(name), std::move(name)};
+    };
+    const auto builtinRuntimeType = [](LanguageTypeId type) {
+        return ResolvedOperatorType{type, 0, {}};
+    };
+    const auto sameResolvedType = [](const ResolvedOperatorType& left,
+                                     const ResolvedOperatorType& right) {
+        if (left.languageType != LanguageTypeId::Unknown ||
+            right.languageType != LanguageTypeId::Unknown) {
+            return left.languageType == right.languageType;
+        }
+        return left.factTypeId == right.factTypeId &&
+            left.factType == right.factType;
+    };
+    const auto compatibleLanguageType = [](LanguageTypeId actual,
+                                           LanguageTypeId expected) {
+        if (actual == expected) return true;
+        const auto numeric = [](LanguageTypeId type) {
+            return type == LanguageTypeId::Number ||
+                   type == LanguageTypeId::Decimal ||
+                   type == LanguageTypeId::Double ||
+                   type == LanguageTypeId::Float ||
+                   type == LanguageTypeId::Int;
+        };
+        if (numeric(actual) && numeric(expected)) {
+            // A general numeric result cannot promise integral output.
+            return expected != LanguageTypeId::Int || actual == LanguageTypeId::Int;
+        }
+        return (actual == LanguageTypeId::Bool || actual == LanguageTypeId::Boolean) &&
+               (expected == LanguageTypeId::Bool || expected == LanguageTypeId::Boolean);
+    };
+    const auto valueType = [&](const std::shared_ptr<Expr>& value) {
         if (auto ast = std::dynamic_pointer_cast<AstValueExpr>(value)) {
-            return ast->valueKind == AstValueKind::Expression ? "expr" :
-                   ast->valueKind == AstValueKind::Statement ? "stmt" : "stmts";
+            return builtinRuntimeType(
+                ast->valueKind == AstValueKind::Expression
+                    ? LanguageTypeId::Expr
+                    : ast->valueKind == AstValueKind::Statement
+                        ? LanguageTypeId::Stmt
+                        : LanguageTypeId::Statements);
         }
-        if (std::dynamic_pointer_cast<NumberExpr>(value)) return "number";
-        if (std::dynamic_pointer_cast<StringExpr>(value)) return "string";
-        if (std::dynamic_pointer_cast<BoolExpr>(value)) return "bool";
-        if (std::dynamic_pointer_cast<ArrayExpr>(value)) return "array";
-        if (std::dynamic_pointer_cast<NilExpr>(value)) return "nil";
-        if (auto type = std::dynamic_pointer_cast<StringExpr>(
-                findMapValue(value, internalSymbolString(InternalSymbolKind::Type)))) {
-            return type->value;
+        if (std::dynamic_pointer_cast<NumberExpr>(value)) {
+            return builtinRuntimeType(LanguageTypeId::Number);
         }
-        return "Fact";
+        if (std::dynamic_pointer_cast<StringExpr>(value)) {
+            return builtinRuntimeType(LanguageTypeId::String);
+        }
+        if (std::dynamic_pointer_cast<BoolExpr>(value)) {
+            return builtinRuntimeType(LanguageTypeId::Bool);
+        }
+        if (std::dynamic_pointer_cast<ArrayExpr>(value)) {
+            return builtinRuntimeType(LanguageTypeId::Array);
+        }
+        if (const auto map = std::dynamic_pointer_cast<MapExpr>(value)) {
+            if (!map->factType.empty()) return factRuntimeType(map->factType);
+            const auto type = std::dynamic_pointer_cast<StringExpr>(
+                findMapValue(value, internalSymbolString(InternalSymbolKind::Type)));
+            if (type) return factRuntimeType(type->value);
+        }
+        return ResolvedOperatorType{};
     };
 
     // Overload selection must not execute captures. Resolve only immutable
@@ -5718,42 +5941,51 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
         }
         return syntax;
     };
-    const auto expressionType = [&](const std::shared_ptr<Expr>& syntax) -> std::string {
+    const auto expressionType = [&](const std::shared_ptr<Expr>& syntax) {
         std::unordered_set<SymbolId> resolving;
         auto metadata = metadataValue(metadataValue, syntax, resolving);
-        const std::string direct = valueType(metadata);
-        if (direct != "Fact" || std::dynamic_pointer_cast<MapExpr>(metadata)) return direct;
+        const ResolvedOperatorType direct = valueType(metadata);
+        if (direct.known()) return direct;
         if (auto term = std::dynamic_pointer_cast<TermExpr>(metadata)) {
             if (!term->name.empty() &&
                 std::isupper(static_cast<unsigned char>(term->name.front()))) {
-                return term->name;
+                return factRuntimeType(term->name);
             }
-            return {};
+            return ResolvedOperatorType{};
         }
         if (auto nested = std::dynamic_pointer_cast<OperatorExpression>(metadata)) {
             if (nested->coreOperator != CoreOperator::Unknown) {
-                if (isComparisonOperator(nested->coreOperator)) return "bool";
+                if (isComparisonOperator(nested->coreOperator)) {
+                    return builtinRuntimeType(LanguageTypeId::Bool);
+                }
                 if (nested->coreOperator == CoreOperator::Add ||
                     nested->coreOperator == CoreOperator::Subtract ||
                     nested->coreOperator == CoreOperator::Multiply ||
                     nested->coreOperator == CoreOperator::Divide ||
                     nested->coreOperator == CoreOperator::Modulo ||
                     nested->coreOperator == CoreOperator::UnaryPlus ||
-                    nested->coreOperator == CoreOperator::UnaryMinus) return "number";
+                    nested->coreOperator == CoreOperator::UnaryMinus) {
+                    return builtinRuntimeType(LanguageTypeId::Number);
+                }
             }
-            std::string resultType;
-            for (const auto& overload : operators_->overloads()) {
-                if (overload.patternId != nested->patternId ||
-                    (overload.visibility == OperatorVisibility::Private &&
-                     overload.module != nested->module)) continue;
-                if (resultType.empty()) resultType = overload.resultType;
-                else if (resultType != overload.resultType) return {};
+            ResolvedOperatorType resultType;
+            for (const auto* overload : operators_->overloadsForPattern(nested->patternId)) {
+                if (overload->visibility == OperatorVisibility::Private &&
+                    overload->module != nested->module) continue;
+                const ResolvedOperatorType candidate =
+                    overload->resultLanguageTypeId != LanguageTypeId::Unknown
+                        ? builtinRuntimeType(overload->resultLanguageTypeId)
+                        : factRuntimeType(overload->resultType);
+                if (!resultType.known()) resultType = candidate;
+                else if (!sameResolvedType(resultType, candidate)) {
+                    return ResolvedOperatorType{};
+                }
             }
             return resultType;
         }
-        return {};
+        return ResolvedOperatorType{};
     };
-    std::vector<std::string> captureTypes;
+    std::vector<ResolvedOperatorType> captureTypes;
     captureTypes.reserve(expression.captureCount());
     for (size_t i = 0; i < expression.captureCount(); ++i) {
         captureTypes.push_back(expressionType(expression.capture(i)));
@@ -5766,20 +5998,21 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
         std::vector<std::shared_ptr<Expr>> factorPrototypes;
     };
     std::vector<Candidate> candidates;
-    const auto hierarchyRank = [&](const std::string& actual,
-                                   const std::string& expected) {
-        if (actual == expected) return 100;
-        if (expected == "Fact") return 10;
-        if (expected == "OperatorRequirement") {
-            return memory_.isCompatibleType(actual, expected) ? 20 : -1;
+    const auto hierarchyRank = [&](const ResolvedOperatorType& actual,
+                                   const OperatorTypeBinding& expected) {
+        if (actual.factTypeId == expected.typeId && actual.factType == expected.type) {
+            return 100;
         }
-        std::vector<std::pair<std::string, int>> pending{{actual, 0}};
+        std::vector<std::pair<std::string, int>> pending{{actual.factType, 0}};
         std::unordered_set<std::string> visited;
         for (size_t index = 0; index < pending.size(); ++index) {
             const auto [current, distance] = pending[index];
             if (!visited.insert(current).second) continue;
             for (const auto& parent : memory_.parentsOf(current)) {
-                if (parent == expected) return std::max(20, 80 - distance - 1);
+                if (symbolIdForName(parent) == expected.typeId &&
+                    parent == expected.type) {
+                    return std::max(20, 80 - distance - 1);
+                }
                 pending.emplace_back(parent, distance + 1);
             }
         }
@@ -5789,22 +6022,37 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
                                   int& score) {
         if (captures.size() != captureTypes.size()) return false;
         for (size_t i = 0; i < captureTypes.size(); ++i) {
-            const std::string& actual = captureTypes[i];
-            const std::string& expected = captures[i].type;
-            if (expected == "expr") {
-                score += 100;
+            const auto& actual = captureTypes[i];
+            const auto& expected = captures[i];
+            if (expected.languageTypeId == LanguageTypeId::Expr) {
+                // expr is the generic code-as-data fallback. A concrete fact
+                // type must win when the nested expression has a known result.
+                score += 5;
                 continue;
             }
-            if (actual.empty()) continue;
-            if (actual == expected) {
-                score += 100;
-            } else if (isFelidaeBuiltinTypeName(expected)) {
-                std::unordered_set<SymbolId> resolving;
-                auto metadata = metadataValue(metadataValue, expression.capture(i), resolving);
-                if (!valueMatchesBuiltinType(metadata, expected)) return false;
-                score += 80;
-            } else if (expected == "Fact") {
+            if (expected.languageTypeId == LanguageTypeId::Any) {
                 score += 10;
+                continue;
+            }
+            if (!actual.known()) continue;
+            if (expected.languageTypeId == LanguageTypeId::Fact) {
+                if (actual.factTypeId == 0) return false;
+                score += 10;
+                continue;
+            }
+            if (expected.languageTypeId != LanguageTypeId::Unknown) {
+                std::unordered_set<SymbolId> resolving;
+                auto metadata = metadataValue(
+                    metadataValue, expression.capture(i), resolving);
+                if (!valueMatchesBuiltinType(metadata, expected.languageTypeId) &&
+                    !compatibleLanguageType(actual.languageType,
+                                            expected.languageTypeId)) {
+                    return false;
+                }
+                score += actual.languageType == expected.languageTypeId ? 100 : 80;
+            } else if (actual.factTypeId == expected.typeId &&
+                       actual.factType == expected.type) {
+                score += 100;
             } else {
                 const int rank = hierarchyRank(actual, expected);
                 if (rank < 0) return false;
@@ -5820,8 +6068,8 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
         }
         return {};
     };
-    for (const auto& overload : operators_->overloads()) {
-        if (overload.patternId != expression.patternId) continue;
+    for (const auto* overloadPtr : operators_->overloadsForPattern(expression.patternId)) {
+        const auto& overload = *overloadPtr;
         if (overload.visibility == OperatorVisibility::Private && overload.module != expression.module) continue;
         int score = 0;
         if (!captureScore(overload.captures, score)) continue;
@@ -5833,10 +6081,9 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
             candidates.push_back(Candidate{&overload, overloadClause, score, {}});
             continue;
         }
-        for (const auto* matcherPtr : operators_->matchersForPattern(expression.patternId)) {
+        for (const auto* matcherPtr : operators_->matchersForPattern(
+                 expression.patternId, overload.factors.size())) {
             const auto& matcher = *matcherPtr;
-            if (matcher.patternId != expression.patternId ||
-                matcher.produces.size() != overload.factors.size()) continue;
             if (matcher.visibility == OperatorVisibility::Private && matcher.module != expression.module) continue;
             int matcherScore = score;
             if (!captureScore(matcher.captures, matcherScore)) continue;
@@ -5852,8 +6099,13 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
                     if (used[producedIndex]) continue;
                     const auto& produced = matcher.produces[producedIndex];
                     int rank = -1;
-                    if (produced.type == required.type) rank = 100;
-                    else rank = hierarchyRank(produced.type, required.type);
+                    if (produced.typeId == required.typeId &&
+                        produced.type == required.type) {
+                        rank = 100;
+                    } else {
+                        rank = hierarchyRank(
+                            factRuntimeType(produced.type), required);
+                    }
                     if (rank > best) {
                         best = rank;
                         bestIndex = producedIndex;
@@ -5931,6 +6183,9 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
                     literalValue = boolLiteral->clone();
                 } else if (std::dynamic_pointer_cast<NilExpr>(syntax)) {
                     nodeKind = literalKind = "nil";
+                } else if (auto identifier = std::dynamic_pointer_cast<VarExpr>(syntax)) {
+                    literalKind = "identifier";
+                    literalValue = std::make_shared<StringExpr>(identifier->name);
                 }
                 std::vector<MapEntry> fields;
                 fields.emplace_back(internalSymbolString(InternalSymbolKind::Type),
@@ -5938,7 +6193,11 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
                 fields.emplace_back("nodeKind", std::make_shared<StringExpr>(nodeKind));
                 fields.emplace_back("captureName", std::make_shared<StringExpr>(
                     std::string(expression.captureName(index))));
-                fields.emplace_back("inferredType", std::make_shared<StringExpr>(captureTypes[index]));
+                const auto& inferred = captureTypes[index];
+                fields.emplace_back("inferredType", std::make_shared<StringExpr>(
+                    inferred.languageType != LanguageTypeId::Unknown
+                        ? std::string(languageTypeName(inferred.languageType))
+                        : inferred.factType));
                 fields.emplace_back("literalKind", std::make_shared<StringExpr>(literalKind));
                 fields.emplace_back("literalValue", std::move(literalValue));
                 fields.emplace_back("explicitlyGrouped", std::make_shared<BoolExpr>(
@@ -5950,15 +6209,10 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
                 fields.emplace_back("children", findMapValue(shape, "children")->clone());
                 return std::make_shared<MapExpr>(std::move(fields));
             };
-            std::string operatorName;
-            const OperatorPatternDefinition* resolvedPattern = nullptr;
-            for (const auto& pattern : operators_->patterns()) {
-                if (pattern.patternId == expression.patternId) {
-                    operatorName = pattern.operatorName;
-                    resolvedPattern = &pattern;
-                    break;
-                }
-            }
+            const OperatorPatternDefinition* resolvedPattern =
+                operators_->findPatternById(expression.patternId);
+            const std::string operatorName =
+                resolvedPattern ? resolvedPattern->operatorName : std::string{};
             std::vector<std::shared_ptr<Expr>> referenceValues;
             referenceValues.reserve(captureTypes.size());
             std::vector<std::shared_ptr<Expr>> contextCaptures;
@@ -6049,7 +6303,8 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
     values.reserve(expression.captureCount());
     for (size_t i = 0; i < expression.captureCount(); ++i) {
         std::shared_ptr<Expr> value;
-        if (selected.overload->captures[i].type == "expr") {
+        if (selected.overload->captures[i].languageTypeId ==
+            LanguageTypeId::Expr) {
             value = std::make_shared<AstValueExpr>(
                 AstValueKind::Expression,
                 std::vector<std::shared_ptr<AstNode>>{expression.capture(i)},
@@ -6111,14 +6366,25 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
             throw InterpreterError("Operator overload method did not return a value");
         }
         auto value = resolveExpr(returned->second, solution.env)->clone();
-        const std::string actual = valueType(value);
-        if (!selected.overload->resultType.empty() &&
-            actual != selected.overload->resultType &&
-            !(isFelidaeBuiltinTypeName(selected.overload->resultType) &&
-              valueMatchesBuiltinType(value, selected.overload->resultType)) &&
-            !memory_.isCompatibleType(actual, selected.overload->resultType)) {
-            throw InterpreterError("Operator overload returned '" + actual + "', expected '" +
-                                   selected.overload->resultType + "'");
+        const ResolvedOperatorType actual = valueType(value);
+        bool validResult = selected.overload->resultType.empty();
+        if (selected.overload->resultLanguageTypeId != LanguageTypeId::Unknown) {
+            validResult = valueMatchesBuiltinType(
+                value, selected.overload->resultLanguageTypeId);
+        } else if (actual.factTypeId != 0) {
+            validResult =
+                (actual.factTypeId == selected.overload->resultTypeId &&
+                 actual.factType == selected.overload->resultType) ||
+                memory_.isCompatibleType(
+                    actual.factType, selected.overload->resultType);
+        }
+        if (!validResult) {
+            const std::string actualName =
+                actual.languageType != LanguageTypeId::Unknown
+                    ? std::string(languageTypeName(actual.languageType))
+                    : actual.factType.empty() ? "unknown" : actual.factType;
+            throw InterpreterError("Operator overload returned '" + actualName +
+                "', expected '" + selected.overload->resultType + "'");
         }
         returnedValues.push_back(std::move(value));
     }
@@ -7147,6 +7413,8 @@ void Interpreter::clearCachesNow() {
     methodRuntimeCache_.clear();
     clauseLookupCache_.clear();
     typeAncestryCache_.clear();
+    typeAncestorDistanceCache_.clear();
+    typeHierarchyDepthCache_.clear();
     comparisonDispatchCache_.clear();
     tableCache_.clear();
 }

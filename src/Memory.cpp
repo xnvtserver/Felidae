@@ -187,6 +187,7 @@ std::shared_ptr<MapExpr> FactMemory::materializeFact(
     }
     auto result = std::make_shared<MapExpr>(std::move(entries));
     result->factIdentity = record.id;
+    result->factType = record.type;
     return result;
 }
 

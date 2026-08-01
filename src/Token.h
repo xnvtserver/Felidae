@@ -180,6 +180,27 @@ enum class LanguageTypeId {
     Statements
 };
 
+inline constexpr std::string_view languageTypeName(LanguageTypeId type) {
+    switch (type) {
+        case LanguageTypeId::Any: return "any";
+        case LanguageTypeId::Array: return "array";
+        case LanguageTypeId::Bool: return "bool";
+        case LanguageTypeId::Boolean: return "boolean";
+        case LanguageTypeId::Decimal: return "decimal";
+        case LanguageTypeId::Double: return "double";
+        case LanguageTypeId::Fact: return "Fact";
+        case LanguageTypeId::Float: return "float";
+        case LanguageTypeId::Int: return "int";
+        case LanguageTypeId::Number: return "number";
+        case LanguageTypeId::String: return "string";
+        case LanguageTypeId::Expr: return "expr";
+        case LanguageTypeId::Stmt: return "stmt";
+        case LanguageTypeId::Statements: return "stmts";
+        case LanguageTypeId::Unknown: return {};
+    }
+    return {};
+}
+
 inline LanguageTypeId languageTypeIdForName(const std::string& name) {
     if (name == "any") return LanguageTypeId::Any;
     if (name == "array") return LanguageTypeId::Array;
