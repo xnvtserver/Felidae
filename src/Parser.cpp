@@ -57,6 +57,10 @@ bool isNameStartToken(TokenType type) {
     return type == TokenType::Ident || type == TokenType::BuiltinFunction;
 }
 
+bool isOperatorAnchorToken(TokenType type) {
+    return type == TokenType::Ident || type == TokenType::CustomOperator;
+}
+
 bool isSystemResultExpr(const std::shared_ptr<Expr>& expr) {
     if (auto var = std::dynamic_pointer_cast<VarExpr>(expr)) {
         return var->nameId == InternalSymbol::SystemResultId;
@@ -952,7 +956,8 @@ std::shared_ptr<Expr> Parser::parseOperatorExpr(int minimumPrecedence,
             break;
         }
         auto definition = infixOperatorForToken(peek().type);
-        const auto customPatterns = definition || parsingOperatorAnnotation_
+        const auto customPatterns = definition || parsingOperatorAnnotation_ ||
+            !isOperatorAnchorToken(peek().type)
             ? std::vector<const OperatorPatternDefinition*>{}
             : operators_->trailingPatternsForAnchor(peek().text, module_);
         if (customPatterns.size() > 1) {
@@ -999,15 +1004,19 @@ std::shared_ptr<Expr> Parser::parseOperatorExpr(int minimumPrecedence,
             }
             for (size_t captureIndex = 1; captureIndex < pattern.captureNames.size(); ++captureIndex) {
                 std::string_view nextStop;
-                if (captureIndex < pattern.anchors.size()) {
-                    const auto& nextAnchor = pattern.anchors[captureIndex];
+                const auto& nextAnchor = pattern.followingAnchors[captureIndex];
+                if (!nextAnchor.empty()) {
                     const auto split = nextAnchor.find(' ');
                     nextStop = std::string_view(nextAnchor).substr(0, split);
                 }
-                auto captured = parseOperatorExpr(rightMinimum, stopAtThen, nextStop);
+                const bool adjacentCapture = nextAnchor.empty() &&
+                    captureIndex + 1 < pattern.captureNames.size();
+                auto captured = adjacentCapture
+                    ? parseUnaryExpr()
+                    : parseOperatorExpr(rightMinimum, stopAtThen, nextStop);
                 captures.emplace_back(pattern.captureNames[captureIndex], std::move(captured));
-                if (captureIndex < pattern.anchors.size()) {
-                    consumePatternAnchor(pattern.anchors[captureIndex]);
+                if (!nextAnchor.empty()) {
+                    consumePatternAnchor(nextAnchor);
                 }
             }
             expr = std::make_shared<OperatorExpression>(
@@ -1054,7 +1063,8 @@ std::shared_ptr<Expr> Parser::parseAccessExpr() {
 }
 
 std::shared_ptr<Expr> Parser::parseUnaryExpr() {
-    const auto leadingPatterns = parsingOperatorAnnotation_
+    const auto leadingPatterns = parsingOperatorAnnotation_ ||
+        !isOperatorAnchorToken(peek().type)
         ? std::vector<const OperatorPatternDefinition*>{}
         : operators_->leadingPatternsForAnchor(peek().text, module_);
     if (leadingPatterns.size() > 1) {
@@ -1067,16 +1077,21 @@ std::shared_ptr<Expr> Parser::parseUnaryExpr() {
         captures.reserve(pattern.captureNames.size());
         for (size_t captureIndex = 0; captureIndex < pattern.captureNames.size(); ++captureIndex) {
             std::string_view nextStop;
-            if (captureIndex + 1 < pattern.anchors.size()) {
-                const auto& nextAnchor = pattern.anchors[captureIndex + 1];
+            const auto& nextAnchor = pattern.followingAnchors[captureIndex];
+            if (!nextAnchor.empty()) {
                 const auto split = nextAnchor.find(' ');
                 nextStop = std::string_view(nextAnchor).substr(0, split);
             }
+            const bool adjacentCapture = nextAnchor.empty() &&
+                captureIndex + 1 < pattern.captureNames.size();
             captures.emplace_back(
                 pattern.captureNames[captureIndex],
-                parseOperatorExpr(static_cast<int>(pattern.precedence), false, nextStop));
-            if (captureIndex + 1 < pattern.anchors.size()) {
-                consumePatternAnchor(pattern.anchors[captureIndex + 1]);
+                adjacentCapture
+                    ? parseUnaryExpr()
+                    : parseOperatorExpr(
+                        static_cast<int>(pattern.precedence), false, nextStop));
+            if (!nextAnchor.empty()) {
+                consumePatternAnchor(nextAnchor);
             }
         }
         auto expression = std::make_shared<OperatorExpression>(
@@ -1376,6 +1391,19 @@ void Parser::validateGoalSystemResultUsage(const std::shared_ptr<Goal>& goal) co
     }
 }
 
+bool Parser::operatorCaptureAcceptsExpressionData(const OperatorExpression& expression,
+                                                  size_t captureIndex) const {
+    if (expression.coreOperator != CoreOperator::Unknown) return false;
+
+    const auto overloads = operators_->overloadsForPattern(expression.patternId);
+    return std::any_of(overloads.begin(), overloads.end(), [&](const auto* overload) {
+        const bool visible = overload->module == module_ ||
+                             overload->visibility == OperatorVisibility::Public;
+        return visible && captureIndex < overload->captures.size() &&
+               overload->captures[captureIndex].languageTypeId == LanguageTypeId::Expr;
+    });
+}
+
 void Parser::collectExprVars(const std::shared_ptr<Expr>& expr, std::set<std::string>& vars) const {
     if (isSystemResultExpr(expr)) return;
     if (auto var = std::dynamic_pointer_cast<VarExpr>(expr)) {
@@ -1383,7 +1411,11 @@ void Parser::collectExprVars(const std::shared_ptr<Expr>& expr, std::set<std::st
         return;
     }
     if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
-        for (size_t i = 0; i < op->captureCount(); ++i) collectExprVars(op->capture(i), vars);
+        for (size_t i = 0; i < op->captureCount(); ++i) {
+            if (!operatorCaptureAcceptsExpressionData(*op, i)) {
+                collectExprVars(op->capture(i), vars);
+            }
+        }
         return;
     }
     if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {

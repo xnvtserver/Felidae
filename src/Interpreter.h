@@ -208,6 +208,9 @@ private:
     mutable std::unordered_map<const ClauseStmt*, MethodRuntimeInfo> methodRuntimeCache_;
     mutable std::unordered_map<std::string, ClauseList*> clauseLookupCache_;
     mutable std::unordered_map<std::string, std::vector<std::string>> typeAncestryCache_;
+    mutable std::unordered_map<std::string,
+        std::unordered_map<std::string, std::size_t>> typeAncestorDistanceCache_;
+    mutable std::unordered_map<std::string, double> typeHierarchyDepthCache_;
     std::unordered_map<ComparisonDispatchKey,
                        ComparisonDispatchPlan,
                        ComparisonDispatchKeyHash> comparisonDispatchCache_;
@@ -419,6 +422,9 @@ private:
     std::shared_ptr<MapExpr> factToMap(const ClauseStmt& clause);
     std::shared_ptr<ArrayExpr> materializeFactSelection(const std::shared_ptr<Expr>& selection);
     const std::vector<std::string>& typeAncestry(const std::string& type) const;
+    const std::unordered_map<std::string, std::size_t>& typeAncestorDistances(
+        const std::string& type) const;
+    double typeHierarchyDepth(const std::string& type) const;
     std::vector<std::shared_ptr<Expr>> valuesForLambdaSource(const std::shared_ptr<Expr>& source, const Env& env);
 
     bool ensurePredicateLoaded(const std::string& predicate);

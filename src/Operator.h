@@ -59,6 +59,7 @@ struct OperatorTypeBinding {
     SymbolId nameId = 0;
     std::string type;
     SymbolId typeId = 0;
+    LanguageTypeId languageTypeId = LanguageTypeId::Unknown;
 };
 
 struct OperatorPatternDefinition {
@@ -69,6 +70,9 @@ struct OperatorPatternDefinition {
     std::string pattern;
     std::vector<std::string> anchors;
     std::vector<std::string> captureNames;
+    // One entry per capture. Empty means the next capture is adjacent and the
+    // current capture consumes one primary expression.
+    std::vector<std::string> followingAnchors;
     OperatorFixity fixity = OperatorFixity::Infix;
     bool startsWithCapture = true;
     bool hasDeclaredFixity = false;
@@ -92,6 +96,7 @@ struct OperatorOverloadDefinition {
     std::vector<OperatorTypeBinding> factors;
     std::string resultType;
     SymbolId resultTypeId = 0;
+    LanguageTypeId resultLanguageTypeId = LanguageTypeId::Unknown;
     OperatorCardinality cardinality = OperatorCardinality::One;
     OperatorEffect effect = OperatorEffect::Pure;
     OperatorVisibility visibility = OperatorVisibility::Private;
@@ -140,6 +145,7 @@ public:
         const std::size_t index = patterns_.size();
         patternByContract_.emplace(key, index);
         patterns_.push_back(std::move(pattern));
+        patternById_.emplace(patterns_.back().patternId, index);
         registerOrigin(index, patterns_.back().module, patterns_.back().visibility);
         const auto& stored = patterns_.back();
         if (!stored.anchors.empty()) {
@@ -161,6 +167,7 @@ public:
                     "@matcher visibility cannot exceed the factored overload visibility");
             }
         }
+        overloadsByPattern_[overload.patternId].push_back(overloads_.size());
         overloads_.push_back(std::move(overload));
     }
 
@@ -176,7 +183,8 @@ public:
                     "@matcher visibility cannot exceed the factored overload visibility");
             }
         }
-        matchersByPattern_[matcher.patternId].push_back(matchers_.size());
+        matchersByPatternAndArity_[matcher.patternId][matcher.produces.size()].push_back(
+            matchers_.size());
         matchers_.push_back(std::move(matcher));
     }
 
@@ -242,13 +250,29 @@ public:
     const std::vector<OperatorPatternDefinition>& patterns() const { return patterns_; }
     const std::vector<OperatorOverloadDefinition>& overloads() const { return overloads_; }
     const std::vector<OperatorMatcherDefinition>& matchers() const { return matchers_; }
-    std::vector<const OperatorMatcherDefinition*> matchersForPattern(PatternId patternId) const {
+    std::vector<const OperatorOverloadDefinition*> overloadsForPattern(PatternId patternId) const {
+        std::vector<const OperatorOverloadDefinition*> matches;
+        const auto found = overloadsByPattern_.find(patternId);
+        if (found == overloadsByPattern_.end()) return matches;
+        matches.reserve(found->second.size());
+        for (const auto index : found->second) matches.push_back(&overloads_.at(index));
+        return matches;
+    }
+    std::vector<const OperatorMatcherDefinition*> matchersForPattern(
+        PatternId patternId,
+        std::size_t producedCount) const {
         std::vector<const OperatorMatcherDefinition*> matches;
-        const auto found = matchersByPattern_.find(patternId);
-        if (found == matchersByPattern_.end()) return matches;
+        const auto pattern = matchersByPatternAndArity_.find(patternId);
+        if (pattern == matchersByPatternAndArity_.end()) return matches;
+        const auto found = pattern->second.find(producedCount);
+        if (found == pattern->second.end()) return matches;
         matches.reserve(found->second.size());
         for (const auto index : found->second) matches.push_back(&matchers_.at(index));
         return matches;
+    }
+    const OperatorPatternDefinition* findPatternById(PatternId patternId) const {
+        const auto found = patternById_.find(patternId);
+        return found == patternById_.end() ? nullptr : &patterns_.at(found->second);
     }
     const OperatorPatternDefinition* findPattern(std::string_view operatorName,
                                                  std::string_view pattern) const {
@@ -350,16 +374,13 @@ private:
     static void compilePattern(OperatorPatternDefinition& pattern) {
         pattern.operatorNameId = symbolIdForName(pattern.operatorName);
         std::size_t cursor = 0;
-        bool firstSegment = true;
-        bool previousWasCapture = false;
+        bool sawSegment = false;
+        bool lastWasCapture = false;
         while (cursor < pattern.pattern.size()) {
             while (cursor < pattern.pattern.size() && pattern.pattern[cursor] == ' ') ++cursor;
             if (cursor >= pattern.pattern.size()) break;
             const bool capture = pattern.pattern[cursor] == '{';
-            if (!firstSegment && capture == previousWasCapture) {
-                throw std::runtime_error("Operator pattern must alternate captures and anchors");
-            }
-            if (firstSegment) pattern.startsWithCapture = capture;
+            if (!sawSegment) pattern.startsWithCapture = capture;
             if (capture) {
                 const auto close = pattern.pattern.find('}', cursor + 1);
                 if (close == std::string::npos) throw std::runtime_error("Unclosed operator pattern capture");
@@ -369,6 +390,7 @@ private:
                     throw std::runtime_error("Operator pattern capture must be a single binding name");
                 }
                 pattern.captureNames.push_back(name);
+                pattern.followingAnchors.emplace_back();
                 cursor = close + 1;
             } else {
                 const auto next = pattern.pattern.find('{', cursor);
@@ -377,15 +399,18 @@ private:
                 const auto anchor = pattern.pattern.substr(cursor, end - cursor);
                 if (anchor.empty()) throw std::runtime_error("Operator pattern anchor cannot be empty");
                 pattern.anchors.push_back(anchor);
+                if (lastWasCapture && !pattern.followingAnchors.empty()) {
+                    pattern.followingAnchors.back() = anchor;
+                }
                 cursor = next == std::string::npos ? pattern.pattern.size() : next;
             }
-            previousWasCapture = capture;
-            firstSegment = false;
+            lastWasCapture = capture;
+            sawSegment = true;
         }
-        if (pattern.captureNames.empty() || pattern.anchors.empty()) {
+        if (!sawSegment || pattern.captureNames.empty() || pattern.anchors.empty()) {
             throw std::runtime_error("Operator pattern requires at least one capture and one anchor");
         }
-        const bool endsWithCapture = previousWasCapture;
+        const bool endsWithCapture = lastWasCapture;
         OperatorFixity inferredFixity = OperatorFixity::Infix;
         if (!pattern.startsWithCapture && endsWithCapture) {
             inferredFixity = pattern.captureNames.size() == 1 && pattern.anchors.size() == 1
@@ -397,7 +422,7 @@ private:
             inferredFixity = pattern.captureNames.size() == 2 && pattern.anchors.size() == 1
                 ? OperatorFixity::Infix : OperatorFixity::Mixfix;
         } else {
-            throw std::runtime_error("Operator pattern cannot contain only anchors");
+            inferredFixity = OperatorFixity::Mixfix;
         }
         if (pattern.hasDeclaredFixity && pattern.fixity != inferredFixity) {
             throw std::runtime_error("Operator pattern shape does not match its declared type");
@@ -455,8 +480,12 @@ private:
     std::vector<OperatorOverloadDefinition> overloads_;
     std::vector<OperatorMatcherDefinition> matchers_;
     std::unordered_map<std::string, std::size_t> patternByContract_;
+    std::unordered_map<PatternId, std::size_t> patternById_;
     std::unordered_map<std::string, std::vector<std::size_t>> patternsByFirstAnchor_;
-    std::unordered_map<PatternId, std::vector<std::size_t>> matchersByPattern_;
+    std::unordered_map<PatternId, std::vector<std::size_t>> overloadsByPattern_;
+    std::unordered_map<PatternId,
+        std::unordered_map<std::size_t, std::vector<std::size_t>>>
+        matchersByPatternAndArity_;
     std::unordered_map<std::size_t, std::vector<OperatorPatternOrigin>> patternOrigins_;
 };
 

@@ -73,7 +73,12 @@ inline ParsedOperatorAnnotation decodeOperatorAnnotation(const Call& annotation)
                             "@" + annotation.name + " repeats binding '" + entry.key + "'");
                     }
                 }
-                result.push_back({entry.key, entry.keyId, type->name, symbolIdForName(type->name)});
+                result.push_back({
+                    entry.key,
+                    entry.keyId,
+                    type->name,
+                    symbolIdForName(type->name),
+                    languageTypeIdForName(type->name)});
             }
         };
         if (auto map = std::dynamic_pointer_cast<MapExpr>(value)) {
@@ -174,6 +179,7 @@ inline OperatorOverloadDefinition makeOperatorOverloadDefinition(
     overload.factors = parsed.factors;
     overload.resultType = parsed.resultType;
     overload.resultTypeId = parsed.resultType.empty() ? 0 : symbolIdForName(parsed.resultType);
+    overload.resultLanguageTypeId = languageTypeIdForName(parsed.resultType);
     overload.cardinality = parsed.cardinality;
     overload.effect = parsed.effect;
     overload.visibility = parsed.visibility;

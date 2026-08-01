@@ -123,6 +123,8 @@ private:
     void validateSystemResultUsage(const std::shared_ptr<Expr>& expr, bool allowed) const;
     void validateGoalSystemResultUsage(const std::shared_ptr<Goal>& goal) const;
     void validateExceptionFlow(const std::vector<std::shared_ptr<Goal>>& goals) const;
+    bool operatorCaptureAcceptsExpressionData(const OperatorExpression& expression,
+                                              size_t captureIndex) const;
     void collectExprVars(const std::shared_ptr<Expr>& expr, std::set<std::string>& vars) const;
     void validateGoalVars(const std::shared_ptr<Goal>& goal, std::set<std::string>& declared) const;
     bool isDeclaredName(const std::string& name, const std::set<std::string>& declared) const;

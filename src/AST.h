@@ -248,6 +248,16 @@ public:
     std::shared_ptr<Expr> clone() const override {
         return std::make_shared<AstValueExpr>(valueKind, nodes, nodeKind);
     }
+    std::string sourceText() const {
+        if (nodes.size() != 1 || !nodes.front()) return {};
+        if (const auto variable = std::dynamic_pointer_cast<VarExpr>(nodes.front())) {
+            return variable->name;
+        }
+        if (const auto text = std::dynamic_pointer_cast<StringExpr>(nodes.front())) {
+            return text->value;
+        }
+        return nodes.front()->debug();
+    }
     std::string debug() const override {
         const char* type = valueKind == AstValueKind::Expression ? "expr" :
                            valueKind == AstValueKind::Statement ? "stmt" : "stmts";
