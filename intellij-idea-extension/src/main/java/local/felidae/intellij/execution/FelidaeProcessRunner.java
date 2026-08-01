@@ -41,6 +41,21 @@ public final class FelidaeProcessRunner {
         );
     }
 
+    public static void runQuery(
+            @NotNull Project project,
+            @NotNull Path interpreter,
+            @NotNull Path sourceFile,
+            @NotNull String query
+    ) {
+        run(
+                project,
+                "Run Felidae Query",
+                interpreter,
+                sourceFile,
+                List.of(query)
+        );
+    }
+
     public static void runChecker(
             @NotNull Project project,
             @NotNull Path debugger,

@@ -404,13 +404,17 @@ struct AstAnalysisSession::Impl {
     struct DefinitionSummary {
         size_t count = 0;
         SourceSpan span;
+        std::vector<SourceSpan> spans;
     };
 
     std::vector<AstDiagnostic> diagnostics;
     std::map<std::string, DefinitionSummary> methodDefinitions;
     std::map<std::string, DefinitionSummary> factDefinitions;
     std::set<std::string> globals;
-    std::map<std::string, SourceSpan> globalSpans;
+    // All spans a global name was (re)bound at; the "unused global"
+    // diagnostic below points at the last one, mirroring how
+    // methodDefinitions/factDefinitions point at their last span too.
+    std::map<std::string, std::vector<SourceSpan>> globalSpanLists;
     std::set<std::string> calls;
     std::unordered_set<std::string> factSignatures;
     std::size_t factsSeen = 0;
@@ -434,7 +438,7 @@ void AstAnalysisSession::consume(const std::shared_ptr<Statement>& stmt) {
     }
     if (auto binding = std::dynamic_pointer_cast<GlobalBindingStmt>(stmt)) {
         impl_->globals.insert(binding->name);
-        impl_->globalSpans[binding->name] = binding->sourceSpan;
+        impl_->globalSpanLists[binding->name].push_back(binding->sourceSpan);
         std::set<std::string> vars;
         collectExprUses(binding->expr, vars, impl_->calls);
         return;
@@ -447,6 +451,7 @@ void AstAnalysisSession::consume(const std::shared_ptr<Statement>& stmt) {
         auto& definition = impl_->factDefinitions[clause->head.name];
         ++definition.count;
         definition.span = clause->sourceSpan;
+        definition.spans.push_back(clause->sourceSpan);
         ++impl_->factsSeen;
         if (impl_->factsSeen <= Impl::MaxExactDuplicateFacts) {
             const std::string signature = factSignature(*clause);
@@ -467,6 +472,7 @@ void AstAnalysisSession::consume(const std::shared_ptr<Statement>& stmt) {
     auto& definition = impl_->methodDefinitions[clause->head.name];
     ++definition.count;
     definition.span = clause->sourceSpan;
+    definition.spans.push_back(clause->sourceSpan);
     collectGlobalAssignmentCollisions(
         clause->body, impl_->globals, impl_->diagnostics);
     collectDiscardedExpressions(
@@ -536,7 +542,7 @@ std::vector<AstDiagnostic> AstAnalysisSession::finish() {
     for (const auto& item : impl_->globals) {
         if (!impl_->calls.count(item)) {
             impl_->diagnostics.push_back(diagnosticForSpan(
-                impl_->globalSpans[item],
+                impl_->globalSpanLists[item].back(),
                 "warning",
                 "felidae.global.unused",
                 "Global '" + item +
@@ -554,6 +560,31 @@ std::vector<AstDiagnostic> AstAnalysisSession::finish() {
         }
     }
     return std::move(impl_->diagnostics);
+}
+
+SymbolSummary AstAnalysisSession::symbols() const {
+    auto toSymbolDefinitions = [](const auto& definitions) {
+        std::vector<SymbolDefinition> result;
+        result.reserve(definitions.size());
+        for (const auto& [name, definition] : definitions) {
+            result.push_back(SymbolDefinition{name, definition.count, definition.spans});
+        }
+        return result;
+    };
+
+    SymbolSummary summary;
+    summary.methods = toSymbolDefinitions(impl_->methodDefinitions);
+    summary.facts = toSymbolDefinitions(impl_->factDefinitions);
+    summary.globals.reserve(impl_->globals.size());
+    for (const auto& name : impl_->globals) {
+        // impl_->globals and impl_->globalSpanLists are always populated
+        // together in consume(), so every global name has at least one span.
+        summary.globals.push_back(SymbolDefinition{
+            name,
+            1,
+            impl_->globalSpanLists.at(name)});
+    }
+    return summary;
 }
 
 std::vector<AstDiagnostic> analyzeProgramAst(const Program& program) {

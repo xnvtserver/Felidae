@@ -1,0 +1,18 @@
+{
+  "name": "celidae-webui",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Celidae's own JS/icon dependencies for its self-contained --html visualizer. Not part of the C++ build; run 'npm run generate' after changing template.html or upgrading a dependency to regenerate the checked-in ../GeneratedVisualizerAssets.h.",
+  "scripts": {
+    "generate": "node generate-template.js"
+  },
+  "dependencies": {
+    "chart.js": "^4.4.4",
+    "cytoscape": "^3.30.2",
+    "heroicons": "^2.1.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "tailwindcss": "^4.3.3"
+  }
+}

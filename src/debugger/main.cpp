@@ -16,18 +16,24 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 namespace fs = std::filesystem;
 using namespace Felidae;
 
 struct DebugOptions {
     bool stopOnEntry = false;
     bool loadImports = false;
-    bool checkOnly = false;
     bool checkJson = false;
     bool metricsJson = false;
     bool lspMode = false;
     bool listLibraries = false;
     bool listBuiltins = false;
+    bool symbolsJson = false;
+    bool version = false;
     bool help = false;
     std::optional<fs::path> programFile;
 };
@@ -45,7 +51,9 @@ static DebugOptions parseDebugCli(int argc, char** argv) {
             continue;
         }
         if (arg == "--check") {
-            options.checkOnly = true;
+            // Accepted for compatibility with documented usage; the default
+            // (non --check-json) path below already does exactly this: parse,
+            // print FELIDAE_DIAGNOSTIC records, and report FELIDAE_CHECK_OK.
             continue;
         }
         if (arg == "--check-json") {
@@ -66,6 +74,14 @@ static DebugOptions parseDebugCli(int argc, char** argv) {
         }
         if (arg == "--list-builtins") {
             options.listBuiltins = true;
+            continue;
+        }
+        if (arg == "--symbols-json") {
+            options.symbolsJson = true;
+            continue;
+        }
+        if (arg == "--version" || arg == "-v") {
+            options.version = true;
             continue;
         }
         if (arg == "--help" || arg == "-h") {
@@ -105,7 +121,11 @@ static void printDebugUsage(std::ostream& out) {
         << "                   Resolved relative to <file.fx> when given, otherwise the\n"
         << "                   current directory. Editor integrations should call this\n"
         << "                   instead of hand-maintaining a copy of the module list.\n"
-        << "  --list-builtins  Print a JSON array of {name, effect} builtin functions.\n";
+        << "  --list-builtins  Print a JSON array of {name, effect} builtin functions.\n"
+        << "  --symbols-json   Print a JSON symbol table (methods, facts, globals with\n"
+        << "                   source spans, plus resolved files and unresolved imports)\n"
+        << "                   for <file.fx>. Always follows imports, like --lsp diagnostics.\n"
+        << "  --version, -v    Print {name, version} as JSON.\n";
 }
 
 static std::string trimText(const std::string& text);
@@ -200,6 +220,63 @@ static std::string builtinsJson(const std::vector<BuiltinInfo>& infos) {
             << "\",\"effect\":\"" << builtinEffectName(infos[i].effect) << "\"}";
     }
     out << "]";
+    return out.str();
+}
+
+static std::string spanJson(const SourceSpan& span) {
+    std::ostringstream out;
+    out << "{\"startLine\":" << span.startLine
+        << ",\"startColumn\":" << span.startColumn
+        << ",\"endLine\":" << span.endLine
+        << ",\"endColumn\":" << span.endColumn << "}";
+    return out.str();
+}
+
+static std::string symbolDefinitionsJson(const std::vector<SymbolDefinition>& definitions) {
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < definitions.size(); ++i) {
+        if (i) out << ",";
+        const auto& definition = definitions[i];
+        out << "{\"name\":\"" << jsonEscape(definition.name)
+            << "\",\"count\":" << definition.count
+            << ",\"spans\":[";
+        for (size_t s = 0; s < definition.spans.size(); ++s) {
+            if (s) out << ",";
+            out << spanJson(definition.spans[s]);
+        }
+        out << "]}";
+    }
+    out << "]";
+    return out.str();
+}
+
+static std::string symbolsJson(
+    const SymbolSummary& symbols,
+    const std::vector<fs::path>& files,
+    const std::vector<std::string>& unresolvedImports) {
+    std::ostringstream out;
+    out << "{\"methods\":" << symbolDefinitionsJson(symbols.methods)
+        << ",\"facts\":" << symbolDefinitionsJson(symbols.facts)
+        << ",\"globals\":" << symbolDefinitionsJson(symbols.globals)
+        << ",\"files\":[";
+    for (size_t i = 0; i < files.size(); ++i) {
+        if (i) out << ",";
+        out << "\"" << jsonEscape(files[i].string()) << "\"";
+    }
+    out << "],\"unresolvedImports\":[";
+    for (size_t i = 0; i < unresolvedImports.size(); ++i) {
+        if (i) out << ",";
+        out << "\"" << jsonEscape(unresolvedImports[i]) << "\"";
+    }
+    out << "]}";
+    return out.str();
+}
+
+static std::string versionJson(const char* toolName) {
+    std::ostringstream out;
+    out << "{\"name\":\"" << jsonEscape(toolName)
+        << "\",\"version\":\"" << jsonEscape(LANGUAGE_VERSION) << "\"}";
     return out.str();
 }
 
@@ -400,6 +477,21 @@ static std::string analyzeFileJson(const fs::path& path) {
     }
 }
 
+static std::string symbolsFileJson(const fs::path& path, bool loadImports) {
+    try {
+        AstAnalysisSession analysis;
+        auto loaded = Tooling::loadProgramStatements(
+            path,
+            loadImports,
+            [&](const std::shared_ptr<Statement>& statement) {
+                analysis.consume(statement);
+            });
+        return symbolsJson(analysis.symbols(), loaded.files, loaded.unresolvedImports);
+    } catch (const std::exception& e) {
+        return errorJson(e.what());
+    }
+}
+
 static void writeLspMessage(const std::string& body) {
     std::cout << "Content-Length: " << body.size() << "\r\n\r\n" << body << std::flush;
 }
@@ -414,6 +506,8 @@ static void publishDiagnostics(const std::string& uri, const std::string& checkJ
         std::string message = extractJsonString(checkJson, "message", pos);
         size_t lineKey = checkJson.rfind("\"line\"", pos);
         size_t columnKey = checkJson.rfind("\"column\"", pos);
+        size_t endLineKey = checkJson.rfind("\"endLine\"", pos);
+        size_t endColumnKey = checkJson.rfind("\"endColumn\"", pos);
         size_t severityKey = checkJson.rfind("\"lspSeverity\"", pos);
         auto readNumber = [&](size_t key, int fallback) {
             if (key == std::string::npos) return fallback;
@@ -424,10 +518,20 @@ static void publishDiagnostics(const std::string& uri, const std::string& checkJ
         int line = std::max(0, readNumber(lineKey, 1) - 1);
         int column = std::max(0, readNumber(columnKey, 1) - 1);
         int severity = readNumber(severityKey, 2);
+        // diagnosticsJson() always emits endLine/endColumn alongside
+        // line/column (see diagnosticsJson in this file), so a real span is
+        // normally available; only synthesize a single-character range as a
+        // last resort (e.g. the minimal shape errorJson() emits).
+        int endLine = endLineKey != std::string::npos && endLineKey > lineKey
+            ? std::max(0, readNumber(endLineKey, line + 1) - 1)
+            : line;
+        int endColumn = endColumnKey != std::string::npos && endColumnKey > columnKey
+            ? std::max(0, readNumber(endColumnKey, column + 2) - 1)
+            : column + 1;
         if (!first) out << ",";
         first = false;
         out << "{\"range\":{\"start\":{\"line\":" << line << ",\"character\":" << column
-            << "},\"end\":{\"line\":" << line << ",\"character\":" << (column + 1)
+            << "},\"end\":{\"line\":" << endLine << ",\"character\":" << endColumn
             << "}},\"severity\":" << severity
             << ",\"source\":\"Felidae Debugger\",\"message\":\"" << jsonEscape(message) << "\"}";
         pos += 9;
@@ -454,14 +558,27 @@ static bool readLspMessage(std::string& body) {
 }
 
 static int runLspServer() {
+#ifdef _WIN32
+    // The CRT's default text-mode translation rewrites every '\n' written to
+    // stdout as "\r\n" - since writeLspMessage()/publishDiagnostics() already
+    // write explicit "\r\n" header terminators, that turned into "\r\r\n" on
+    // Windows, corrupting the LSP wire format for any real client. Binary
+    // mode on stdin avoids the equivalent corruption when reading message
+    // bodies containing embedded newlines.
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stdin), _O_BINARY);
+#endif
     std::map<std::string, std::string> documents;
     std::string body;
     while (readLspMessage(body)) {
         std::string method = extractJsonString(body, "method");
         std::string id = extractJsonId(body);
         if (method == "initialize") {
-            writeLspMessage("{\"jsonrpc\":\"2.0\",\"id\":" + id +
-                            ",\"result\":{\"capabilities\":{\"textDocumentSync\":1}}}");
+            writeLspMessage(
+                "{\"jsonrpc\":\"2.0\",\"id\":" + id +
+                ",\"result\":{\"capabilities\":{\"textDocumentSync\":1},"
+                "\"serverInfo\":{\"name\":\"felidae_debug\",\"version\":\"" +
+                jsonEscape(LANGUAGE_VERSION) + "\"}}}");
         } else if (method == "shutdown") {
             writeLspMessage("{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":null}");
         } else if (method == "exit") {
@@ -476,6 +593,17 @@ static int runLspServer() {
                 ? analyzeTextJson(fileUriToPath(uri), existing->second)
                 : analyzeFileJson(fileUriToPath(uri));
             publishDiagnostics(uri, result);
+        } else if (id != "null") {
+            // A request (has an id, so the client is waiting on a reply) for
+            // a method this diagnostics-only server doesn't implement, e.g.
+            // textDocument/completion or textDocument/hover. Previously this
+            // fell through with no response at all, leaving a spec-compliant
+            // client blocked forever on that id. Notifications (no id) are
+            // still silently ignored, per the LSP spec.
+            writeLspMessage(
+                "{\"jsonrpc\":\"2.0\",\"id\":" + id +
+                ",\"error\":{\"code\":-32601,\"message\":\"Method not found: " +
+                jsonEscape(method) + "\"}}");
         }
     }
     return 0;
@@ -487,6 +615,10 @@ int main(int argc, char** argv) {
         options = parseDebugCli(argc, argv);
         if (options.help) {
             printDebugUsage(std::cout);
+            return 0;
+        }
+        if (options.version) {
+            std::cout << versionJson("felidae_debug") << "\n" << std::flush;
             return 0;
         }
         if (options.lspMode) {
@@ -510,6 +642,11 @@ int main(int argc, char** argv) {
         }
         if (options.programFile->extension() != FILE_EXTENSION) {
             throw std::runtime_error("Felidae source files must use .fx extension");
+        }
+
+        if (options.symbolsJson) {
+            std::cout << symbolsFileJson(*options.programFile, options.loadImports) << "\n" << std::flush;
+            return 0;
         }
 
         const bool dataOutputOnly = options.checkJson;

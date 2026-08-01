@@ -167,7 +167,7 @@
       "patterns": [
         {
           "name": "support.class.library.felidae",
-          "match": "\\b(?:array|console|csv|db|fact|fact_analysis|file|flibrary|gtk|http|json|list|math|ml|plot|prelude|probability|process|qt|smoke|str|system|thread|wordnet)(?=\\s*[:.])"
+          "match": "\\b(?:array|comparison|console|csv|db|exception|fact|fact_analysis|file|flibrary|group|gtk|http|json|list|logic|math|ml|package|plot|prelude|probability|process|qt|set|smoke|str|system|thread|wordnet)(?=\\s*[:.])"
         },
         {
           "name": "punctuation.accessor.library.felidae",

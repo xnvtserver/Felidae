@@ -44,3 +44,21 @@ intellijPlatform {
         }
     }
 }
+
+// Keeps the bundled stdlib hover-doc content in sync with the repo-root
+// docs/builtin-docs.json, which is the single source of truth shared with
+// the VS Code extension (see vs-code-extension/scripts/generate-builtin-docs.js).
+tasks.register("generateBuiltinDocs") {
+    val source = file("$projectDir/../docs/builtin-docs.json")
+    val dest = file("$projectDir/src/main/resources/builtin-docs.json")
+    inputs.file(source)
+    outputs.file(dest)
+    doLast {
+        dest.parentFile.mkdirs()
+        source.copyTo(dest, overwrite = true)
+    }
+}
+
+tasks.named("processResources") {
+    dependsOn("generateBuiltinDocs")
+}

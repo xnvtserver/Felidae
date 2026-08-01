@@ -43,508 +43,17 @@ const semanticLegend = new vscode.SemanticTokensLegend(["variable", "method"], [
 const FELIDAE_BUILTIN_TYPE_NAMES = new Set([
     "any", "array", "bool", "boolean", "decimal", "double", "float", "int", "number", "string"
 ]);
-const builtinDocs = {
-    "then": {
-        heading: "then",
-        description: "Pipes one expression into the next expression from left to right. The right side can read the previous successful step through system.result.",
-        example: "score := Load() then Normalize(input: system.result) then Rank(input: system.result)"
-    },
-    "system:result": {
-        heading: "system.result",
-        description: "Read-only value for the previous successful step inside the right side of a then pipeline. It is unavailable outside that pipeline scope.",
-        example: "result := StepOne() then StepTwo(input: system.result)"
-    },
-    "lambda": {
-        heading: "lambda",
-        description: "Filters or maps an array/fact collection with a local immutable item variable.",
-        example: "Adults := lambda(Person, p => p.age >= 18)"
-    },
-    "ParseDoc": {
-        heading: "ParseDoc",
-        description: "Demo parser function used by method-style examples to map document text.",
-        example: "parsed := lambda(docs, d => ParseDoc(d.doc))"
-    },
-    "count": {
-        heading: "count",
-        description: "Returns the number of items in an array or fact/type collection.",
-        example: "count(Adults)"
-    },
-    "average": {
-        heading: "average",
-        description: "Returns the average of a numeric array.",
-        example: "average(lambda(Person, p => p.age))"
-    },
-    "sort": {
-        heading: "sort",
-        description: "Sorts an array of numbers or strings.",
-        example: "sort(lambda(Person, p => p.name))"
-    },
-    "search": {
-        heading: "search",
-        description: "Filters strings in an array using substring matching.",
-        example: "search(lambda(Person, p => p.name), \"Ra\")"
-    },
-    "contains": {
-        heading: "contains",
-        description: "Checks a string substring or array membership.",
-        example: "contains(\"Ravi\", \"Ra\")"
-    },
-    "lower": {
-        heading: "lower",
-        description: "Converts a string to lowercase.",
-        example: "lower(\"HELLO\")"
-    },
-    "upper": {
-        heading: "upper",
-        description: "Converts a string to uppercase.",
-        example: "upper(\"hello\")"
-    },
-    "length": {
-        heading: "length",
-        description: "Returns the length of a string or array.",
-        example: "length(\"hello\")"
-    },
-    "throw": {
-        heading: "throw",
-        description: "Signals an exception reason. With target:, routes the message to a handler rule.",
-        example: "throw(msg: \"thrown from module a\", target: DivideFailureHandler)"
-    },
-    "type": {
-        heading: "type",
-        description: "Reads the concrete fact/type name from a map value that carries runtime type metadata.",
-        example: "type(value: employee, name: TypeName)"
-    },
-    "instanceof": {
-        heading: "instanceof",
-        description: "Succeeds when a value is an instance of the requested fact/type, including parents declared with extend.",
-        example: "instanceof(value: employee, type: Person)"
-    },
-    "math:add": {
-        heading: "math:add",
-        description: "Adds two numbers and unifies the result with the output argument.",
-        example: "math:add(lhs: 2, rhs: 3, result: total)"
-    },
-    "math:sub": {
-        heading: "math:sub",
-        description: "Subtracts right from left and unifies the result with the output argument.",
-        example: "math:sub(lhs: 5, rhs: 2, result: result)"
-    },
-    "math:mul": {
-        heading: "math:mul",
-        description: "Multiplies two numbers and unifies the result with the output argument.",
-        example: "math:mul(lhs: 2, rhs: 3, result: result)"
-    },
-    "math:div": {
-        heading: "math:div",
-        description: "Divides left by right and unifies the result with the output argument.",
-        example: "math:div(lhs: 10, rhs: 2, result: result)"
-    },
-    "math:mod": {
-        heading: "math:mod",
-        description: "Computes the numeric remainder and unifies it with the output argument.",
-        example: "math:mod(lhs: 10, rhs: 3, result: result)"
-    },
-    "str:len": {
-        heading: "str:len",
-        description: "Unifies the output argument with the length of a string.",
-        example: "str:len(data: \"hello\", equals: size)"
-    },
-    "str:contains": {
-        heading: "str:contains",
-        description: "Succeeds when the string contains the requested substring.",
-        example: "str:contains(data: \"hello\", needle: \"ell\")"
-    },
-    "str:concat": {
-        heading: "str:concat",
-        description: "Concatenates two strings and unifies the result with the output argument.",
-        example: "str:concat(left: \"hello\", right: \" world\", result: text)"
-    },
-    "str:lower": {
-        heading: "str:lower",
-        description: "Lowercases a string and unifies the result with the output argument.",
-        example: "str:lower(data: \"HELLO\", equals: text)"
-    },
-    "str:upper": {
-        heading: "str:upper",
-        description: "Uppercases a string and unifies the result with the output argument.",
-        example: "str:upper(data: \"hello\", equals: text)"
-    },
-    "str:trim": {
-        heading: "str.trim",
-        description: "Removes leading and trailing whitespace from a string.",
-        example: "text := str.trim(data: \"  hello  \")"
-    },
-    "str:split": {
-        heading: "str.split",
-        description: "Splits a string by a non-empty delimiter and returns an array of strings.",
-        example: "parts := str.split(data: \"a,b,c\", delimiter: \",\")"
-    },
-    "str:replace": {
-        heading: "str.replace",
-        description: "Replaces all occurrences of a search string with a replacement string.",
-        example: "text := str.replace(data: \"a-b\", search: \"-\", replacement: \":\")"
-    },
-    "str:startsWith": {
-        heading: "str.startsWith",
-        description: "Returns \"true\" when a string starts with the requested prefix.",
-        example: "ok := str.startsWith(data: \"Alice\", prefix: \"Al\")"
-    },
-    "str:endsWith": {
-        heading: "str.endsWith",
-        description: "Returns \"true\" when a string ends with the requested suffix.",
-        example: "ok := str.endsWith(data: \"Alice\", suffix: \"ice\")"
-    },
-    "array:get": {
-        heading: "array:get",
-        description: "Reads an array item by zero-based index and unifies it with the output argument.",
-        example: "array:get(data: [1, 2, 3], position: 0, access: value)"
-    },
-    "array:len": {
-        heading: "array:len",
-        description: "Unifies the output argument with the number of array items.",
-        example: "array:len(data: [1, 2, 3], access: size)"
-    },
-    "array:push": {
-        heading: "array:push",
-        description: "Creates an array with one appended value and unifies it with the output argument.",
-        example: "array:push(data: [1, 2], value: 3, result: out)"
-    },
-    "fn:array": {
-        heading: "fn:array",
-        description: "Creates an immutable Felidae array value from the data argument.",
-        example: "array1 := fn:array(data: [1, 2, 3, 4])"
-    },
-    "fn:pair": {
-        heading: "fn:pair",
-        description: "Creates an immutable pair value with first and last fields.",
-        example: "pair := fn:pair(first: \"web\", last: 2.0)"
-    },
-    "fn:tuple": {
-        heading: "fn:tuple",
-        description: "Creates an immutable tuple-style value from named fields.",
-        example: "tuple := fn:tuple(first: \"hello\", second: \"world\")"
-    },
-    "pair:first": {
-        heading: "pair:first",
-        description: "Unifies the output argument with the first item of a pair.",
-        example: "pair:first(data: fn:pair(first: \"web\", last: 2), access: key)"
-    },
-    "pair:second": {
-        heading: "pair:second",
-        description: "Unifies the output argument with the second item of a pair.",
-        example: "pair:second(data: fn:pair(first: \"web\", last: 2), access: value)"
-    },
-    "json:parse": {
-        heading: "json:parse",
-        description: "Parses JSON text into Felidae map/array values.",
-        example: "json:parse(data: \"{\\\"name\\\":\\\"Alice\\\"}\", access: object)"
-    },
-    "json:get": {
-        heading: "json:get",
-        description: "Reads a key from a JSON/map value and unifies it with the output argument.",
-        example: "json:get(data: object, key: \"name\", access: value)"
-    },
-    "json:has": {
-        heading: "json.has",
-        description: "Returns \"true\" when a JSON/map value contains the requested key.",
-        example: "ok := json.has(data: object, key: \"name\")"
-    },
-    "json:keys": {
-        heading: "json.keys",
-        description: "Returns an array containing the keys of a JSON/map value.",
-        example: "keys := json.keys(data: object)"
-    },
-    "json:set": {
-        heading: "json.set",
-        description: "Returns a copy of a JSON/map value with one key added or replaced.",
-        example: "next := json.set(data: object, key: \"office\", value: \"SEA\")"
-    },
-    "json:remove": {
-        heading: "json.remove",
-        description: "Returns a copy of a JSON/map value without the requested key.",
-        example: "next := json.remove(data: object, key: \"role\")"
-    },
-    "json:toText": {
-        heading: "json.toText",
-        description: "Serializes Felidae values, arrays, maps, and fact-like rows into JSON text.",
-        example: "jsonText := json.toText(data: rows)"
-    },
-    "csv:parse": {
-        heading: "csv.parse",
-        description: "Parses CSV text through the native rapidcsv-backed stdlib and returns an array of row maps.",
-        example: "rows := csv.parse(data: csvText)"
-    },
-    "csv:toFacts": {
-        heading: "csv.toFacts",
-        description: "Parses CSV text and returns typed fact-like row maps carrying the requested __type.",
-        example: "schools := csv.toFacts(data: csvText, type: \"School\")"
-    },
-    "csv:toText": {
-        heading: "csv.toText",
-        description: "Writes an array of row maps back to CSV text through the native rapidcsv-backed stdlib.",
-        example: "text := csv.toText(data: rows)"
-    },
-    "csv:toFelidaeFacts": {
-        heading: "csv.toFelidaeFacts",
-        description: "Converts row maps into Felidae fact declaration text.",
-        example: "facts := csv.toFelidaeFacts(data: rows, type: \"School\")"
-    },
-    "csv:addRow": {
-        heading: "csv.addRow",
-        description: "Returns a copy of a row array with one map row appended.",
-        example: "rows2 := csv.addRow(data: rows, row: {name: \"Alice\"})"
-    },
-    "csv:findRows": {
-        heading: "csv.findRows",
-        description: "Returns rows whose field text equals the requested value.",
-        example: "sea := csv.findRows(data: rows, key: \"office\", value: \"SEA\")"
-    },
-    "csv:updateRows": {
-        heading: "csv.updateRows",
-        description: "Returns rows with matching records patched by a map value.",
-        example: "rows2 := csv.updateRows(data: rows, key: \"name\", value: \"Bob\", patch: {office: \"SEA\"})"
-    },
-    "csv:deleteRows": {
-        heading: "csv.deleteRows",
-        description: "Returns rows excluding records whose field text equals the requested value.",
-        example: "rows2 := csv.deleteRows(data: rows, key: \"role\", value: \"Manager\")"
-    },
-    "console:readLine": {
-        heading: "console.readLine",
-        description: "Reads one line from standard input using the native C++ console implementation.",
-        example: "line := console.readLine()"
-    },
-    "console:write": {
-        heading: "console.write",
-        description: "Writes a value to standard output without a trailing newline.",
-        example: "status := console.write(value: \"hello\")"
-    },
-    "console:writeLine": {
-        heading: "console.writeLine",
-        description: "Writes a value to standard output with a trailing newline.",
-        example: "status := console.writeLine(value: \"hello\")"
-    },
-    "system:print": {
-        heading: "system.print",
-        description: "Prints a value to standard output with a trailing newline. The system library is available automatically.",
-        example: "status := system.print(value: \"hello\")"
-    },
-    "file:readFile": {
-        heading: "file.readFile",
-        description: "Reads a file as text through the native C++ file implementation.",
-        example: "text := file.readFile(path: \"data.txt\")"
-    },
-    "file:readLines": {
-        heading: "file.readLines",
-        description: "Reads a file and returns an immutable array of lines.",
-        example: "lines := file.readLines(path: \"data.txt\")"
-    },
-    "file:readLine": {
-        heading: "file.readLine",
-        description: "Reads a single zero-based line from a file.",
-        example: "line := file.readLine(path: \"data.txt\", line: 0)"
-    },
-    "file:writeFile": {
-        heading: "file.writeFile",
-        description: "Writes text to a file, replacing existing content.",
-        example: "status := file.writeFile(path: \"data.txt\", data: \"hello\")"
-    },
-    "file:writeLines": {
-        heading: "file.writeLines",
-        description: "Writes an array of strings to a file, one line per item.",
-        example: "status := file.writeLines(path: \"data.txt\", data: [\"a\", \"b\"])"
-    },
-    "file:appendFile": {
-        heading: "file.appendFile",
-        description: "Appends text to a file through the native C++ file implementation.",
-        example: "status := file.appendFile(path: \"data.txt\", data: \"more\")"
-    },
-    "file:exists": {
-        heading: "file.exists",
-        description: "Returns \"true\" when a path exists, otherwise \"false\".",
-        example: "ok := file.exists(path: \"data.txt\")"
-    },
-    "file:deleteFile": {
-        heading: "file.deleteFile",
-        description: "Deletes a file and returns \"true\" when a file was removed.",
-        example: "removed := file.deleteFile(path: \"data.txt\")"
-    },
-    "http:get": {
-        heading: "http.get",
-        description: "Fetches a URL through the native cpp-httplib-backed HTTP module.",
-        example: "body := http.get(url: \"https://example.com\")"
-    },
-    "http:post": {
-        heading: "http.post",
-        description: "Sends a POST request through the native cpp-httplib-backed HTTP module.",
-        example: "body := http.post(url: \"http://127.0.0.1:8080/\", body: \"hello\")"
-    },
-    "http:put": {
-        heading: "http.put",
-        description: "Sends a PUT request through the native cpp-httplib-backed HTTP module.",
-        example: "body := http.put(url: \"http://127.0.0.1:8080/\", body: \"hello\")"
-    },
-    "http:delete": {
-        heading: "http.delete",
-        description: "Sends a DELETE request through the native cpp-httplib-backed HTTP module.",
-        example: "body := http.delete(url: \"http://127.0.0.1:8080/\")"
-    },
-    "http:serveStatic": {
-        heading: "http.serveStatic",
-        description: "Starts a blocking local server whose GET, POST, PUT, and DELETE / endpoints return the provided response.",
-        example: "status := http.serveStatic(host: \"127.0.0.1\", port: 8080, response: \"Hello World\")"
-    },
-    "process:platform": {
-        heading: "process.platform",
-        description: "Returns the current OS platform name: windows, linux, macos, or unknown.",
-        example: "platform := process.platform()"
-    },
-    "process:exec": {
-        heading: "process.exec",
-        description: "Runs an explicit shell command and returns captured output. Use only in trusted scripts/tests.",
-        example: "output := process.exec(command: \"echo hello\")"
-    },
-    "process:sleep": {
-        heading: "process.sleep",
-        description: "Sleeps for the provided number of milliseconds.",
-        example: "ready := process.sleep(milliseconds: 800)"
-    },
-    "math:sqrt": {
-        heading: "math.sqrt",
-        description: "Returns the square root of a number.",
-        example: "root := math.sqrt(value: 81)"
-    },
-    "math:pow": {
-        heading: "math.pow",
-        description: "Raises a base number to an exponent.",
-        example: "value := math.pow(base: 2, exponent: 8)"
-    },
-    "math:sin": {
-        heading: "math.sin",
-        description: "Returns the sine of a numeric value.",
-        example: "value := math.sin(value: angle)"
-    },
-    "math:cos": {
-        heading: "math.cos",
-        description: "Returns the cosine of a numeric value.",
-        example: "value := math.cos(value: angle)"
-    },
-    "math:tan": {
-        heading: "math.tan",
-        description: "Returns the tangent of a numeric value.",
-        example: "value := math.tan(value: angle)"
-    },
-    "math:asin": {
-        heading: "math.asin",
-        description: "Returns the arcsine of a numeric value.",
-        example: "value := math.asin(value: ratio)"
-    },
-    "math:acos": {
-        heading: "math.acos",
-        description: "Returns the arccosine of a numeric value.",
-        example: "value := math.acos(value: ratio)"
-    },
-    "math:atan": {
-        heading: "math.atan",
-        description: "Returns the arctangent of a numeric value.",
-        example: "value := math.atan(value: slope)"
-    },
-    "math:atan2": {
-        heading: "math.atan2",
-        description: "Returns the arctangent of y/x using both signs to select the quadrant.",
-        example: "value := math.atan2(y: y, x: x)"
-    },
-    "math:log": {
-        heading: "math.log",
-        description: "Returns the natural logarithm of a number.",
-        example: "value := math.log(value: 10)"
-    },
-    "math:log10": {
-        heading: "math.log10",
-        description: "Returns the base-10 logarithm of a number.",
-        example: "value := math.log10(value: 100)"
-    },
-    "math:exp": {
-        heading: "math.exp",
-        description: "Returns e raised to the provided numeric value.",
-        example: "value := math.exp(value: 2)"
-    },
-    "math:abs": {
-        heading: "math.abs",
-        description: "Returns the absolute value of a number.",
-        example: "value := math.abs(value: -3)"
-    },
-    "math:floor": {
-        heading: "math.floor",
-        description: "Rounds a number down to the nearest integer value.",
-        example: "value := math.floor(value: 3.9)"
-    },
-    "math:ceil": {
-        heading: "math.ceil",
-        description: "Rounds a number up to the nearest integer value.",
-        example: "value := math.ceil(value: 3.1)"
-    },
-    "math:round": {
-        heading: "math.round",
-        description: "Rounds a number to the nearest integer value.",
-        example: "value := math.round(value: 3.5)"
-    },
-    "math:pi": {
-        heading: "math.pi",
-        description: "Returns the pi constant.",
-        example: "value := math.pi()"
-    },
-    "math:e": {
-        heading: "math.e",
-        description: "Returns Euler's number.",
-        example: "value := math.e()"
-    },
-    "math:random": {
-        heading: "math.random",
-        description: "Returns a random floating-point number between min and max.",
-        example: "value := math.random(min: 0, max: 1)"
-    },
-    "ml:sigmoid": {
-        heading: "ml.sigmoid",
-        description: "Applies the sigmoid activation function to one numeric value.",
-        example: "value := ml.sigmoid(value: 0)"
-    },
-    "ml:relu": {
-        heading: "ml.relu",
-        description: "Applies the ReLU activation function to one numeric value.",
-        example: "value := ml.relu(value: score)"
-    },
-    "ml:dot": {
-        heading: "ml.dot",
-        description: "Computes the dot product of two numeric arrays of equal length.",
-        example: "score := ml.dot(left: [1, 2, 3], right: [4, 5, 6])"
-    },
-    "ml:meanSquaredError": {
-        heading: "ml.meanSquaredError",
-        description: "Computes mean squared error for two numeric arrays of equal length.",
-        example: "loss := ml.meanSquaredError(left: [1, 2], right: [1, 3])"
-    },
-    "thread:createThread": {
-        heading: "thread.createThread",
-        description: "Creates a handle for running a method on an independent interpreter snapshot.",
-        example: "t1 := thread.createThread(function: \"Worker\")"
-    },
-    "thread:start": {
-        heading: "thread.start",
-        description: "Starts a Felidae thread handle and returns its lifecycle status.",
-        example: "status := thread.start(thread: t1)"
-    },
-    "thread:result": {
-        heading: "thread.result",
-        description: "Waits for a Felidae thread to finish and returns the worker method result.",
-        example: "result := thread.result(thread: t1)"
-    },
-    "thread:status": {
-        heading: "thread.status",
-        description: "Reads the current status of a Felidae thread handle.",
-        example: "status := thread.status(thread: t1)"
+function loadBuiltinDocs() {
+    try {
+        const docsPath = path.join(__dirname, "..", "resources", "builtin-docs.json");
+        const parsed = JSON.parse(fs.readFileSync(docsPath, "utf8"));
+        return parsed && typeof parsed === "object" ? parsed : {};
     }
-};
+    catch {
+        return {};
+    }
+}
+const builtinDocs = loadBuiltinDocs();
 function builtinSourceName(name) {
     const legacyColonBuiltins = new Set([
         "math:add", "math:sub", "math:mul", "math:div", "math:mod",
@@ -1459,7 +968,7 @@ async function visualizeFelidae(context, uri) {
         vscode.window.showWarningMessage("Open a Felidae .fx file before visualizing.");
         return;
     }
-    const graph = await loadRuntimeGraph(document);
+    const graph = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Felidae: loading runtime graph from Celidae..." }, () => loadRuntimeGraph(document));
     const runtimeGraph = graph ?? staticGraphToRuntimeGraph(buildFelidaeGraph(document));
     const panel = vscode.window.createWebviewPanel("felidaeVisualizer", `Felidae Graph: ${path.basename(document.uri.fsPath)}`, vscode.ViewColumn.Beside, {
         enableScripts: true,
@@ -1625,11 +1134,194 @@ function collectGraphCalls(text) {
 function normalizeGraphName(name) {
     return name.replace(/\./g, ":");
 }
+const FELIDAE_LIBRARY_NAMES = "array|comparison|console|csv|db|exception|fact|fact_analysis|file|flibrary|fn|group|gtk|http|json|list|logic|math|ml|package|pair|plot|prelude|probability|process|qt|set|smoke|str|system|thread|wordnet";
 function isLibraryName(name) {
-    return /^(array|console|csv|file|fn|http|json|math|ml|pair|process|str|system|thread)(:|$)/.test(name);
+    return new RegExp(`^(${FELIDAE_LIBRARY_NAMES})(:|$)`).test(name);
 }
 function isLibraryNamespace(name) {
-    return /^(array|console|csv|file|fn|http|json|math|ml|pair|process|str|system|thread)$/.test(name);
+    return new RegExp(`^(${FELIDAE_LIBRARY_NAMES})$`).test(name);
+}
+const DECLARATION_PATTERN = /^[ \t]*([A-Za-z_][A-Za-z0-9_:.]*)(?:\s+extend\s+([A-Za-z_][A-Za-z0-9_]*))?\s*\(([\s\S]*?)\)\s*(=>|\.)/gm;
+const GLOBAL_BINDING_PATTERN = /^([A-Za-z_][A-Za-z0-9_]*)\s*:=/gm;
+class FelidaeDocumentSymbolProvider {
+    provideDocumentSymbols(document) {
+        if (document.languageId !== "felidae")
+            return [];
+        const text = document.getText();
+        const symbols = [];
+        const declaration = new RegExp(DECLARATION_PATTERN);
+        let match;
+        while ((match = declaration.exec(text)) !== null) {
+            const rawName = match[1];
+            const normalized = normalizeGraphName(rawName);
+            if (isLibraryName(normalized))
+                continue;
+            const isMethod = match[4] === "=>";
+            const nameStart = match.index + match[0].indexOf(rawName);
+            const nameRange = new vscode.Range(document.positionAt(nameStart), document.positionAt(nameStart + rawName.length));
+            const fullRange = new vscode.Range(document.positionAt(match.index), document.positionAt(match.index + match[0].length));
+            const detail = isMethod ? (match[2] ? `extends ${match[2]}` : "") : "fact";
+            const symbol = new vscode.DocumentSymbol(rawName, detail, isMethod ? vscode.SymbolKind.Method : vscode.SymbolKind.Struct, fullRange, nameRange);
+            if (!isMethod) {
+                for (const field of collectHeadFields(match[3])) {
+                    const fieldOffset = text.indexOf(field, match.index);
+                    const fieldPos = fieldOffset >= 0 && fieldOffset < match.index + match[0].length
+                        ? document.positionAt(fieldOffset)
+                        : nameRange.start;
+                    const fieldRange = new vscode.Range(fieldPos, fieldPos.translate(0, field.length));
+                    symbol.children.push(new vscode.DocumentSymbol(field, "field", vscode.SymbolKind.Field, fieldRange, fieldRange));
+                }
+            }
+            symbols.push(symbol);
+        }
+        const globalBinding = new RegExp(GLOBAL_BINDING_PATTERN);
+        while ((match = globalBinding.exec(text)) !== null) {
+            const name = match[1];
+            const nameRange = new vscode.Range(document.positionAt(match.index), document.positionAt(match.index + name.length));
+            symbols.push(new vscode.DocumentSymbol(name, "global", vscode.SymbolKind.Variable, nameRange, nameRange));
+        }
+        return symbols;
+    }
+}
+function tokenIndexBefore(tokens, position) {
+    let index = -1;
+    for (let i = 0; i < tokens.length; i++) {
+        const token = tokens[i];
+        if (token.line > position.line)
+            break;
+        if (token.line === position.line && token.start >= position.character)
+            break;
+        index = i;
+    }
+    return index;
+}
+function builtinDocKeysForNamespace(baseName) {
+    const prefix = `${baseName}:`;
+    return Object.keys(builtinDocs).filter((key) => key.startsWith(prefix));
+}
+function builtinDocCompletionsForNamespace(baseName) {
+    return builtinDocKeysForNamespace(baseName).map((key) => {
+        const doc = builtinDocs[key];
+        const functionName = key.slice(key.indexOf(":") + 1);
+        const item = new vscode.CompletionItem(functionName, vscode.CompletionItemKind.Function);
+        item.detail = doc.heading;
+        const markdown = new vscode.MarkdownString();
+        markdown.appendMarkdown(`${doc.description}\n\n`);
+        markdown.appendCodeblock(doc.example, "felidae");
+        item.documentation = markdown;
+        item.insertText = functionName;
+        return item;
+    });
+}
+function argNamesFromExample(example) {
+    const names = new Set();
+    const pattern = /([A-Za-z_][A-Za-z0-9_]*)\s*:/g;
+    let match;
+    while ((match = pattern.exec(example)) !== null)
+        names.add(match[1]);
+    return [...names];
+}
+function namedArgCompletion(name, detail) {
+    const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Field);
+    item.insertText = new vscode.SnippetString(`${name}: $0`);
+    if (detail)
+        item.detail = detail;
+    return item;
+}
+function completionsForCallFields(document, callName) {
+    const normalized = callName.replace(/\./g, ":");
+    const builtin = builtinDocs[normalized];
+    if (builtin) {
+        return argNamesFromExample(builtin.example).map((name) => namedArgCompletion(name, builtin.heading));
+    }
+    const simpleName = normalized.split(":").pop() ?? normalized;
+    const text = document.getText();
+    const declaration = new RegExp(DECLARATION_PATTERN);
+    let match;
+    while ((match = declaration.exec(text)) !== null) {
+        if (match[1] !== simpleName && normalizeGraphName(match[1]) !== simpleName)
+            continue;
+        return collectHeadFields(match[3]).map((name) => namedArgCompletion(name, `field of ${match[1]}`));
+    }
+    return [];
+}
+function completionsForScope(document, tokens, index) {
+    const items = new Map();
+    const add = (name, kind, detail) => {
+        if (!name || items.has(name))
+            return;
+        const item = new vscode.CompletionItem(name, kind);
+        if (detail)
+            item.detail = detail;
+        items.set(name, item);
+    };
+    for (const name of collectVariableNames(tokens, 0, Math.max(0, index + 1))) {
+        add(name, vscode.CompletionItemKind.Variable, "in scope");
+    }
+    for (const name of collectGlobalBindings(tokens)) {
+        add(name, vscode.CompletionItemKind.Constant, "global");
+    }
+    for (const name of collectImportedModuleNames(document)) {
+        add(name, vscode.CompletionItemKind.Module, "imported module");
+    }
+    for (const name of FELIDAE_LIBRARY_NAMES.split("|")) {
+        add(name, vscode.CompletionItemKind.Module, "core library");
+    }
+    for (const key of Object.keys(builtinDocs)) {
+        if (key.includes(":"))
+            continue;
+        add(key, vscode.CompletionItemKind.Function, builtinDocs[key].heading);
+    }
+    const text = document.getText();
+    const declaration = new RegExp(DECLARATION_PATTERN);
+    let match;
+    while ((match = declaration.exec(text)) !== null) {
+        const normalized = normalizeGraphName(match[1]);
+        if (isLibraryName(normalized))
+            continue;
+        const isMethod = match[4] === "=>";
+        add(match[1], isMethod ? vscode.CompletionItemKind.Method : vscode.CompletionItemKind.Struct, isMethod ? "method" : "fact");
+    }
+    const cached = symbolSummaryCache.get(document.uri.toString());
+    if (cached) {
+        for (const method of cached.methods)
+            add(method.name, vscode.CompletionItemKind.Method, "method (felidae_debug)");
+        for (const fact of cached.facts)
+            add(fact.name, vscode.CompletionItemKind.Struct, "fact (felidae_debug)");
+        for (const global of cached.globals)
+            add(global.name, vscode.CompletionItemKind.Constant, "global (felidae_debug)");
+    }
+    return [...items.values()];
+}
+class FelidaeCompletionItemProvider {
+    provideCompletionItems(document, position) {
+        if (document.languageId !== "felidae")
+            return [];
+        const linePrefix = document.lineAt(position.line).text.slice(0, position.character);
+        const dotMatch = /([A-Za-z_][A-Za-z0-9_]*)\.$/.exec(linePrefix);
+        if (dotMatch) {
+            const namespaceItems = builtinDocCompletionsForNamespace(dotMatch[1]);
+            if (namespaceItems.length)
+                return namespaceItems;
+        }
+        const lexed = lexDocument(document);
+        const tokens = lexed.tokens;
+        const index = tokenIndexBefore(tokens, position);
+        const items = new Map();
+        if (/[(,]\s*$/.test(linePrefix)) {
+            const callName = enclosingCallName(tokens, index);
+            if (callName) {
+                for (const item of completionsForCallFields(document, callName)) {
+                    items.set(item.label, item);
+                }
+            }
+        }
+        for (const item of completionsForScope(document, tokens, index)) {
+            if (!items.has(item.label))
+                items.set(item.label, item);
+        }
+        return [...items.values()];
+    }
 }
 function cytoscapeElements(graph) {
     const nodes = graph.nodes.map((node) => ({
@@ -1725,16 +1417,19 @@ function visualizationHtml(cytoscapeUri, graph) {
     }
     .tab {
       border: 1px solid var(--line);
-      border-radius: 4px;
+      border-radius: 6px;
       background: var(--vscode-button-secondaryBackground);
       color: var(--vscode-button-secondaryForeground);
-      padding: 4px 9px;
+      padding: 5px 11px;
       cursor: pointer;
+      transition: background-color .12s ease, border-color .12s ease, transform .06s ease;
     }
+    .tab:hover { transform: translateY(-1px); }
     .tab.active {
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
       border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent) inset;
     }
     .view {
       display: none;
@@ -1762,10 +1457,16 @@ function visualizationHtml(cytoscapeUri, graph) {
     .search {
       min-width: 220px;
       border: 1px solid var(--line);
-      border-radius: 4px;
+      border-radius: 5px;
       background: var(--vscode-input-background);
       color: var(--vscode-input-foreground);
       padding: 5px 8px;
+      transition: border-color .12s ease, box-shadow .12s ease;
+    }
+    .search:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent), transparent 75%);
     }
     .panel {
       padding: 12px;
@@ -1794,10 +1495,13 @@ function visualizationHtml(cytoscapeUri, graph) {
     }
     .metric {
       border: 1px solid var(--line);
+      border-left: 3px solid var(--accent);
       border-radius: 6px;
-      padding: 8px;
+      padding: 8px 10px;
       background: var(--surface-2);
+      transition: border-color .15s ease;
     }
+    .metric:hover { border-color: var(--accent); }
     .metric b {
       display: block;
       font-size: 20px;
@@ -1809,9 +1513,10 @@ function visualizationHtml(cytoscapeUri, graph) {
       width: 100%;
       height: 210px;
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: 8px;
       background: var(--vscode-editor-background);
       margin-bottom: 12px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.12);
     }
     .quality-list, .detail-list {
       display: grid;
@@ -1860,13 +1565,15 @@ function visualizationHtml(cytoscapeUri, graph) {
     input { margin: 0; }
     button {
       border: 1px solid var(--vscode-button-border, transparent);
-      border-radius: 4px;
+      border-radius: 5px;
       background: var(--vscode-button-secondaryBackground);
       color: var(--vscode-button-secondaryForeground);
-      padding: 3px 8px;
+      padding: 4px 9px;
       cursor: pointer;
+      transition: background-color .12s ease, transform .06s ease;
     }
     button:hover { background: var(--vscode-button-secondaryHoverBackground); }
+    button:active { transform: translateY(1px); }
     #graph {
       width: 100%;
       height: 100%;
@@ -1878,9 +1585,11 @@ function visualizationHtml(cytoscapeUri, graph) {
     }
     .legend span {
       border: 1px solid var(--line);
-      border-radius: 4px;
-      padding: 2px 6px;
+      border-radius: 5px;
+      padding: 2px 7px;
+      transition: border-color .12s ease;
     }
+    .legend span:hover { border-color: var(--accent); }
     .tag {
       display: inline-block;
       border: 1px solid var(--line);
@@ -2412,11 +2121,10 @@ function resolveConfiguredPath(documentUri, configuredPath) {
     }
     return configuredPath;
 }
-async function ensureInterpreterInstalled(interpreterPath, label) {
+async function ensureInterpreterInstalled(interpreterPath, label, settingsQuery = "felidae.interpreterPath") {
     if (fs.existsSync(interpreterPath))
         return true;
-    const downloadLabel = label.toLowerCase().includes("celidae") ? "Download Celidae" : "Download Felidae";
-    const settingsQuery = label.toLowerCase().includes("celidae") ? "felidae.celidaePath" : "felidae.interpreterPath";
+    const downloadLabel = settingsQuery === "felidae.celidaePath" ? "Download Celidae" : "Download Felidae";
     const choice = await vscode.window.showWarningMessage(`You have not installed the ${label}, or the configured path was not found: ${interpreterPath}`, downloadLabel, "Open Settings");
     if (choice === downloadLabel) {
         await vscode.env.openExternal(vscode.Uri.parse("https://github.com/xnvtserver/Felidae/releases"));
@@ -2425,6 +2133,33 @@ async function ensureInterpreterInstalled(interpreterPath, label) {
         await vscode.commands.executeCommand("workbench.action.openSettings", settingsQuery);
     }
     return false;
+}
+// Best-effort cache of `felidae_debug <file> --symbols-json --load-imports`
+// results, keyed by document URI. Populated in the background on the same
+// debounce cycle as diagnostics; completion reads it synchronously and falls
+// back to text-scanning when no entry exists yet (e.g. right after opening a
+// file, or against a felidae_debug build too old to support the flag).
+const symbolSummaryCache = new Map();
+function refreshSymbolCache(document) {
+    if (document.uri.scheme !== "file" || document.languageId !== "felidae")
+        return;
+    const interpreterPath = resolveDebugInterpreterPath(document.uri);
+    if (!fs.existsSync(interpreterPath))
+        return;
+    childProcess.execFile(interpreterPath, [document.uri.fsPath, "--symbols-json", "--load-imports"], { cwd: path.dirname(document.uri.fsPath), windowsHide: true, timeout: 10000 }, (error, stdout) => {
+        if (error)
+            return;
+        try {
+            const parsed = JSON.parse(stdout.trim());
+            if (parsed && Array.isArray(parsed.methods) && Array.isArray(parsed.facts)) {
+                symbolSummaryCache.set(document.uri.toString(), parsed);
+            }
+        }
+        catch {
+            // Older felidae_debug builds without --symbols-json, or a transient
+            // parse failure mid-edit. Completion silently keeps using text scans.
+        }
+    });
 }
 function runtimeCheckDiagnostics(document) {
     return new Promise((resolve) => {
@@ -2482,7 +2217,7 @@ function parseRuntimeJsonDiagnostics(document, stdout) {
                     : item.severity === "hint"
                         ? vscode.DiagnosticSeverity.Hint
                         : vscode.DiagnosticSeverity.Warning;
-            return new vscode.Diagnostic(new vscode.Range(new vscode.Position(boundedLine, boundedColumn), new vscode.Position(boundedLine, Math.min(boundedColumn + 1, lineText.length))), item.message ?? "Celidae diagnostic", severity);
+            return new vscode.Diagnostic(new vscode.Range(new vscode.Position(boundedLine, boundedColumn), new vscode.Position(boundedLine, Math.min(boundedColumn + 1, lineText.length))), item.message ?? "Felidae AST diagnostic", severity);
         });
     }
     catch {
@@ -2536,12 +2271,41 @@ function formatRuntimeCheckMessage(text) {
     }
     return { message, severity };
 }
+class FelidaeCodeActionProvider {
+    provideCodeActions(document, _range, context) {
+        const actions = [];
+        for (const diagnostic of context.diagnostics) {
+            const notIterable = /^Fact type '([^']+)' is not implicitly iterable/.exec(diagnostic.message);
+            if (!notIterable)
+                continue;
+            const factName = notIterable[1];
+            const line = diagnostic.range.start.line;
+            const lineText = document.lineAt(line).text;
+            const callPattern = new RegExp(`\\b${factName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\)`);
+            const callMatch = callPattern.exec(lineText);
+            if (!callMatch)
+                continue;
+            const itemName = callMatch[1];
+            const startChar = callMatch.index;
+            const endChar = callMatch.index + callMatch[0].length;
+            const replacement = `lambda(${factName}, ${itemName} => ${itemName})`;
+            const action = new vscode.CodeAction(`Rewrite as lambda(${factName}, ${itemName} => ...)`, vscode.CodeActionKind.QuickFix);
+            action.diagnostics = [diagnostic];
+            action.isPreferred = true;
+            action.edit = new vscode.WorkspaceEdit();
+            action.edit.replace(document.uri, new vscode.Range(new vscode.Position(line, startChar), new vscode.Position(line, endChar)), replacement);
+            actions.push(action);
+        }
+        return actions;
+    }
+}
+FelidaeCodeActionProvider.providedCodeActionKinds = [vscode.CodeActionKind.QuickFix];
 async function confirmRuntimeCheck(document, actionLabel) {
     const interpreterPath = resolveDebugInterpreterPath(document.uri);
-    const installed = await ensureInterpreterInstalled(interpreterPath, "Felidae AST debugger");
+    const installed = await ensureInterpreterInstalled(interpreterPath, "Felidae AST debugger", "felidae.debugInterpreterPath");
     if (!installed)
         return false;
-    const diagnostics = await runtimeCheckDiagnostics(document);
+    const diagnostics = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Felidae: checking with felidae_debug --check-json..." }, () => runtimeCheckDiagnostics(document));
     const hasErrors = diagnostics.some((item) => item.severity === vscode.DiagnosticSeverity.Error);
     if (!hasErrors)
         return true;
@@ -2648,7 +2412,7 @@ async function debugMain(uri) {
     if (!canDebug)
         return;
     const interpreterPath = resolveDebugInterpreterPath(document.uri);
-    const installed = await ensureInterpreterInstalled(interpreterPath, "Felidae AST debugger");
+    const installed = await ensureInterpreterInstalled(interpreterPath, "Felidae AST debugger", "felidae.debugInterpreterPath");
     if (!installed)
         return;
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
@@ -2670,6 +2434,7 @@ class FelidaeDebugAdapter {
         this.callStack = [];
         this.methodDefinitions = new Map();
         this.breakpointsByFile = new Map();
+        this.fileLinesCache = new Map();
         this.stdoutBuffer = "";
         this.onDidSendMessage = this.emitter.event;
     }
@@ -2915,24 +2680,39 @@ class FelidaeDebugAdapter {
         }
         this.sendOutput(`${line}\n`, "stdout");
     }
-    loadExecutableLines(program) {
+    // Every stepIntoCall/stepOutOfCall/launch and every "variables" DAP request
+    // (fired after each stop event) used to re-read and re-split the source
+    // file from scratch. Cache split lines per file, invalidated by mtime, so
+    // repeated steps within the same unchanged file are cheap.
+    getFileLines(filePath) {
+        const key = this.normalizePath(filePath);
         try {
-            const text = fs.readFileSync(program, "utf8");
-            const lines = text.split(/\r?\n/);
-            const executable = [];
-            for (let i = 0; i < lines.length; i++) {
-                const trimmed = lines[i].trim();
-                if (!trimmed || trimmed.startsWith("#"))
-                    continue;
-                if (/^[)\]}.,]+$/.test(trimmed))
-                    continue;
-                executable.push(i + 1);
-            }
-            return executable.length ? executable : [1];
+            const mtimeMs = fs.statSync(filePath).mtimeMs;
+            const cached = this.fileLinesCache.get(key);
+            if (cached && cached.mtimeMs === mtimeMs)
+                return cached.lines;
+            const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+            this.fileLinesCache.set(key, { mtimeMs, lines });
+            return lines;
         }
         catch {
-            return [1];
+            return [];
         }
+    }
+    loadExecutableLines(program) {
+        const lines = this.getFileLines(program);
+        if (!lines.length)
+            return [1];
+        const executable = [];
+        for (let i = 0; i < lines.length; i++) {
+            const trimmed = lines[i].trim();
+            if (!trimmed || trimmed.startsWith("#"))
+                continue;
+            if (/^[)\]}.,]+$/.test(trimmed))
+                continue;
+            executable.push(i + 1);
+        }
+        return executable.length ? executable : [1];
     }
     loadMethodDefinitions(program) {
         const definitions = new Map();
@@ -2942,14 +2722,24 @@ class FelidaeDebugAdapter {
             if (visited.has(normalized) || !fs.existsSync(filePath))
                 return;
             visited.add(normalized);
-            const text = fs.readFileSync(filePath, "utf8");
-            const lines = text.split(/\r?\n/);
+            const lines = this.getFileLines(filePath);
+            const text = lines.join("\n");
+            // Reuse the same declaration scanner the Document Symbol/Completion
+            // providers already use, instead of a second, slightly different
+            // per-line method-head regex.
+            const declaration = new RegExp(DECLARATION_PATTERN);
+            let match;
+            while ((match = declaration.exec(text)) !== null) {
+                if (match[4] !== "=>")
+                    continue;
+                const name = match[1].replace(/\./g, ":");
+                if (!definitions.has(name)) {
+                    const line = text.slice(0, match.index).split("\n").length;
+                    definitions.set(name, { file: filePath, line });
+                }
+            }
             for (let i = 0; i < lines.length; i++) {
                 const withoutComment = lines[i].split("#", 1)[0];
-                const head = /^\s*([A-Za-z_][A-Za-z0-9_]*(?:(?:[:.])[A-Za-z_][A-Za-z0-9_]*)*)\s*\([^)]*\)\s*=>/.exec(withoutComment);
-                if (head) {
-                    definitions.set(head[1].replace(/\./g, ":"), { file: filePath, line: i + 1 });
-                }
                 const importMatch = /^\s*import\s+"([^"]+)"/.exec(withoutComment);
                 if (importMatch) {
                     for (const imported of this.resolveImportFiles(filePath, importMatch[1]))
@@ -2983,9 +2773,6 @@ class FelidaeDebugAdapter {
             current = parent;
         }
     }
-    isExecutableLine(line) {
-        return this.executableLines.includes(line);
-    }
     normalizePath(filePath) {
         return path.resolve(filePath).toLowerCase();
     }
@@ -2996,8 +2783,13 @@ class FelidaeDebugAdapter {
         const breakpoints = this.breakpointsByFile.get(this.normalizePath(activeFile));
         if (!breakpoints || breakpoints.size === 0)
             return false;
+        // Recompute directly for activeFile (cheap: getFileLines is cached)
+        // rather than trusting this.executableLines to already match it, so this
+        // stays correct even if a future edit adds a path that moves
+        // currentSource without also refreshing executableLines.
+        const fileExecutableLines = this.loadExecutableLines(activeFile);
         const next = Array.from(breakpoints)
-            .filter((line) => line > this.currentLine && this.isExecutableLine(line))
+            .filter((line) => line > this.currentLine && fileExecutableLines.includes(line))
             .sort((left, right) => left - right)[0];
         if (!next)
             return false;
@@ -3014,7 +2806,11 @@ class FelidaeDebugAdapter {
         this.stepToNextLine();
     }
     stepToNextLine() {
-        const currentIndex = Math.max(0, this.executableLines.findIndex((line) => line >= this.currentLine));
+        const foundIndex = this.executableLines.findIndex((line) => line >= this.currentLine);
+        // findIndex returns -1 once currentLine is past every known executable
+        // line; falling back to 0 would jump backward to the top of the file
+        // instead of staying at the last line.
+        const currentIndex = foundIndex === -1 ? this.executableLines.length - 1 : foundIndex;
         const nextIndex = Math.min(this.executableLines.length - 1, currentIndex + 1);
         this.currentLine = this.executableLines[nextIndex] ?? this.currentLine;
     }
@@ -3053,12 +2849,7 @@ class FelidaeDebugAdapter {
         return true;
     }
     readLine(filePath, line) {
-        try {
-            return fs.readFileSync(filePath, "utf8").split(/\r?\n/)[line - 1] ?? "";
-        }
-        catch {
-            return "";
-        }
+        return this.getFileLines(filePath)[line - 1] ?? "";
     }
     nextExecutableLineAfter(filePath, line) {
         const lines = this.loadExecutableLines(filePath);
@@ -3083,34 +2874,30 @@ class FelidaeDebugAdapter {
         if (!activeFile) {
             return [];
         }
-        try {
-            const text = fs.readFileSync(activeFile, "utf8");
-            const lines = text.split(/\r?\n/);
-            const endIndex = Math.min(lines.length, Math.max(1, this.currentLine));
-            let scopeStart = 0;
-            const variables = new Set();
-            for (let i = endIndex - 1; i >= 0; i--) {
-                const head = /^\s*[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)\s*=>/.exec(lines[i]);
-                if (head) {
-                    scopeStart = i;
-                    this.collectHeadVariables(head[1], variables);
-                    break;
-                }
-            }
-            for (let i = scopeStart; i < endIndex; i++) {
-                this.collectLineVariables(lines[i], variables);
-            }
-            return Array.from(variables)
-                .sort((left, right) => left.localeCompare(right))
-                .map((name) => ({
-                name,
-                value: "<simulated>",
-                variablesReference: 0
-            }));
-        }
-        catch {
+        const lines = this.getFileLines(activeFile);
+        if (!lines.length)
             return [];
+        const endIndex = Math.min(lines.length, Math.max(1, this.currentLine));
+        let scopeStart = 0;
+        const variables = new Set();
+        for (let i = endIndex - 1; i >= 0; i--) {
+            const head = /^\s*[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)\s*=>/.exec(lines[i]);
+            if (head) {
+                scopeStart = i;
+                this.collectHeadVariables(head[1], variables);
+                break;
+            }
         }
+        for (let i = scopeStart; i < endIndex; i++) {
+            this.collectLineVariables(lines[i], variables);
+        }
+        return Array.from(variables)
+            .sort((left, right) => left.localeCompare(right))
+            .map((name) => ({
+            name,
+            value: "<simulated>",
+            variablesReference: 0
+        }));
     }
     collectHeadVariables(parameters, variables) {
         const parts = parameters.split(",");
@@ -3178,6 +2965,8 @@ class FelidaeDebugConfigurationProvider {
 }
 function activate(context) {
     const diagnostics = vscode.languages.createDiagnosticCollection("felidae");
+    const debounceTimers = new Map();
+    const DIAGNOSTICS_DEBOUNCE_MS = 350;
     const refreshDiagnostics = (document) => {
         if (document.languageId !== "felidae")
             return;
@@ -3188,6 +2977,19 @@ function activate(context) {
                 return;
             diagnostics.set(document.uri, runtimeDiagnostics);
         });
+        refreshSymbolCache(document);
+    };
+    const scheduleDiagnosticsRefresh = (document) => {
+        if (document.languageId !== "felidae")
+            return;
+        const key = document.uri.toString();
+        const existing = debounceTimers.get(key);
+        if (existing)
+            clearTimeout(existing);
+        debounceTimers.set(key, setTimeout(() => {
+            debounceTimers.delete(key);
+            refreshDiagnostics(document);
+        }, DIAGNOSTICS_DEBOUNCE_MS));
     };
     const refreshMainContext = () => {
         const document = vscode.window.activeTextEditor?.document;
@@ -3202,16 +3004,25 @@ function activate(context) {
         refreshDiagnostics(document);
         refreshMainContext();
     }), vscode.workspace.onDidChangeTextDocument((event) => {
-        refreshDiagnostics(event.document);
+        scheduleDiagnosticsRefresh(event.document);
         refreshMainContext();
     }), vscode.workspace.onDidSaveTextDocument((document) => {
         refreshDiagnostics(document);
         refreshMainContext();
-    }), vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri)), vscode.window.onDidChangeActiveTextEditor((editor) => {
+    }), vscode.workspace.onDidCloseTextDocument((document) => {
+        diagnostics.delete(document.uri);
+        symbolSummaryCache.delete(document.uri.toString());
+        const key = document.uri.toString();
+        const timer = debounceTimers.get(key);
+        if (timer) {
+            clearTimeout(timer);
+            debounceTimers.delete(key);
+        }
+    }), vscode.window.onDidChangeActiveTextEditor((editor) => {
         if (editor)
             refreshDiagnostics(editor.document);
         refreshMainContext();
-    }), vscode.languages.registerDocumentLinkProvider({ language: "felidae" }, new FelidaeDocumentLinkProvider()), vscode.languages.registerHoverProvider({ language: "felidae" }, new FelidaeHoverProvider()), vscode.languages.registerDefinitionProvider({ language: "felidae" }, new FelidaeDefinitionProvider()), vscode.languages.registerFoldingRangeProvider({ language: "felidae" }, new FelidaeFoldingRangeProvider()), vscode.languages.registerCodeLensProvider({ language: "felidae" }, new FelidaeCodeLensProvider()), vscode.languages.registerDocumentSemanticTokensProvider({ language: "felidae" }, new FelidaeSemanticTokensProvider(), semanticLegend), vscode.debug.registerDebugConfigurationProvider("felidae", new FelidaeDebugConfigurationProvider()), vscode.debug.registerDebugAdapterDescriptorFactory("felidae", new FelidaeDebugAdapterFactory()));
+    }), vscode.languages.registerDocumentLinkProvider({ language: "felidae" }, new FelidaeDocumentLinkProvider()), vscode.languages.registerHoverProvider({ language: "felidae" }, new FelidaeHoverProvider()), vscode.languages.registerDefinitionProvider({ language: "felidae" }, new FelidaeDefinitionProvider()), vscode.languages.registerFoldingRangeProvider({ language: "felidae" }, new FelidaeFoldingRangeProvider()), vscode.languages.registerCodeLensProvider({ language: "felidae" }, new FelidaeCodeLensProvider()), vscode.languages.registerDocumentSemanticTokensProvider({ language: "felidae" }, new FelidaeSemanticTokensProvider(), semanticLegend), vscode.languages.registerDocumentSymbolProvider({ language: "felidae" }, new FelidaeDocumentSymbolProvider()), vscode.languages.registerCompletionItemProvider({ language: "felidae" }, new FelidaeCompletionItemProvider(), ".", "(", ","), vscode.languages.registerCodeActionsProvider({ language: "felidae" }, new FelidaeCodeActionProvider(), { providedCodeActionKinds: FelidaeCodeActionProvider.providedCodeActionKinds }), vscode.debug.registerDebugConfigurationProvider("felidae", new FelidaeDebugConfigurationProvider()), vscode.debug.registerDebugAdapterDescriptorFactory("felidae", new FelidaeDebugAdapterFactory()));
 }
 function deactivate() { }
 //# sourceMappingURL=extension.js.map

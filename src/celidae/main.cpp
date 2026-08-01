@@ -14,11 +14,13 @@ namespace {
 
 struct Options {
     bool html = false;
+    bool svg = false;
     bool envelope = true;
     bool loadImports = false;
     bool metricsJson = false;
     Felidae::Celidae::DiagramType type = Felidae::Celidae::DiagramType::Schema;
     bool help = false;
+    bool version = false;
     std::optional<fs::path> file;
 };
 
@@ -33,7 +35,9 @@ Options parseOptions(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") options.help = true;
+        else if (arg == "--version" || arg == "-v") options.version = true;
         else if (arg == "--html" || arg == "--visualize-data-html") options.html = true;
+        else if (arg == "--svg") options.svg = true;
         else if (arg == "--json") options.envelope = false;
         else if (arg == "--inspect-graph" || arg == "--visualize-data-json") options.envelope = true;
         else if (arg == "--load-imports") options.loadImports = true;
@@ -57,6 +61,10 @@ Options parseOptions(int argc, char** argv) {
     return options;
 }
 
+void printVersion() {
+    std::cout << "{\"name\":\"celidae\",\"version\":\"" << Felidae::LANGUAGE_VERSION << "\"}\n";
+}
+
 void printHelp() {
     std::cout
         << "Celidae fact relationship visualizer " << Felidae::LANGUAGE_VERSION << "\n"
@@ -64,7 +72,15 @@ void printHelp() {
         << "Usage:\n"
         << "  celidae program.fx --inspect-graph [--load-imports]\n"
         << "  celidae program.fx --json [--load-imports]\n"
-        << "  celidae program.fx --html --type=er [--load-imports]\n\n"
+        << "  celidae program.fx --html [--load-imports]\n"
+        << "  celidae program.fx --svg --type=er [--load-imports]\n"
+        << "  celidae --version\n\n"
+        << "Output formats:\n"
+        << "  --inspect-graph / --json  JSON graph for one --type (schema/graph/er).\n"
+        << "  --html                    Self-contained interactive visualizer bundling all\n"
+        << "                            three diagram types with force/tree/circle layouts.\n"
+        << "  --svg                     Static vector export for one --type, suitable for\n"
+        << "                            embedding directly in documents or slides.\n\n"
         << "Diagram types: schema (default), graph (dependencies), er (facts, fields, inheritance).\n"
         << "Celidae parses facts, inheritance, properties, and rule references. "
         << "It never executes main(), methods, queries, or native libraries.\n";
@@ -75,6 +91,10 @@ void printHelp() {
 int main(int argc, char** argv) {
     try {
         const Options options = parseOptions(argc, argv);
+        if (options.version) {
+            printVersion();
+            return 0;
+        }
         if (options.help || !options.file) {
             printHelp();
             return options.help ? 0 : 1;
@@ -91,15 +111,22 @@ int main(int argc, char** argv) {
             [&](const std::shared_ptr<Felidae::Statement>& statement) {
                 graph.consume(statement);
             });
-        const std::string json = graph.json(options.type, loaded.unresolvedImports);
         const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - started).count();
         if (options.html) {
-            std::cout << Felidae::Celidae::standaloneHtml(json);
+            // Bundle all three diagram types into one self-contained file so
+            // a user can compare schema/graph/er without re-running Celidae.
+            const std::string schemaJson = graph.json(Felidae::Celidae::DiagramType::Schema, loaded.unresolvedImports);
+            const std::string graphTypeJson = graph.json(Felidae::Celidae::DiagramType::Graph, loaded.unresolvedImports);
+            const std::string erJson = graph.json(Felidae::Celidae::DiagramType::Er, loaded.unresolvedImports);
+            std::cout << Felidae::Celidae::standaloneHtml(schemaJson, graphTypeJson, erJson);
+        } else if (options.svg) {
+            const auto rendered = graph.buildGraph(options.type, loaded.unresolvedImports);
+            std::cout << Felidae::Celidae::standaloneSvg(rendered, options.type);
         } else if (options.envelope) {
-            std::cout << Felidae::Celidae::graphJsonEnvelope(json);
+            std::cout << Felidae::Celidae::graphJsonEnvelope(graph.json(options.type, loaded.unresolvedImports));
         } else {
-            std::cout << json << "\n";
+            std::cout << graph.json(options.type, loaded.unresolvedImports) << "\n";
         }
         if (options.metricsJson) {
             std::cerr << "FELIDAE_CELIDAE_METRICS {\"analysisMs\":"

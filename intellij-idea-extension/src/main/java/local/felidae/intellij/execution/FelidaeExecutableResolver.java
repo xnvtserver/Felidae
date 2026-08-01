@@ -1,6 +1,7 @@
 package local.felidae.intellij.execution;
 
 import com.intellij.openapi.project.Project;
+import local.felidae.intellij.settings.FelidaeSettingsState;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -47,6 +48,10 @@ public final class FelidaeExecutableResolver {
     public static @Nullable Path resolveDebugger(
             @NotNull Project project
     ) {
+        Path configured = FelidaeSettingsState.getInstance(project).resolvedDebuggerPath();
+        if (configured != null) {
+            return configured;
+        }
         return resolve(
                 project,
                 DEBUG_ENVIRONMENT_VARIABLE,
@@ -58,6 +63,10 @@ public final class FelidaeExecutableResolver {
     public static @Nullable Path resolveVisualizer(
             @NotNull Project project
     ) {
+        Path configured = FelidaeSettingsState.getInstance(project).resolvedCelidaePath();
+        if (configured != null) {
+            return configured;
+        }
         return resolve(
                 project,
                 VISUALIZER_ENVIRONMENT_VARIABLE,
@@ -69,6 +78,10 @@ public final class FelidaeExecutableResolver {
     public static @Nullable Path resolveInterpreter(
             @NotNull Project project
     ) {
+        Path configured = FelidaeSettingsState.getInstance(project).resolvedInterpreterPath();
+        if (configured != null) {
+            return configured;
+        }
         return resolve(
                 project,
                 INTERPRETER_ENVIRONMENT_VARIABLE,

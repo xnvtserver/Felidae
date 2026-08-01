@@ -1,6 +1,7 @@
 #include "celidae/Visualization.h"
 
 #include "BuiltinRegistry.h"
+#include "celidae/GeneratedVisualizerAssets.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -9,6 +10,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <tuple>
 #include <unordered_map>
 
@@ -84,11 +86,13 @@ struct FactProfile {
     std::map<std::string, std::size_t> fields;
 };
 
+// Accumulates a graph as structured node/edge records (shared by every
+// output format) plus a JSON serialization on demand, so the JSON, HTML data
+// payload, and SVG layout engine all read from one classification pass in
+// SchemaGraphAccumulator::buildGraph instead of three parallel ones.
 struct GraphWriter {
-    std::ostringstream nodes;
-    std::ostringstream edges;
-    bool firstNode = true;
-    bool firstEdge = true;
+    std::vector<RenderNode> nodes;
+    std::vector<RenderEdge> edges;
     std::set<std::string> nodeIds;
     std::set<std::string> edgeIds;
 
@@ -97,24 +101,46 @@ struct GraphWriter {
               const std::string& kind,
               const std::string& detail = {}) {
         if (!nodeIds.insert(id).second) return;
-        if (!firstNode) nodes << ",";
-        firstNode = false;
-        nodes << "{\"id\":\"" << jsonEscape(id)
-              << "\",\"label\":\"" << jsonEscape(label)
-              << "\",\"kind\":\"" << jsonEscape(kind) << "\"";
-        if (!detail.empty()) nodes << ",\"detail\":\"" << jsonEscape(detail) << "\"";
-        nodes << "}";
+        nodes.push_back(RenderNode{id, label, kind, detail});
     }
 
     void edge(const std::string& from, const std::string& to, const std::string& label) {
         const std::string identity = from + "\n" + to + "\n" + label;
         if (!edgeIds.insert(identity).second) return;
-        if (!firstEdge) edges << ",";
-        firstEdge = false;
-        edges << "{\"id\":\"" << stableEdgeId(identity)
-              << "\",\"from\":\"" << jsonEscape(from)
-              << "\",\"to\":\"" << jsonEscape(to)
-              << "\",\"label\":\"" << jsonEscape(label) << "\"}";
+        edges.push_back(RenderEdge{from, to, label});
+    }
+
+    std::string toJson(std::size_t factCount,
+                       std::size_t methodCount,
+                       std::size_t globalCount,
+                       const char* mode) const {
+        std::ostringstream out;
+        out << "{\"schemaVersion\":2,\"mode\":\"" << mode << "\",\"summary\":{"
+            << "\"factTypes\":" << factCount << ","
+            << "\"methods\":" << methodCount << ","
+            << "\"globals\":" << globalCount << "},"
+            << "\"truncation\":{\"truncated\":false,\"omittedNodes\":0,"
+               "\"omittedEdges\":0},"
+            << "\"nodes\":[";
+        for (size_t i = 0; i < nodes.size(); ++i) {
+            if (i) out << ",";
+            out << "{\"id\":\"" << jsonEscape(nodes[i].id)
+                << "\",\"label\":\"" << jsonEscape(nodes[i].label)
+                << "\",\"kind\":\"" << jsonEscape(nodes[i].kind) << "\"";
+            if (!nodes[i].detail.empty()) out << ",\"detail\":\"" << jsonEscape(nodes[i].detail) << "\"";
+            out << "}";
+        }
+        out << "],\"edges\":[";
+        for (size_t i = 0; i < edges.size(); ++i) {
+            if (i) out << ",";
+            const std::string identity = edges[i].from + "\n" + edges[i].to + "\n" + edges[i].label;
+            out << "{\"id\":\"" << stableEdgeId(identity)
+                << "\",\"from\":\"" << jsonEscape(edges[i].from)
+                << "\",\"to\":\"" << jsonEscape(edges[i].to)
+                << "\",\"label\":\"" << jsonEscape(edges[i].label) << "\"}";
+        }
+        out << "]}";
+        return out.str();
     }
 };
 
@@ -184,6 +210,14 @@ std::string scriptSafeJson(std::string json) {
         json.replace(pos, 2, "<\\/");
     }
     return json;
+}
+
+void replaceToken(std::string& text, const std::string& token, const std::string& value) {
+    const size_t pos = text.find(token);
+    if (pos == std::string::npos) {
+        throw std::runtime_error("Celidae visualizer template is missing token: " + token);
+    }
+    text.replace(pos, token.size(), value);
 }
 
 } // namespace
@@ -296,7 +330,7 @@ void SchemaGraphAccumulator::consume(const std::shared_ptr<Statement>& statement
     }
 }
 
-std::string SchemaGraphAccumulator::json(
+RenderedGraph SchemaGraphAccumulator::buildGraph(
     DiagramType type,
     const std::vector<std::string>& unresolvedImports) const {
     GraphWriter graph;
@@ -365,18 +399,19 @@ std::string SchemaGraphAccumulator::json(
         graph.edge(from, nodeId(kind, targetName), label);
     }
 
-    std::ostringstream out;
     const char* mode = type == DiagramType::Er ? "er" :
         (type == DiagramType::Graph ? "graph" : "schema");
-    out << "{\"schemaVersion\":2,\"mode\":\"" << mode << "\",\"summary\":{"
-        << "\"factTypes\":" << impl_->facts.size() << ","
-        << "\"methods\":" << impl_->methods.size() << ","
-        << "\"globals\":" << impl_->globals.size() << "},"
-        << "\"truncation\":{\"truncated\":false,\"omittedNodes\":0,"
-           "\"omittedEdges\":0},"
-        << "\"nodes\":[" << graph.nodes.str()
-        << "],\"edges\":[" << graph.edges.str() << "]}";
-    return out.str();
+    RenderedGraph result;
+    result.nodes = graph.nodes;
+    result.edges = graph.edges;
+    result.json = graph.toJson(impl_->facts.size(), impl_->methods.size(), impl_->globals.size(), mode);
+    return result;
+}
+
+std::string SchemaGraphAccumulator::json(
+    DiagramType type,
+    const std::vector<std::string>& unresolvedImports) const {
+    return buildGraph(type, unresolvedImports).json;
 }
 
 std::string graphJson(const Program& program,
@@ -392,44 +427,124 @@ std::string graphJsonEnvelope(const std::string& json) {
     return "FELIDAE_GRAPH_BEGIN\n" + json + "\nFELIDAE_GRAPH_END\n";
 }
 
-std::string standaloneHtml(const std::string& json) {
+namespace {
+
+// Server-computed layout shared by standaloneSvg. The interactive HTML runs
+// the same three algorithms client-side (so a user can re-layout/drag
+// live); this C++ copy is what makes a static SVG possible without a JS
+// runtime.
+struct Point { double x = 0, y = 0; };
+
+std::map<std::string, Point> computeLaneLayout(const RenderedGraph& graph) {
+    static const std::vector<std::string> kinds = {"fact", "field", "method", "global", "library"};
+    std::map<std::string, int> columnByKind;
+    for (size_t i = 0; i < kinds.size(); ++i) columnByKind[kinds[i]] = static_cast<int>(i);
+    std::map<std::string, std::vector<const RenderNode*>> lanes;
+    for (const auto& node : graph.nodes) lanes[node.kind].push_back(&node);
+
+    std::map<std::string, Point> positions;
+    const double colWidth = 230;
+    const double rowHeight = 76;
+    for (auto& [kind, nodes] : lanes) {
+        const int column = columnByKind.count(kind) ? columnByKind[kind] : static_cast<int>(kinds.size());
+        for (size_t row = 0; row < nodes.size(); ++row) {
+            positions[nodes[row]->id] = Point{70.0 + column * colWidth, 55.0 + static_cast<double>(row) * rowHeight};
+        }
+    }
+    return positions;
+}
+
+// jsonEscape() is for embedding text inside a JSON string literal; it
+// deliberately leaves '<'/'>'/'&' untouched, which are exactly the
+// characters that corrupt or break out of SVG/XML text content (a fact
+// label containing "&" would otherwise produce invalid, unparsable XML).
+std::string xmlEscape(const std::string& value) {
+    std::string out;
+    out.reserve(value.size());
+    for (const char ch : value) {
+        switch (ch) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            default: out += ch; break;
+        }
+    }
+    return out;
+}
+
+const char* kindColor(const std::string& kind) {
+    if (kind == "fact") return "#18f0d7";
+    if (kind == "field") return "#f7c948";
+    if (kind == "method") return "#6ca8ff";
+    if (kind == "global") return "#f27d9d";
+    if (kind == "library") return "#9ca3af";
+    return "#9ca3af";
+}
+
+} // namespace
+
+std::string standaloneSvg(const RenderedGraph& graph, DiagramType type) {
+    const auto positions = computeLaneLayout(graph);
+    double maxX = 400, maxY = 400;
+    for (const auto& [id, point] : positions) {
+        maxX = std::max(maxX, point.x + 220);
+        maxY = std::max(maxY, point.y + 60);
+    }
+
     std::ostringstream out;
-    out << "<!doctype html>\n<html lang=\"en\">\n<head>\n"
-        << "<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
-        << "<title>Celidae Fact Graph</title>\n<style>\n"
-        << ":root{font-family:Inter,Segoe UI,Arial,sans-serif;color:#d9fffb;background:#071110}"
-        << "body{margin:0;min-height:100vh;display:grid;grid-template-columns:minmax(240px,320px) 1fr}"
-        << "aside{padding:18px;border-right:1px solid #1d4742;background:#0a1715;overflow:auto}"
-        << "main{min-width:0;overflow:auto;background:#071110}"
-        << "h1{font-size:20px;margin:0 0 8px;color:#18f0d7}h2{font-size:12px;margin:20px 0 8px;color:#88aaa6}"
-        << "p{color:#88aaa6;font-size:12px;line-height:1.45}input{box-sizing:border-box;width:100%;padding:9px;border:1px solid #28665e;border-radius:5px;background:#071110;color:#d9fffb}"
-        << ".metric{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #173430}"
-        << ".pill{display:inline-block;margin:3px;padding:4px 7px;border:1px solid #28665e;border-radius:4px}"
-        << "svg{display:block;min-width:900px;width:100%;height:100vh}.edge{stroke:#376760;stroke-width:1.2;marker-end:url(#arrow)}"
-        << ".edge-label{fill:#7fa39e;font-size:10px}.node rect{stroke-width:1.4;rx:7}.node text{fill:#d9fffb;font-size:12px;pointer-events:none}.node.dim{opacity:.12}"
-        << "@media(max-width:760px){body{grid-template-columns:1fr;grid-template-rows:auto 1fr}"
-        << "aside{max-height:34vh;border-right:0;border-bottom:1px solid #1d4742}svg{height:66vh}}\n"
-        << "</style></head><body>\n"
-        << "<aside><h1>Celidae Fact & Dependency View</h1><p>Facts and fields form the schema layer; methods, globals and libraries form the execution layer.</p><input id=\"search\" type=\"search\" placeholder=\"Filter nodes\" aria-label=\"Filter graph nodes\"><div id=\"metrics\"></div>"
-        << "<h2>Node Types</h2><div id=\"types\"></div></aside>"
-        << "<main><svg id=\"graph\" role=\"img\" aria-label=\"Felidae fact relationship graph\"></svg></main>\n"
-        << "<script type=\"application/json\" id=\"celidae-data\">" << scriptSafeJson(json) << "</script>\n"
-        << "<script>"
-        << "const d=JSON.parse(document.getElementById('celidae-data').textContent),n=d.nodes||[],e=d.edges||[];"
-        << "const count=n.reduce((m,x)=>(m[x.kind]=(m[x.kind]||0)+1,m),{});"
-        << "document.getElementById('metrics').innerHTML='<div class=\"metric\"><span>Nodes</span><strong>'+n.length+'</strong></div><div class=\"metric\"><span>Relationships</span><strong>'+e.length+'</strong></div>';"
-        << "document.getElementById('types').innerHTML=Object.entries(count).map(([k,v])=>'<span class=\"pill\">'+k+' '+v+'</span>').join('');"
-        << "const svg=document.getElementById('graph'),w=1200,row=72,kinds=['fact','field','method','global','library'],by=new Map(n.map(x=>[x.id,x]));"
-        << "const cols=new Map(kinds.map((k,i)=>[k,i]));const lanes=new Map;for(const x of n){const k=x.kind||'library',a=lanes.get(k)||[];a.push(x);lanes.set(k,a)}"
-        << "const maxRows=Math.max(1,...[...lanes.values()].map(x=>x.length)),h=Math.max(760,100+maxRows*row);svg.setAttribute('viewBox','0 0 '+w+' '+h);"
-        << "const ns='http://www.w3.org/2000/svg',defs=document.createElementNS(ns,'defs'),marker=document.createElementNS(ns,'marker'),path=document.createElementNS(ns,'path');marker.setAttribute('id','arrow');marker.setAttribute('viewBox','0 0 10 10');marker.setAttribute('refX','9');marker.setAttribute('refY','5');marker.setAttribute('markerWidth','6');marker.setAttribute('markerHeight','6');marker.setAttribute('orient','auto-start-reverse');path.setAttribute('d','M 0 0 L 10 5 L 0 10 z');path.setAttribute('fill','#376760');marker.append(path);defs.append(marker);svg.append(defs);"
-        << "for(const [kind,a] of lanes){const col=cols.has(kind)?cols.get(kind):4;a.forEach((x,i)=>{x.x=70+col*225;x.y=55+i*row})}"
-        << "e.forEach((x,i)=>{const a=by.get(x.from),b=by.get(x.to);if(!a||!b)return;const l=document.createElementNS(ns,'line');for(const [k,v] of Object.entries({x1:a.x+150,y1:a.y+20,x2:b.x,y2:b.y+20}))l.setAttribute(k,v);l.setAttribute('class','edge');svg.appendChild(l);const t=document.createElementNS(ns,'text');t.setAttribute('class','edge-label');t.setAttribute('x',(a.x+b.x+150)/2);t.setAttribute('y',(a.y+b.y+40)/2-4);t.textContent=x.label||'';svg.appendChild(t)});"
-        << "const c={fact:'#18f0d7',field:'#f7c948',method:'#6ca8ff',global:'#f27d9d',library:'#9ca3af'};"
-        << "n.forEach(x=>{const g=document.createElementNS(ns,'g'),q=document.createElementNS(ns,'rect'),t=document.createElementNS(ns,'text'),u=document.createElementNS(ns,'title');g.setAttribute('class','node');g.dataset.text=(x.label+' '+(x.detail||'')).toLowerCase();q.setAttribute('x',x.x);q.setAttribute('y',x.y);q.setAttribute('width',150);q.setAttribute('height',40);q.setAttribute('fill',c[x.kind]||'#9ca3af');q.setAttribute('fill-opacity','.22');q.setAttribute('stroke',c[x.kind]||'#9ca3af');t.setAttribute('x',x.x+10);t.setAttribute('y',x.y+24);t.textContent=x.label.length>19?x.label.slice(0,18)+'…':x.label;u.textContent=(x.kind+': '+x.label)+(x.detail?' — '+x.detail:'');g.append(q,t,u);svg.appendChild(g)});"
-        << "document.getElementById('search').addEventListener('input',ev=>{const q=ev.target.value.trim().toLowerCase();document.querySelectorAll('.node').forEach(x=>x.classList.toggle('dim',q&&!x.dataset.text.includes(q))) });"
-        << "</script></body></html>\n";
+    const char* title = type == DiagramType::Er ? "Celidae ER Diagram" :
+        (type == DiagramType::Graph ? "Celidae Dependency Graph" : "Celidae Fact Schema");
+    out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 " << maxX << " " << maxY
+        << "\" width=\"" << maxX << "\" height=\"" << maxY << "\" font-family=\"Segoe UI, Inter, sans-serif\">\n"
+        << "<title>" << xmlEscape(title) << "</title>\n"
+        << "<defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"6\" markerHeight=\"6\" orient=\"auto-start-reverse\">"
+        << "<path d=\"M 0 0 L 10 5 L 0 10 z\" fill=\"#376760\"/></marker></defs>\n"
+        << "<rect x=\"0\" y=\"0\" width=\"" << maxX << "\" height=\"" << maxY << "\" fill=\"#0b1210\"/>\n";
+
+    for (const auto& edge : graph.edges) {
+        const auto fromIt = positions.find(edge.from);
+        const auto toIt = positions.find(edge.to);
+        if (fromIt == positions.end() || toIt == positions.end()) continue;
+        const double x1 = fromIt->second.x + 150, y1 = fromIt->second.y + 20;
+        const double x2 = toIt->second.x, y2 = toIt->second.y + 20;
+        out << "<line x1=\"" << x1 << "\" y1=\"" << y1 << "\" x2=\"" << x2 << "\" y2=\"" << y2
+            << "\" stroke=\"#376760\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/>\n";
+        if (!edge.label.empty()) {
+            out << "<text x=\"" << (x1 + x2) / 2 << "\" y=\"" << (y1 + y2) / 2 - 4
+                << "\" fill=\"#7fa39e\" font-size=\"10\">" << xmlEscape(edge.label) << "</text>\n";
+        }
+    }
+
+    for (const auto& node : graph.nodes) {
+        const auto it = positions.find(node.id);
+        if (it == positions.end()) continue;
+        const double x = it->second.x, y = it->second.y;
+        const std::string color = kindColor(node.kind);
+        std::string label = node.label.size() > 19 ? node.label.substr(0, 18) + "\xE2\x80\xA6" : node.label;
+        out << "<g>\n"
+            << "  <rect x=\"" << x << "\" y=\"" << y << "\" width=\"150\" height=\"40\" rx=\"7\""
+            << " fill=\"" << color << "\" fill-opacity=\"0.22\" stroke=\"" << color << "\" stroke-width=\"1.4\"/>\n"
+            << "  <text x=\"" << (x + 10) << "\" y=\"" << (y + 24) << "\" fill=\"#e6f7f4\" font-size=\"12\">"
+            << xmlEscape(label) << "</text>\n"
+            << "  <title>" << xmlEscape(node.kind + ": " + node.label + (node.detail.empty() ? "" : " \xE2\x80\x94 " + node.detail)) << "</title>\n"
+            << "</g>\n";
+    }
+
+    out << "</svg>\n";
     return out.str();
+}
+
+std::string standaloneHtml(const std::string& schemaJson, const std::string& graphJson, const std::string& erJson) {
+    // kVisualizerTemplate is generated from src/celidae/webui/template.html
+    // (cytoscape + chart.js + heroicons, all npm-installed there - see
+    // GeneratedVisualizerAssets.h). This function only substitutes the three
+    // DiagramType payloads into the pre-built, self-contained page.
+    std::string html = kVisualizerTemplate;
+    replaceToken(html, "__DATA_SCHEMA__", scriptSafeJson(schemaJson));
+    replaceToken(html, "__DATA_GRAPH__", scriptSafeJson(graphJson));
+    replaceToken(html, "__DATA_ER__", scriptSafeJson(erJson));
+    return html;
 }
 
 } // namespace Felidae::Celidae
