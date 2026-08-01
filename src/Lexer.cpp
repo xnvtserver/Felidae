@@ -5,6 +5,22 @@
 
 namespace Felidae {
 
+namespace {
+
+bool isCustomOperatorCharacter(char value) {
+    switch (value) {
+        case '~':
+        case '^':
+        case '&':
+        case '$':
+            return true;
+        default:
+            return false;
+    }
+}
+
+} // namespace
+
 Lexer::Lexer(std::string source)
     : ownedInput_(std::make_unique<std::istringstream>(std::move(source))),
       input_(ownedInput_.get()) {}
@@ -100,6 +116,8 @@ Token Lexer::readIdentifier() {
     // source text.
     if (text == "import") return Token{TokenType::Import, {}, startLine, startCol};
     if (text == "not") return Token{TokenType::Not, {}, startLine, startCol};
+    if (text == "and") return Token{TokenType::And, {}, startLine, startCol};
+    if (text == "or") return Token{TokenType::Or, {}, startLine, startCol};
     if (text == "then") return Token{TokenType::Then, {}, startLine, startCol};
     if (text == "if") return Token{TokenType::If, {}, startLine, startCol};
     if (text == "else") return Token{TokenType::Else, {}, startLine, startCol};
@@ -241,8 +259,10 @@ Token Lexer::nextToken() {
             case '-': type = TokenType::Minus; break;
             case '*': type = TokenType::Star; break;
             case '/': type = TokenType::Slash; break;
+            case '%': type = TokenType::Percent; break;
             case '.': type = TokenType::Dot; break;
             case '|': type = TokenType::Pipe; break;
+            case '@': type = TokenType::At; break;
             case '?': type = TokenType::Question; break;
             case '=':
                 if (match('>')) { type = TokenType::Arrow; }
@@ -262,6 +282,14 @@ Token Lexer::nextToken() {
                 else type = TokenType::GT;
                 break;
             default: {
+                if (isCustomOperatorCharacter(c)) {
+                    type = TokenType::CustomOperator;
+                    text.push_back(c);
+                    while (!isAtEnd() && isCustomOperatorCharacter(peek())) {
+                        text.push_back(advance());
+                    }
+                    break;
+                }
                 std::ostringstream oss;
                 oss << "Unexpected character '" << c << "' at " << startLine << ":" << startCol;
                 throw LexerError(oss.str());

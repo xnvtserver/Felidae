@@ -160,12 +160,8 @@ void visitExpr(const std::shared_ptr<Expr>& expr,
         for (const auto& entry : map->entries) visitExpr(entry.value, visitCall);
     } else if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
         visitExpr(access->target, visitCall);
-    } else if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
-        visitExpr(binary->left, visitCall);
-        visitExpr(binary->right, visitCall);
-    } else if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
-        visitExpr(pipeline->left, visitCall);
-        visitExpr(pipeline->right, visitCall);
+    } else if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
+        for (size_t i = 0; i < op->captureCount(); ++i) visitExpr(op->capture(i), visitCall);
     }
 }
 

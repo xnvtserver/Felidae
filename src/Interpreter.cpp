@@ -3,6 +3,7 @@
 #include "Lexer.h"
 #include "FelidaeRuntime.h"
 #include "Parser.h"
+#include "OperatorAnnotation.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -185,6 +186,49 @@ static std::shared_ptr<Expr> findMapValue(const std::shared_ptr<Expr>& expr,
         }
     }
     return {};
+}
+
+static std::string publicValueString(const std::shared_ptr<Expr>& value) {
+    if (!value) return "nil";
+    if (const auto array = std::dynamic_pointer_cast<ArrayExpr>(value)) {
+        std::ostringstream out;
+        out << "[";
+        for (size_t index = 0; index < array->items.size(); ++index) {
+            if (index) out << ", ";
+            out << publicValueString(array->items[index]);
+        }
+        out << "]";
+        return out.str();
+    }
+    if (const auto map = std::dynamic_pointer_cast<MapExpr>(value)) {
+        const bool fact = !map->factType.empty();
+        std::ostringstream out;
+        out << (fact ? map->factType + "(" : "{");
+        bool first = true;
+        for (const auto& entry : map->entries) {
+            if (fact && (entry.keyId == InternalSymbol::TypeId ||
+                         entry.keyId == InternalSymbol::ParentId)) {
+                continue;
+            }
+            if (!first) out << ", ";
+            first = false;
+            out << entry.key << ": " << publicValueString(entry.value);
+        }
+        out << (fact ? ")" : "}");
+        return out.str();
+    }
+    if (const auto term = std::dynamic_pointer_cast<TermExpr>(value)) {
+        std::ostringstream out;
+        out << term->name << "(";
+        for (size_t index = 0; index < term->args.size(); ++index) {
+            if (index) out << ", ";
+            if (!term->args[index].name.empty()) out << term->args[index].name << ": ";
+            out << publicValueString(term->args[index].value);
+        }
+        out << ")";
+        return out.str();
+    }
+    return value->debug();
 }
 
 static std::vector<MapEntry> cloneEntries(const std::vector<MapEntry>& entries) {
@@ -372,6 +416,51 @@ static bool exprAsArray(const std::shared_ptr<Expr>& expr, std::vector<std::shar
     return false;
 }
 
+static std::string astNodeKind(const std::shared_ptr<AstNode>& node) {
+    if (std::dynamic_pointer_cast<TermExpr>(node)) return "function_call";
+    if (auto op = std::dynamic_pointer_cast<OperatorExpression>(node)) {
+        if (isComparisonOperator(op->coreOperator) ||
+            op->coreOperator == CoreOperator::LogicalAnd ||
+            op->coreOperator == CoreOperator::LogicalOr ||
+            op->coreOperator == CoreOperator::LogicalNot) return "logical";
+        if (op->coreOperator == CoreOperator::Add ||
+            op->coreOperator == CoreOperator::Subtract ||
+            op->coreOperator == CoreOperator::Multiply ||
+            op->coreOperator == CoreOperator::Divide ||
+            op->coreOperator == CoreOperator::Modulo ||
+            op->coreOperator == CoreOperator::UnaryPlus ||
+            op->coreOperator == CoreOperator::UnaryMinus) return "arithmetic";
+        return "operator_expression";
+    }
+    if (std::dynamic_pointer_cast<LambdaExpr>(node)) return "lambda";
+    if (std::dynamic_pointer_cast<AccessExpr>(node)) return "member_access";
+    if (std::dynamic_pointer_cast<MapExpr>(node)) return "map";
+    if (std::dynamic_pointer_cast<ArrayExpr>(node)) return "array";
+    if (std::dynamic_pointer_cast<StringExpr>(node)) return "string_literal";
+    if (std::dynamic_pointer_cast<NumberExpr>(node)) return "number_literal";
+    if (std::dynamic_pointer_cast<BoolExpr>(node)) return "bool_literal";
+    if (std::dynamic_pointer_cast<NilExpr>(node)) return "nil_literal";
+    if (std::dynamic_pointer_cast<VarExpr>(node)) return "variable";
+    if (auto clause = std::dynamic_pointer_cast<ClauseStmt>(node)) {
+        if (clause->clauseKind == ClauseKind::Fact) return "fact_declaration";
+        if (clause->clauseKind == ClauseKind::NativeDeclaration) return "native_declaration";
+        if (clause->clauseKind == ClauseKind::EntryCall) return "entry_call";
+        return "method_declaration";
+    }
+    if (std::dynamic_pointer_cast<ImportStmt>(node)) return "import_statement";
+    if (std::dynamic_pointer_cast<GlobalBindingStmt>(node)) return "global_binding";
+    if (std::dynamic_pointer_cast<IfGoal>(node)) return "conditional";
+    if (std::dynamic_pointer_cast<AssignGoal>(node) ||
+        std::dynamic_pointer_cast<MultiAssignGoal>(node)) return "assignment";
+    if (std::dynamic_pointer_cast<ReturnGoal>(node)) return "return";
+    if (std::dynamic_pointer_cast<WhereGoal>(node)) return "where";
+    if (std::dynamic_pointer_cast<CallGoal>(node)) return "call_statement";
+    if (std::dynamic_pointer_cast<NotGoal>(node)) return "negation";
+    if (std::dynamic_pointer_cast<OrGoal>(node)) return "alternatives";
+    if (std::dynamic_pointer_cast<GroupGoal>(node)) return "statement_group";
+    return "ast";
+}
+
 static bool valueMatchesBuiltinType(const std::shared_ptr<Expr>& value, const std::string& type) {
     const std::string lowered = lowerText(type);
     if (lowered == "any") return true;
@@ -389,6 +478,13 @@ static bool valueMatchesBuiltinType(const std::shared_ptr<Expr>& value, const st
     if (lowered == "array") {
         std::vector<std::shared_ptr<Expr>> items;
         return exprAsArray(value, items);
+    }
+    if (lowered == "expr" || lowered == "stmt" || lowered == "stmts") {
+        auto ast = std::dynamic_pointer_cast<AstValueExpr>(value);
+        if (!ast) return false;
+        if (lowered == "expr") return ast->valueKind == AstValueKind::Expression;
+        if (lowered == "stmt") return ast->valueKind == AstValueKind::Statement;
+        return ast->valueKind == AstValueKind::Statements;
     }
     if (lowered == "bool" || lowered == "boolean") {
         if (std::dynamic_pointer_cast<BoolExpr>(value)) return true;
@@ -733,7 +829,10 @@ void Interpreter::beginModuleTransaction() {
     // Keep an independent bucket table for rollback so normal streamed
     // registration does not invalidate live ClauseList pointers through COW.
     transaction->clauses = std::make_shared<ClauseTable>(*clauses_);
+    transaction->operators = std::make_shared<OperatorRegistry>(*operators_);
+    transaction->operatorClauses = operatorClauses_;
     transaction->autoEntryCalls = autoEntryCalls_;
+    transaction->autoEntryResults = autoEntryResults_;
     transaction->memory = memory_;
     transaction->globals = globals_;
     transaction->referencesBySource = referencesBySource_;
@@ -768,7 +867,10 @@ void Interpreter::rollbackModuleTransaction() {
     if (!moduleTransaction_) return;
     const ModuleTransactionState& transaction = *moduleTransaction_;
     clauses_ = transaction.clauses;
+    operators_ = transaction.operators;
+    operatorClauses_ = transaction.operatorClauses;
     autoEntryCalls_ = transaction.autoEntryCalls;
+    autoEntryResults_ = transaction.autoEntryResults;
     memory_ = transaction.memory;
     globals_ = transaction.globals;
     referencesBySource_ = transaction.referencesBySource;
@@ -844,6 +946,8 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
     }
 
     auto clausesSnapshot = clauses_;
+    auto operatorsSnapshot = operators_;
+    auto operatorClausesSnapshot = operatorClauses_;
     auto memorySnapshot = memory_;
     auto globalsSnapshot = cloneEnv(globals_.values());
     auto loadedFilesSnapshot = loadedFiles_;
@@ -857,6 +961,8 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
                                 task,
                                 functionName,
                                 clausesSnapshot = std::move(clausesSnapshot),
+                                operatorsSnapshot = std::move(operatorsSnapshot),
+                                operatorClausesSnapshot = std::move(operatorClausesSnapshot),
                                 memorySnapshot = std::move(memorySnapshot),
                                 globalsSnapshot = std::move(globalsSnapshot),
                                 loadedFilesSnapshot = std::move(loadedFilesSnapshot),
@@ -868,6 +974,8 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
         try {
             Interpreter child;
             child.clauses_ = std::move(clausesSnapshot);
+            child.operators_ = std::move(operatorsSnapshot);
+            child.operatorClauses_ = std::move(operatorClausesSnapshot);
             child.memory_ = std::move(memorySnapshot);
             child.globals_.replaceValues(std::move(globalsSnapshot));
             child.loadedFiles_ = std::move(loadedFilesSnapshot);
@@ -987,6 +1095,7 @@ void Interpreter::addProgram(const Program& program) {
                     auto clause = std::static_pointer_cast<ClauseStmt>(statement);
                     if (clause->clauseKind == ClauseKind::EntryCall) {
                         autoEntryCalls_.push_back(clause->head);
+                        autoEntryResults_.push_back(executeEntryCall(clause->head));
                         break;
                     }
                     addClause(clause);
@@ -1025,6 +1134,7 @@ void Interpreter::addStreamedStatement(std::shared_ptr<Statement> statement) {
         auto clause = std::static_pointer_cast<ClauseStmt>(statement);
         if (clause->clauseKind == ClauseKind::EntryCall) {
             autoEntryCalls_.push_back(clause->head);
+            autoEntryResults_.push_back(executeEntryCall(clause->head));
             return;
         }
         // Facts cannot introduce rule dependency edges, globals, or method
@@ -1128,6 +1238,178 @@ void Interpreter::validateNegationStratification(const Program& program) const {
 
 void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
     const std::string clauseName = clause->head.name;
+    for (const auto& annotation : clause->annotations) {
+        if (annotation.builtinId != BuiltinId::OverloadAnnotation &&
+            annotation.builtinId != BuiltinId::MatcherAnnotation) {
+            if (!hasMethod(annotation.name) && !nativeDeclarationFor(annotation.name)) {
+                throw InterpreterError("Annotation method '" + annotation.name +
+                                       "' is not declared before '" + clauseName + "'");
+            }
+            TermExpr invocation(annotation.name, {}, annotation.builtinId);
+            invocation.nameId = annotation.nameId;
+            invocation.args.reserve(annotation.args.size());
+            for (const auto& argument : annotation.args) {
+                invocation.args.push_back(Arg{argument.name, argument.value->clone()});
+            }
+            if (const auto* annotationClauses = findClauses(annotation.name, annotation.nameId)) {
+                for (const auto& annotationClause : *annotationClauses) {
+                    if (!isMethodClause(*annotationClause)) continue;
+                    const auto plans = buildMethodParamPlan(*annotationClause);
+                    for (std::size_t i = 0; i < plans.size(); ++i) {
+                        const auto& plan = plans[i];
+                        if (plan.typeId != LanguageTypeId::Stmt &&
+                            plan.typeId != LanguageTypeId::Statements) continue;
+                        const bool supplied = std::any_of(
+                            invocation.args.begin(), invocation.args.end(), [&](const Arg& argument) {
+                                return argument.name == annotationClause->head.args[i].name;
+                            });
+                        if (supplied) continue;
+                        std::vector<std::shared_ptr<AstNode>> nodes;
+                        AstValueKind valueKind = AstValueKind::Statement;
+                        std::string nodeKind;
+                        if (plan.typeId == LanguageTypeId::Stmt) {
+                            nodes.push_back(clause);
+                            nodeKind = astNodeKind(clause);
+                        } else {
+                            valueKind = AstValueKind::Statements;
+                            for (const auto& goal : clause->body) nodes.push_back(goal);
+                            for (const auto& branch : clause->fallbackBranches) {
+                                for (const auto& goal : branch) nodes.push_back(goal);
+                            }
+                            nodeKind = "statement_block";
+                        }
+                        invocation.args.push_back(Arg{
+                            annotationClause->head.args[i].name,
+                            std::make_shared<AstValueExpr>(
+                                valueKind, std::move(nodes), std::move(nodeKind))});
+                    }
+                    break;
+                }
+            }
+            std::shared_ptr<Expr> ignored;
+            if (!evalCallAsValue(invocation, Env{}, ignored)) {
+                throw InterpreterError("Annotation method '" + annotation.name +
+                                       "' produced no result for declaration '" + clauseName + "'");
+            }
+            continue;
+        }
+        ParsedOperatorAnnotation parsed;
+        try {
+            parsed = decodeOperatorAnnotation(annotation);
+        } catch (const std::runtime_error& error) {
+            throw InterpreterError(error.what());
+        }
+        const auto* pattern = parsed.pattern.empty()
+            ? operators_->findPatternByOperator(parsed.operatorName)
+            : operators_->findPattern(parsed.operatorName, parsed.pattern);
+        if (!pattern) throw InterpreterError("Operator annotation pattern was not registered");
+        if (!parsed.hasVisibility) {
+            try {
+                parsed.visibility = operators_->visibilityForPattern(
+                    pattern->patternId, clause->module);
+            } catch (const std::runtime_error& error) {
+                throw InterpreterError(error.what());
+            }
+        }
+        if (!clause->head.args.empty()) {
+            throw InterpreterError("Annotated operator methods receive captures implicitly and cannot declare parameters");
+        }
+        if (parsed.effect != OperatorEffect::Pure) {
+            throw InterpreterError("Custom operator and matcher methods must be pure");
+        }
+        std::unordered_set<const ClauseStmt*> purityWalk;
+        std::string impurity;
+        if (!isReferenceMethodPure(clause, purityWalk, impurity)) {
+            throw InterpreterError("Annotated operator method '" + clauseName +
+                                   "' is not transitively pure: " + impurity);
+        }
+        if (annotation.builtinId == BuiltinId::MatcherAnnotation) {
+            const auto metadataExpression = [&](const auto& self,
+                                                const std::shared_ptr<Expr>& expression) -> bool {
+                if (!expression) return false;
+                if (std::dynamic_pointer_cast<StringExpr>(expression) ||
+                    std::dynamic_pointer_cast<NumberExpr>(expression) ||
+                    std::dynamic_pointer_cast<BoolExpr>(expression) ||
+                    std::dynamic_pointer_cast<NilExpr>(expression) ||
+                    std::dynamic_pointer_cast<VarExpr>(expression)) return true;
+                if (auto access = std::dynamic_pointer_cast<AccessExpr>(expression)) {
+                    return self(self, access->target);
+                }
+                if (auto array = std::dynamic_pointer_cast<ArrayExpr>(expression)) {
+                    return std::all_of(array->items.begin(), array->items.end(),
+                        [&](const std::shared_ptr<Expr>& item) { return self(self, item); });
+                }
+                if (auto map = std::dynamic_pointer_cast<MapExpr>(expression)) {
+                    return std::all_of(map->entries.begin(), map->entries.end(),
+                        [&](const MapEntry& field) { return self(self, field.value); });
+                }
+                return false;
+            };
+            const ReturnGoal* returned = nullptr;
+            for (const auto& goal : clause->body) {
+                if (auto candidate = std::dynamic_pointer_cast<ReturnGoal>(goal)) {
+                    if (returned) throw InterpreterError("@matcher must return exactly one RequirementMatch");
+                    returned = candidate.get();
+                    continue;
+                }
+                if (auto guard = std::dynamic_pointer_cast<WhereGoal>(goal)) {
+                    const auto comparison = std::dynamic_pointer_cast<BinaryGoal>(guard->condition);
+                    if (!comparison ||
+                        (comparison->op != TokenType::EqEq && comparison->op != TokenType::NotEq &&
+                         comparison->op != TokenType::LT && comparison->op != TokenType::LTE &&
+                         comparison->op != TokenType::GT && comparison->op != TokenType::GTE) ||
+                        !metadataExpression(metadataExpression, comparison->left) ||
+                        !metadataExpression(metadataExpression, comparison->right)) {
+                        throw InterpreterError(
+                            "@matcher where guards may only compare immutable context or ExpressionRef metadata");
+                    }
+                    continue;
+                } else {
+                    throw InterpreterError(
+                        "@matcher bodies may contain only static where guards and RequirementMatch return");
+                }
+            }
+            if (!returned || returned->fields.size() != 1 || !returned->fields.front().name.empty()) {
+                throw InterpreterError("@matcher must return RequirementMatch(...)");
+            }
+            const auto wrapper = std::dynamic_pointer_cast<TermExpr>(returned->fields.front().value);
+            if (!wrapper || wrapper->name != "RequirementMatch") {
+                throw InterpreterError("@matcher must return the RequirementMatch wrapper");
+            }
+            if (wrapper->args.size() != parsed.produces.size()) {
+                throw InterpreterError("RequirementMatch fields must exactly match @matcher 'produces'");
+            }
+            for (const auto& produced : parsed.produces) {
+                if (!memory_.isCompatibleType(produced.type, "OperatorRequirement")) {
+                    throw InterpreterError("@matcher produced type '" + produced.type +
+                                           "' must extend OperatorRequirement");
+                }
+                const Arg* output = nullptr;
+                for (const auto& field : wrapper->args) {
+                    if (field.nameId == produced.nameId && field.name == produced.name) {
+                        if (output) throw InterpreterError(
+                            "RequirementMatch repeats factor binding '" + produced.name + "'");
+                        output = &field;
+                    }
+                }
+                const auto prototype = output
+                    ? std::dynamic_pointer_cast<TermExpr>(output->value)
+                    : std::shared_ptr<TermExpr>{};
+                if (!prototype || prototype->nameId != produced.typeId ||
+                    prototype->name != produced.type) {
+                    throw InterpreterError("RequirementMatch binding '" + produced.name +
+                                           "' must construct " + produced.type);
+                }
+            }
+            operators_->registerMatcher(makeOperatorMatcherDefinition(
+                parsed, *pattern, clause->head.name, clause->head.nameId, clause->module));
+            operatorClauses_[pattern->patternId].push_back(clause);
+            continue;
+        }
+        operators_->registerOverload(makeOperatorOverloadDefinition(
+            parsed, *pattern, clause->head.name, clause->head.nameId, clause->module));
+        operatorClauses_[pattern->patternId].push_back(clause);
+    }
     if (clause->isFact() && globals_.count(clause->head.name) == 0) {
         const auto registrationStarted = std::chrono::steady_clock::now();
         auto factMap = factToMap(*clause);
@@ -1265,7 +1547,13 @@ std::shared_ptr<Expr> Interpreter::callMain(const std::shared_ptr<Expr>& systemI
 
 std::shared_ptr<Expr> Interpreter::callAutoEntry() {
     if (autoEntryCalls_.empty()) throw InterpreterError("No auto entry call found");
-    const Call& entryCall = autoEntryCalls_.front();
+    if (autoEntryResults_.size() != autoEntryCalls_.size() || !autoEntryResults_.front()) {
+        throw InterpreterError("Auto entry result was not committed at its statement boundary");
+    }
+    return autoEntryResults_.front()->clone();
+}
+
+std::shared_ptr<Expr> Interpreter::executeEntryCall(const Call& entryCall) {
     auto clauses = findClauses(entryCall.name, entryCall.nameId);
     if (!clauses) throw InterpreterError("Auto entry method '" + entryCall.name + "' not found");
 
@@ -1283,7 +1571,12 @@ std::shared_ptr<Expr> Interpreter::callAutoEntry() {
 
 std::string Interpreter::valueToString(const std::shared_ptr<Expr>& value) const {
     Env env;
-    return exprToString(value, env);
+    auto resolved = resolveExpr(value, env);
+    std::shared_ptr<Expr> evaluated;
+    if (const_cast<Interpreter*>(this)->evalExprValue(resolved, env, evaluated)) {
+        return publicValueString(evaluated);
+    }
+    return publicValueString(resolved);
 }
 
 void Interpreter::solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals,
@@ -1711,6 +2004,7 @@ bool Interpreter::bodyHasReturnGoal(const std::vector<std::shared_ptr<Goal>>& go
             case GoalKind::Assign:
             case GoalKind::MultiAssign:
             case GoalKind::Where:
+            case GoalKind::Not:
                 break;
         }
     }
@@ -1816,6 +2110,28 @@ bool Interpreter::solveMethodCall(const Call& call,
                 continue;
             }
             Env attempt = candidate;
+            if (paramPlan.typeId == LanguageTypeId::Expr ||
+                paramPlan.typeId == LanguageTypeId::Stmt ||
+                paramPlan.typeId == LanguageTypeId::Statements) {
+                std::shared_ptr<AstValueExpr> astValue;
+                auto alreadyBound = std::dynamic_pointer_cast<AstValueExpr>(
+                    resolveExpr(callArg->value, callerEnv));
+                if (alreadyBound) {
+                    astValue = alreadyBound;
+                } else if (paramPlan.typeId == LanguageTypeId::Expr) {
+                    astValue = std::make_shared<AstValueExpr>(
+                        AstValueKind::Expression,
+                        std::vector<std::shared_ptr<AstNode>>{callArg->value},
+                        astNodeKind(callArg->value));
+                } else {
+                    continue;
+                }
+                if (!valueMatchesBuiltinType(astValue, paramPlan.typeName)) continue;
+                if (unifyExpr(std::make_shared<VarExpr>(paramPlan.localName), astValue, attempt)) {
+                    nextCandidates.push_back(std::move(attempt));
+                }
+                continue;
+            }
             auto unresolvedCallVar = std::dynamic_pointer_cast<VarExpr>(resolveExpr(callArg->value, callerEnv));
             if (unresolvedCallVar) {
                 if (unresolvedCallVar->name == paramPlan.localName ||
@@ -2170,10 +2486,10 @@ bool Interpreter::isReferenceMethodPure(const std::shared_ptr<ClauseStmt>& claus
             for (const auto& item : map->entries) if (!self(self, item.value)) return false;
         } else if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
             return self(self, access->target);
-        } else if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
-            return self(self, binary->left) && self(self, binary->right);
-        } else if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
-            return self(self, pipeline->left) && self(self, pipeline->right);
+        } else if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
+            for (size_t i = 0; i < op->captureCount(); ++i) {
+                if (!self(self, op->capture(i))) return false;
+            }
         } else if (auto lambda = std::dynamic_pointer_cast<LambdaExpr>(expr)) {
             return self(self, lambda->source) && self(self, lambda->body) && self(self, lambda->right);
         }
@@ -2981,14 +3297,22 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
 
     if (call.builtinId == BuiltinId::Type) {
         if (!valueArg({"value", "data", "input"}, 0, a)) return false;
-        auto typeValue = findMapValue(a, internalSymbolString(InternalSymbolKind::Type));
-        auto typeString = std::dynamic_pointer_cast<StringExpr>(typeValue);
-        if (!typeString) return false;
+        std::string resolvedType;
+        if (auto ast = std::dynamic_pointer_cast<AstValueExpr>(a)) resolvedType = ast->nodeKind;
+        else if (auto typeString = std::dynamic_pointer_cast<StringExpr>(
+                     findMapValue(a, internalSymbolString(InternalSymbolKind::Type)))) {
+            resolvedType = typeString->value;
+        } else if (std::dynamic_pointer_cast<NumberExpr>(a)) resolvedType = "number";
+        else if (std::dynamic_pointer_cast<StringExpr>(a)) resolvedType = "string";
+        else if (std::dynamic_pointer_cast<BoolExpr>(a)) resolvedType = "bool";
+        else if (std::dynamic_pointer_cast<ArrayExpr>(a)) resolvedType = "array";
+        else if (std::dynamic_pointer_cast<NilExpr>(a)) resolvedType = "nil";
+        else return false;
         const Arg* out = namedArg("name");
         if (!out) out = namedArg("type");
         if (!out) out = namedArg("out");
         if (!out) out = outArg("out", 1);
-        return out && unifyExpr(out->value, std::make_shared<StringExpr>(typeString->value), env);
+        return out && unifyExpr(out->value, std::make_shared<StringExpr>(resolvedType), env);
     }
 
     if (call.builtinId == BuiltinId::Instanceof) {
@@ -3747,6 +4071,26 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         args.push_back(value);
     }
 
+    if (term.builtinId == BuiltinId::Type) {
+        if (args.size() != 1) return false;
+        if (auto ast = std::dynamic_pointer_cast<AstValueExpr>(args.front())) {
+            out = std::make_shared<StringExpr>(ast->nodeKind);
+            return true;
+        }
+        if (auto type = std::dynamic_pointer_cast<StringExpr>(
+                findMapValue(args.front(), internalSymbolString(InternalSymbolKind::Type)))) {
+            out = type->clone();
+            return true;
+        }
+        if (std::dynamic_pointer_cast<NumberExpr>(args.front())) out = std::make_shared<StringExpr>("number");
+        else if (std::dynamic_pointer_cast<StringExpr>(args.front())) out = std::make_shared<StringExpr>("string");
+        else if (std::dynamic_pointer_cast<BoolExpr>(args.front())) out = std::make_shared<StringExpr>("bool");
+        else if (std::dynamic_pointer_cast<ArrayExpr>(args.front())) out = std::make_shared<StringExpr>("array");
+        else if (std::dynamic_pointer_cast<NilExpr>(args.front())) out = std::make_shared<StringExpr>("nil");
+        else return false;
+        return true;
+    }
+
     if (term.builtinId == BuiltinId::FnPair) {
         if (args.size() != 2) return false;
         out = std::make_shared<TermExpr>("fn:pair", std::vector<Arg>{{"first", args[0]}, {"last", args[1]}}, BuiltinId::FnPair);
@@ -3805,7 +4149,9 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
                 entries.push_back(MapEntry{arg.name, args[i]});
             }
         }
-        out = std::make_shared<MapExpr>(std::move(entries));
+        auto fact = std::make_shared<MapExpr>(std::move(entries));
+        fact->factType = term.name;
+        out = std::move(fact);
         return true;
     }
 
@@ -3981,13 +4327,29 @@ bool Interpreter::evalCallAsValueOnce(
         }
     }
     if (callableBody && !nativeDeclarationFor(term.name)) {
-        Call call(term.name, {}, term.builtinId);
-        for (size_t i = 0; i < args.size(); ++i) {
-            call.args.push_back(Arg{term.args[i].name, args[i]});
-        }
         if (!callableClauses) return false;
         for (const auto& clause : *callableClauses) {
             if (clause->body.empty() && !isMethodClause(*clause)) continue;
+            Call call(term.name, {}, term.builtinId);
+            const auto parameterPlans = buildMethodParamPlan(*clause);
+            for (size_t argumentIndex = 0; argumentIndex < term.args.size(); ++argumentIndex) {
+                const auto& argument = term.args[argumentIndex];
+                bool preserveAst = false;
+                for (size_t parameterIndex = 0; parameterIndex < clause->head.args.size(); ++parameterIndex) {
+                    const auto& parameter = clause->head.args[parameterIndex];
+                    if ((!argument.name.empty() && argument.name == parameter.name) ||
+                        (argument.name.empty() && argumentIndex == parameterIndex)) {
+                        const auto typeId = parameterPlans[parameterIndex].typeId;
+                        preserveAst = typeId == LanguageTypeId::Expr ||
+                                      typeId == LanguageTypeId::Stmt ||
+                                      typeId == LanguageTypeId::Statements;
+                        break;
+                    }
+                }
+                call.args.push_back(Arg{
+                    argument.name,
+                    preserveAst ? argument.value->clone() : args[argumentIndex]});
+            }
             std::vector<Solution> solutions;
             const bool previousValueCallMode = valueCallMode_;
             {
@@ -4014,6 +4376,10 @@ bool Interpreter::evalCallAsValueOnce(
                     return true;
                 }
             }
+        }
+        Call call(term.name, {}, term.builtinId);
+        for (size_t i = 0; i < args.size(); ++i) {
+            call.args.push_back(Arg{term.args[i].name, args[i]});
         }
         std::vector<Solution> goalSolutions;
         {
@@ -5073,8 +5439,8 @@ bool Interpreter::evalCallAsValueOnce(
 }
 
 bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& env, std::shared_ptr<Expr>& out) {
-    if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
-        return evalPipelineExpr(*pipeline, env, out);
+    if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
+        return evalOperatorExpr(*op, env, out);
     }
     auto resolved = resolveExpr(expr, env);
     if (auto lambda = std::dynamic_pointer_cast<LambdaExpr>(resolved)) {
@@ -5108,37 +5474,6 @@ bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& en
     if (auto term = std::dynamic_pointer_cast<TermExpr>(resolved)) {
         return evalBuiltinTerm(*term, env, out);
     }
-    if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(resolved)) {
-        std::shared_ptr<Expr> left;
-        std::shared_ptr<Expr> right;
-        if (!evalExprValue(binary->left, env, left) || !evalExprValue(binary->right, env, right)) {
-            return false;
-        }
-        auto leftNumber = std::dynamic_pointer_cast<NumberExpr>(left);
-        auto rightNumber = std::dynamic_pointer_cast<NumberExpr>(right);
-        if (leftNumber && rightNumber) {
-            switch (binary->op) {
-                case TokenType::Plus:
-                    out = std::make_shared<NumberExpr>(leftNumber->value + rightNumber->value);
-                    return true;
-                case TokenType::Minus:
-                    out = std::make_shared<NumberExpr>(leftNumber->value - rightNumber->value);
-                    return true;
-                case TokenType::Star:
-                    out = std::make_shared<NumberExpr>(leftNumber->value * rightNumber->value);
-                    return true;
-                case TokenType::Slash:
-                    if (std::fabs(rightNumber->value) < 1e-12) {
-                        throw InterpreterError("DivisionByZero");
-                    }
-                    out = std::make_shared<NumberExpr>(leftNumber->value / rightNumber->value);
-                    return true;
-                default:
-                    break;
-            }
-        }
-        throw InterpreterError("Operator '" + tokenTypeName(binary->op) + "' expects numeric operands");
-    }
     if (auto array = std::dynamic_pointer_cast<ArrayExpr>(resolved)) {
         std::vector<std::shared_ptr<Expr>> items;
         items.reserve(array->items.size());
@@ -5163,6 +5498,7 @@ bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& en
         // discard its runtime-only identity.  This keeps aliases and values
         // retrieved through Fact.all/select attached to the same fact record.
         evaluated->factIdentity = map->factIdentity;
+        evaluated->factType = map->factType;
         out = std::move(evaluated);
         return true;
     }
@@ -5182,21 +5518,615 @@ bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& en
     return true;
 }
 
-bool Interpreter::evalPipelineExpr(const PipelineExpr& pipeline, const Env& env, std::shared_ptr<Expr>& out) {
-    std::shared_ptr<Expr> previous;
-    if (!evalExprValue(pipeline.left, env, previous) || std::dynamic_pointer_cast<NilExpr>(previous)) {
-        out = std::make_shared<NilExpr>();
-        return true;
+bool Interpreter::evalOperatorExpr(const OperatorExpression& expression,
+                                   const Env& env,
+                                   std::shared_ptr<Expr>& out) {
+    if (expression.coreOperator != CoreOperator::Unknown &&
+        operatorClauses_.count(expression.patternId) > 0) {
+        bool matched = false;
+        const bool evaluated = evalCustomOperatorExpr(expression, env, out, &matched);
+        if (matched) return evaluated;
+    }
+    if (expression.coreOperator == CoreOperator::Unknown) {
+        return evalCustomOperatorExpr(expression, env, out);
+    }
+    const auto booleanValue = [](const std::shared_ptr<Expr>& value,
+                                 const char* operatorName) {
+        if (auto boolean = std::dynamic_pointer_cast<BoolExpr>(value)) return boolean->value;
+        if (auto text = std::dynamic_pointer_cast<StringExpr>(value)) {
+            if (text->value == "true") return true;
+            if (text->value == "false") return false;
+        }
+        throw InterpreterError(std::string("Logical operator '") + operatorName +
+                               "' expects boolean operands");
+    };
+    switch (expression.coreOperator) {
+        case CoreOperator::Then: {
+            if (expression.captureCount() != 2) throw InterpreterError("Invalid then operator shape");
+            std::shared_ptr<Expr> previous;
+            if (!evalExprValue(expression.capture(0), env, previous) ||
+                std::dynamic_pointer_cast<NilExpr>(previous)) {
+                out = std::make_shared<NilExpr>();
+                return true;
+            }
+            PipelineResultValueScope pipelineResult(pipelineResults_, previous);
+            std::shared_ptr<Expr> next;
+            if (!evalExprValue(expression.capture(1), env, next) ||
+                std::dynamic_pointer_cast<NilExpr>(next)) {
+                out = std::make_shared<NilExpr>();
+                return true;
+            }
+            out = std::move(next);
+            return true;
+        }
+        case CoreOperator::UnaryMinus:
+        case CoreOperator::UnaryPlus: {
+            if (expression.captureCount() != 1) throw InterpreterError("Invalid unary operator shape");
+            std::shared_ptr<Expr> operand;
+            if (!evalExprValue(expression.capture(0), env, operand)) return false;
+            const auto number = std::dynamic_pointer_cast<NumberExpr>(operand);
+            if (!number) throw InterpreterError("Unary numeric operator expects a number");
+            out = std::make_shared<NumberExpr>(
+                expression.coreOperator == CoreOperator::UnaryMinus ? -number->value : number->value);
+            return true;
+        }
+        case CoreOperator::LogicalNot: {
+            if (expression.captureCount() != 1) throw InterpreterError("Invalid logical not shape");
+            std::shared_ptr<Expr> operand;
+            if (!evalExprValue(expression.capture(0), env, operand)) return false;
+            out = std::make_shared<BoolExpr>(!booleanValue(operand, "not"));
+            return true;
+        }
+        case CoreOperator::LogicalAnd:
+        case CoreOperator::LogicalOr: {
+            if (expression.captureCount() != 2) throw InterpreterError("Invalid logical operator shape");
+            std::shared_ptr<Expr> left;
+            if (!evalExprValue(expression.capture(0), env, left)) return false;
+            const bool leftTruth = booleanValue(
+                left, expression.coreOperator == CoreOperator::LogicalAnd ? "and" : "or");
+            if ((expression.coreOperator == CoreOperator::LogicalAnd && !leftTruth) ||
+                (expression.coreOperator == CoreOperator::LogicalOr && leftTruth)) {
+                out = std::make_shared<BoolExpr>(leftTruth);
+                return true;
+            }
+            std::shared_ptr<Expr> right;
+            if (!evalExprValue(expression.capture(1), env, right)) return false;
+            out = std::make_shared<BoolExpr>(booleanValue(
+                right, expression.coreOperator == CoreOperator::LogicalAnd ? "and" : "or"));
+            return true;
+        }
+        case CoreOperator::Add:
+        case CoreOperator::Subtract:
+        case CoreOperator::Multiply:
+        case CoreOperator::Divide:
+        case CoreOperator::Modulo:
+        case CoreOperator::StrictEqual:
+        case CoreOperator::StrictNotEqual:
+        case CoreOperator::Less:
+        case CoreOperator::LessEqual:
+        case CoreOperator::Greater:
+        case CoreOperator::GreaterEqual:
+            break;
+        default:
+            throw InterpreterError("Unsupported operator id " + std::to_string(expression.operatorId));
     }
 
-    PipelineResultValueScope pipelineResult(pipelineResults_, previous);
-    std::shared_ptr<Expr> next;
-    bool ok = evalExprValue(pipeline.right, env, next);
-    if (!ok || std::dynamic_pointer_cast<NilExpr>(next)) {
-        out = std::make_shared<NilExpr>();
-        return true;
+    if (expression.captureCount() != 2) throw InterpreterError("Invalid binary operator shape");
+    std::shared_ptr<Expr> left;
+    std::shared_ptr<Expr> right;
+    if (!evalExprValue(expression.capture(0), env, left) ||
+        !evalExprValue(expression.capture(1), env, right)) {
+        return false;
     }
-    out = next;
+
+    switch (expression.coreOperator) {
+        case CoreOperator::StrictEqual:
+        case CoreOperator::StrictNotEqual: {
+            const bool equal = exprEqualsLiteral(left, right);
+            out = std::make_shared<BoolExpr>(
+                expression.coreOperator == CoreOperator::StrictEqual ? equal : !equal);
+            return true;
+        }
+        case CoreOperator::Less:
+        case CoreOperator::LessEqual:
+        case CoreOperator::Greater:
+        case CoreOperator::GreaterEqual:
+            out = std::make_shared<BoolExpr>(
+                compareResolved(left, coreOperatorDefinition(expression.coreOperator).token, right));
+            return true;
+        default:
+            break;
+    }
+
+    const auto leftNumber = std::dynamic_pointer_cast<NumberExpr>(left);
+    const auto rightNumber = std::dynamic_pointer_cast<NumberExpr>(right);
+    if (!leftNumber || !rightNumber) {
+        throw InterpreterError(
+            "Operator '" + std::string(coreOperatorDefinition(expression.coreOperator).spelling) +
+            "' expects numeric operands");
+    }
+    switch (expression.coreOperator) {
+        case CoreOperator::Add:
+            out = std::make_shared<NumberExpr>(leftNumber->value + rightNumber->value);
+            return true;
+        case CoreOperator::Subtract:
+            out = std::make_shared<NumberExpr>(leftNumber->value - rightNumber->value);
+            return true;
+        case CoreOperator::Multiply:
+            out = std::make_shared<NumberExpr>(leftNumber->value * rightNumber->value);
+            return true;
+        case CoreOperator::Divide:
+        case CoreOperator::Modulo:
+            if (std::fabs(rightNumber->value) < 1e-12) throw InterpreterError("DivisionByZero");
+            out = std::make_shared<NumberExpr>(
+                expression.coreOperator == CoreOperator::Divide
+                    ? leftNumber->value / rightNumber->value
+                    : std::fmod(leftNumber->value, rightNumber->value));
+            return true;
+        default:
+            break;
+    }
+    throw InterpreterError("Invalid numeric operator id " + std::to_string(expression.operatorId));
+}
+
+bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
+                                         const Env& env,
+                                         std::shared_ptr<Expr>& out,
+                                         bool* matched) {
+    if (matched) *matched = false;
+    const auto clauses = operatorClauses_.find(expression.patternId);
+    if (clauses == operatorClauses_.end()) {
+        if (matched) return false;
+        throw InterpreterError("No overload implementation is registered for operator pattern " +
+                               std::to_string(expression.patternId));
+    }
+    const auto valueType = [&](const std::shared_ptr<Expr>& value) -> std::string {
+        if (auto ast = std::dynamic_pointer_cast<AstValueExpr>(value)) {
+            return ast->valueKind == AstValueKind::Expression ? "expr" :
+                   ast->valueKind == AstValueKind::Statement ? "stmt" : "stmts";
+        }
+        if (std::dynamic_pointer_cast<NumberExpr>(value)) return "number";
+        if (std::dynamic_pointer_cast<StringExpr>(value)) return "string";
+        if (std::dynamic_pointer_cast<BoolExpr>(value)) return "bool";
+        if (std::dynamic_pointer_cast<ArrayExpr>(value)) return "array";
+        if (std::dynamic_pointer_cast<NilExpr>(value)) return "nil";
+        if (auto type = std::dynamic_pointer_cast<StringExpr>(
+                findMapValue(value, internalSymbolString(InternalSymbolKind::Type)))) {
+            return type->value;
+        }
+        return "Fact";
+    };
+
+    // Overload selection must not execute captures. Resolve only immutable
+    // values already present in the frame and direct structural metadata.
+    const auto metadataValue = [&](const auto& self,
+                                   const std::shared_ptr<Expr>& syntax,
+                                   std::unordered_set<SymbolId>& resolving)
+        -> std::shared_ptr<Expr> {
+        if (auto variable = std::dynamic_pointer_cast<VarExpr>(syntax)) {
+            if (!resolving.insert(variable->nameId).second) return syntax;
+            auto local = env.find(variable->name);
+            if (local != env.end()) return self(self, local->second, resolving);
+            auto global = globals_.find(variable->name);
+            if (global != globals_.end()) return self(self, global->second, resolving);
+            return syntax;
+        }
+        if (auto access = std::dynamic_pointer_cast<AccessExpr>(syntax)) {
+            auto target = self(self, access->target, resolving);
+            auto field = findMapValue(target, access->key);
+            return field ? self(self, field, resolving) : syntax;
+        }
+        return syntax;
+    };
+    const auto expressionType = [&](const std::shared_ptr<Expr>& syntax) -> std::string {
+        std::unordered_set<SymbolId> resolving;
+        auto metadata = metadataValue(metadataValue, syntax, resolving);
+        const std::string direct = valueType(metadata);
+        if (direct != "Fact" || std::dynamic_pointer_cast<MapExpr>(metadata)) return direct;
+        if (auto term = std::dynamic_pointer_cast<TermExpr>(metadata)) {
+            if (!term->name.empty() &&
+                std::isupper(static_cast<unsigned char>(term->name.front()))) {
+                return term->name;
+            }
+            return {};
+        }
+        if (auto nested = std::dynamic_pointer_cast<OperatorExpression>(metadata)) {
+            if (nested->coreOperator != CoreOperator::Unknown) {
+                if (isComparisonOperator(nested->coreOperator)) return "bool";
+                if (nested->coreOperator == CoreOperator::Add ||
+                    nested->coreOperator == CoreOperator::Subtract ||
+                    nested->coreOperator == CoreOperator::Multiply ||
+                    nested->coreOperator == CoreOperator::Divide ||
+                    nested->coreOperator == CoreOperator::Modulo ||
+                    nested->coreOperator == CoreOperator::UnaryPlus ||
+                    nested->coreOperator == CoreOperator::UnaryMinus) return "number";
+            }
+            std::string resultType;
+            for (const auto& overload : operators_->overloads()) {
+                if (overload.patternId != nested->patternId ||
+                    (overload.visibility == OperatorVisibility::Private &&
+                     overload.module != nested->module)) continue;
+                if (resultType.empty()) resultType = overload.resultType;
+                else if (resultType != overload.resultType) return {};
+            }
+            return resultType;
+        }
+        return {};
+    };
+    std::vector<std::string> captureTypes;
+    captureTypes.reserve(expression.captureCount());
+    for (size_t i = 0; i < expression.captureCount(); ++i) {
+        captureTypes.push_back(expressionType(expression.capture(i)));
+    }
+
+    struct Candidate {
+        const OperatorOverloadDefinition* overload = nullptr;
+        std::shared_ptr<ClauseStmt> clause;
+        int score = 0;
+        std::vector<std::shared_ptr<Expr>> factorPrototypes;
+    };
+    std::vector<Candidate> candidates;
+    const auto hierarchyRank = [&](const std::string& actual,
+                                   const std::string& expected) {
+        if (actual == expected) return 100;
+        if (expected == "Fact") return 10;
+        if (expected == "OperatorRequirement") {
+            return memory_.isCompatibleType(actual, expected) ? 20 : -1;
+        }
+        std::vector<std::pair<std::string, int>> pending{{actual, 0}};
+        std::unordered_set<std::string> visited;
+        for (size_t index = 0; index < pending.size(); ++index) {
+            const auto [current, distance] = pending[index];
+            if (!visited.insert(current).second) continue;
+            for (const auto& parent : memory_.parentsOf(current)) {
+                if (parent == expected) return std::max(20, 80 - distance - 1);
+                pending.emplace_back(parent, distance + 1);
+            }
+        }
+        return -1;
+    };
+    const auto captureScore = [&](const std::vector<OperatorTypeBinding>& captures,
+                                  int& score) {
+        if (captures.size() != captureTypes.size()) return false;
+        for (size_t i = 0; i < captureTypes.size(); ++i) {
+            const std::string& actual = captureTypes[i];
+            const std::string& expected = captures[i].type;
+            if (expected == "expr") {
+                score += 100;
+                continue;
+            }
+            if (actual.empty()) continue;
+            if (actual == expected) {
+                score += 100;
+            } else if (isFelidaeBuiltinTypeName(expected)) {
+                std::unordered_set<SymbolId> resolving;
+                auto metadata = metadataValue(metadataValue, expression.capture(i), resolving);
+                if (!valueMatchesBuiltinType(metadata, expected)) return false;
+                score += 80;
+            } else if (expected == "Fact") {
+                score += 10;
+            } else {
+                const int rank = hierarchyRank(actual, expected);
+                if (rank < 0) return false;
+                score += rank;
+            }
+        }
+        return true;
+    };
+    const auto matchingClause = [&](SymbolId methodId,
+                                    const std::string& methodName) -> std::shared_ptr<ClauseStmt> {
+        for (const auto& clause : clauses->second) {
+            if (clause->head.nameId == methodId && clause->head.name == methodName) return clause;
+        }
+        return {};
+    };
+    for (const auto& overload : operators_->overloads()) {
+        if (overload.patternId != expression.patternId) continue;
+        if (overload.visibility == OperatorVisibility::Private && overload.module != expression.module) continue;
+        int score = 0;
+        if (!captureScore(overload.captures, score)) continue;
+        if (overload.visibility == OperatorVisibility::Private &&
+            overload.module == expression.module) ++score;
+        const auto overloadClause = matchingClause(overload.methodId, overload.methodName);
+        if (!overloadClause) continue;
+        if (overload.factors.empty()) {
+            candidates.push_back(Candidate{&overload, overloadClause, score, {}});
+            continue;
+        }
+        for (const auto* matcherPtr : operators_->matchersForPattern(expression.patternId)) {
+            const auto& matcher = *matcherPtr;
+            if (matcher.patternId != expression.patternId ||
+                matcher.produces.size() != overload.factors.size()) continue;
+            if (matcher.visibility == OperatorVisibility::Private && matcher.module != expression.module) continue;
+            int matcherScore = score;
+            if (!captureScore(matcher.captures, matcherScore)) continue;
+
+            std::vector<std::size_t> producedForFactor(overload.factors.size(), matcher.produces.size());
+            std::vector<bool> used(matcher.produces.size(), false);
+            bool signatureMatches = true;
+            for (size_t factorIndex = 0; factorIndex < overload.factors.size(); ++factorIndex) {
+                const auto& required = overload.factors[factorIndex];
+                int best = -1;
+                std::size_t bestIndex = matcher.produces.size();
+                for (size_t producedIndex = 0; producedIndex < matcher.produces.size(); ++producedIndex) {
+                    if (used[producedIndex]) continue;
+                    const auto& produced = matcher.produces[producedIndex];
+                    int rank = -1;
+                    if (produced.type == required.type) rank = 100;
+                    else rank = hierarchyRank(produced.type, required.type);
+                    if (rank > best) {
+                        best = rank;
+                        bestIndex = producedIndex;
+                    }
+                }
+                if (bestIndex == matcher.produces.size()) {
+                    signatureMatches = false;
+                    break;
+                }
+                used[bestIndex] = true;
+                producedForFactor[factorIndex] = bestIndex;
+                matcherScore += 1000 + best;
+            }
+            if (!signatureMatches) continue;
+            const auto matcherClause = matchingClause(matcher.methodId, matcher.methodName);
+            if (!matcherClause) continue;
+            const auto nodeKindFor = [](const std::shared_ptr<Expr>& syntax) {
+                if (std::dynamic_pointer_cast<StringExpr>(syntax)) return std::string("string");
+                if (std::dynamic_pointer_cast<NumberExpr>(syntax)) return std::string("number");
+                if (std::dynamic_pointer_cast<BoolExpr>(syntax)) return std::string("bool");
+                if (std::dynamic_pointer_cast<NilExpr>(syntax)) return std::string("nil");
+                if (std::dynamic_pointer_cast<VarExpr>(syntax)) return std::string("variable");
+                if (std::dynamic_pointer_cast<TermExpr>(syntax)) return std::string("call");
+                if (std::dynamic_pointer_cast<OperatorExpression>(syntax)) return std::string("operator");
+                if (std::dynamic_pointer_cast<ArrayExpr>(syntax)) return std::string("array");
+                if (std::dynamic_pointer_cast<MapExpr>(syntax)) return std::string("map");
+                if (std::dynamic_pointer_cast<AccessExpr>(syntax)) return std::string("access");
+                return std::string("expression");
+            };
+            const auto spanValue = [](const SourceSpan& span) {
+                std::vector<MapEntry> fields;
+                fields.emplace_back("startLine", std::make_shared<NumberExpr>(span.startLine));
+                fields.emplace_back("startColumn", std::make_shared<NumberExpr>(span.startColumn));
+                fields.emplace_back("endLine", std::make_shared<NumberExpr>(span.endLine));
+                fields.emplace_back("endColumn", std::make_shared<NumberExpr>(span.endColumn));
+                return std::make_shared<MapExpr>(std::move(fields));
+            };
+            const auto syntaxShape = [&](const auto& self,
+                                         const std::shared_ptr<Expr>& syntax) -> std::shared_ptr<Expr> {
+                std::vector<MapEntry> fields;
+                fields.emplace_back("nodeKind", std::make_shared<StringExpr>(nodeKindFor(syntax)));
+                fields.emplace_back("sourceSpan", spanValue(syntax->sourceSpan));
+                std::vector<std::shared_ptr<Expr>> children;
+                if (auto nested = std::dynamic_pointer_cast<OperatorExpression>(syntax)) {
+                    fields.emplace_back("operatorId", std::make_shared<NumberExpr>(nested->operatorId));
+                    fields.emplace_back("patternId", std::make_shared<NumberExpr>(nested->patternId));
+                    for (size_t child = 0; child < nested->captureCount(); ++child) {
+                        children.push_back(self(self, nested->capture(child)));
+                    }
+                } else if (auto term = std::dynamic_pointer_cast<TermExpr>(syntax)) {
+                    for (const auto& argument : term->args) children.push_back(self(self, argument.value));
+                } else if (auto access = std::dynamic_pointer_cast<AccessExpr>(syntax)) {
+                    children.push_back(self(self, access->target));
+                } else if (auto array = std::dynamic_pointer_cast<ArrayExpr>(syntax)) {
+                    for (const auto& item : array->items) children.push_back(self(self, item));
+                } else if (auto map = std::dynamic_pointer_cast<MapExpr>(syntax)) {
+                    for (const auto& field : map->entries) children.push_back(self(self, field.value));
+                }
+                fields.emplace_back("children", std::make_shared<ArrayExpr>(std::move(children)));
+                return std::make_shared<MapExpr>(std::move(fields));
+            };
+            const auto expressionReference = [&](size_t index) {
+                const auto& syntax = expression.capture(index);
+                std::string nodeKind = nodeKindFor(syntax);
+                std::string literalKind;
+                std::shared_ptr<Expr> literalValue = std::make_shared<NilExpr>();
+                if (auto stringLiteral = std::dynamic_pointer_cast<StringExpr>(syntax)) {
+                    nodeKind = literalKind = "string";
+                    literalValue = stringLiteral->clone();
+                } else if (auto numberLiteral = std::dynamic_pointer_cast<NumberExpr>(syntax)) {
+                    nodeKind = literalKind = "number";
+                    literalValue = numberLiteral->clone();
+                } else if (auto boolLiteral = std::dynamic_pointer_cast<BoolExpr>(syntax)) {
+                    nodeKind = literalKind = "bool";
+                    literalValue = boolLiteral->clone();
+                } else if (std::dynamic_pointer_cast<NilExpr>(syntax)) {
+                    nodeKind = literalKind = "nil";
+                }
+                std::vector<MapEntry> fields;
+                fields.emplace_back(internalSymbolString(InternalSymbolKind::Type),
+                                    std::make_shared<StringExpr>("ExpressionRef"));
+                fields.emplace_back("nodeKind", std::make_shared<StringExpr>(nodeKind));
+                fields.emplace_back("captureName", std::make_shared<StringExpr>(
+                    std::string(expression.captureName(index))));
+                fields.emplace_back("inferredType", std::make_shared<StringExpr>(captureTypes[index]));
+                fields.emplace_back("literalKind", std::make_shared<StringExpr>(literalKind));
+                fields.emplace_back("literalValue", std::move(literalValue));
+                fields.emplace_back("explicitlyGrouped", std::make_shared<BoolExpr>(
+                    std::dynamic_pointer_cast<OperatorExpression>(syntax)
+                        ? std::dynamic_pointer_cast<OperatorExpression>(syntax)->explicitlyGrouped
+                        : false));
+                fields.emplace_back("sourceSpan", spanValue(syntax->sourceSpan));
+                auto shape = std::dynamic_pointer_cast<MapExpr>(syntaxShape(syntaxShape, syntax));
+                fields.emplace_back("children", findMapValue(shape, "children")->clone());
+                return std::make_shared<MapExpr>(std::move(fields));
+            };
+            std::string operatorName;
+            const OperatorPatternDefinition* resolvedPattern = nullptr;
+            for (const auto& pattern : operators_->patterns()) {
+                if (pattern.patternId == expression.patternId) {
+                    operatorName = pattern.operatorName;
+                    resolvedPattern = &pattern;
+                    break;
+                }
+            }
+            std::vector<std::shared_ptr<Expr>> referenceValues;
+            referenceValues.reserve(captureTypes.size());
+            std::vector<std::shared_ptr<Expr>> contextCaptures;
+            contextCaptures.reserve(captureTypes.size());
+            for (size_t i = 0; i < captureTypes.size(); ++i) {
+                auto reference = expressionReference(i);
+                referenceValues.push_back(reference);
+                contextCaptures.push_back(reference->clone());
+            }
+            std::vector<MapEntry> contextFields;
+            contextFields.emplace_back(internalSymbolString(InternalSymbolKind::Type),
+                                       std::make_shared<StringExpr>("OperatorContext"));
+            contextFields.emplace_back("operator", std::make_shared<StringExpr>(operatorName));
+            contextFields.emplace_back("operatorId", std::make_shared<NumberExpr>(expression.operatorId));
+            contextFields.emplace_back("patternId", std::make_shared<NumberExpr>(expression.patternId));
+            contextFields.emplace_back("pattern", std::make_shared<StringExpr>(
+                resolvedPattern ? resolvedPattern->pattern : std::string{}));
+            contextFields.emplace_back("precedence", std::make_shared<NumberExpr>(
+                resolvedPattern ? static_cast<int>(resolvedPattern->precedence) : 0));
+            contextFields.emplace_back("associativity", std::make_shared<StringExpr>(
+                !resolvedPattern ? "none" :
+                resolvedPattern->associativity == OperatorAssociativity::Left ? "left" :
+                resolvedPattern->associativity == OperatorAssociativity::Right ? "right" : "none"));
+            contextFields.emplace_back("explicitlyGrouped",
+                                       std::make_shared<BoolExpr>(expression.explicitlyGrouped));
+            contextFields.emplace_back("sourceSpan", spanValue(expression.sourceSpan));
+            contextFields.emplace_back("captures", std::make_shared<ArrayExpr>(std::move(contextCaptures)));
+            Env guardEnv;
+            guardEnv["context"] = std::make_shared<MapExpr>(std::move(contextFields));
+            for (size_t i = 0; i < matcher.captures.size(); ++i) {
+                guardEnv[matcher.captures[i].name] = referenceValues[i];
+            }
+            bool guardsMatch = true;
+            for (const auto& goal : matcherClause->body) {
+                if (!std::dynamic_pointer_cast<WhereGoal>(goal)) continue;
+                std::vector<Solution> guardSolutions;
+                solveRecursive({goal}, guardEnv, guardSolutions, 1, 0);
+                if (guardSolutions.empty()) {
+                    guardsMatch = false;
+                    break;
+                }
+            }
+            if (!guardsMatch) continue;
+            const ReturnGoal* returned = nullptr;
+            for (const auto& goal : matcherClause->body) {
+                if (auto result = std::dynamic_pointer_cast<ReturnGoal>(goal)) returned = result.get();
+            }
+            if (!returned || returned->fields.size() != 1) continue;
+            const auto wrapper = std::dynamic_pointer_cast<TermExpr>(returned->fields.front().value);
+            if (!wrapper) continue;
+
+            std::vector<std::shared_ptr<Expr>> factorPrototypes;
+            factorPrototypes.reserve(overload.factors.size());
+            for (size_t factorIndex = 0; factorIndex < overload.factors.size(); ++factorIndex) {
+                const auto& produced = matcher.produces[producedForFactor[factorIndex]];
+                const Arg* prototype = nullptr;
+                for (const auto& field : wrapper->args) {
+                    if (field.nameId == produced.nameId && field.name == produced.name) {
+                        prototype = &field;
+                        break;
+                    }
+                }
+                if (!prototype) {
+                    signatureMatches = false;
+                    break;
+                }
+                factorPrototypes.push_back(prototype->value);
+            }
+            if (signatureMatches) {
+                candidates.push_back(Candidate{
+                    &overload, overloadClause, matcherScore, std::move(factorPrototypes)});
+            }
+        }
+    }
+    if (candidates.empty()) {
+        if (matched) return false;
+        throw InterpreterError("No typed overload matches the operator captures");
+    }
+    std::sort(candidates.begin(), candidates.end(), [](const Candidate& left, const Candidate& right) {
+        return left.score > right.score;
+    });
+    if (candidates.size() > 1 && candidates[0].score == candidates[1].score) {
+        throw InterpreterError("Ambiguous operator overload: multiple implementations have equal specificity");
+    }
+    const Candidate& selected = candidates.front();
+    if (matched) *matched = true;
+    std::vector<std::shared_ptr<Expr>> values;
+    values.reserve(expression.captureCount());
+    for (size_t i = 0; i < expression.captureCount(); ++i) {
+        std::shared_ptr<Expr> value;
+        if (selected.overload->captures[i].type == "expr") {
+            value = std::make_shared<AstValueExpr>(
+                AstValueKind::Expression,
+                std::vector<std::shared_ptr<AstNode>>{expression.capture(i)},
+                astNodeKind(expression.capture(i)));
+        } else if (!evalExprValue(expression.capture(i), env, value)) {
+            return false;
+        }
+        values.push_back(std::move(value));
+    }
+    Env methodEnv;
+    for (size_t i = 0; i < values.size(); ++i) {
+        methodEnv[selected.overload->captures[i].name] = values[i];
+    }
+    Env prototypeEnv;
+    for (size_t i = 0; i < values.size(); ++i) {
+        prototypeEnv[selected.overload->captures[i].name] = values[i];
+    }
+    for (size_t i = 0; i < selected.factorPrototypes.size(); ++i) {
+        std::shared_ptr<Expr> materialized;
+        if (!evalExprValue(selected.factorPrototypes[i], prototypeEnv, materialized)) {
+            throw InterpreterError("Requirement prototype could not be materialized after overload selection");
+        }
+        methodEnv[selected.overload->factors[i].name] = std::move(materialized);
+    }
+    std::vector<Solution> solutions;
+    constexpr std::size_t kMaxOperatorManyResults = 1000;
+    const std::size_t solutionLimit = selected.overload->cardinality == OperatorCardinality::Many
+        ? kMaxOperatorManyResults + 1 : 2;
+    solveRecursive(selected.clause->body, methodEnv, solutions, solutionLimit, 0);
+    if (solutions.empty()) {
+        for (const auto& branch : selected.clause->fallbackBranches) {
+            solveRecursive(branch, methodEnv, solutions, solutionLimit, 0);
+            if (!solutions.empty()) break;
+        }
+    }
+    if (selected.overload->cardinality == OperatorCardinality::One && solutions.size() != 1) {
+        throw InterpreterError("Operator overload cardinality 'one' requires exactly one result");
+    }
+    if (selected.overload->cardinality == OperatorCardinality::Optional && solutions.size() > 1) {
+        throw InterpreterError("Operator overload cardinality 'optional' permits at most one result");
+    }
+    if (selected.overload->cardinality == OperatorCardinality::Many &&
+        solutions.size() > kMaxOperatorManyResults) {
+        throw InterpreterError("Operator overload cardinality 'many' exceeded the 1000-result safety limit");
+    }
+    if (solutions.empty()) {
+        if (selected.overload->cardinality == OperatorCardinality::Many) {
+            out = std::make_shared<ArrayExpr>(std::vector<std::shared_ptr<Expr>>{});
+            return true;
+        }
+        out = std::make_shared<NilExpr>();
+        return selected.overload->cardinality == OperatorCardinality::Optional;
+    }
+    std::vector<std::shared_ptr<Expr>> returnedValues;
+    returnedValues.reserve(solutions.size());
+    for (const auto& solution : solutions) {
+        auto returned = solution.env.find(internalSymbolString(InternalSymbolKind::Return));
+        if (returned == solution.env.end()) {
+            throw InterpreterError("Operator overload method did not return a value");
+        }
+        auto value = resolveExpr(returned->second, solution.env)->clone();
+        const std::string actual = valueType(value);
+        if (!selected.overload->resultType.empty() &&
+            actual != selected.overload->resultType &&
+            !(isFelidaeBuiltinTypeName(selected.overload->resultType) &&
+              valueMatchesBuiltinType(value, selected.overload->resultType)) &&
+            !memory_.isCompatibleType(actual, selected.overload->resultType)) {
+            throw InterpreterError("Operator overload returned '" + actual + "', expected '" +
+                                   selected.overload->resultType + "'");
+        }
+        returnedValues.push_back(std::move(value));
+    }
+    if (selected.overload->cardinality == OperatorCardinality::Many) {
+        out = std::make_shared<ArrayExpr>(std::move(returnedValues));
+    } else {
+        out = std::move(returnedValues.front());
+    }
     return true;
 }
 
@@ -5703,16 +6633,28 @@ std::shared_ptr<Expr> Interpreter::renameExpr(const std::shared_ptr<Expr>& expr,
             lambda->op,
             lambda->right ? renameExpr(lambda->right, prefix) : nullptr);
     }
-    if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
-        return std::make_shared<BinaryExpr>(
-            renameExpr(binary->left, prefix),
-            binary->op,
-            renameExpr(binary->right, prefix));
-    }
-    if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
-        return std::make_shared<PipelineExpr>(
-            renameExpr(pipeline->left, prefix),
-            renameExpr(pipeline->right, prefix));
+    if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
+        std::shared_ptr<OperatorExpression> renamed;
+        if (op->coreOperator != CoreOperator::Unknown) {
+            renamed = op->captureCount() == 1
+                ? std::make_shared<OperatorExpression>(op->coreOperator, renameExpr(op->capture(0), prefix))
+                : std::make_shared<OperatorExpression>(
+                      op->coreOperator,
+                      renameExpr(op->capture(0), prefix),
+                      renameExpr(op->capture(1), prefix));
+        } else {
+            std::vector<OperatorCapture> captures;
+            captures.reserve(op->captureCount());
+            for (size_t i = 0; i < op->captureCount(); ++i) {
+                captures.emplace_back(std::string(op->captureName(i)), renameExpr(op->capture(i), prefix));
+            }
+            renamed = std::make_shared<OperatorExpression>(
+                op->operatorId, op->patternId, std::move(captures), op->explicitlyGrouped);
+        }
+        renamed->operatorId = op->operatorId;
+        renamed->patternId = op->patternId;
+        renamed->module = op->module;
+        return renamed;
     }
     return expr;
 }
@@ -5743,11 +6685,11 @@ bool Interpreter::exprNeedsRename(const std::shared_ptr<Expr>& expr) const {
     if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
         return exprNeedsRename(access->target);
     }
-    if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
-        return exprNeedsRename(binary->left) || exprNeedsRename(binary->right);
-    }
-    if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
-        return exprNeedsRename(pipeline->left) || exprNeedsRename(pipeline->right);
+    if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
+        for (size_t i = 0; i < op->captureCount(); ++i) {
+            if (exprNeedsRename(op->capture(i))) return true;
+        }
+        return false;
     }
     // Lambda parameter names are invocation-local even when their current
     // source/body happens not to mention another ordinary variable.
@@ -5860,16 +6802,16 @@ bool Interpreter::exprMayHaveSideEffects(const std::shared_ptr<Expr>& expr) cons
     if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
         return exprMayHaveSideEffects(access->target);
     }
-    if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
-        return exprMayHaveSideEffects(binary->left) || exprMayHaveSideEffects(binary->right);
+    if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
+        for (size_t i = 0; i < op->captureCount(); ++i) {
+            if (exprMayHaveSideEffects(op->capture(i))) return true;
+        }
+        return false;
     }
     if (auto lambda = std::dynamic_pointer_cast<LambdaExpr>(expr)) {
         return exprMayHaveSideEffects(lambda->source) ||
                exprMayHaveSideEffects(lambda->body) ||
                exprMayHaveSideEffects(lambda->right);
-    }
-    if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
-        return exprMayHaveSideEffects(pipeline->left) || exprMayHaveSideEffects(pipeline->right);
     }
     return false;
 }
@@ -5896,6 +6838,7 @@ Interpreter::MethodParamPlan Interpreter::makeMethodParamPlan(const Arg& param) 
     }
     if (plan.typedParam) {
         plan.typeName = typeExpr->name;
+        plan.typeId = languageTypeIdForName(typeExpr->name);
         plan.builtinType = isFelidaeBuiltinTypeName(typeExpr->name);
     }
     return plan;
@@ -5927,6 +6870,11 @@ std::shared_ptr<MapExpr> Interpreter::factToMap(const ClauseStmt& clause) {
     const auto parentNames = clause.parentNames.empty()
         ? std::vector<std::string>{clause.parentName}
         : clause.parentNames;
+    const bool requirementSchema = std::any_of(
+        parentNames.begin(), parentNames.end(), [&](const std::string& parent) {
+            return parent == "OperatorRequirement" ||
+                   memory_.isCompatibleType(parent, "OperatorRequirement");
+        });
     std::set<std::string> childFields;
     for (const auto& arg : clause.head.args) childFields.insert(arg.name);
     for (const auto& parentType : parentNames) {
@@ -5937,6 +6885,7 @@ std::shared_ptr<MapExpr> Interpreter::factToMap(const ClauseStmt& clause) {
             return fact.type == parentType && fact.active;
         });
         if (parent == parentIndexes.end()) {
+            if (parentType == "OperatorRequirement") continue;
             throw InterpreterError("Unknown parent fact/type '" + parentType + "'");
         }
         const auto parentValue = memory_.factValue(*parent);
@@ -5970,14 +6919,22 @@ std::shared_ptr<MapExpr> Interpreter::factToMap(const ClauseStmt& clause) {
     for (const auto& arg : clause.head.args) {
         std::shared_ptr<Expr> value;
         if (!evalExprValue(arg.value, env, value)) {
+            const auto declaredType = std::dynamic_pointer_cast<VarExpr>(arg.value);
+            if (requirementSchema && declaredType &&
+                isFelidaeTypeAnnotationName(declaredType->name)) {
+                value = std::make_shared<StringExpr>(declaredType->name);
+            } else {
             throw InterpreterError("Cannot evaluate fact field '" + arg.name + "' for " + clause.head.name);
+            }
         }
         // Explicit child fields always override inherited values.  This also
         // supplies the required disambiguation for two parents that expose
         // the same field with different values.
         upsertEntry(entries, arg.name, value->clone());
     }
-    return std::make_shared<MapExpr>(std::move(entries));
+    auto fact = std::make_shared<MapExpr>(std::move(entries));
+    fact->factType = clause.head.name;
+    return fact;
 }
 
 std::vector<std::shared_ptr<Expr>> Interpreter::valuesForLambdaSource(const std::shared_ptr<Expr>& source,
@@ -6232,7 +7189,7 @@ void Interpreter::loadProgramFile(const std::filesystem::path& file) {
                 return;
             }
             addStreamedStatement(std::move(statement));
-        });
+        }, operators_);
         streamedModuleMicros_ += static_cast<std::size_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - streamStarted).count());

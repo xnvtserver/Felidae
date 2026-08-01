@@ -84,12 +84,8 @@ void collectExprUses(const std::shared_ptr<Expr>& expr,
         auto targetVar = std::dynamic_pointer_cast<VarExpr>(access->target);
         if (access->key == "result" && targetVar && targetVar->name == "system") return;
         collectExprUses(access->target, vars, calls);
-    } else if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
-        collectExprUses(binary->left, vars, calls);
-        collectExprUses(binary->right, vars, calls);
-    } else if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
-        collectExprUses(pipeline->left, vars, calls);
-        collectExprUses(pipeline->right, vars, calls);
+    } else if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
+        for (size_t i = 0; i < op->captureCount(); ++i) collectExprUses(op->capture(i), vars, calls);
     }
 }
 
@@ -333,12 +329,10 @@ void validateReasoningExpr(const std::shared_ptr<Expr>& expr,
         for (const auto& entry : map->entries) {
             validateReasoningExpr(entry.value, owner, diagnostics);
         }
-    } else if (const auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
-        validateReasoningExpr(binary->left, owner, diagnostics);
-        validateReasoningExpr(binary->right, owner, diagnostics);
-    } else if (const auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
-        validateReasoningExpr(pipeline->left, owner, diagnostics);
-        validateReasoningExpr(pipeline->right, owner, diagnostics);
+    } else if (const auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
+        for (size_t i = 0; i < op->captureCount(); ++i) {
+            validateReasoningExpr(op->capture(i), owner, diagnostics);
+        }
     } else if (const auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
         validateReasoningExpr(access->target, owner, diagnostics);
     } else if (const auto lambda = std::dynamic_pointer_cast<LambdaExpr>(expr)) {
@@ -473,6 +467,16 @@ void AstAnalysisSession::consume(const std::shared_ptr<Statement>& stmt) {
     ++definition.count;
     definition.span = clause->sourceSpan;
     definition.spans.push_back(clause->sourceSpan);
+    for (const auto& annotation : clause->annotations) {
+        if (annotation.builtinId == BuiltinId::OverloadAnnotation ||
+            annotation.builtinId == BuiltinId::MatcherAnnotation) {
+            // Operator dispatch references the annotated implementation even
+            // though no source-level TermExpr call names it.
+            impl_->calls.insert(clause->head.name);
+        } else {
+            impl_->calls.insert(annotation.name);
+        }
+    }
     collectGlobalAssignmentCollisions(
         clause->body, impl_->globals, impl_->diagnostics);
     collectDiscardedExpressions(

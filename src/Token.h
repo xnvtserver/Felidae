@@ -156,7 +156,10 @@ enum class BuiltinId {
     MlDot,
     MlMeanSquaredError,
 
-    Last = MlMeanSquaredError
+    OverloadAnnotation,
+    MatcherAnnotation,
+
+    Last = MatcherAnnotation
 };
 
 enum class LanguageTypeId {
@@ -171,7 +174,10 @@ enum class LanguageTypeId {
     Float,
     Int,
     Number,
-    String
+    String,
+    Expr,
+    Stmt,
+    Statements
 };
 
 inline LanguageTypeId languageTypeIdForName(const std::string& name) {
@@ -186,6 +192,9 @@ inline LanguageTypeId languageTypeIdForName(const std::string& name) {
     if (name == "int") return LanguageTypeId::Int;
     if (name == "number") return LanguageTypeId::Number;
     if (name == "string") return LanguageTypeId::String;
+    if (name == "expr") return LanguageTypeId::Expr;
+    if (name == "stmt") return LanguageTypeId::Stmt;
+    if (name == "stmts") return LanguageTypeId::Statements;
     return LanguageTypeId::Unknown;
 }
 
@@ -211,9 +220,12 @@ enum class TokenType {
     Number,
     Newline,
     BuiltinFunction,
+    CustomOperator,
 
     Import,
     Not,
+    And,
+    Or,
     Then,
     If,
     Else,
@@ -236,6 +248,7 @@ enum class TokenType {
     Dot,
     Pipe,
     Question,
+    At,
 
     Bind,       // :=
     DoubleColon,// ::
@@ -244,6 +257,7 @@ enum class TokenType {
     Minus,      // -
     Star,       // *
     Slash,      // /
+    Percent,    // %
     EqEq,       // ==
     NotEq,      // !=
     LT,         // <
@@ -289,8 +303,11 @@ inline std::string tokenTypeName(TokenType type) {
         case TokenType::Number: return "Number";
         case TokenType::Newline: return "Newline";
         case TokenType::BuiltinFunction: return "BuiltinFunction";
+        case TokenType::CustomOperator: return "CustomOperator";
         case TokenType::Import: return "Import";
         case TokenType::Not: return "not";
+        case TokenType::And: return "and";
+        case TokenType::Or: return "or";
         case TokenType::Then: return "then";
         case TokenType::If: return "if";
         case TokenType::Else: return "else";
@@ -312,6 +329,7 @@ inline std::string tokenTypeName(TokenType type) {
         case TokenType::Dot: return ".";
         case TokenType::Pipe: return "|";
         case TokenType::Question: return "?";
+        case TokenType::At: return "@";
         case TokenType::Bind: return ":=";
         case TokenType::DoubleColon: return "::";
         case TokenType::Arrow: return "=>";
@@ -319,6 +337,7 @@ inline std::string tokenTypeName(TokenType type) {
         case TokenType::Minus: return "-";
         case TokenType::Star: return "*";
         case TokenType::Slash: return "/";
+        case TokenType::Percent: return "%";
         case TokenType::EqEq: return "==";
         case TokenType::NotEq: return "!=";
         case TokenType::LT: return "<";

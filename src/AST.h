@@ -1,10 +1,12 @@
 #pragma once
 
+#include "Operator.h"
 #include "Token.h"
 #include <cstdint>
 #include <iomanip>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -20,11 +22,11 @@ enum class ExprKind {
     Array,
     Map,
     Access,
-    Binary,
-    Pipeline,
+    Operator,
     Term,
     Lambda,
-    FactSelection
+    FactSelection,
+    AstValue
 };
 
 enum class GoalKind {
@@ -193,6 +195,11 @@ public:
         : entries(std::move(entries)) {}
 
     std::vector<MapEntry> entries;
+    // Set only for values created by Felidae fact declarations or
+    // constructors. It is intentionally separate from the visible __type
+    // field so an ordinary map cannot masquerade as a fact at the language
+    // boundary.
+    std::string factType;
     // Runtime-only identity for a value materialized from FactMemory.  It is
     // deliberately absent from debug(), serialization and structural
     // equality: two facts may have equal visible fields while retaining
@@ -208,6 +215,7 @@ public:
         }
         auto result = std::make_shared<MapExpr>(std::move(copied));
         result->factIdentity = factIdentity;
+        result->factType = factType;
         return result;
     }
 
@@ -220,6 +228,30 @@ public:
         }
         oss << "}";
         return oss.str();
+    }
+};
+
+enum class AstValueKind : std::uint8_t { Expression, Statement, Statements };
+
+class AstValueExpr final : public Expr {
+public:
+    AstValueExpr(AstValueKind valueKind,
+                 std::vector<std::shared_ptr<AstNode>> nodes,
+                 std::string nodeKind)
+        : valueKind(valueKind), nodes(std::move(nodes)), nodeKind(std::move(nodeKind)) {}
+
+    AstValueKind valueKind = AstValueKind::Expression;
+    std::vector<std::shared_ptr<AstNode>> nodes;
+    std::string nodeKind;
+
+    ExprKind kind() const override { return ExprKind::AstValue; }
+    std::shared_ptr<Expr> clone() const override {
+        return std::make_shared<AstValueExpr>(valueKind, nodes, nodeKind);
+    }
+    std::string debug() const override {
+        const char* type = valueKind == AstValueKind::Expression ? "expr" :
+                           valueKind == AstValueKind::Statement ? "stmt" : "stmts";
+        return std::string("<") + type + ":" + nodeKind + ">";
     }
 };
 
@@ -286,41 +318,100 @@ public:
     }
 };
 
-class BinaryExpr final : public Expr {
-public:
-    BinaryExpr(std::shared_ptr<Expr> left, TokenType op, std::shared_ptr<Expr> right)
-        : left(std::move(left)), op(std::move(op)), right(std::move(right)) {}
+struct OperatorCapture {
+    OperatorCapture() = default;
+    OperatorCapture(std::string name, std::shared_ptr<Expr> expression)
+        : name(std::move(name)), nameId(symbolIdForName(this->name)), expression(std::move(expression)) {}
 
-    std::shared_ptr<Expr> left;
-    TokenType op;
-    std::shared_ptr<Expr> right;
-
-    ExprKind kind() const override { return ExprKind::Binary; }
-    std::shared_ptr<Expr> clone() const override {
-        return std::make_shared<BinaryExpr>(left->clone(), op, right->clone());
-    }
-
-    std::string debug() const override {
-        return left->debug() + " " + tokenTypeName(op) + " " + right->debug();
-    }
+    std::string name;
+    SymbolId nameId = 0;
+    std::shared_ptr<Expr> expression;
 };
 
-class PipelineExpr final : public Expr {
+class OperatorExpression final : public Expr {
 public:
-    PipelineExpr(std::shared_ptr<Expr> left, std::shared_ptr<Expr> right)
-        : left(std::move(left)), right(std::move(right)) {}
+    OperatorExpression(CoreOperator coreOperator,
+                       std::shared_ptr<Expr> left,
+                       std::shared_ptr<Expr> right)
+        : operatorId(Felidae::operatorId(coreOperator)),
+          patternId(corePatternId(coreOperator)),
+          coreOperator(coreOperator), first_(std::move(left)), second_(std::move(right)),
+          inlineCaptureCount_(2) {}
 
-    std::shared_ptr<Expr> left;
-    std::shared_ptr<Expr> right;
+    OperatorExpression(CoreOperator coreOperator, std::shared_ptr<Expr> operand)
+        : operatorId(Felidae::operatorId(coreOperator)),
+          patternId(corePatternId(coreOperator)),
+          coreOperator(coreOperator), first_(std::move(operand)), inlineCaptureCount_(1) {}
 
-    ExprKind kind() const override { return ExprKind::Pipeline; }
+    OperatorExpression(OperatorId operatorId,
+                       PatternId patternId,
+                       std::vector<OperatorCapture> captures,
+                       bool explicitlyGrouped = false)
+        : operatorId(operatorId), patternId(patternId), coreOperator(CoreOperator::Unknown),
+          explicitlyGrouped(explicitlyGrouped), namedCaptures_(std::move(captures)) {}
+
+    OperatorId operatorId = 0;
+    PatternId patternId = 0;
+    CoreOperator coreOperator = CoreOperator::Unknown;
+    bool explicitlyGrouped = false;
+    std::string module;
+
+    size_t captureCount() const {
+        return coreOperator == CoreOperator::Unknown ? namedCaptures_.size() : inlineCaptureCount_;
+    }
+    const std::shared_ptr<Expr>& capture(size_t index) const {
+        if (coreOperator == CoreOperator::Unknown) return namedCaptures_.at(index).expression;
+        if (index == 0 && inlineCaptureCount_ > 0) return first_;
+        if (index == 1 && inlineCaptureCount_ > 1) return second_;
+        throw std::out_of_range("Operator capture index");
+    }
+    std::string_view captureName(size_t index) const {
+        if (coreOperator == CoreOperator::Unknown) return namedCaptures_.at(index).name;
+        if (inlineCaptureCount_ == 1 && index == 0) return "operand";
+        if (index == 0) return "left";
+        if (index == 1 && inlineCaptureCount_ > 1) return "right";
+        return {};
+    }
+
+    ExprKind kind() const override { return ExprKind::Operator; }
     std::shared_ptr<Expr> clone() const override {
-        return std::make_shared<PipelineExpr>(left->clone(), right->clone());
+        std::shared_ptr<OperatorExpression> result;
+        if (coreOperator != CoreOperator::Unknown) {
+            result = captureCount() == 1
+                ? std::make_shared<OperatorExpression>(coreOperator, capture(0)->clone())
+                : std::make_shared<OperatorExpression>(coreOperator, capture(0)->clone(), capture(1)->clone());
+        } else {
+            std::vector<OperatorCapture> copied;
+            copied.reserve(namedCaptures_.size());
+            for (const auto& capture : namedCaptures_) {
+                copied.emplace_back(capture.name, capture.expression->clone());
+            }
+            result = std::make_shared<OperatorExpression>(operatorId, patternId, std::move(copied), explicitlyGrouped);
+        }
+        result->operatorId = operatorId;
+        result->patternId = patternId;
+        result->explicitlyGrouped = explicitlyGrouped;
+        result->module = module;
+        result->sourceSpan = sourceSpan;
+        return result;
     }
 
     std::string debug() const override {
-        return left->debug() + " then " + right->debug();
+        const auto definition = coreOperatorDefinition(coreOperator);
+        if (definition.fixity == OperatorFixity::Prefix && captureCount() == 1) {
+            return std::string(definition.spelling) + capture(0)->debug();
+        }
+        if (captureCount() == 2) {
+            return capture(0)->debug() + " " + std::string(definition.spelling) + " " + capture(1)->debug();
+        }
+        return "operator(" + std::to_string(operatorId) + ")";
     }
+
+private:
+    std::shared_ptr<Expr> first_;
+    std::shared_ptr<Expr> second_;
+    std::vector<OperatorCapture> namedCaptures_;
+    std::uint8_t inlineCaptureCount_ = 0;
 };
 
 struct Arg {
@@ -757,12 +848,19 @@ public:
     std::vector<std::vector<std::shared_ptr<Goal>>> fallbackBranches;
     bool emptyDeclaration = false;
     ClauseKind clauseKind = ClauseKind::Rule;
+    std::string module;
+    // An annotation is a normal method application evaluated against this
+    // declaration. Built-in annotations and user annotations share this AST.
+    std::vector<Call> annotations;
 
     StatementKind kind() const override { return StatementKind::Clause; }
     bool isFact() const { return clauseKind == ClauseKind::Fact; }
 
     std::string debug() const override {
         std::ostringstream oss;
+        for (const auto& annotation : annotations) {
+            oss << "@" << annotation.debug() << "\n";
+        }
         oss << head.name;
         if (!parentNames.empty()) {
             oss << " extend ";

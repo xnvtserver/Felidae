@@ -13,11 +13,13 @@ struct LoadedProgram {
     Program program;
     std::vector<std::filesystem::path> files;
     std::vector<std::string> unresolvedImports;
+    std::shared_ptr<OperatorRegistry> operators;
 };
 
 struct LoadedSources {
     std::vector<std::filesystem::path> files;
     std::vector<std::string> unresolvedImports;
+    std::shared_ptr<OperatorRegistry> operators;
 };
 
 Program parseText(std::string text);

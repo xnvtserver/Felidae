@@ -59,6 +59,7 @@ public:
     std::string runtimeMetricsJson() const;
     void recordStreamedModuleMicros(std::size_t micros);
     std::size_t syncFactSource(const std::filesystem::path& file);
+    std::shared_ptr<OperatorRegistry> operatorRegistry() const { return operators_; }
 
 private:
     struct ThreadTask {
@@ -73,6 +74,7 @@ private:
     struct MethodParamPlan {
         std::string localName;
         std::string typeName;
+        LanguageTypeId typeId = LanguageTypeId::Unknown;
         bool typedParam = false;
         bool builtinType = false;
     };
@@ -171,7 +173,10 @@ private:
 
     struct ModuleTransactionState {
         std::shared_ptr<ClauseTable> clauses;
+        std::shared_ptr<OperatorRegistry> operators;
+        std::unordered_map<PatternId, std::vector<std::shared_ptr<ClauseStmt>>> operatorClauses;
         std::vector<Call> autoEntryCalls;
+        std::vector<std::shared_ptr<Expr>> autoEntryResults;
         FactMemory memory;
         GlobalEnv globals;
         std::unordered_map<std::uint64_t, std::vector<ReferenceAttachment>> referencesBySource;
@@ -190,8 +195,11 @@ private:
     };
 
     std::shared_ptr<ClauseTable> clauses_ = std::make_shared<ClauseTable>();
+    std::shared_ptr<OperatorRegistry> operators_ = std::make_shared<OperatorRegistry>();
+    std::unordered_map<PatternId, std::vector<std::shared_ptr<ClauseStmt>>> operatorClauses_;
     std::unique_ptr<ModuleTransactionState> moduleTransaction_;
     std::vector<Call> autoEntryCalls_;
+    std::vector<std::shared_ptr<Expr>> autoEntryResults_;
     FactMemory memory_;
     GlobalEnv globals_;
     std::unordered_map<std::string, SolveCacheEntry> solveCache_;
@@ -321,8 +329,15 @@ private:
                                 std::shared_ptr<Expr>& out);
     bool evalCallAsValue(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
     bool evalCallAsValueOnce(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
-    bool evalPipelineExpr(const PipelineExpr& pipeline, const Env& env, std::shared_ptr<Expr>& out);
+    bool evalOperatorExpr(const OperatorExpression& expression,
+                          const Env& env,
+                          std::shared_ptr<Expr>& out);
+    bool evalCustomOperatorExpr(const OperatorExpression& expression,
+                                const Env& env,
+                                std::shared_ptr<Expr>& out,
+                                bool* matched = nullptr);
     bool evalExprValue(const std::shared_ptr<Expr>& expr, const Env& env, std::shared_ptr<Expr>& out);
+    std::shared_ptr<Expr> executeEntryCall(const Call& entryCall);
     bool compareResolved(const std::shared_ptr<Expr>& left,
                          TokenType op,
                          const std::shared_ptr<Expr>& right) const;

@@ -172,19 +172,31 @@ Program parseProgramFile(const fs::path& path) {
 }
 
 Program parseProgramText(std::string text) {
+    auto operators = std::make_shared<OperatorRegistry>();
+    Lexer bootstrapLexer(text);
+    Parser bootstrapParser(bootstrapLexer, operators);
+    bootstrapParser.bootstrapOperatorPatterns();
     Lexer lexer(std::move(text));
-    Parser parser(lexer);
+    Parser parser(lexer, std::move(operators));
     return parser.parseProgram();
 }
 
 void parseProgramFileStatements(
     const fs::path& path,
-    const std::function<void(std::shared_ptr<Statement>)>& consume) {
+    const std::function<void(std::shared_ptr<Statement>)>& consume,
+    std::shared_ptr<OperatorRegistry> operators) {
     const fs::path normalized = resolveProgramEntryPath(path);
+    auto registry = operators ? std::move(operators) : std::make_shared<OperatorRegistry>();
+    std::ifstream bootstrapInput(normalized, std::ios::binary);
+    if (!bootstrapInput) throw std::runtime_error("Cannot open file: " + normalized.string());
+    Lexer bootstrapLexer(bootstrapInput);
+    Parser bootstrapParser(bootstrapLexer, registry, normalized.string());
+    bootstrapParser.bootstrapOperatorPatterns();
+
     std::ifstream input(normalized, std::ios::binary);
     if (!input) throw std::runtime_error("Cannot open file: " + normalized.string());
     Lexer lexer(input);
-    Parser parser(lexer);
+    Parser parser(lexer, std::move(registry), normalized.string());
     parser.parseProgram(consume);
 }
 
@@ -231,7 +243,7 @@ void loadProgramRoot(const fs::path& file,
                     return;
                 }
                 interpreter.addStreamedStatement(std::move(statement));
-            });
+            }, interpreter.operatorRegistry());
         }
         interpreter.commitModuleTransaction();
         interpreter.recordStreamedModuleMicros(static_cast<std::size_t>(
@@ -323,12 +335,8 @@ static void collectVarsExpr(const std::shared_ptr<Expr>& expr, std::vector<std::
         auto targetVar = std::dynamic_pointer_cast<VarExpr>(access->target);
         if (access->keyId == InternalSymbol::ResultId && targetVar && targetVar->nameId == InternalSymbol::SystemId) return;
         collectVarsExpr(access->target, vars);
-    } else if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
-        collectVarsExpr(binary->left, vars);
-        collectVarsExpr(binary->right, vars);
-    } else if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
-        collectVarsExpr(pipeline->left, vars);
-        collectVarsExpr(pipeline->right, vars);
+    } else if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
+        for (size_t i = 0; i < op->captureCount(); ++i) collectVarsExpr(op->capture(i), vars);
     }
 }
 

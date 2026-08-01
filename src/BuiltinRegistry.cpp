@@ -139,7 +139,9 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::MlSigmoid, "ml:sigmoid", BuiltinEffect::Pure},
         {BuiltinId::MlRelu, "ml:relu", BuiltinEffect::Pure},
         {BuiltinId::MlDot, "ml:dot", BuiltinEffect::Pure},
-        {BuiltinId::MlMeanSquaredError, "ml:meanSquaredError", BuiltinEffect::Pure}
+        {BuiltinId::MlMeanSquaredError, "ml:meanSquaredError", BuiltinEffect::Pure},
+        {BuiltinId::OverloadAnnotation, "overload", BuiltinEffect::Pure},
+        {BuiltinId::MatcherAnnotation, "matcher", BuiltinEffect::Pure}
 };
 
 constexpr std::size_t builtinInfoCount() {
