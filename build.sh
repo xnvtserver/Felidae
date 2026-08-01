@@ -184,7 +184,7 @@ fi
 
 COMMON_SOURCES=(
     src/FelidaeRuntime.cpp src/BuiltinRegistry.cpp
-    src/Lexer.cpp src/Parser.cpp src/Interpreter.cpp src/Env.cpp
+    src/Lexer.cpp src/Parser.cpp src/Interpreter.cpp src/ReasoningRuntime.cpp src/Env.cpp
     src/Memory.cpp src/NativeRuntime.cpp
 )
 CELIDAE_SOURCES=(
