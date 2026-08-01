@@ -1,0 +1,22 @@
+id = "felidae"
+name = "Felidae"
+description = "Syntax highlighting, indentation, and outline support for the Felidae (.fx) language."
+version = "0.1.0"
+schema_version = 1
+authors = ["Felidae Project"]
+repository = "https://github.com/xnvtserver/Felidae"
+
+[grammars.felidae]
+# tree-sitter-felidae/ (see ../tree-sitter-felidae, "intentionally kept
+# separate from the C++ parser" per its README) currently lives inside this
+# monorepo, not as its own published git repository. Zed builds a grammar
+# by `git clone`-ing `repository` at `rev`, so before this extension can be
+# installed (as anything other than a Zed "dev extension" pointed at a
+# local checkout - see README.md), tree-sitter-felidae needs to be pushed
+# to a git repository Zed can fetch, and `rev` filled in with the resulting
+# commit SHA. Verify against Zed's current extension docs whether the
+# grammar must live at that repository's root or a subdirectory is
+# supported, since that determines whether tree-sitter-felidae needs to
+# move to its own repository or can stay nested here.
+repository = "https://github.com/xnvtserver/Felidae"
+rev = "REPLACE_WITH_TREE_SITTER_FELIDAE_COMMIT_SHA"
