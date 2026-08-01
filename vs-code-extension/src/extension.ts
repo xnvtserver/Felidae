@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as childProcess from "child_process";
 import * as fs from "fs";
 import * as path from "path";
+import { FelidaeDocumentFormattingEditProvider } from "./formatter";
 
 type TokenKind =
   | "ident"
@@ -3310,6 +3311,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("felidae.debugMain", debugMain),
     vscode.commands.registerCommand("felidae.runQuery", runQuery),
     vscode.commands.registerCommand("felidae.visualize", (uri?: vscode.Uri) => visualizeFelidae(context, uri)),
+    vscode.commands.registerCommand("felidae.formatDocument", () => vscode.commands.executeCommand("editor.action.formatDocument")),
     vscode.workspace.onDidOpenTextDocument((document) => {
       refreshDiagnostics(document);
       refreshMainContext();
@@ -3352,6 +3354,10 @@ export function activate(context: vscode.ExtensionContext): void {
       { language: "felidae" },
       new FelidaeCodeActionProvider(),
       { providedCodeActionKinds: FelidaeCodeActionProvider.providedCodeActionKinds }
+    ),
+    vscode.languages.registerDocumentFormattingEditProvider(
+      { language: "felidae" },
+      new FelidaeDocumentFormattingEditProvider()
     ),
     vscode.debug.registerDebugConfigurationProvider("felidae", new FelidaeDebugConfigurationProvider()),
     vscode.debug.registerDebugAdapterDescriptorFactory("felidae", new FelidaeDebugAdapterFactory())

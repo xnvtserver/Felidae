@@ -39,6 +39,7 @@ const vscode = __importStar(require("vscode"));
 const childProcess = __importStar(require("child_process"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const formatter_1 = require("./formatter");
 const semanticLegend = new vscode.SemanticTokensLegend(["variable", "method"], ["readonly"]);
 const FELIDAE_BUILTIN_TYPE_NAMES = new Set([
     "any", "array", "bool", "boolean", "decimal", "double", "float", "int", "number", "string"
@@ -3000,7 +3001,7 @@ function activate(context) {
         refreshDiagnostics(document);
     }
     refreshMainContext();
-    context.subscriptions.push(diagnostics, vscode.commands.registerCommand("felidae.runMain", runMain), vscode.commands.registerCommand("felidae.debugMain", debugMain), vscode.commands.registerCommand("felidae.runQuery", runQuery), vscode.commands.registerCommand("felidae.visualize", (uri) => visualizeFelidae(context, uri)), vscode.workspace.onDidOpenTextDocument((document) => {
+    context.subscriptions.push(diagnostics, vscode.commands.registerCommand("felidae.runMain", runMain), vscode.commands.registerCommand("felidae.debugMain", debugMain), vscode.commands.registerCommand("felidae.runQuery", runQuery), vscode.commands.registerCommand("felidae.visualize", (uri) => visualizeFelidae(context, uri)), vscode.commands.registerCommand("felidae.formatDocument", () => vscode.commands.executeCommand("editor.action.formatDocument")), vscode.workspace.onDidOpenTextDocument((document) => {
         refreshDiagnostics(document);
         refreshMainContext();
     }), vscode.workspace.onDidChangeTextDocument((event) => {
@@ -3022,7 +3023,7 @@ function activate(context) {
         if (editor)
             refreshDiagnostics(editor.document);
         refreshMainContext();
-    }), vscode.languages.registerDocumentLinkProvider({ language: "felidae" }, new FelidaeDocumentLinkProvider()), vscode.languages.registerHoverProvider({ language: "felidae" }, new FelidaeHoverProvider()), vscode.languages.registerDefinitionProvider({ language: "felidae" }, new FelidaeDefinitionProvider()), vscode.languages.registerFoldingRangeProvider({ language: "felidae" }, new FelidaeFoldingRangeProvider()), vscode.languages.registerCodeLensProvider({ language: "felidae" }, new FelidaeCodeLensProvider()), vscode.languages.registerDocumentSemanticTokensProvider({ language: "felidae" }, new FelidaeSemanticTokensProvider(), semanticLegend), vscode.languages.registerDocumentSymbolProvider({ language: "felidae" }, new FelidaeDocumentSymbolProvider()), vscode.languages.registerCompletionItemProvider({ language: "felidae" }, new FelidaeCompletionItemProvider(), ".", "(", ","), vscode.languages.registerCodeActionsProvider({ language: "felidae" }, new FelidaeCodeActionProvider(), { providedCodeActionKinds: FelidaeCodeActionProvider.providedCodeActionKinds }), vscode.debug.registerDebugConfigurationProvider("felidae", new FelidaeDebugConfigurationProvider()), vscode.debug.registerDebugAdapterDescriptorFactory("felidae", new FelidaeDebugAdapterFactory()));
+    }), vscode.languages.registerDocumentLinkProvider({ language: "felidae" }, new FelidaeDocumentLinkProvider()), vscode.languages.registerHoverProvider({ language: "felidae" }, new FelidaeHoverProvider()), vscode.languages.registerDefinitionProvider({ language: "felidae" }, new FelidaeDefinitionProvider()), vscode.languages.registerFoldingRangeProvider({ language: "felidae" }, new FelidaeFoldingRangeProvider()), vscode.languages.registerCodeLensProvider({ language: "felidae" }, new FelidaeCodeLensProvider()), vscode.languages.registerDocumentSemanticTokensProvider({ language: "felidae" }, new FelidaeSemanticTokensProvider(), semanticLegend), vscode.languages.registerDocumentSymbolProvider({ language: "felidae" }, new FelidaeDocumentSymbolProvider()), vscode.languages.registerCompletionItemProvider({ language: "felidae" }, new FelidaeCompletionItemProvider(), ".", "(", ","), vscode.languages.registerCodeActionsProvider({ language: "felidae" }, new FelidaeCodeActionProvider(), { providedCodeActionKinds: FelidaeCodeActionProvider.providedCodeActionKinds }), vscode.languages.registerDocumentFormattingEditProvider({ language: "felidae" }, new formatter_1.FelidaeDocumentFormattingEditProvider()), vscode.debug.registerDebugConfigurationProvider("felidae", new FelidaeDebugConfigurationProvider()), vscode.debug.registerDebugAdapterDescriptorFactory("felidae", new FelidaeDebugAdapterFactory()));
 }
 function deactivate() { }
 //# sourceMappingURL=extension.js.map

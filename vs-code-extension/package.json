@@ -24,6 +24,7 @@
     "onCommand:felidae.debugMain",
     "onCommand:felidae.runQuery",
     "onCommand:felidae.visualize",
+    "onCommand:felidae.formatDocument",
     "onDebugInitialConfigurations:felidae",
     "onDebugResolve:felidae"
   ],
@@ -97,6 +98,11 @@
         "command": "felidae.visualize",
         "title": "Felidae: Visualize",
         "icon": "$(type-hierarchy-sub)"
+      },
+      {
+        "command": "felidae.formatDocument",
+        "title": "Felidae: Format Document",
+        "icon": "$(list-flat)"
       }
     ],
     "debuggers": [
@@ -202,6 +208,11 @@
           "command": "felidae.visualize",
           "when": "resourceLangId == felidae",
           "group": "navigation"
+        },
+        {
+          "command": "felidae.formatDocument",
+          "when": "resourceLangId == felidae",
+          "group": "1_modification"
         }
       ]
     }

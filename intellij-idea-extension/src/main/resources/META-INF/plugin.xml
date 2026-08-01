@@ -152,6 +152,25 @@
                     keymap="$default"
                     first-keystroke="ctrl alt F11"/>
         </action>
+
+        <action
+                id="Felidae.FormatFile"
+                class="local.felidae.intellij.actions.FelidaeFormatAction"
+                text="Format Felidae File"
+                description="Reformat the current Felidae file's indentation, blank lines, and trailing whitespace"
+                icon="AllIcons.Actions.ReformatCode">
+
+            <add-to-group
+                    group-id="ToolsMenu"
+                    anchor="last"/>
+            <add-to-group
+                    group-id="EditorPopupMenu"
+                    anchor="last"/>
+
+            <keyboard-shortcut
+                    keymap="$default"
+                    first-keystroke="ctrl alt F8"/>
+        </action>
     </actions>
 </idea-plugin>
 

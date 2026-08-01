@@ -16,6 +16,7 @@ $commonSources = @(
     "src/Lexer.cpp",
     "src/Parser.cpp",
     "src/Interpreter.cpp",
+    "src/ReasoningRuntime.cpp",
     "src/Env.cpp",
     "src/Memory.cpp",
     "src/NativeRuntime.cpp"
