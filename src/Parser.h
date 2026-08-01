@@ -5,6 +5,7 @@
 #include "Token.h"
 #include <functional>
 #include <map>
+#include <memory>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -19,11 +20,18 @@ public:
 
 class Parser {
 public:
-    explicit Parser(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
-    explicit Parser(Lexer& lexer) : lexer_(&lexer) {}
+    explicit Parser(std::vector<Token> tokens,
+                    std::shared_ptr<OperatorRegistry> operators = std::make_shared<OperatorRegistry>(),
+                    std::string module = {})
+        : tokens_(std::move(tokens)), operators_(std::move(operators)), module_(std::move(module)) {}
+    explicit Parser(Lexer& lexer,
+                    std::shared_ptr<OperatorRegistry> operators = std::make_shared<OperatorRegistry>(),
+                    std::string module = {})
+        : lexer_(&lexer), operators_(std::move(operators)), module_(std::move(module)) {}
 
     Program parseProgram();
     void parseProgram(const std::function<void(std::shared_ptr<Statement>)>& consume);
+    void bootstrapOperatorPatterns();
     std::vector<std::shared_ptr<Goal>> parseQuery();
     std::shared_ptr<Expr> parseExpressionText();
 
@@ -34,8 +42,12 @@ private:
     std::map<std::string, std::set<std::string>> predicateFields_;
     std::set<std::string> knownTypes_;
     std::set<std::string> methodPredicates_;
+    std::set<std::string> annotationBindings_;
+    std::shared_ptr<OperatorRegistry> operators_;
+    std::string module_;
     size_t pos_ = 0;
     size_t anonymousCounter_ = 0;
+    bool parsingOperatorAnnotation_ = false;
     std::uint64_t nodeCounter_ = 0;
 
     void ensureToken(size_t index) const;
@@ -58,8 +70,10 @@ private:
                    int startColumn);
 
     std::shared_ptr<Statement> parseStatement();
+    Call parseAnnotation();
     std::shared_ptr<ImportStmt> parseImport();
-    std::shared_ptr<ClauseStmt> parseClause();
+    std::shared_ptr<ClauseStmt> parseClause(std::vector<Call> annotations = {});
+    void prepareOperatorAnnotation(const Call& annotation);
     bool parseEmptyDeclarationBody();
     void parseRuleBody(const Call& head,
                        std::vector<std::shared_ptr<Goal>>& body,
@@ -78,6 +92,8 @@ private:
 
     std::shared_ptr<Goal> parseGoal();
     std::shared_ptr<Goal> parseIfGoal();
+    std::shared_ptr<BinaryGoal> comparisonGoal(const std::shared_ptr<Expr>& expr,
+                                               const std::string& message) const;
     bool isMultiAssignmentStart() const;
     std::vector<AssignmentTarget> parseAssignmentTargets();
     std::vector<std::shared_ptr<Goal>> parseGoalConjunction();
@@ -85,19 +101,22 @@ private:
     void splitFallbackPrelude(std::vector<std::shared_ptr<Goal>>& primary,
                               std::vector<std::vector<std::shared_ptr<Goal>>>& fallbackBranches) const;
     std::shared_ptr<Expr> parseExpr();
+    std::shared_ptr<Expr> parseOperatorExpr(int minimumPrecedence,
+                                           bool stopAtThen = false,
+                                           std::string_view stopAnchor = {});
+    void consumePatternAnchor(std::string_view anchor);
     std::shared_ptr<Expr> parseAccessExpr();
-    std::shared_ptr<Expr> parseAdditiveExpr();
-    std::shared_ptr<Expr> parseMultiplicativeExpr();
     std::shared_ptr<Expr> parseUnaryExpr();
     std::shared_ptr<Expr> parsePrimaryExpr();
     std::shared_ptr<Expr> parseLambdaExpr();
     std::shared_ptr<Expr> parseMapExpr();
     std::shared_ptr<Expr> parseArrayExpr();
-    std::shared_ptr<Expr> foldConstantBinary(std::shared_ptr<Expr> left,
-                                             TokenType op,
-                                             std::shared_ptr<Expr> right) const;
+    std::shared_ptr<Expr> makeOperatorExpr(CoreOperator op,
+                                           std::shared_ptr<Expr> left,
+                                           std::shared_ptr<Expr> right) const;
 
     bool isMethodStyleHead(const Call& head) const;
+    std::string typeAnnotationName(const std::shared_ptr<Expr>& expression) const;
     bool isTypeNameKnown(const std::string& name) const;
     void validateCallFields(const Call& call) const;
     bool containsAccessExpr(const std::shared_ptr<Expr>& expr) const;

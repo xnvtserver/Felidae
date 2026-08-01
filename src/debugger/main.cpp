@@ -1,5 +1,6 @@
 #include "debugger/AstAnalyzer.h"
 #include "BuiltinRegistry.h"
+#include "OperatorAnnotation.h"
 #include "tooling/SourceParser.h"
 #include "Version.h"
 
@@ -33,6 +34,7 @@ struct DebugOptions {
     bool listLibraries = false;
     bool listBuiltins = false;
     bool symbolsJson = false;
+    bool operatorsJson = false;
     bool version = false;
     bool help = false;
     std::optional<fs::path> programFile;
@@ -80,6 +82,10 @@ static DebugOptions parseDebugCli(int argc, char** argv) {
             options.symbolsJson = true;
             continue;
         }
+        if (arg == "--operators-json") {
+            options.operatorsJson = true;
+            continue;
+        }
         if (arg == "--version" || arg == "-v") {
             options.version = true;
             continue;
@@ -125,6 +131,8 @@ static void printDebugUsage(std::ostream& out) {
         << "  --symbols-json   Print a JSON symbol table (methods, facts, globals with\n"
         << "                   source spans, plus resolved files and unresolved imports)\n"
         << "                   for <file.fx>. Always follows imports, like --lsp diagnostics.\n"
+        << "  --operators-json Print versioned, non-executing dynamic operator metadata\n"
+        << "                   for <file.fx>, including imported public contracts.\n"
         << "  --version, -v    Print {name, version} as JSON.\n";
 }
 
@@ -260,6 +268,141 @@ static std::string symbolsJson(
         << ",\"facts\":" << symbolDefinitionsJson(symbols.facts)
         << ",\"globals\":" << symbolDefinitionsJson(symbols.globals)
         << ",\"files\":[";
+    for (size_t i = 0; i < files.size(); ++i) {
+        if (i) out << ",";
+        out << "\"" << jsonEscape(files[i].string()) << "\"";
+    }
+    out << "],\"unresolvedImports\":[";
+    for (size_t i = 0; i < unresolvedImports.size(); ++i) {
+        if (i) out << ",";
+        out << "\"" << jsonEscape(unresolvedImports[i]) << "\"";
+    }
+    out << "]}";
+    return out.str();
+}
+
+static const char* operatorPrecedenceName(OperatorPrecedence value) {
+    switch (value) {
+        case OperatorPrecedence::Control: return "control";
+        case OperatorPrecedence::LogicalOr: return "logical-or";
+        case OperatorPrecedence::LogicalAnd: return "logical-and";
+        case OperatorPrecedence::Relationship: return "relationship";
+        case OperatorPrecedence::Ordering: return "ordering";
+        case OperatorPrecedence::Pipeline: return "pipeline";
+        case OperatorPrecedence::Additive: return "additive";
+        case OperatorPrecedence::Multiplicative: return "multiplicative";
+        case OperatorPrecedence::Prefix: return "prefix";
+    }
+    return "relationship";
+}
+
+static const char* operatorAssociativityName(OperatorAssociativity value) {
+    switch (value) {
+        case OperatorAssociativity::None: return "none";
+        case OperatorAssociativity::Left: return "left";
+        case OperatorAssociativity::Right: return "right";
+    }
+    return "none";
+}
+
+static const char* operatorFixityName(OperatorFixity value) {
+    switch (value) {
+        case OperatorFixity::Prefix: return "prefix";
+        case OperatorFixity::Infix: return "infix";
+        case OperatorFixity::Postfix: return "postfix";
+        case OperatorFixity::Mixfix: return "mixfix";
+    }
+    return "infix";
+}
+
+static const char* operatorVisibilityName(OperatorVisibility value) {
+    return value == OperatorVisibility::Public ? "public" : "private";
+}
+
+static const char* operatorCardinalityName(OperatorCardinality value) {
+    switch (value) {
+        case OperatorCardinality::One: return "one";
+        case OperatorCardinality::Optional: return "optional";
+        case OperatorCardinality::Many: return "many";
+    }
+    return "one";
+}
+
+static std::string operatorBindingsJson(const std::vector<OperatorTypeBinding>& bindings) {
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < bindings.size(); ++i) {
+        if (i) out << ",";
+        out << "{\"name\":\"" << jsonEscape(bindings[i].name)
+            << "\",\"nameId\":" << bindings[i].nameId
+            << ",\"type\":\"" << jsonEscape(bindings[i].type)
+            << "\",\"typeId\":" << bindings[i].typeId << "}";
+    }
+    out << "]";
+    return out.str();
+}
+
+static std::string operatorMetadataJson(const OperatorRegistry& registry,
+                                        const std::vector<fs::path>& files,
+                                        const std::vector<std::string>& unresolvedImports) {
+    std::ostringstream out;
+    out << "{\"protocol\":\"felidae.operator-metadata\",\"version\":1,\"patterns\":[";
+    const auto& patterns = registry.patterns();
+    for (size_t i = 0; i < patterns.size(); ++i) {
+        if (i) out << ",";
+        const auto& pattern = patterns[i];
+        out << "{\"operatorId\":" << pattern.operatorId
+            << ",\"patternId\":" << pattern.patternId
+            << ",\"operator\":\"" << jsonEscape(pattern.operatorName)
+            << "\",\"pattern\":\"" << jsonEscape(pattern.pattern)
+            << "\",\"precedence\":\"" << operatorPrecedenceName(pattern.precedence)
+            << "\",\"associativity\":\"" << operatorAssociativityName(pattern.associativity)
+            << "\",\"fixity\":\"" << operatorFixityName(pattern.fixity)
+            << "\",\"visibility\":\"" << operatorVisibilityName(pattern.visibility)
+            << "\",\"module\":\"" << jsonEscape(pattern.module) << "\",\"anchors\":[";
+        for (size_t a = 0; a < pattern.anchors.size(); ++a) {
+            if (a) out << ",";
+            out << "\"" << jsonEscape(pattern.anchors[a]) << "\"";
+        }
+        out << "],\"captures\":[";
+        for (size_t c = 0; c < pattern.captureNames.size(); ++c) {
+            if (c) out << ",";
+            out << "\"" << jsonEscape(pattern.captureNames[c]) << "\"";
+        }
+        out << "]}";
+    }
+    out << "],\"overloads\":[";
+    const auto& overloads = registry.overloads();
+    for (size_t i = 0; i < overloads.size(); ++i) {
+        if (i) out << ",";
+        const auto& overload = overloads[i];
+        out << "{\"operatorId\":" << overload.operatorId
+            << ",\"patternId\":" << overload.patternId
+            << ",\"method\":\"" << jsonEscape(overload.methodName)
+            << "\",\"methodId\":" << overload.methodId
+            << ",\"captures\":" << operatorBindingsJson(overload.captures)
+            << ",\"factors\":" << operatorBindingsJson(overload.factors)
+            << ",\"result\":\"" << jsonEscape(overload.resultType)
+            << "\",\"cardinality\":\"" << operatorCardinalityName(overload.cardinality)
+            << "\",\"effects\":\"" << (overload.effect == OperatorEffect::Pure ? "pure" : "impure")
+            << "\",\"visibility\":\"" << operatorVisibilityName(overload.visibility)
+            << "\",\"module\":\"" << jsonEscape(overload.module) << "\"}";
+    }
+    out << "],\"matchers\":[";
+    const auto& matchers = registry.matchers();
+    for (size_t i = 0; i < matchers.size(); ++i) {
+        if (i) out << ",";
+        const auto& matcher = matchers[i];
+        out << "{\"operatorId\":" << matcher.operatorId
+            << ",\"patternId\":" << matcher.patternId
+            << ",\"method\":\"" << jsonEscape(matcher.methodName)
+            << "\",\"methodId\":" << matcher.methodId
+            << ",\"captures\":" << operatorBindingsJson(matcher.captures)
+            << ",\"produces\":" << operatorBindingsJson(matcher.produces)
+            << ",\"visibility\":\"" << operatorVisibilityName(matcher.visibility)
+            << "\",\"module\":\"" << jsonEscape(matcher.module) << "\"}";
+    }
+    out << "],\"files\":[";
     for (size_t i = 0; i < files.size(); ++i) {
         if (i) out << ",";
         out << "\"" << jsonEscape(files[i].string()) << "\"";
@@ -492,6 +635,46 @@ static std::string symbolsFileJson(const fs::path& path, bool loadImports) {
     }
 }
 
+static std::string operatorsFileJson(const fs::path& path, bool loadImports) {
+    try {
+        std::vector<std::shared_ptr<ClauseStmt>> clauses;
+        auto loaded = Tooling::loadProgramStatements(
+            path, loadImports, [&](const std::shared_ptr<Statement>& statement) {
+                if (auto clause = std::dynamic_pointer_cast<ClauseStmt>(statement)) {
+                    clauses.push_back(std::move(clause));
+                }
+            });
+        if (!loaded.operators) return errorJson("Operator metadata registry was not created");
+        for (const auto& clause : clauses) {
+            for (const auto& annotation : clause->annotations) {
+                if (annotation.builtinId != BuiltinId::OverloadAnnotation &&
+                    annotation.builtinId != BuiltinId::MatcherAnnotation) continue;
+                auto parsed = decodeOperatorAnnotation(annotation);
+                const auto* pattern = parsed.pattern.empty()
+                    ? loaded.operators->findPatternByOperator(parsed.operatorName)
+                    : loaded.operators->findPattern(parsed.operatorName, parsed.pattern);
+                if (!pattern) throw std::runtime_error(
+                    "Operator annotation pattern was not registered for metadata");
+                if (!parsed.hasVisibility) {
+                    parsed.visibility = loaded.operators->visibilityForPattern(
+                        pattern->patternId, clause->module);
+                }
+                if (annotation.builtinId == BuiltinId::MatcherAnnotation) {
+                    loaded.operators->registerMatcher(makeOperatorMatcherDefinition(
+                        parsed, *pattern, clause->head.name, clause->head.nameId, clause->module));
+                } else {
+                    loaded.operators->registerOverload(makeOperatorOverloadDefinition(
+                        parsed, *pattern, clause->head.name, clause->head.nameId, clause->module));
+                }
+            }
+        }
+        return operatorMetadataJson(
+            *loaded.operators, loaded.files, loaded.unresolvedImports);
+    } catch (const std::exception& e) {
+        return errorJson(e.what());
+    }
+}
+
 static void writeLspMessage(const std::string& body) {
     std::cout << "Content-Length: " << body.size() << "\r\n\r\n" << body << std::flush;
 }
@@ -646,6 +829,10 @@ int main(int argc, char** argv) {
 
         if (options.symbolsJson) {
             std::cout << symbolsFileJson(*options.programFile, options.loadImports) << "\n" << std::flush;
+            return 0;
+        }
+        if (options.operatorsJson) {
+            std::cout << operatorsFileJson(*options.programFile, options.loadImports) << "\n" << std::flush;
             return 0;
         }
 

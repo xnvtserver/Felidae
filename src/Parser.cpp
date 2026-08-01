@@ -1,5 +1,6 @@
 #include "Parser.h"
 #include "BuiltinRegistry.h"
+#include "OperatorAnnotation.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -232,9 +233,46 @@ std::shared_ptr<Expr> Parser::parseExpressionText() {
     return expr;
 }
 
+void Parser::bootstrapOperatorPatterns() {
+    while (!isAtEnd()) {
+        if (!check(TokenType::At)) {
+            advance();
+            continue;
+        }
+        Call annotation = parseAnnotation();
+        if (annotation.builtinId != BuiltinId::OverloadAnnotation) continue;
+        ParsedOperatorAnnotation parsed;
+        try {
+            parsed = decodeOperatorAnnotation(annotation);
+        } catch (const std::runtime_error& error) {
+            throw ParserError(error.what());
+        }
+        if (parsed.pattern.empty()) continue;
+        OperatorPatternDefinition pattern;
+        pattern.operatorName = parsed.operatorName;
+        pattern.pattern = parsed.pattern;
+        pattern.precedence = parsed.precedence;
+        pattern.associativity = parsed.associativity;
+        pattern.fixity = parsed.fixity;
+        pattern.hasDeclaredFixity = parsed.hasFixity;
+        pattern.visibility = parsed.visibility;
+        pattern.module = module_;
+        try {
+            operators_->registerPattern(std::move(pattern));
+        } catch (const std::runtime_error& error) {
+            throw ParserError(error.what());
+        }
+    }
+}
+
 std::shared_ptr<Statement> Parser::parseStatement() {
     const int startLine = peek().line;
     const int startColumn = peek().column;
+    std::vector<Call> annotations;
+    while (check(TokenType::At)) {
+        annotations.push_back(parseAnnotation());
+        consumeLogicalNewline();
+    }
     ensureToken(pos_ + 3);
     if (isAssignmentToChain(tokens_, pos_, {"system", "result"})) {
         throw ParserError("system.result is read-only and can only be read inside a then pipeline");
@@ -245,6 +283,11 @@ std::shared_ptr<Statement> Parser::parseStatement() {
     }
     if (check(TokenType::Where)) {
         throw ParserError("'where' is only valid inside a method body.");
+    }
+    if (!annotations.empty() &&
+        (check(TokenType::Import) ||
+         (check(TokenType::Ident) && hasToken(pos_ + 1) && tokenAt(pos_ + 1).type == TokenType::Bind))) {
+        throw ParserError("Annotations can only be applied to method declarations");
     }
     std::shared_ptr<Statement> statement;
     if (check(TokenType::Import)) {
@@ -259,9 +302,30 @@ std::shared_ptr<Statement> Parser::parseStatement() {
         stampNode(statement, startLine, startColumn);
         return statement;
     }
-    statement = parseClause();
+    statement = parseClause(std::move(annotations));
     stampNode(statement, startLine, startColumn);
     return statement;
+}
+
+Call Parser::parseAnnotation() {
+    consume(TokenType::At, "Expected '@'");
+    const std::string name = parseQualifiedName();
+    if (!check(TokenType::LParen)) {
+        throw ParserError("Annotation method '" + name + "' requires an argument list");
+    }
+    const bool previous = parsingOperatorAnnotation_;
+    const BuiltinId annotationId = builtinIdForName(name);
+    parsingOperatorAnnotation_ =
+        annotationId == BuiltinId::OverloadAnnotation ||
+        annotationId == BuiltinId::MatcherAnnotation;
+    try {
+        Call annotation = parseCallFromName(name, false);
+        parsingOperatorAnnotation_ = previous;
+        return annotation;
+    } catch (...) {
+        parsingOperatorAnnotation_ = previous;
+        throw;
+    }
 }
 
 std::shared_ptr<ImportStmt> Parser::parseImport() {
@@ -292,7 +356,9 @@ std::shared_ptr<ImportStmt> Parser::parseImport() {
     return std::make_shared<ImportStmt>(std::move(paths));
 }
 
-std::shared_ptr<ClauseStmt> Parser::parseClause() {
+std::shared_ptr<ClauseStmt> Parser::parseClause(std::vector<Call> annotations) {
+    annotationBindings_.clear();
+    for (const auto& annotation : annotations) prepareOperatorAnnotation(annotation);
     std::string name = parseQualifiedName();
     std::vector<std::string> parentNames;
     if (check(TokenType::Extend)) {
@@ -350,13 +416,95 @@ std::shared_ptr<ClauseStmt> Parser::parseClause() {
             << ", found " << tokenTypeName(peek().type);
         throw ParserError(oss.str());
     }
-    return std::make_shared<ClauseStmt>(
+    auto clause = std::make_shared<ClauseStmt>(
         std::move(head),
         std::move(parentNames),
         std::move(body),
         std::move(fallbackBranches),
         emptyDeclaration,
         clauseKind);
+    if (!annotations.empty() && clause->clauseKind != ClauseKind::Method) {
+        throw ParserError("Annotations can only be applied to complete method declarations");
+    }
+    clause->annotations = std::move(annotations);
+    clause->module = module_;
+    annotationBindings_.clear();
+    return clause;
+}
+
+void Parser::prepareOperatorAnnotation(const Call& annotation) {
+    if (annotation.builtinId != BuiltinId::OverloadAnnotation &&
+        annotation.builtinId != BuiltinId::MatcherAnnotation) {
+        return;
+    }
+    ParsedOperatorAnnotation parsed;
+    try {
+        parsed = decodeOperatorAnnotation(annotation);
+    } catch (const std::runtime_error& error) {
+        throw ParserError(error.what());
+    }
+    const bool matcher = annotation.builtinId == BuiltinId::MatcherAnnotation;
+    if (matcher && (parsed.hasPrecedence || parsed.hasAssociativity || parsed.hasCardinality ||
+                    parsed.hasEffects || parsed.hasResult || parsed.hasFactor || parsed.hasFactors)) {
+        throw ParserError(
+            "@matcher may declare operator, pattern, type, captures, produces, and visibility only");
+    }
+    const OperatorPatternDefinition* registeredPtr = nullptr;
+    if (parsed.pattern.empty()) {
+        try {
+            registeredPtr = operators_->findPatternByOperator(parsed.operatorName);
+        } catch (const std::runtime_error& error) {
+            throw ParserError(error.what());
+        }
+        if (!registeredPtr) {
+            throw ParserError(matcher
+                ? "@matcher requires an operator pattern declared by @overload"
+                : "Initial operator overload requires 'pattern'");
+        }
+    } else {
+        registeredPtr = operators_->findPattern(parsed.operatorName, parsed.pattern);
+        if (!registeredPtr) {
+            if (matcher) {
+                throw ParserError("@matcher cannot define operator syntax; declare the pattern with @overload first");
+            }
+            OperatorPatternDefinition pattern;
+            pattern.operatorName = parsed.operatorName;
+            pattern.pattern = parsed.pattern;
+            pattern.precedence = parsed.precedence;
+            pattern.associativity = parsed.associativity;
+            pattern.fixity = parsed.fixity;
+            pattern.hasDeclaredFixity = parsed.hasFixity;
+            pattern.visibility = parsed.visibility;
+            pattern.module = module_;
+            registeredPtr = &operators_->registerPattern(std::move(pattern));
+        } else {
+            if ((parsed.hasPrecedence && parsed.precedence != registeredPtr->precedence) ||
+                (parsed.hasAssociativity && parsed.associativity != registeredPtr->associativity) ||
+                (parsed.hasFixity && parsed.fixity != registeredPtr->fixity)) {
+                throw ParserError(
+                    "Operator pattern cannot redefine precedence, associativity, or type");
+            }
+        }
+    }
+    const auto& registered = *registeredPtr;
+
+    if (matcher) {
+        if (parsed.produces.empty()) throw ParserError("@matcher requires 'produces'");
+        for (const auto& binding : parsed.captures) annotationBindings_.insert(binding.name);
+        annotationBindings_.insert("context");
+    } else {
+        for (const auto& binding : parsed.captures) annotationBindings_.insert(binding.name);
+        for (const auto& binding : parsed.factors) annotationBindings_.insert(binding.name);
+    }
+    if (parsed.captures.size() != registered.captureNames.size()) {
+        throw ParserError("Operator annotation captures must exactly match the pattern captures");
+    }
+    for (size_t i = 0; i < parsed.captures.size(); ++i) {
+        if (parsed.captures[i].name != registered.captureNames[i]) {
+            throw ParserError("Operator annotation capture '" + parsed.captures[i].name +
+                              "' does not match pattern capture '" + registered.captureNames[i] + "'");
+        }
+    }
 }
 
 bool Parser::parseEmptyDeclarationBody() {
@@ -502,36 +650,30 @@ std::vector<Arg> Parser::parseArgList() {
 }
 
 Arg Parser::parseArg() {
-    auto parseValue = [&]() {
-        auto left = parseExpr();
-        if (!isComparison(peek().type)) return left;
-        const TokenType op = advance().type;
-        auto right = parseExpr();
-        return std::shared_ptr<Expr>(
-            std::make_shared<BinaryExpr>(std::move(left), op, std::move(right)));
-    };
     if (isNameStartToken(peek().type)) {
         // named argument: name: expr
         if (hasToken(pos_ + 1) &&
             tokenAt(pos_ + 1).type == TokenType::Colon) {
             std::string name = advance().text;
             consume(TokenType::Colon, "Expected ':' after argument name");
-            return Arg{name, parseValue()};
+            if (name == "factor" && isNameStartToken(peek().type) && hasToken(pos_ + 1) &&
+                tokenAt(pos_ + 1).type == TokenType::Colon) {
+                std::string binding = advance().text;
+                consume(TokenType::Colon, "Expected ':' after nested binding name");
+                return Arg{name, std::make_shared<MapExpr>(std::vector<MapEntry>{
+                    MapEntry{std::move(binding), parseExpr()}})};
+            }
+            return Arg{name, parseExpr()};
         }
     }
-    return Arg{"", parseValue()};
+    return Arg{"", parseExpr()};
 }
 
 std::shared_ptr<Goal> Parser::parseIfGoal() {
     consume(TokenType::If, "Expected if");
-    auto left = parseExpr();
-    if (!isComparison(peek().type)) {
-        throw ParserError("Expected comparison operator after if expression");
-    }
-    TokenType op = advance().type;
-    // Parse only the condition operand here. A following 'then' belongs to
-    // conditional syntax, while parseExpr() continues to own pipeline 'then'.
-    auto right = parseAccessExpr();
+    auto conditionExpr = parseOperatorExpr(
+        static_cast<int>(OperatorPrecedence::Control), true);
+    auto condition = comparisonGoal(conditionExpr, "Expected comparison expression after if");
     consume(TokenType::Then, "Expected 'then' after if condition");
     if (!matchGoalSeparator()) {
         throw ParserError("Expected a newline after 'then' in if condition");
@@ -548,9 +690,21 @@ std::shared_ptr<Goal> Parser::parseIfGoal() {
         elseBranch = parseGoalList();
     }
     return std::make_shared<IfGoal>(
-        std::make_shared<BinaryGoal>(std::move(left), std::move(op), std::move(right)),
+        std::move(condition),
         std::move(thenBranch),
         std::move(elseBranch));
+}
+
+std::shared_ptr<BinaryGoal> Parser::comparisonGoal(const std::shared_ptr<Expr>& expr,
+                                                   const std::string& message) const {
+    const auto op = std::dynamic_pointer_cast<OperatorExpression>(expr);
+    if (!op || !isComparisonOperator(op->coreOperator) || op->captureCount() != 2) {
+        throw ParserError(message);
+    }
+    return std::make_shared<BinaryGoal>(
+        op->capture(0),
+        coreOperatorDefinition(op->coreOperator).token,
+        op->capture(1));
 }
 
 std::shared_ptr<Goal> Parser::parseGoal() {
@@ -586,14 +740,8 @@ std::shared_ptr<Goal> Parser::parseGoal() {
 
     if (check(TokenType::Where)) {
         advance();
-        auto left = parseExpr();
-        if (!isComparison(peek().type)) {
-            throw ParserError("Expected comparison operator after where expression");
-        }
-        TokenType op = advance().type;
-        auto right = parseExpr();
-        return finish(std::make_shared<WhereGoal>(
-            std::make_shared<BinaryGoal>(std::move(left), std::move(op), std::move(right))));
+        return finish(std::make_shared<WhereGoal>(comparisonGoal(
+            parseExpr(), "Expected comparison operator after where expression")));
     }
 
     if (check(TokenType::Return)) {
@@ -629,24 +777,17 @@ std::shared_ptr<Goal> Parser::parseGoal() {
         lookahead = parseTokenChain(tokens_, lookahead).end;
     }
     if (hasToken(lookahead) && tokenAt(lookahead).type == TokenType::LParen) {
-        size_t saved = pos_;
         auto expr = parseExpr();
-        if (isComparison(peek().type)) {
-            TokenType op = advance().type;
-            auto right = parseExpr();
-            return finish(std::make_shared<BinaryGoal>(std::move(expr), std::move(op), std::move(right)));
+        if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr);
+            op && isComparisonOperator(op->coreOperator)) {
+            return finish(comparisonGoal(expr, "Expected comparison expression in goal"));
         }
-        pos_ = saved;
-        return finish(std::make_shared<CallGoal>(parseCall(false)));
+        auto term = std::dynamic_pointer_cast<TermExpr>(expr);
+        if (!term) throw ParserError("Expected predicate call or comparison in goal");
+        return finish(std::make_shared<CallGoal>(Call{term->name, term->args, term->builtinId}));
     }
 
-    auto left = parseExpr();
-    if (!isComparison(peek().type)) {
-        throw ParserError("Expected comparison operator in goal");
-    }
-    TokenType op = advance().type;
-    auto right = parseExpr();
-    return finish(std::make_shared<BinaryGoal>(std::move(left), std::move(op), std::move(right)));
+    return finish(comparisonGoal(parseExpr(), "Expected comparison operator in goal"));
 }
 
 bool Parser::isMultiAssignmentStart() const {
@@ -787,27 +928,115 @@ void Parser::splitFallbackPrelude(std::vector<std::shared_ptr<Goal>>& primary,
 }
 
 std::shared_ptr<Expr> Parser::parseExpr() {
-    auto expr = parseAccessExpr();
+    auto expr = parseOperatorExpr(static_cast<int>(OperatorPrecedence::Control));
     if (check(TokenType::Dot) &&
         hasToken(pos_ + 1) &&
         tokenAt(pos_ + 1).type == TokenType::Then) {
         throw ParserError(
             "Unexpected token after statement terminator: use 'left then right', not 'left.then right'");
     }
-    while (true) {
-        size_t beforeThen = pos_;
-        consumeLogicalNewline();
-        if (!match(TokenType::Then)) {
-            pos_ = beforeThen;
-            break;
-        }
-        expr = std::make_shared<PipelineExpr>(std::move(expr), parseAccessExpr());
-    }
     return expr;
 }
 
+std::shared_ptr<Expr> Parser::parseOperatorExpr(int minimumPrecedence,
+                                               bool stopAtThen,
+                                               std::string_view stopAnchor) {
+    const int startLine = peek().line;
+    const int startColumn = peek().column;
+    auto expr = parseUnaryExpr();
+    while (true) {
+        const size_t beforeSeparator = pos_;
+        consumeLogicalNewline();
+        if (!stopAnchor.empty() && peek().text == stopAnchor) {
+            pos_ = beforeSeparator;
+            break;
+        }
+        auto definition = infixOperatorForToken(peek().type);
+        const auto customPatterns = definition || parsingOperatorAnnotation_
+            ? std::vector<const OperatorPatternDefinition*>{}
+            : operators_->trailingPatternsForAnchor(peek().text, module_);
+        if (customPatterns.size() > 1) {
+            throw ParserError("Ambiguous operator syntax at '" + peek().text + "'");
+        }
+        if (definition && stopAtThen && definition->id == CoreOperator::Then) {
+            pos_ = beforeSeparator;
+            break;
+        }
+        const int precedence = definition
+            ? static_cast<int>(definition->precedence)
+            : customPatterns.empty() ? -1 : static_cast<int>(customPatterns.front()->precedence);
+        if (!definition && customPatterns.empty() && peek().type == TokenType::Ident &&
+            pos_ > 0 && previous().line == peek().line) {
+            throw ParserError("Unknown or inaccessible operator '" + peek().text + "'");
+        }
+        if (precedence < minimumPrecedence) {
+            pos_ = beforeSeparator;
+            break;
+        }
+
+        advance();
+        const auto associativity = definition
+            ? definition->associativity : customPatterns.front()->associativity;
+        const int rightMinimum = associativity == OperatorAssociativity::Right
+            ? precedence
+            : precedence + 1;
+        if (definition) {
+            auto right = parseOperatorExpr(rightMinimum, stopAtThen, stopAnchor);
+            expr = makeOperatorExpr(definition->id, std::move(expr), std::move(right));
+        } else {
+            const auto& pattern = *customPatterns.front();
+            const auto firstSpace = pattern.anchors.front().find(' ');
+            if (firstSpace != std::string::npos) {
+                consumePatternAnchor(pattern.anchors.front().substr(firstSpace + 1));
+            }
+            std::vector<OperatorCapture> captures;
+            captures.emplace_back(pattern.captureNames[0], std::move(expr));
+            if (pattern.fixity == OperatorFixity::Postfix) {
+                expr = std::make_shared<OperatorExpression>(
+                    pattern.operatorId, pattern.patternId, std::move(captures));
+                std::static_pointer_cast<OperatorExpression>(expr)->module = module_;
+                continue;
+            }
+            for (size_t captureIndex = 1; captureIndex < pattern.captureNames.size(); ++captureIndex) {
+                std::string_view nextStop;
+                if (captureIndex < pattern.anchors.size()) {
+                    const auto& nextAnchor = pattern.anchors[captureIndex];
+                    const auto split = nextAnchor.find(' ');
+                    nextStop = std::string_view(nextAnchor).substr(0, split);
+                }
+                auto captured = parseOperatorExpr(rightMinimum, stopAtThen, nextStop);
+                captures.emplace_back(pattern.captureNames[captureIndex], std::move(captured));
+                if (captureIndex < pattern.anchors.size()) {
+                    consumePatternAnchor(pattern.anchors[captureIndex]);
+                }
+            }
+            expr = std::make_shared<OperatorExpression>(
+                pattern.operatorId, pattern.patternId, std::move(captures));
+            std::static_pointer_cast<OperatorExpression>(expr)->module = module_;
+        }
+    }
+    stampNode(expr, startLine, startColumn);
+    return expr;
+}
+
+void Parser::consumePatternAnchor(std::string_view anchor) {
+    std::size_t cursor = 0;
+    while (cursor < anchor.size()) {
+        while (cursor < anchor.size() && anchor[cursor] == ' ') ++cursor;
+        if (cursor >= anchor.size()) break;
+        const auto end = anchor.find(' ', cursor);
+        const std::string word(anchor.substr(cursor, end == std::string_view::npos
+            ? anchor.size() - cursor : end - cursor));
+        if (peek().text != word) {
+            throw ParserError("Expected operator anchor '" + word + "'");
+        }
+        advance();
+        cursor = end == std::string_view::npos ? anchor.size() : end + 1;
+    }
+}
+
 std::shared_ptr<Expr> Parser::parseAccessExpr() {
-    auto expr = parseAdditiveExpr();
+    auto expr = parsePrimaryExpr();
     while ((check(TokenType::Colon) || check(TokenType::Dot)) &&
         hasToken(pos_ + 1) &&
         isNameStartToken(tokenAt(pos_ + 1).type) &&
@@ -824,36 +1053,56 @@ std::shared_ptr<Expr> Parser::parseAccessExpr() {
     return expr;
 }
 
-std::shared_ptr<Expr> Parser::parseAdditiveExpr() {
-    auto expr = parseMultiplicativeExpr();
-    while (check(TokenType::Plus) || check(TokenType::Minus)) {
-        TokenType op = advance().type;
-        expr = foldConstantBinary(std::move(expr), op, parseMultiplicativeExpr());
-    }
-    return expr;
-}
-
-std::shared_ptr<Expr> Parser::parseMultiplicativeExpr() {
-    auto expr = parseUnaryExpr();
-    while (check(TokenType::Star) || check(TokenType::Slash)) {
-        TokenType op = advance().type;
-        expr = foldConstantBinary(std::move(expr), op, parseUnaryExpr());
-    }
-    return expr;
-}
-
 std::shared_ptr<Expr> Parser::parseUnaryExpr() {
+    const auto leadingPatterns = parsingOperatorAnnotation_
+        ? std::vector<const OperatorPatternDefinition*>{}
+        : operators_->leadingPatternsForAnchor(peek().text, module_);
+    if (leadingPatterns.size() > 1) {
+        throw ParserError("Ambiguous leading operator syntax at '" + peek().text + "'");
+    }
+    if (!leadingPatterns.empty()) {
+        const auto& pattern = *leadingPatterns.front();
+        consumePatternAnchor(pattern.anchors.front());
+        std::vector<OperatorCapture> captures;
+        captures.reserve(pattern.captureNames.size());
+        for (size_t captureIndex = 0; captureIndex < pattern.captureNames.size(); ++captureIndex) {
+            std::string_view nextStop;
+            if (captureIndex + 1 < pattern.anchors.size()) {
+                const auto& nextAnchor = pattern.anchors[captureIndex + 1];
+                const auto split = nextAnchor.find(' ');
+                nextStop = std::string_view(nextAnchor).substr(0, split);
+            }
+            captures.emplace_back(
+                pattern.captureNames[captureIndex],
+                parseOperatorExpr(static_cast<int>(pattern.precedence), false, nextStop));
+            if (captureIndex + 1 < pattern.anchors.size()) {
+                consumePatternAnchor(pattern.anchors[captureIndex + 1]);
+            }
+        }
+        auto expression = std::make_shared<OperatorExpression>(
+            pattern.operatorId, pattern.patternId, std::move(captures));
+        expression->module = module_;
+        return expression;
+    }
+    if (match(TokenType::Not)) {
+        auto logical = std::make_shared<OperatorExpression>(
+            CoreOperator::LogicalNot, parseUnaryExpr());
+        logical->module = module_;
+        return logical;
+    }
     if (match(TokenType::Minus)) {
         auto operand = parseUnaryExpr();
         if (auto number = std::dynamic_pointer_cast<NumberExpr>(operand)) {
             return std::make_shared<NumberExpr>(-number->value);
         }
-        return std::make_shared<BinaryExpr>(std::make_shared<NumberExpr>(0.0), TokenType::Minus, std::move(operand));
+        auto unary = std::make_shared<OperatorExpression>(CoreOperator::UnaryMinus, std::move(operand));
+        unary->module = module_;
+        return unary;
     }
     if (match(TokenType::Plus)) {
         return parseUnaryExpr();
     }
-    return parsePrimaryExpr();
+    return parseAccessExpr();
 }
 
 std::shared_ptr<Expr> Parser::parsePrimaryExpr() {
@@ -865,6 +1114,9 @@ std::shared_ptr<Expr> Parser::parsePrimaryExpr() {
     if (match(TokenType::LParen)) {
         auto expr = parseExpr();
         consume(TokenType::RParen, "Expected ')' after grouped expression");
+        if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
+            op->explicitlyGrouped = true;
+        }
         return expr;
     }
     if (check(TokenType::LBrace)) return parseMapExpr();
@@ -939,13 +1191,17 @@ std::shared_ptr<Expr> Parser::parseLambdaExpr() {
     std::string variable = consume(TokenType::Ident, "Expected lambda variable").text;
     consume(TokenType::Arrow, "Expected '=>' after lambda variable");
     auto body = parseExpr();
-    if (isComparison(peek().type)) {
-        TokenType op = advance().type;
-        auto right = parseExpr();
-        consume(TokenType::RParen, "Expected ')' after lambda");
-        return std::make_shared<LambdaExpr>(std::move(source), std::move(variable), std::move(body), std::move(op), std::move(right));
-    }
     consume(TokenType::RParen, "Expected ')' after lambda");
+    if (auto comparison = std::dynamic_pointer_cast<OperatorExpression>(body);
+        comparison && comparison->captureCount() == 2 &&
+        isComparisonOperator(comparison->coreOperator)) {
+        return std::make_shared<LambdaExpr>(
+            std::move(source),
+            std::move(variable),
+            comparison->capture(0),
+            coreOperatorDefinition(comparison->coreOperator).token,
+            comparison->capture(1));
+    }
     return std::make_shared<LambdaExpr>(std::move(source), std::move(variable), std::move(body));
 }
 
@@ -971,46 +1227,63 @@ std::shared_ptr<Expr> Parser::parseArrayExpr() {
     std::vector<std::shared_ptr<Expr>> items;
     if (!check(TokenType::RBracket)) {
         do {
-            items.push_back(parseExpr());
+            if (isNameStartToken(peek().type) && hasToken(pos_ + 1) &&
+                tokenAt(pos_ + 1).type == TokenType::Colon) {
+                std::string name = advance().text;
+                consume(TokenType::Colon, "Expected ':' after array binding name");
+                items.push_back(std::make_shared<MapExpr>(std::vector<MapEntry>{
+                    MapEntry{std::move(name), parseExpr()}}));
+            } else {
+                items.push_back(parseExpr());
+            }
         } while (match(TokenType::Comma));
     }
     consume(TokenType::RBracket, "Expected ']' after array");
     return std::make_shared<ArrayExpr>(std::move(items));
 }
 
-std::shared_ptr<Expr> Parser::foldConstantBinary(std::shared_ptr<Expr> left,
-                                                 TokenType op,
-                                                 std::shared_ptr<Expr> right) const {
+std::shared_ptr<Expr> Parser::makeOperatorExpr(CoreOperator op,
+                                               std::shared_ptr<Expr> left,
+                                               std::shared_ptr<Expr> right) const {
     auto leftNumber = std::dynamic_pointer_cast<NumberExpr>(left);
     auto rightNumber = std::dynamic_pointer_cast<NumberExpr>(right);
-    if (!leftNumber || !rightNumber) {
-        return std::make_shared<BinaryExpr>(std::move(left), op, std::move(right));
+    if (!leftNumber || !rightNumber || operators_->hasVisiblePattern(corePatternId(op), module_)) {
+        auto expression = std::make_shared<OperatorExpression>(op, std::move(left), std::move(right));
+        expression->module = module_;
+        return expression;
     }
     switch (op) {
-        case TokenType::Plus:
+        case CoreOperator::Add:
             return std::make_shared<NumberExpr>(leftNumber->value + rightNumber->value);
-        case TokenType::Minus:
+        case CoreOperator::Subtract:
             return std::make_shared<NumberExpr>(leftNumber->value - rightNumber->value);
-        case TokenType::Star:
+        case CoreOperator::Multiply:
             return std::make_shared<NumberExpr>(leftNumber->value * rightNumber->value);
-        case TokenType::Slash:
+        case CoreOperator::Divide:
             if (std::fabs(rightNumber->value) < 1e-12) {
                 throw ParserError("Division by zero in constant expression");
             }
             return std::make_shared<NumberExpr>(leftNumber->value / rightNumber->value);
+        case CoreOperator::Modulo:
+            if (std::fabs(rightNumber->value) < 1e-12) {
+                throw ParserError("Division by zero in constant modulo expression");
+            }
+            return std::make_shared<NumberExpr>(std::fmod(leftNumber->value, rightNumber->value));
         default:
             break;
     }
-    return std::make_shared<BinaryExpr>(std::move(left), op, std::move(right));
+    auto expression = std::make_shared<OperatorExpression>(op, std::move(left), std::move(right));
+    expression->module = module_;
+    return expression;
 }
 
 bool Parser::containsAccessExpr(const std::shared_ptr<Expr>& expr) const {
     if (std::dynamic_pointer_cast<AccessExpr>(expr)) return true;
-    if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
-        return containsAccessExpr(pipeline->left) || containsAccessExpr(pipeline->right);
-    }
-    if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
-        return containsAccessExpr(binary->left) || containsAccessExpr(binary->right);
+    if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
+        for (size_t i = 0; i < op->captureCount(); ++i) {
+            if (containsAccessExpr(op->capture(i))) return true;
+        }
+        return false;
     }
     if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
         for (const auto& arg : term->args) {
@@ -1042,9 +1315,14 @@ void Parser::validateSystemResultUsage(const std::shared_ptr<Expr>& expr, bool a
         }
         return;
     }
-    if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
-        validateSystemResultUsage(pipeline->left, allowed);
-        validateSystemResultUsage(pipeline->right, true);
+    if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
+        const bool isThenOperator =
+            op->coreOperator == CoreOperator::Then ||
+            op->patternId == corePatternId(CoreOperator::Then);
+        for (size_t i = 0; i < op->captureCount(); ++i) {
+            const bool captureAllowed = isThenOperator && i == 1;
+            validateSystemResultUsage(op->capture(i), captureAllowed ? true : allowed);
+        }
         return;
     }
     if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
@@ -1061,11 +1339,6 @@ void Parser::validateSystemResultUsage(const std::shared_ptr<Expr>& expr, bool a
     }
     if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
         validateSystemResultUsage(access->target, allowed);
-        return;
-    }
-    if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
-        validateSystemResultUsage(binary->left, allowed);
-        validateSystemResultUsage(binary->right, allowed);
         return;
     }
     if (auto lambda = std::dynamic_pointer_cast<LambdaExpr>(expr)) {
@@ -1109,9 +1382,8 @@ void Parser::collectExprVars(const std::shared_ptr<Expr>& expr, std::set<std::st
         if (!isAnonymousSymbolName(var->name)) vars.insert(var->name);
         return;
     }
-    if (auto pipeline = std::dynamic_pointer_cast<PipelineExpr>(expr)) {
-        collectExprVars(pipeline->left, vars);
-        collectExprVars(pipeline->right, vars);
+    if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
+        for (size_t i = 0; i < op->captureCount(); ++i) collectExprVars(op->capture(i), vars);
         return;
     }
     if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
@@ -1135,11 +1407,6 @@ void Parser::collectExprVars(const std::shared_ptr<Expr>& expr, std::set<std::st
     }
     if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
         collectExprVars(access->target, vars);
-        return;
-    }
-    if (auto binary = std::dynamic_pointer_cast<BinaryExpr>(expr)) {
-        collectExprVars(binary->left, vars);
-        collectExprVars(binary->right, vars);
         return;
     }
     if (auto lambda = std::dynamic_pointer_cast<LambdaExpr>(expr)) {
@@ -1261,13 +1528,14 @@ void Parser::validateGoalVars(const std::shared_ptr<Goal>& goal, std::set<std::s
 }
 
 bool Parser::isDeclaredName(const std::string& name, const std::set<std::string>& declared) const {
-    return declared.count(name) > 0 || globals_.count(name) > 0;
+    return declared.count(name) > 0 || globals_.count(name) > 0 || annotationBindings_.count(name) > 0;
 }
 
 void Parser::validateRuleVars(const Call& head,
                               const std::vector<std::shared_ptr<Goal>>& body,
                               const std::vector<std::vector<std::shared_ptr<Goal>>>& fallbackBranches) const {
     std::set<std::string> declared;
+    declared.insert(annotationBindings_.begin(), annotationBindings_.end());
     const bool methodStyle = head.name == "main" || isMethodStyleHead(head);
     for (const auto& arg : head.args) {
         if (methodStyle && !arg.name.empty()) declared.insert(arg.name);
@@ -1294,16 +1562,21 @@ void Parser::validateRuleVars(const Call& head,
 bool Parser::isMethodStyleHead(const Call& head) const {
     if (head.args.empty()) return false;
     for (const auto& arg : head.args) {
-        auto var = std::dynamic_pointer_cast<VarExpr>(arg.value);
-        if (!arg.name.empty() && var && isFelidaeTypeAnnotationName(var->name)) {
+        if (!arg.name.empty() && !typeAnnotationName(arg.value).empty()) {
             return true;
         }
     }
     for (const auto& arg : head.args) {
-        auto var = std::dynamic_pointer_cast<VarExpr>(arg.value);
-        if (!var || !isFelidaeTypeAnnotationName(var->name)) return false;
+        if (typeAnnotationName(arg.value).empty()) return false;
     }
     return true;
+}
+
+std::string Parser::typeAnnotationName(const std::shared_ptr<Expr>& expression) const {
+    if (auto variable = std::dynamic_pointer_cast<VarExpr>(expression)) {
+        return isFelidaeTypeAnnotationName(variable->name) ? variable->name : std::string{};
+    }
+    return {};
 }
 
 bool Parser::isTypeNameKnown(const std::string& name) const {

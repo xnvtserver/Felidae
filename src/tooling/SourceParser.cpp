@@ -91,17 +91,93 @@ std::vector<fs::path> resolveImport(const fs::path& baseDir,
     return files;
 }
 
-void appendProgram(Program& destination, Program source) {
-    for (auto& statement : source.statements) {
-        destination.addStatement(std::move(statement));
+std::vector<std::string> scanImports(const fs::path& file) {
+    std::ifstream input(file, std::ios::binary);
+    if (!input) throw std::runtime_error("Cannot open file: " + file.string());
+    Lexer lexer(input);
+    const auto tokens = lexer.tokenize();
+    std::vector<std::string> imports;
+    for (std::size_t i = 0; i < tokens.size(); ++i) {
+        if (tokens[i].type != TokenType::Import) continue;
+        ++i;
+        if (i < tokens.size() && tokens[i].type == TokenType::String) {
+            imports.push_back(tokens[i].text);
+            continue;
+        }
+        if (i >= tokens.size() || tokens[i].type != TokenType::LParen) continue;
+        for (++i; i < tokens.size() && tokens[i].type != TokenType::RParen; ++i) {
+            if (tokens[i].type == TokenType::String) imports.push_back(tokens[i].text);
+        }
     }
+    return imports;
+}
+
+struct SourceGraph {
+    std::vector<fs::path> dependencyOrder;
+    std::vector<std::string> unresolvedImports;
+};
+
+SourceGraph collectSourceGraph(const fs::path& entry,
+                               const fs::path& projectRoot,
+                               bool loadImports) {
+    SourceGraph graph;
+    std::set<fs::path> visited;
+    std::set<fs::path> visiting;
+    const auto visit = [&](const auto& self, fs::path file) -> void {
+        file = fs::absolute(file).lexically_normal();
+        if (visited.count(file) > 0) return;
+        if (!visiting.insert(file).second) return;
+        if (loadImports) {
+            for (const auto& importName : scanImports(file)) {
+                auto resolved = resolveImport(file.parent_path(), projectRoot, importName);
+                if (resolved.empty()) {
+                    graph.unresolvedImports.push_back(importName);
+                    continue;
+                }
+                for (const auto& dependency : resolved) self(self, dependency);
+            }
+        }
+        visiting.erase(file);
+        visited.insert(file);
+        graph.dependencyOrder.push_back(std::move(file));
+    };
+    visit(visit, entry);
+    std::sort(graph.unresolvedImports.begin(), graph.unresolvedImports.end());
+    graph.unresolvedImports.erase(
+        std::unique(graph.unresolvedImports.begin(), graph.unresolvedImports.end()),
+        graph.unresolvedImports.end());
+    return graph;
+}
+
+void bootstrapFile(const fs::path& file,
+                   const std::shared_ptr<OperatorRegistry>& operators) {
+    std::ifstream input(file, std::ios::binary);
+    if (!input) throw std::runtime_error("Cannot open file: " + file.string());
+    Lexer lexer(input);
+    Parser parser(lexer, operators, file.string());
+    parser.bootstrapOperatorPatterns();
+}
+
+void parseFileWithRegistry(
+    const fs::path& file,
+    const std::shared_ptr<OperatorRegistry>& operators,
+    const std::function<void(std::shared_ptr<Statement>)>& consume) {
+    std::ifstream input(file, std::ios::binary);
+    if (!input) throw std::runtime_error("Cannot open file: " + file.string());
+    Lexer lexer(input);
+    Parser parser(lexer, operators, file.string());
+    parser.parseProgram(consume);
 }
 
 } // namespace
 
 Program parseText(std::string text) {
+    auto operators = std::make_shared<OperatorRegistry>();
+    Lexer bootstrapLexer(text);
+    Parser bootstrapParser(bootstrapLexer, operators);
+    bootstrapParser.bootstrapOperatorPatterns();
     Lexer lexer(std::move(text));
-    Parser parser(lexer);
+    Parser parser(lexer, std::move(operators));
     return parser.parseProgram();
 }
 
@@ -117,10 +193,17 @@ void parseFileStatements(
     const fs::path& path,
     const std::function<void(std::shared_ptr<Statement>)>& consume) {
     const fs::path entry = resolveEntryPath(path);
+    auto operators = std::make_shared<OperatorRegistry>();
+    std::ifstream bootstrapInput(entry, std::ios::binary);
+    if (!bootstrapInput) throw std::runtime_error("Cannot open file: " + entry.string());
+    Lexer bootstrapLexer(bootstrapInput);
+    Parser bootstrapParser(bootstrapLexer, operators, entry.string());
+    bootstrapParser.bootstrapOperatorPatterns();
+
     std::ifstream input(entry, std::ios::binary);
     if (!input) throw std::runtime_error("Cannot open file: " + entry.string());
     Lexer lexer(input);
-    Parser parser(lexer);
+    Parser parser(lexer, std::move(operators), entry.string());
     parser.parseProgram(consume);
 }
 
@@ -145,36 +228,16 @@ LoadedProgram loadProgram(const fs::path& entryFile, bool loadImports) {
     LoadedProgram loaded;
     const fs::path entry = resolveEntryPath(entryFile);
     const fs::path projectRoot = findProjectRoot(entry);
-    std::vector<fs::path> pending{entry};
-    std::set<fs::path> visited;
-
-    while (!pending.empty()) {
-        fs::path file = fs::absolute(pending.back()).lexically_normal();
-        pending.pop_back();
-        if (!visited.insert(file).second) continue;
-
-        Program parsed = parseFile(file);
-        loaded.files.push_back(file);
-        if (loadImports) {
-            for (const auto& import : parsed.imports) {
-                for (const auto& importName : import->paths) {
-                    auto resolved = resolveImport(file.parent_path(), projectRoot, importName);
-                    if (resolved.empty()) {
-                        loaded.unresolvedImports.push_back(importName);
-                    } else {
-                        pending.insert(pending.end(), resolved.begin(), resolved.end());
-                    }
-                }
-            }
-        }
-        appendProgram(loaded.program, std::move(parsed));
+    auto graph = collectSourceGraph(entry, projectRoot, loadImports);
+    loaded.files = graph.dependencyOrder;
+    loaded.unresolvedImports = std::move(graph.unresolvedImports);
+    loaded.operators = std::make_shared<OperatorRegistry>();
+    for (const auto& file : graph.dependencyOrder) bootstrapFile(file, loaded.operators);
+    for (const auto& file : graph.dependencyOrder) {
+        parseFileWithRegistry(file, loaded.operators, [&](std::shared_ptr<Statement> statement) {
+            loaded.program.addStatement(std::move(statement));
+        });
     }
-
-    std::sort(loaded.files.begin(), loaded.files.end());
-    std::sort(loaded.unresolvedImports.begin(), loaded.unresolvedImports.end());
-    loaded.unresolvedImports.erase(
-        std::unique(loaded.unresolvedImports.begin(), loaded.unresolvedImports.end()),
-        loaded.unresolvedImports.end());
     return loaded;
 }
 
@@ -185,37 +248,14 @@ LoadedSources loadProgramStatements(
     LoadedSources loaded;
     const fs::path entry = resolveEntryPath(entryFile);
     const fs::path projectRoot = findProjectRoot(entry);
-    std::vector<fs::path> pending{entry};
-    std::set<fs::path> visited;
-
-    while (!pending.empty()) {
-        fs::path file = fs::absolute(pending.back()).lexically_normal();
-        pending.pop_back();
-        if (!visited.insert(file).second) continue;
-
-        loaded.files.push_back(file);
-        parseFileStatements(file, [&](std::shared_ptr<Statement> statement) {
-            if (loadImports) {
-                if (auto import = std::dynamic_pointer_cast<ImportStmt>(statement)) {
-                    for (const auto& importName : import->paths) {
-                        auto resolved = resolveImport(file.parent_path(), projectRoot, importName);
-                        if (resolved.empty()) {
-                            loaded.unresolvedImports.push_back(importName);
-                        } else {
-                            pending.insert(pending.end(), resolved.begin(), resolved.end());
-                        }
-                    }
-                }
-            }
-            consume(statement);
-        });
+    auto graph = collectSourceGraph(entry, projectRoot, loadImports);
+    loaded.files = graph.dependencyOrder;
+    loaded.unresolvedImports = std::move(graph.unresolvedImports);
+    loaded.operators = std::make_shared<OperatorRegistry>();
+    for (const auto& file : graph.dependencyOrder) bootstrapFile(file, loaded.operators);
+    for (const auto& file : graph.dependencyOrder) {
+        parseFileWithRegistry(file, loaded.operators, consume);
     }
-
-    std::sort(loaded.files.begin(), loaded.files.end());
-    std::sort(loaded.unresolvedImports.begin(), loaded.unresolvedImports.end());
-    loaded.unresolvedImports.erase(
-        std::unique(loaded.unresolvedImports.begin(), loaded.unresolvedImports.end()),
-        loaded.unresolvedImports.end());
     return loaded;
 }
 
