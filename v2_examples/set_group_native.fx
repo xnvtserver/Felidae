@@ -8,8 +8,8 @@ Vegis(name: "carrot", taste: "sweet")
 Vegis(name: "tomato", taste: "sweet")
 
 main() =>
-    fruit := Fact.all(type: "Fruit")
-    vegis := Fact.all(type: "Vegis")
+    fruit := lambda(Fruit, item => item)
+    vegis := lambda(Vegis, item => item)
     allFood := Set.union(sets: [fruit, vegis])
     commonTaste := Set.intersectionBy(sets: [fruit, vegis], fields: ["taste"])
     fruitOnlyTaste := Set.differenceBy(sets: [fruit, vegis], fields: ["taste"])
