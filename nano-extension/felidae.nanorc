@@ -1,0 +1,45 @@
+## Felidae (.fx) syntax highlighting for GNU nano.
+## Install: see nano-extension/README.md in the Felidae repository.
+##
+## nano paints later "color" rules over earlier ones where matches overlap,
+## so broad/generic patterns are listed first and specific ones (keywords,
+## constants, comments) last, letting them win over a generic call/word match.
+
+syntax "felidae" "\.fx$"
+comment "#"
+
+# Declaration / call head: Name( — lowest priority, overridden below by
+# keyword coloring for known words like lambda(, count(, throw(.
+color brightgreen "[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\("
+
+# Capitalized identifiers read as fact/type names.
+color cyan "\<[A-Z][A-Za-z0-9_]*\>"
+
+# Standard-library module names (array, math, str, json, ...).
+color brightblue "\<(array|comparison|console|csv|db|exception|fact|fact_analysis|file|flibrary|fn|group|gtk|http|json|list|logic|math|ml|package|pair|plot|prelude|probability|process|qt|set|smoke|str|system|thread|wordnet)\>"
+
+# Primitive type annotations.
+color brightcyan "\<(any|array|bool|boolean|decimal|double|float|int|number|string)\>"
+
+# Control keywords.
+color brightyellow "\<(extend|where|if|else|return|lambda|then|import)\>"
+
+# Constants.
+color brightred "\<(nil|true|false)\>"
+
+# Operators and structural punctuation.
+color yellow "(=>|:=|==|!=|<=|>=)"
+color yellow "[][(){}]"
+color brightmagenta "\?"
+
+# Numbers.
+color magenta "\<[0-9]+(\.[0-9]+)?\>"
+
+# Strings (double-quoted, backslash escapes).
+color green "\"(\\.|[^\"])*\""
+
+# Line comments — highest priority so '#' always wins within its own line.
+color brightblack "#.*$"
+
+# Trailing whitespace, painted over everything including comments.
+color ,red "[[:space:]]+$"

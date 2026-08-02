@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <iomanip>
 #include <map>
@@ -81,10 +82,70 @@ void visitReferenceAttachments(const std::shared_ptr<Goal>& goal,
     }
 }
 
+// One fact record's literal field values, e.g. {name: "Ada", born: "1815-12-10"}.
+using FactRecordValues = std::map<std::string, std::string>;
+
 struct FactProfile {
     std::size_t records = 0;
     std::map<std::string, std::size_t> fields;
+    // Literal values per record, for the diagram types that plot values
+    // rather than structure (timeline, statistics). Capped: a large fact set
+    // would otherwise retain every literal in the program.
+    std::vector<FactRecordValues> samples;
 };
+
+// Enough records to draw a representative timeline/distribution without
+// letting a generated fact file balloon memory.
+constexpr std::size_t kMaxFactSamples = 500;
+
+// Literal text of an argument value, or empty when it is not a literal.
+// Only literals are meaningful here: an expression's value is not known
+// without executing the program, which Celidae deliberately does not do.
+std::string literalText(const std::shared_ptr<Expr>& value) {
+    if (auto text = std::dynamic_pointer_cast<StringExpr>(value)) return text->value;
+    if (auto number = std::dynamic_pointer_cast<NumberExpr>(value)) {
+        std::ostringstream out;
+        out << number->value;
+        return out.str();
+    }
+    if (auto boolean = std::dynamic_pointer_cast<BoolExpr>(value)) {
+        return boolean->value ? "true" : "false";
+    }
+    return {};
+}
+
+// True when the whole literal parses as a number, so it can order facts on a
+// timeline when no date field exists.
+bool looksNumeric(const std::string& value) {
+    if (value.empty()) return false;
+    char* end = nullptr;
+    std::strtod(value.c_str(), &end);
+    return end != nullptr && *end == '\0';
+}
+
+// Recognises the date shapes a fact field realistically carries: an ISO date
+// or timestamp, or a bare year. Deliberately strict - guessing wrong would
+// scatter unrelated facts along a time axis.
+bool looksLikeDate(const std::string& value) {
+    auto digits = [&](std::size_t from, std::size_t count) {
+        if (from + count > value.size()) return false;
+        for (std::size_t i = from; i < from + count; ++i) {
+            if (!std::isdigit(static_cast<unsigned char>(value[i]))) return false;
+        }
+        return true;
+    };
+    // YYYY-MM-DD, optionally followed by a time component.
+    if (value.size() >= 10 && digits(0, 4) && value[4] == '-' && digits(5, 2) &&
+        value[7] == '-' && digits(8, 2)) {
+        return true;
+    }
+    // A bare four-digit year in a plausible range.
+    if (value.size() == 4 && digits(0, 4)) {
+        const int year = std::stoi(value);
+        return year >= 1000 && year <= 9999;
+    }
+    return false;
+}
 
 // Accumulates a graph as structured node/edge records (shared by every
 // output format) plus a JSON serialization on demand, so the JSON, HTML data
@@ -208,6 +269,12 @@ std::string scriptSafeJson(std::string json) {
     return json;
 }
 
+std::string toUpperAscii(const std::string& value) {
+    std::string out = value;
+    for (char& ch : out) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    return out;
+}
+
 void replaceToken(std::string& text, const std::string& token, const std::string& value) {
     const size_t pos = text.find(token);
     if (pos == std::string::npos) {
@@ -250,10 +317,17 @@ void SchemaGraphAccumulator::consume(const std::shared_ptr<Statement>& statement
         auto& profile = impl_->facts[clause->head.name];
         ++profile.records;
         std::set<std::string> fieldsInRecord;
+        FactRecordValues values;
         for (const auto& argument : clause->head.args) {
-            if (!argument.name.empty()) fieldsInRecord.insert(argument.name);
+            if (argument.name.empty()) continue;
+            fieldsInRecord.insert(argument.name);
+            std::string literal = literalText(argument.value);
+            if (!literal.empty()) values.emplace(argument.name, std::move(literal));
         }
         for (const auto& field : fieldsInRecord) ++profile.fields[field];
+        if (!values.empty() && profile.samples.size() < kMaxFactSamples) {
+            profile.samples.push_back(std::move(values));
+        }
         // A fact may extend more than one direct parent.  parentName is only
         // the compatibility view for older callers; using it here would make
         // ER and graph diagrams silently omit every secondary inheritance
@@ -326,10 +400,216 @@ void SchemaGraphAccumulator::consume(const std::shared_ptr<Statement>& statement
     }
 }
 
+// Builds the timeline view: fact records placed in order of a date-like
+// field. Needs FactProfile::samples, which is why literal values are captured
+// in consume().
+static void buildTimelineGraph(
+    GraphWriter& graph,
+    const std::map<std::string, FactProfile>& facts) {
+    for (const auto& item : facts) {
+        // The ordering field is whichever field carries an orderable literal
+        // in the most records; ties break on field name for stable output.
+        //
+        // Dates are preferred, but restricting to them made this view work
+        // only on fact sets that happen to carry an ISO date - most programs
+        // do not. Any numeric field (a version, a duration, a score, a
+        // sequence number) orders facts just as well, so it is used as a
+        // fallback rather than leaving the view empty.
+        std::map<std::string, std::size_t> dateFieldCounts;
+        std::map<std::string, std::size_t> numericFieldCounts;
+        for (const auto& record : item.second.samples) {
+            for (const auto& value : record) {
+                if (looksLikeDate(value.second)) ++dateFieldCounts[value.first];
+                else if (looksNumeric(value.second)) ++numericFieldCounts[value.first];
+            }
+        }
+
+        const bool byDate = !dateFieldCounts.empty();
+        const auto& orderCounts = byDate ? dateFieldCounts : numericFieldCounts;
+        if (orderCounts.empty()) continue;
+
+        const std::string dateField = std::max_element(
+            orderCounts.begin(),
+            orderCounts.end(),
+            [](const auto& a, const auto& b) {
+                if (a.second != b.second) return a.second < b.second;
+                return a.first > b.first;
+            })->first;
+
+        std::ostringstream typeDetail;
+        typeDetail << (byDate ? "dateField=" : "orderField=") << dateField
+                   << " dated=" << dateFieldCounts[dateField]
+                   << " records=" << item.second.records;
+        // consume() keeps at most kMaxFactSamples records per type, so a
+        // larger fact set produces a partial timeline. Say so on the node
+        // rather than presenting the first 500 events as if they were all of
+        // them - a silently truncated timeline is a wrong answer, not a
+        // smaller one.
+        if (item.second.records > item.second.samples.size()) {
+            typeDetail << " TRUNCATED: showing first " << item.second.samples.size()
+                       << " of " << item.second.records << " records";
+        }
+        graph.node(nodeId("fact", item.first), item.first, "fact", typeDetail.str());
+
+        // Sort records by the date value so the emitted order is the timeline
+        // order; the renderer does not have to re-sort.
+        std::vector<std::pair<std::string, const FactRecordValues*>> dated;
+        for (const auto& record : item.second.samples) {
+            auto found = record.find(dateField);
+            if (found == record.end()) continue;
+            if (byDate ? !looksLikeDate(found->second) : !looksNumeric(found->second)) continue;
+            dated.emplace_back(found->second, &record);
+        }
+        // ISO dates and bare years sort lexically; numbers must sort
+        // numerically or "10" would land before "9".
+        std::sort(dated.begin(), dated.end(), [byDate](const auto& a, const auto& b) {
+            if (byDate) return a.first < b.first;
+            return std::strtod(a.first.c_str(), nullptr) < std::strtod(b.first.c_str(), nullptr);
+        });
+
+        std::string previousId;
+        for (std::size_t i = 0; i < dated.size(); ++i) {
+            // A label the reader recognises: prefer a name-like field.
+            std::string label = dated[i].first;
+            for (const char* candidate : {"name", "id", "title", "label"}) {
+                auto found = dated[i].second->find(candidate);
+                if (found != dated[i].second->end()) {
+                    label = found->second + " (" + dated[i].first + ")";
+                    break;
+                }
+            }
+            std::ostringstream detail;
+            detail << dateField << "=" << dated[i].first;
+            for (const auto& value : *dated[i].second) {
+                if (value.first == dateField) continue;
+                detail << " " << value.first << "=" << value.second;
+            }
+            const std::string id =
+                nodeId("event", item.first + "#" + std::to_string(i));
+            graph.node(id, label, "event", detail.str());
+            graph.edge(nodeId("fact", item.first), id, "at");
+            // Chain consecutive events so a renderer without a time axis
+            // still shows the sequence.
+            if (!previousId.empty()) graph.edge(previousId, id, "then");
+            previousId = id;
+        }
+    }
+}
+
+// Inheritance only, as a containment tree: every fact, plus its `extends`
+// edges. Reuses the edges consume() already collected - no new data needed.
+static void buildHierarchyGraph(
+    GraphWriter& graph,
+    const std::map<std::string, FactProfile>& facts,
+    const std::set<std::tuple<std::string, std::string, std::string>>& references) {
+    std::set<std::string> children;
+    for (const auto& reference : references) {
+        if (std::get<2>(reference) != "extends") continue;
+        children.insert(std::get<0>(reference));
+    }
+    for (const auto& item : facts) {
+        const std::string id = nodeId("fact", item.first);
+        std::ostringstream detail;
+        detail << "records=" << item.second.records
+               << " fields=" << item.second.fields.size();
+        if (!children.count(id)) detail << " root";
+        graph.node(id, item.first, "fact", detail.str());
+    }
+    for (const auto& reference : references) {
+        if (std::get<2>(reference) != "extends") continue;
+        const std::string parent = nodeId("fact", std::get<1>(reference));
+        graph.node(parent, std::get<1>(reference), "fact");
+        // Parent -> child, so tree layouts root at the base type.
+        graph.edge(parent, std::get<0>(reference), "extends");
+    }
+}
+
+// Per-fact-type statistics: one node per fact carrying record/field counts,
+// plus one node per field carrying its coverage, for chart rendering.
+static void buildStatsGraph(
+    GraphWriter& graph,
+    const std::map<std::string, FactProfile>& facts) {
+    for (const auto& item : facts) {
+        std::size_t literalFields = 0;
+        for (const auto& record : item.second.samples) literalFields += record.size();
+        const double averageLiterals = item.second.samples.empty()
+            ? 0.0
+            : static_cast<double>(literalFields) /
+                static_cast<double>(item.second.samples.size());
+
+        std::ostringstream detail;
+        detail << "records=" << item.second.records
+               << " fields=" << item.second.fields.size()
+               << " sampled=" << item.second.samples.size()
+               << " avgLiterals=" << std::fixed << std::setprecision(1) << averageLiterals;
+        graph.node(nodeId("fact", item.first), item.first, "fact", detail.str());
+
+        for (const auto& field : item.second.fields) {
+            const double coverage = item.second.records == 0
+                ? 0.0
+                : static_cast<double>(field.second) * 100.0 /
+                    static_cast<double>(item.second.records);
+            std::ostringstream fieldDetail;
+            fieldDetail << "present=" << field.second
+                        << " of=" << item.second.records
+                        << " coverage=" << std::fixed << std::setprecision(1)
+                        << coverage << "%";
+            const std::string fieldName = item.first + "." + field.first;
+            graph.node(nodeId("field", fieldName), field.first, "field", fieldDetail.str());
+            graph.edge(nodeId("fact", item.first), nodeId("field", fieldName), "field");
+        }
+    }
+}
+
+const char* diagramTypeName(DiagramType type) {
+    switch (type) {
+        case DiagramType::Schema: return "schema";
+        case DiagramType::Graph: return "graph";
+        case DiagramType::Er: return "er";
+        case DiagramType::Timeline: return "timeline";
+        case DiagramType::Hierarchy: return "hierarchy";
+        case DiagramType::Stats: return "stats";
+    }
+    return "schema";
+}
+
+bool parseDiagramType(const std::string& name, DiagramType& out) {
+    for (DiagramType candidate : kAllDiagramTypes) {
+        if (name == diagramTypeName(candidate)) {
+            out = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
 RenderedGraph SchemaGraphAccumulator::buildGraph(
     DiagramType type,
     const std::vector<std::string>& unresolvedImports) const {
     GraphWriter graph;
+
+    // The value- and inheritance-oriented views share none of the
+    // fact/field/execution assembly below, so they build and return directly.
+    if (type == DiagramType::Timeline || type == DiagramType::Hierarchy ||
+        type == DiagramType::Stats) {
+        if (type == DiagramType::Timeline) {
+            buildTimelineGraph(graph, impl_->facts);
+        } else if (type == DiagramType::Hierarchy) {
+            buildHierarchyGraph(graph, impl_->facts, impl_->references);
+        } else {
+            buildStatsGraph(graph, impl_->facts);
+        }
+        RenderedGraph valueResult;
+        valueResult.nodes = graph.nodes;
+        valueResult.edges = graph.edges;
+        valueResult.json = graph.toJson(
+            impl_->facts.size(),
+            impl_->methods.size(),
+            impl_->globals.size(),
+            diagramTypeName(type));
+        return valueResult;
+    }
+
     const bool includeFields = type != DiagramType::Graph;
     const bool includeExecution = type == DiagramType::Graph;
     const bool includeImports = type != DiagramType::Er;
@@ -395,12 +675,14 @@ RenderedGraph SchemaGraphAccumulator::buildGraph(
         graph.edge(from, nodeId(kind, targetName), label);
     }
 
-    const char* mode = type == DiagramType::Er ? "er" :
-        (type == DiagramType::Graph ? "graph" : "schema");
     RenderedGraph result;
     result.nodes = graph.nodes;
     result.edges = graph.edges;
-    result.json = graph.toJson(impl_->facts.size(), impl_->methods.size(), impl_->globals.size(), mode);
+    result.json = graph.toJson(
+        impl_->facts.size(),
+        impl_->methods.size(),
+        impl_->globals.size(),
+        diagramTypeName(type));
     return result;
 }
 
@@ -430,6 +712,84 @@ namespace {
 // live); this C++ copy is what makes a static SVG possible without a JS
 // runtime.
 struct Point { double x = 0, y = 0; };
+
+// Timeline layout: one row per fact type, its events running left to right in
+// the order buildTimelineGraph emitted them (already sorted by date).
+//
+// The lane layout below cannot express this - it groups by node *kind*, so
+// every event in the program lands in a single undifferentiated column and the
+// exported SVG shows none of the ordering the view exists to convey.
+std::map<std::string, Point> computeTimelineLayout(const RenderedGraph& graph) {
+    // Each event's owning fact comes from the "at" edge Celidae emits.
+    std::map<std::string, std::string> ownerOfEvent;
+    for (const auto& edge : graph.edges) {
+        if (edge.label == "at") ownerOfEvent[edge.to] = edge.from;
+    }
+
+    std::vector<std::string> factOrder;
+    std::map<std::string, std::vector<std::string>> eventsByFact;
+    for (const auto& node : graph.nodes) {
+        if (node.kind == "fact") {
+            if (!eventsByFact.count(node.id)) factOrder.push_back(node.id);
+            eventsByFact.try_emplace(node.id);
+        }
+    }
+    for (const auto& node : graph.nodes) {
+        if (node.kind != "event") continue;
+        const auto owner = ownerOfEvent.find(node.id);
+        const std::string key = owner == ownerOfEvent.end() ? std::string("(ungrouped)") : owner->second;
+        if (!eventsByFact.count(key)) factOrder.push_back(key);
+        eventsByFact[key].push_back(node.id);
+    }
+
+    std::map<std::string, Point> positions;
+    const double laneHeight = 120;
+    const double stepWidth = 210;
+    double y = 60;
+    for (const auto& fact : factOrder) {
+        positions[fact] = Point{70.0, y};
+        const auto& events = eventsByFact[fact];
+        for (size_t i = 0; i < events.size(); ++i) {
+            positions[events[i]] = Point{300.0 + static_cast<double>(i) * stepWidth, y};
+        }
+        y += laneHeight;
+    }
+    return positions;
+}
+
+// Hierarchy layout: parents above their children, so inheritance depth reads
+// top to bottom instead of every fact stacking into one column.
+std::map<std::string, Point> computeHierarchyLayout(const RenderedGraph& graph) {
+    std::map<std::string, int> depth;
+    std::map<std::string, std::string> parentOf;
+    for (const auto& edge : graph.edges) {
+        if (edge.label == "extends") parentOf[edge.to] = edge.from;
+    }
+    for (const auto& node : graph.nodes) {
+        int level = 0;
+        std::string current = node.id;
+        std::set<std::string> seen;
+        // seen guards against a cyclic `extend` chain, which would otherwise
+        // spin here forever.
+        while (seen.insert(current).second) {
+            const auto parent = parentOf.find(current);
+            if (parent == parentOf.end()) break;
+            current = parent->second;
+            ++level;
+        }
+        depth[node.id] = level;
+    }
+
+    std::map<int, int> countAtDepth;
+    std::map<std::string, Point> positions;
+    for (const auto& node : graph.nodes) {
+        const int level = depth[node.id];
+        const int column = countAtDepth[level]++;
+        positions[node.id] =
+            Point{70.0 + static_cast<double>(column) * 240.0, 55.0 + static_cast<double>(level) * 110.0};
+    }
+    return positions;
+}
 
 std::map<std::string, Point> computeLaneLayout(const RenderedGraph& graph) {
     static const std::vector<std::string> kinds = {"fact", "field", "method", "global", "library"};
@@ -468,19 +828,40 @@ std::string xmlEscape(const std::string& value) {
     return out;
 }
 
+// Keep in sync with the COLORS map in src/celidae/webui/template.html: the
+// SVG export and the HTML export must agree on what colour a kind is. Adding
+// a kind means editing both, plus the legend and lane order in the template.
 const char* kindColor(const std::string& kind) {
     if (kind == "fact") return "#18f0d7";
     if (kind == "field") return "#f7c948";
     if (kind == "method") return "#6ca8ff";
     if (kind == "global") return "#f27d9d";
     if (kind == "library") return "#9ca3af";
+    if (kind == "event") return "#c4a2ff";
     return "#9ca3af";
+}
+
+const char* diagramTitle(DiagramType type) {
+    switch (type) {
+        case DiagramType::Schema: return "Celidae Fact Schema";
+        case DiagramType::Graph: return "Celidae Dependency Graph";
+        case DiagramType::Er: return "Celidae ER Diagram";
+        case DiagramType::Timeline: return "Celidae Fact Timeline";
+        case DiagramType::Hierarchy: return "Celidae Fact Hierarchy";
+        case DiagramType::Stats: return "Celidae Fact Statistics";
+    }
+    return "Celidae Fact Schema";
 }
 
 } // namespace
 
 std::string standaloneSvg(const RenderedGraph& graph, DiagramType type) {
-    const auto positions = computeLaneLayout(graph);
+    // Each view gets the layout that actually carries its meaning; the lane
+    // layout only suits the kind-partitioned views.
+    const auto positions =
+        type == DiagramType::Timeline ? computeTimelineLayout(graph)
+        : type == DiagramType::Hierarchy ? computeHierarchyLayout(graph)
+        : computeLaneLayout(graph);
     double maxX = 400, maxY = 400;
     for (const auto& [id, point] : positions) {
         maxX = std::max(maxX, point.x + 220);
@@ -488,8 +869,7 @@ std::string standaloneSvg(const RenderedGraph& graph, DiagramType type) {
     }
 
     std::ostringstream out;
-    const char* title = type == DiagramType::Er ? "Celidae ER Diagram" :
-        (type == DiagramType::Graph ? "Celidae Dependency Graph" : "Celidae Fact Schema");
+    const char* title = diagramTitle(type);
     out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 " << maxX << " " << maxY
         << "\" width=\"" << maxX << "\" height=\"" << maxY << "\" font-family=\"Segoe UI, Inter, sans-serif\">\n"
@@ -531,15 +911,27 @@ std::string standaloneSvg(const RenderedGraph& graph, DiagramType type) {
     return out.str();
 }
 
-std::string standaloneHtml(const std::string& schemaJson, const std::string& graphJson, const std::string& erJson) {
+std::string standaloneHtml(const std::map<DiagramType, std::string>& payloads) {
     // kVisualizerTemplate is generated from src/celidae/webui/template.html
     // (cytoscape + chart.js + heroicons, all npm-installed there - see
-    // GeneratedVisualizerAssets.h). This function only substitutes the three
+    // GeneratedVisualizerAssets.h). This function only substitutes the
     // DiagramType payloads into the pre-built, self-contained page.
+    //
+    // Every type gets a token so the template's shape is fixed; a type the
+    // caller did not supply is substituted with `null`, and the page renders
+    // only the views whose payload is non-null. That is what lets
+    // `--template=<name>` emit a focused single-view file from the same
+    // template as the all-views default.
     std::string html = kVisualizerTemplate;
-    replaceToken(html, "__DATA_SCHEMA__", scriptSafeJson(schemaJson));
-    replaceToken(html, "__DATA_GRAPH__", scriptSafeJson(graphJson));
-    replaceToken(html, "__DATA_ER__", scriptSafeJson(erJson));
+    for (DiagramType type : kAllDiagramTypes) {
+        const std::string token =
+            std::string("__DATA_") + toUpperAscii(diagramTypeName(type)) + "__";
+        const auto found = payloads.find(type);
+        replaceToken(
+            html,
+            token,
+            found == payloads.end() ? "null" : scriptSafeJson(found->second));
+    }
     return html;
 }
 

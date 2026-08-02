@@ -12,6 +12,12 @@ setlocal shiftwidth=4
 setlocal tabstop=4
 setlocal expandtab
 
+" Neovim only: report whether felidae_debug --lsp is attached. Registration
+" itself is opt-in via `require("felidae.lsp").setup()` - see README.md.
+if has('nvim')
+  command! -buffer FelidaeLspStatus lua require("felidae.lsp").status()
+endif
+
 command! -buffer FelidaeFormat call felidae#FormatBuffer()
 command! -buffer FelidaeRun call felidae#Run()
 command! -buffer FelidaeCheck call felidae#Check()

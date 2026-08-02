@@ -342,6 +342,52 @@ For whole-buffer, structurally exact reindentation use
                        (list felidae-celidae-path "--html" buffer-file-name)
                        " ")))
 
+;;; Language server
+;;
+;; `felidae_debug --lsp' speaks LSP: diagnostics, document symbols and
+;; go-to-definition, all computed from the real parse rather than from the
+;; text-scanning fallbacks in this file. Registering it with Eglot (built in
+;; since Emacs 29) or lsp-mode gives Imenu, Xref and Flymake for free, which
+;; is what brings this mode in line with other language modes.
+
+(defcustom felidae-enable-lsp t
+  "Whether to register `felidae-debug-interpreter-path' as a language server.
+Set to nil to rely purely on this mode's built-in text scanning."
+  :type 'boolean
+  :group 'felidae)
+
+(defun felidae--server-command (&optional _interactive)
+  "Command Eglot should run for a Felidae buffer."
+  (list felidae-debug-interpreter-path "--lsp"))
+
+(defun felidae--register-lsp ()
+  "Teach Eglot and/or lsp-mode about the Felidae language server."
+  (when felidae-enable-lsp
+    (with-eval-after-load 'eglot
+      (add-to-list 'eglot-server-programs
+                   '(felidae-mode . felidae--server-command)))
+    (with-eval-after-load 'lsp-mode
+      (when (fboundp 'lsp-register-client)
+        (add-to-list 'lsp-language-id-configuration '(felidae-mode . "felidae"))
+        (lsp-register-client
+         (funcall (intern "make-lsp-client")
+                  :new-connection (funcall (intern "lsp-stdio-connection")
+                                           #'felidae--server-command)
+                  :activation-fn (lambda (&rest _) (derived-mode-p 'felidae-mode))
+                  :server-id 'felidae))))))
+
+(felidae--register-lsp)
+
+;;;###autoload
+(defun felidae-start-lsp ()
+  "Start Eglot for the current Felidae buffer."
+  (interactive)
+  (unless (fboundp 'eglot-ensure)
+    (user-error "Eglot is not available; Emacs 29+ or the eglot package is required"))
+  (unless (executable-find felidae-debug-interpreter-path)
+    (user-error "Felidae language server not found: %s" felidae-debug-interpreter-path))
+  (funcall (intern "eglot-ensure")))
+
 ;;; Comments / misc
 
 (defun felidae--setup-comments ()
@@ -357,6 +403,7 @@ For whole-buffer, structurally exact reindentation use
     (define-key map (kbd "C-c C-r") #'felidae-run-file)
     (define-key map (kbd "C-c C-c") #'felidae-check-file)
     (define-key map (kbd "C-c C-v") #'felidae-visualize-file)
+    (define-key map (kbd "C-c C-l") #'felidae-start-lsp)
     map)
   "Keymap for `felidae-mode'.")
 

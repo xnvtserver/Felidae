@@ -8,6 +8,9 @@ import com.intellij.psi.PsiFile;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Quick Documentation (Ctrl+Q / hover) for Felidae stdlib calls, backed by
  * the same content the VS Code extension shows (FelidaeBuiltinDocs, bundled
@@ -48,13 +51,64 @@ public final class FelidaeDocumentationProvider extends AbstractDocumentationPro
         if (key == null) {
             return null;
         }
+
         FelidaeBuiltinDocs.Entry entry = FelidaeBuiltinDocs.get(key);
-        if (entry == null) {
+        if (entry != null) {
+            return "<div class='definition'><b>" + escape(entry.heading()) + "</b></div>" +
+                    "<div class='content'>" + escape(entry.description()) + "</div>" +
+                    parameterTable(toParams(entry)) +
+                    "<div class='content'><pre>" + escape(entry.example()) + "</pre></div>";
+        }
+
+        // Not a builtin: document the user's own declarations too, so hovering
+        // a fact or method shows the parameters it expects.
+        PsiFile file = element.getContainingFile();
+        if (file == null) {
             return null;
         }
-        return "<div class='definition'><b>" + escape(entry.heading()) + "</b></div>" +
-                "<div class='content'>" + escape(entry.description()) + "</div>" +
-                "<div class='content'><pre>" + escape(entry.example()) + "</pre></div>";
+        FelidaeCallResolver.ResolvedCall resolved =
+                FelidaeCallResolver.resolve(file.getText(), key);
+        if (resolved == null) {
+            return null;
+        }
+        StringBuilder signature = new StringBuilder(resolved.label()).append("(");
+        for (int i = 0; i < resolved.params().size(); i++) {
+            if (i > 0) signature.append(", ");
+            signature.append(resolved.params().get(i).label());
+        }
+        signature.append(")");
+        return "<div class='definition'><b>" + escape(resolved.label()) + "</b></div>" +
+                "<div class='content'>" + escape(resolved.detail()) + "</div>" +
+                parameterTable(resolved.params()) +
+                "<div class='content'><pre>" + escape(signature.toString()) + "</pre></div>";
+    }
+
+    private static @NotNull List<FelidaeCallResolver.Param> toParams(
+            @NotNull FelidaeBuiltinDocs.Entry entry
+    ) {
+        List<FelidaeCallResolver.Param> params = new ArrayList<>(entry.params().size());
+        for (FelidaeBuiltinDocs.Param param : entry.params()) {
+            params.add(new FelidaeCallResolver.Param(param.name(), param.type()));
+        }
+        return params;
+    }
+
+    /** Renders the expected named arguments as IntelliJ's standard doc section. */
+    private static @NotNull String parameterTable(@NotNull List<FelidaeCallResolver.Param> params) {
+        if (params.isEmpty()) {
+            return "";
+        }
+        StringBuilder html = new StringBuilder("<table class='sections'>");
+        html.append("<tr><td valign='top' class='section'><p>Params:</p></td><td valign='top'>");
+        for (FelidaeCallResolver.Param param : params) {
+            html.append("<p><code>").append(escape(param.name())).append("</code>");
+            if (!param.type().isEmpty()) {
+                html.append(" &ndash; ").append(escape(param.type()));
+            }
+            html.append("</p>");
+        }
+        html.append("</td></tr></table>");
+        return html.toString();
     }
 
     private static @Nullable String resolveKey(@NotNull CharSequence text, int offset) {
@@ -73,7 +127,12 @@ public final class FelidaeDocumentationProvider extends AbstractDocumentationPro
         if (FelidaeBuiltinDocs.contains(normalized)) {
             return normalized;
         }
-        return FelidaeBuiltinDocs.contains(raw) ? raw : null;
+        if (FelidaeBuiltinDocs.contains(raw)) {
+            return raw;
+        }
+        // Fall through to user-defined declarations, resolved in generateDoc
+        // against the file's own text.
+        return raw;
     }
 
     private static boolean isNameChar(char ch) {

@@ -19,10 +19,25 @@ struct AstDiagnostic {
     std::string file;
 };
 
+// One declared parameter of a method/fact head, e.g. the `name: string` in
+// `Greeting(name: string) =>`. `type` is the annotation when the head writes
+// one (a type-like identifier such as `string`/`any`/`Person`, or the kind of
+// a literal default) and is empty when the head binds a plain variable
+// instead, e.g. the `e` in `HasManager(employee: e)`.
+struct SymbolParameter {
+    std::string name;
+    std::string type;
+};
+
 struct SymbolDefinition {
     std::string name;
     std::size_t count = 0;
     std::vector<SourceSpan> spans;
+    // Parameters of the last-seen declaration of this symbol. Editor
+    // integrations use these for signature help / parameter info, which is
+    // why they come from the parsed AST here rather than each extension
+    // re-deriving them from source text with its own regex.
+    std::vector<SymbolParameter> params;
 };
 
 struct SymbolSummary {

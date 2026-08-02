@@ -2,7 +2,12 @@ import * as vscode from "vscode";
 import * as childProcess from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { FelidaeDocumentFormattingEditProvider } from "./formatter";
+import {
+  FelidaeDocumentFormattingEditProvider,
+  FelidaeDocumentRangeFormattingEditProvider
+} from "./formatter";
+import * as ml from "./mlRanking";
+import * as languageClient from "./languageClient";
 
 type TokenKind =
   | "ident"
@@ -46,10 +51,21 @@ interface PositionedString {
   end: number;
 }
 
+// One named argument a call accepts. `type` is only known for user-defined
+// declarations (from felidae_debug's AST, or scraped from the head text);
+// builtins document names only.
+interface FelidaeParam {
+  name: string;
+  type?: string;
+}
+
 interface BuiltinDoc {
   heading: string;
   description: string;
   example: string;
+  // Derived at build time by scripts/generate-builtin-docs.js from `example`,
+  // so neither this extension nor the IntelliJ plugin has to re-parse it.
+  params?: FelidaeParam[];
 }
 
 interface DapRequest extends vscode.DebugProtocolMessage {
@@ -515,7 +531,15 @@ function collectVariableNames(tokens: Token[], start: number, end: number): Set<
   return vars;
 }
 
-function enclosingCallName(tokens: Token[], index: number): string | undefined {
+interface EnclosingCall {
+  name: string;
+  // Token index of the `(` that opens the argument list the cursor sits in.
+  openParen: number;
+}
+
+// Walks back from `index` to the unmatched `(` the cursor is inside, and
+// reads the (possibly dotted/namespaced) call name in front of it.
+function enclosingCall(tokens: Token[], index: number): EnclosingCall | undefined {
   let depth = 0;
   for (let i = index; i >= 0; i--) {
     const kind = tokens[i].kind;
@@ -532,13 +556,39 @@ function enclosingCallName(tokens: Token[], index: number): string | undefined {
           nameParts.unshift(tokens[cursor - 1].text);
           cursor -= 2;
         }
-        return nameParts.join(":");
+        return { name: nameParts.join(":"), openParen: i };
       }
       depth--;
     }
     if (kind === "lbrace" || kind === "lbracket") depth--;
   }
   return undefined;
+}
+
+function enclosingCallName(tokens: Token[], index: number): string | undefined {
+  return enclosingCall(tokens, index)?.name;
+}
+
+// Which argument slot the cursor is in, and which keys the call already
+// names, by scanning forward from the opening `(` at this call's own depth.
+function callArgumentState(
+  tokens: Token[],
+  openParen: number,
+  index: number
+): { activeParameter: number; suppliedKeys: Set<string> } {
+  const suppliedKeys = new Set<string>();
+  let activeParameter = 0;
+  let depth = 0;
+  for (let i = openParen + 1; i <= index && i < tokens.length; i++) {
+    const kind = tokens[i].kind;
+    if (kind === "lparen" || kind === "lbrace" || kind === "lbracket") depth++;
+    else if (kind === "rparen" || kind === "rbrace" || kind === "rbracket") depth--;
+    else if (kind === "comma" && depth === 0) activeParameter++;
+    else if (kind === "ident" && depth === 0 && tokens[i + 1]?.kind === "colon") {
+      suppliedKeys.add(tokens[i].text);
+    }
+  }
+  return { activeParameter, suppliedKeys };
 }
 
 function headLooksMethodStyle(tokens: Token[], start: number, end: number): boolean {
@@ -851,18 +901,38 @@ class FelidaeHoverProvider implements vscode.HoverProvider {
     if (!name) return undefined;
 
     const doc = builtinDocs[name];
-    if (!doc) return undefined;
+    if (doc) {
+      const markdown = new vscode.MarkdownString();
+      markdown.appendMarkdown(`### ${doc.heading}\n\n`);
+      markdown.appendMarkdown(`${doc.description}\n\n`);
+      markdown.appendCodeblock(doc.example, "felidae");
+      return new vscode.Hover(markdown);
+    }
 
+    // Not a builtin: fall through to the user's own declarations so hovering
+    // a fact or method shows its signature too, via the same resolver that
+    // backs completion and signature help.
+    const resolved = resolveCall(document, name);
+    if (!resolved) return undefined;
+
+    const signature = resolved.params
+      .map((param) => (param.type ? `${param.name}: ${param.type}` : `${param.name}:`))
+      .join(", ");
     const markdown = new vscode.MarkdownString();
-    markdown.appendMarkdown(`### ${doc.heading}\n\n`);
-    markdown.appendMarkdown(`${doc.description}\n\n`);
-    markdown.appendCodeblock(doc.example, "felidae");
+    markdown.appendMarkdown(`### ${resolved.label}\n\n`);
+    markdown.appendMarkdown(`${resolved.detail}\n\n`);
+    markdown.appendCodeblock(`${resolved.label}(${signature})`, "felidae");
     return new vscode.Hover(markdown);
   }
 }
 
 class FelidaeDefinitionProvider implements vscode.DefinitionProvider {
   async provideDefinition(document: vscode.TextDocument, position: vscode.Position): Promise<vscode.Definition | undefined> {
+    // The language server advertises definitionProvider, and VS Code merges
+    // results from every registered provider - so answering here as well
+    // would show each declaration twice. The server resolves against the real
+    // parse, so it wins; this stays as the fallback when it is not running.
+    if (languageClient.isRunning()) return undefined;
     const name = getCallNameAtPosition(document, position);
     if (!name) return undefined;
     const builtin = await builtinDefinition(document, name);
@@ -905,35 +975,59 @@ async function builtinDefinition(document: vscode.TextDocument, name: string): P
   return new vscode.Location(target, new vscode.Position(0, 0));
 }
 
+// Folds whole declarations - a method from its head down to its final
+// `return`, and a multi-line fact from its head to its closing paren - plus
+// runs of comment lines.
+//
+// This used to fold only on a `.` terminator at depth 0, so the dotless style
+// most Felidae code is written in produced no fold regions at all. Regions are
+// now derived from where declarations start, which is the same thing the
+// outline and the IntelliJ folding builder use.
 class FelidaeFoldingRangeProvider implements vscode.FoldingRangeProvider {
   provideFoldingRanges(document: vscode.TextDocument): vscode.FoldingRange[] {
-    const lexed = lexDocument(document);
+    if (document.languageId !== "felidae") return [];
     const ranges: vscode.FoldingRange[] = [];
-    let startLine: number | undefined;
-    let depth = 0;
+    const lines: string[] = [];
+    for (let i = 0; i < document.lineCount; i++) lines.push(document.lineAt(i).text);
 
-    for (let i = 0; i < lexed.tokens.length; i++) {
-      const token = lexed.tokens[i];
-      if (startLine === undefined && token.kind !== "dot" && token.kind !== "comma") {
-        startLine = token.line;
-      }
+    // A line beginning a new top-level construct ends the previous region.
+    // The optional `extend Parent` clause must be allowed here, or a fact
+    // written as `Child extend Parent(...)` is not seen as starting anything
+    // and the whole run of facts collapses into one region.
+    const startsTopLevel = (line: string) =>
+      /^[A-Za-z_][A-Za-z0-9_:.]*(?:[ \t]+extend[ \t]+[A-Za-z_][A-Za-z0-9_]*)?[ \t]*\(/.test(line) ||
+      /^import\b/.test(line) ||
+      /^[A-Za-z_][A-Za-z0-9_]*[ \t]*:=/.test(line);
 
-      if (token.kind === "lparen" || token.kind === "lbrace" || token.kind === "lbracket") {
-        depth++;
-        continue;
+    for (let i = 0; i < lines.length; i++) {
+      if (!startsTopLevel(lines[i])) continue;
+      let end = i;
+      for (let j = i + 1; j < lines.length; j++) {
+        if (startsTopLevel(lines[j])) break;
+        // Blank lines and comments trailing a declaration belong to whatever
+        // comes next - a comment here is the next declaration's doc. Ending
+        // at the last real body line keeps a one-line fact unfoldable instead
+        // of letting it swallow the following comment.
+        if (lines[j].trim().length > 0 && !/^[ \t]*#/.test(lines[j])) end = j;
       }
-      if (token.kind === "rparen" || token.kind === "rbrace" || token.kind === "rbracket") {
-        depth = Math.max(0, depth - 1);
-        continue;
+      if (end > i) {
+        ranges.push(new vscode.FoldingRange(i, end, vscode.FoldingRangeKind.Region));
       }
+    }
 
-      const next = lexed.tokens[i + 1];
-      const accessorDot = token.kind === "dot" && next?.kind === "ident" && next.line === token.line;
-      if (token.kind === "dot" && depth === 0 && !accessorDot) {
-        if (startLine !== undefined && token.line > startLine) {
-          ranges.push(new vscode.FoldingRange(startLine, token.line, vscode.FoldingRangeKind.Region));
+    // Consecutive `#` lines fold as a comment block, which is what VS Code's
+    // "Fold All Block Comments" acts on.
+    let commentStart = -1;
+    for (let i = 0; i <= lines.length; i++) {
+      const isComment = i < lines.length && /^[ \t]*#/.test(lines[i]);
+      if (isComment && commentStart < 0) commentStart = i;
+      else if (!isComment && commentStart >= 0) {
+        if (i - 1 > commentStart) {
+          ranges.push(
+            new vscode.FoldingRange(commentStart, i - 1, vscode.FoldingRangeKind.Comment)
+          );
         }
-        startLine = undefined;
+        commentStart = -1;
       }
     }
 
@@ -947,8 +1041,9 @@ class FelidaeCodeLensProvider implements vscode.CodeLensProvider {
     const lenses: vscode.CodeLens[] = [];
     for (let line = 0; line < document.lineCount; line++) {
       const text = document.lineAt(line).text;
-      const match = /^\s*main\s*\([^)]*\)\s*=>/.exec(text);
-      if (!match) continue;
+      // Same column-0 anchoring as hasMainMethod: an indented `main(...)`
+      // call is a call, not the entry point.
+      if (!/^main[ \t]*\([^)]*\)[ \t]*=>/.test(text)) continue;
       const range = new vscode.Range(line, text.indexOf("main"), line, text.indexOf("main") + 4);
       lenses.push(new vscode.CodeLens(range, {
         title: "$(play) Run",
@@ -1149,7 +1244,10 @@ function buildFelidaeGraph(document: vscode.TextDocument): FelidaeGraph {
   const graph: FelidaeGraph = { nodes: new Map(), edges: [] };
   const text = document.getText();
   const lexed = lexDocument(document);
-  const declaration = /^\s*([A-Za-z_][A-Za-z0-9_:.]*)(?:\s+extend\s+([A-Za-z_][A-Za-z0-9_]*))?\s*\(([\s\S]*?)\)\s*(=>|\.)/gm;
+  // Was a second, divergent copy of DECLARATION_PATTERN carrying the same
+  // unbounded-`[\s\S]*?` and leading-whitespace bugs, so the visualizer's
+  // graph disagreed with the outline about which declarations exist.
+  const declaration = new RegExp(DECLARATION_PATTERN);
   let match: RegExpExecArray | null;
 
   while ((match = declaration.exec(text)) !== null) {
@@ -1202,14 +1300,22 @@ function staticGraphToRuntimeGraph(graph: FelidaeGraph): RuntimeGraph {
   return { nodes, edges };
 }
 
-function collectHeadFields(argsText: string): string[] {
-  const fields = new Set<string>();
+// Splits a declaration head's raw `(...)` text into its named parameters,
+// keeping the annotation after the `:` so signature help can show
+// `name: string` rather than a bare `name`. Depth-aware so a nested default
+// like `opts: {a: 1, b: 2}` stays one parameter.
+function collectHeadParams(argsText: string): FelidaeParam[] {
+  const params: FelidaeParam[] = [];
+  const seen = new Set<string>();
   let depth = 0;
   let segmentStart = 0;
   const flush = (end: number) => {
     const segment = argsText.slice(segmentStart, end).trim();
-    const match = /^([A-Za-z_][A-Za-z0-9_]*)\s*:/.exec(segment);
-    if (match) fields.add(match[1]);
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)\s*:(?!=)/.exec(segment);
+    if (!match || seen.has(match[1])) return;
+    seen.add(match[1]);
+    const type = segment.slice(match[0].length).trim();
+    params.push(type ? { name: match[1], type } : { name: match[1] });
   };
   for (let i = 0; i < argsText.length; i++) {
     const ch = argsText[i];
@@ -1221,7 +1327,12 @@ function collectHeadFields(argsText: string): string[] {
     }
   }
   flush(argsText.length);
-  return [...fields];
+  return params;
+}
+
+// Name-only view of collectHeadParams, for the callers that only label fields.
+function collectHeadFields(argsText: string): string[] {
+  return collectHeadParams(argsText).map((param) => param.name);
 }
 
 function statementEndOffset(document: vscode.TextDocument, tokens: Token[], offset: number): number | undefined {
@@ -1263,13 +1374,34 @@ function isLibraryNamespace(name: string): boolean {
   return new RegExp(`^(${FELIDAE_LIBRARY_NAMES})$`).test(name);
 }
 
+// Declaration head: `Name(args)`, `Name extend Parent(args)`, optionally
+// followed by `=>` (method) or `.` (dot-terminated fact).
+//
+// Two properties matter and both were wrong before:
+//
+//  * The argument list uses bounded nesting rather than `[\s\S]*?`. The lazy
+//    form is unbounded across newlines, so a dotless fact - which has no `=>`
+//    or `.` to stop at - made one match swallow every declaration up to the
+//    next terminated one. In examples/timeline_facts.fx that hid 3 of 4
+//    declarations from the outline, completion and the debug adapter.
+//  * It anchors at column 0. Felidae declarations are always top level, so
+//    allowing leading whitespace matched indented *calls*: `return (`,
+//    `system.print(...)` and `instanceof(...)` were all reported as
+//    declarations named `return`, `system.print` and `instanceof`.
+//
+// Across examples/ and v2_examples/ this takes true declarations found from
+// 356 to 618 while removing those false positives.
 const DECLARATION_PATTERN =
-  /^[ \t]*([A-Za-z_][A-Za-z0-9_:.]*)(?:\s+extend\s+([A-Za-z_][A-Za-z0-9_]*))?\s*\(([\s\S]*?)\)\s*(=>|\.)/gm;
+  /^([A-Za-z_][A-Za-z0-9_:.]*)(?:[ \t]+extend[ \t]+([A-Za-z_][A-Za-z0-9_]*))?[ \t]*\(((?:[^()]|\((?:[^()]|\([^()]*\))*\))*)\)[ \t]*(=>|\.|$)/gm;
 const GLOBAL_BINDING_PATTERN = /^([A-Za-z_][A-Za-z0-9_]*)\s*:=/gm;
 
 class FelidaeDocumentSymbolProvider implements vscode.DocumentSymbolProvider {
   provideDocumentSymbols(document: vscode.TextDocument): vscode.ProviderResult<vscode.DocumentSymbol[]> {
     if (document.languageId !== "felidae") return [];
+    // Same reasoning as FelidaeDefinitionProvider: the server advertises
+    // documentSymbolProvider, and VS Code concatenates outlines from all
+    // providers, so answering here too would duplicate every entry.
+    if (languageClient.isRunning()) return [];
     const text = document.getText();
     const symbols: vscode.DocumentSymbol[] = [];
 
@@ -1359,14 +1491,6 @@ function builtinDocCompletionsForNamespace(baseName: string): vscode.CompletionI
   });
 }
 
-function argNamesFromExample(example: string): string[] {
-  const names = new Set<string>();
-  const pattern = /([A-Za-z_][A-Za-z0-9_]*)\s*:/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(example)) !== null) names.add(match[1]);
-  return [...names];
-}
-
 function namedArgCompletion(name: string, detail?: string): vscode.CompletionItem {
   const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Field);
   item.insertText = new vscode.SnippetString(`${name}: $0`);
@@ -1374,22 +1498,88 @@ function namedArgCompletion(name: string, detail?: string): vscode.CompletionIte
   return item;
 }
 
-function completionsForCallFields(document: vscode.TextDocument, callName: string): vscode.CompletionItem[] {
+interface ResolvedCall {
+  label: string;
+  params: FelidaeParam[];
+  detail: string;
+  documentation?: vscode.MarkdownString;
+}
+
+// The single place a call name is turned into its parameter list. Both
+// keyword-argument completion and signature help go through this so they can
+// never disagree about what a call accepts.
+//
+// Resolution order, most to least authoritative:
+//   1. builtinDocs - params derived at build time from the documented example.
+//   2. symbolSummaryCache - real parameters parsed by felidae_debug from the
+//      AST, including types, for user-defined methods and facts.
+//   3. DECLARATION_PATTERN text scan - the fallback when felidae_debug is
+//      missing, older than --symbols-json, or has not answered yet.
+function resolveCall(document: vscode.TextDocument, callName: string): ResolvedCall | undefined {
   const normalized = callName.replace(/\./g, ":");
+
   const builtin = builtinDocs[normalized];
   if (builtin) {
-    return argNamesFromExample(builtin.example).map((name) => namedArgCompletion(name, builtin.heading));
+    const markdown = new vscode.MarkdownString();
+    markdown.appendMarkdown(`${builtin.description}\n\n`);
+    markdown.appendCodeblock(builtin.example, "felidae");
+    return {
+      label: builtin.heading,
+      params: builtin.params ?? [],
+      detail: builtin.heading,
+      documentation: markdown
+    };
   }
 
   const simpleName = normalized.split(":").pop() ?? normalized;
+  const matchesName = (name: string) =>
+    name === normalized || name === simpleName || normalizeGraphName(name) === simpleName;
+
+  const summary = symbolSummaryCache.get(document.uri.toString());
+  if (summary) {
+    for (const group of [summary.methods, summary.facts]) {
+      for (const definition of group ?? []) {
+        if (!matchesName(definition.name) || !definition.params?.length) continue;
+        return {
+          label: definition.name,
+          params: definition.params,
+          detail: group === summary.facts ? `fact ${definition.name}` : `method ${definition.name}`
+        };
+      }
+    }
+  }
+
   const text = document.getText();
   const declaration = new RegExp(DECLARATION_PATTERN);
   let match: RegExpExecArray | null;
   while ((match = declaration.exec(text)) !== null) {
-    if (match[1] !== simpleName && normalizeGraphName(match[1]) !== simpleName) continue;
-    return collectHeadFields(match[3]).map((name) => namedArgCompletion(name, `field of ${match![1]}`));
+    if (!matchesName(match[1])) continue;
+    return {
+      label: match[1],
+      params: collectHeadParams(match[3]),
+      detail: match[4] === "=>" ? `method ${match[1]}` : `fact ${match[1]}`
+    };
   }
-  return [];
+  return undefined;
+}
+
+function completionsForCallFields(
+  document: vscode.TextDocument,
+  callName: string,
+  suppliedKeys: ReadonlySet<string> = new Set()
+): vscode.CompletionItem[] {
+  const resolved = resolveCall(document, callName);
+  if (!resolved) return [];
+  return resolved.params
+    // A key already written earlier in this same call is not a useful
+    // suggestion for the argument currently being typed.
+    .filter((param) => !suppliedKeys.has(param.name))
+    .map((param) =>
+      namedArgCompletion(
+        param.name,
+        param.type ? `${resolved.detail} — ${param.type}` : resolved.detail
+      )
+    );
 }
 
 function completionsForScope(
@@ -1442,6 +1632,77 @@ function completionsForScope(
   return [...items.values()];
 }
 
+// Shows the expected `key:` parameters while the cursor is inside a call's
+// parentheses, highlighting the argument slot being typed. Parameter data
+// comes from resolveCall, the same resolver keyword-argument completion uses.
+class FelidaeSignatureHelpProvider implements vscode.SignatureHelpProvider {
+  provideSignatureHelp(
+    document: vscode.TextDocument,
+    position: vscode.Position
+  ): vscode.ProviderResult<vscode.SignatureHelp> {
+    if (document.languageId !== "felidae") return undefined;
+
+    const tokens = lexDocument(document).tokens;
+    const index = tokenIndexBefore(tokens, position);
+    const call = enclosingCall(tokens, index);
+    if (!call) return undefined;
+
+    const resolved = resolveCall(document, call.name);
+    if (!resolved || resolved.params.length === 0) return undefined;
+
+    const parameters = resolved.params.map(
+      (param) =>
+        new vscode.ParameterInformation(
+          param.type ? `${param.name}: ${param.type}` : `${param.name}:`
+        )
+    );
+    const signature = new vscode.SignatureInformation(
+      `${resolved.label}(${parameters.map((parameter) => parameter.label).join(", ")})`
+    );
+    signature.parameters = parameters;
+    if (resolved.documentation) signature.documentation = resolved.documentation;
+
+    const { activeParameter, suppliedKeys } = callArgumentState(tokens, call.openParen, index);
+
+    const help = new vscode.SignatureHelp();
+    help.signatures = [signature];
+    help.activeSignature = 0;
+    // Named arguments may be written in any order, so the slot index only
+    // tells us where the cursor is, not which parameter it belongs to. If the
+    // argument being typed already names a key, highlight that key; otherwise
+    // point at the first parameter still unsupplied, falling back to the slot.
+    const typedKey = this.keyBeingTyped(tokens, call.openParen, index);
+    const byName = typedKey
+      ? resolved.params.findIndex((param) => param.name === typedKey)
+      : -1;
+    if (byName >= 0) {
+      help.activeParameter = byName;
+    } else {
+      const firstUnsupplied = resolved.params.findIndex(
+        (param) => !suppliedKeys.has(param.name)
+      );
+      help.activeParameter =
+        firstUnsupplied >= 0 ? firstUnsupplied : Math.min(activeParameter, parameters.length - 1);
+    }
+    return help;
+  }
+
+  // The key of the argument currently being typed, i.e. the `ident` that
+  // starts the slot the cursor is in (`foo(a: 1, bar|` -> "bar").
+  private keyBeingTyped(tokens: Token[], openParen: number, index: number): string | undefined {
+    let depth = 0;
+    let slotStart = openParen + 1;
+    for (let i = openParen + 1; i <= index && i < tokens.length; i++) {
+      const kind = tokens[i].kind;
+      if (kind === "lparen" || kind === "lbrace" || kind === "lbracket") depth++;
+      else if (kind === "rparen" || kind === "rbrace" || kind === "rbracket") depth--;
+      else if (kind === "comma" && depth === 0) slotStart = i + 1;
+    }
+    const first = tokens[slotStart];
+    return first?.kind === "ident" ? first.text : undefined;
+  }
+}
+
 class FelidaeCompletionItemProvider implements vscode.CompletionItemProvider {
   provideCompletionItems(document: vscode.TextDocument, position: vscode.Position): vscode.ProviderResult<vscode.CompletionItem[]> {
     if (document.languageId !== "felidae") return [];
@@ -1459,19 +1720,286 @@ class FelidaeCompletionItemProvider implements vscode.CompletionItemProvider {
     const items = new Map<string, vscode.CompletionItem>();
 
     if (/[(,]\s*$/.test(linePrefix)) {
-      const callName = enclosingCallName(tokens, index);
-      if (callName) {
-        for (const item of completionsForCallFields(document, callName)) {
+      const call = enclosingCall(tokens, index);
+      if (call) {
+        const { suppliedKeys } = callArgumentState(tokens, call.openParen, index);
+        const fieldItems = completionsForCallFields(document, call.name, suppliedKeys);
+        rankNamedArguments(document, call.name, suppliedKeys, fieldItems);
+        for (const item of fieldItems) {
           items.set(item.label as string, item);
         }
       }
     }
 
-    for (const item of completionsForScope(document, tokens, index)) {
+    const scopeItems = completionsForScope(document, tokens, index);
+    rankScopeCompletions(document, position, scopeItems);
+    for (const item of scopeItems) {
       if (!items.has(item.label as string)) items.set(item.label as string, item);
     }
 
     return [...items.values()];
+  }
+}
+
+// VS Code orders a completion list by `sortText`, so ranking is applied by
+// assigning sort keys rather than by reordering the array. Items keep their
+// existing labels/details; only their order changes. When no model is bundled
+// (mlRanking finds no resources/models) both helpers no-op and the list stays
+// exactly as it was before ranking existed.
+
+function rankByScore(
+  items: vscode.CompletionItem[],
+  score: (item: vscode.CompletionItem) => number
+): void {
+  const scored = items.map((item, position) => ({ item, position, score: score(item) }));
+  scored.sort((a, b) => b.score - a.score || a.position - b.position);
+  scored.forEach((entry, rank) => {
+    // Zero-padded so lexicographic sortText matches numeric rank.
+    entry.item.sortText = String(rank).padStart(4, "0");
+  });
+}
+
+function completionKindOf(item: vscode.CompletionItem): ml.CandidateKind {
+  switch (item.kind) {
+    case vscode.CompletionItemKind.Method:
+    case vscode.CompletionItemKind.Function:
+      return "method";
+    case vscode.CompletionItemKind.Struct:
+    case vscode.CompletionItemKind.Class:
+      return "fact";
+    case vscode.CompletionItemKind.Module:
+      return "library";
+    case vscode.CompletionItemKind.Field:
+      return "param";
+    default:
+      return "local";
+  }
+}
+
+function rankScopeCompletions(
+  document: vscode.TextDocument,
+  position: vscode.Position,
+  items: vscode.CompletionItem[]
+): void {
+  if (!ml.isCompletionRankingEnabled() || items.length < 2) return;
+  const line = document.lineAt(position.line).text;
+  const prefixMatch = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(line.slice(0, position.character));
+  const textAbove = document.getText(
+    new vscode.Range(new vscode.Position(0, 0), position)
+  );
+  const context = ml.buildCompletionContext(textAbove, prefixMatch ? prefixMatch[1] : "");
+  rankByScore(items, (item) =>
+    ml.scoreCompletion(item.label as string, completionKindOf(item), context)
+  );
+}
+
+function rankNamedArguments(
+  document: vscode.TextDocument,
+  callName: string,
+  suppliedKeys: ReadonlySet<string>,
+  items: vscode.CompletionItem[]
+): void {
+  if (!ml.isNextParamRankingEnabled() || items.length < 2) return;
+  const resolved = resolveCall(document, callName);
+  if (!resolved) return;
+
+  const declIndexOf = new Map(resolved.params.map((param, i) => [param.name, i]));
+  const firstUnsuppliedIndex = resolved.params.findIndex(
+    (param) => !suppliedKeys.has(param.name)
+  );
+  const context: ml.NextParamContext = {
+    paramsTotal: resolved.params.length,
+    suppliedCount: suppliedKeys.size,
+    firstUnsuppliedIndex,
+    isBuiltinCall: builtinDocs[callName.replace(/\./g, ":")] !== undefined
+  };
+  rankByScore(items, (item) => {
+    const name = item.label as string;
+    const declIndex = declIndexOf.get(name);
+    return declIndex === undefined ? 0 : ml.scoreNextParam(name, declIndex, context);
+  });
+}
+
+// --------------------------------------------------------------------------
+// Symbol occurrences - the primitive behind highlight, find-references and
+// rename. Built on lexDocument so occurrences inside strings and comments are
+// never matched: those are separate token kinds, so filtering to `ident` is
+// enough.
+// --------------------------------------------------------------------------
+
+function symbolOccurrences(document: vscode.TextDocument, name: string): vscode.Range[] {
+  const ranges: vscode.Range[] = [];
+  for (const token of lexDocument(document).tokens) {
+    if (token.kind !== "ident" || token.text !== name) continue;
+    ranges.push(
+      new vscode.Range(
+        new vscode.Position(token.line, token.start),
+        new vscode.Position(token.line, token.end)
+      )
+    );
+  }
+  return ranges;
+}
+
+function identifierAt(
+  document: vscode.TextDocument,
+  position: vscode.Position
+): { name: string; range: vscode.Range } | undefined {
+  const range = document.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
+  if (!range) return undefined;
+  return { name: document.getText(range), range };
+}
+
+/** True when `name` is declared at top level, i.e. visible to other files. */
+function isTopLevelSymbol(document: vscode.TextDocument, name: string): boolean {
+  const text = document.getText();
+  const declaration = new RegExp(DECLARATION_PATTERN);
+  let match: RegExpExecArray | null;
+  while ((match = declaration.exec(text)) !== null) {
+    if (match[1] === name || normalizeGraphName(match[1]) === name) return true;
+  }
+  const binding = new RegExp(GLOBAL_BINDING_PATTERN);
+  while ((match = binding.exec(text)) !== null) {
+    if (match[1] === name) return true;
+  }
+  return false;
+}
+
+async function felidaeDocuments(): Promise<vscode.TextDocument[]> {
+  const uris = await vscode.workspace.findFiles("**/*.fx", "**/node_modules/**", 500);
+  const documents: vscode.TextDocument[] = [];
+  for (const uri of uris) {
+    try {
+      documents.push(await vscode.workspace.openTextDocument(uri));
+    } catch {
+      // Unreadable or binary file: skip rather than fail the whole request.
+    }
+  }
+  return documents;
+}
+
+class FelidaeDocumentHighlightProvider implements vscode.DocumentHighlightProvider {
+  provideDocumentHighlights(
+    document: vscode.TextDocument,
+    position: vscode.Position
+  ): vscode.ProviderResult<vscode.DocumentHighlight[]> {
+    const found = identifierAt(document, position);
+    if (!found) return [];
+    return symbolOccurrences(document, found.name).map(
+      (range) => new vscode.DocumentHighlight(range, vscode.DocumentHighlightKind.Text)
+    );
+  }
+}
+
+class FelidaeReferenceProvider implements vscode.ReferenceProvider {
+  async provideReferences(
+    document: vscode.TextDocument,
+    position: vscode.Position
+  ): Promise<vscode.Location[]> {
+    const found = identifierAt(document, position);
+    if (!found) return [];
+
+    const locations: vscode.Location[] = symbolOccurrences(document, found.name).map(
+      (range) => new vscode.Location(document.uri, range)
+    );
+
+    // A local binding or parameter means nothing in another file, so only
+    // top-level declarations are worth a workspace-wide scan.
+    if (!isTopLevelSymbol(document, found.name)) return locations;
+
+    for (const other of await felidaeDocuments()) {
+      if (other.uri.toString() === document.uri.toString()) continue;
+      for (const range of symbolOccurrences(other, found.name)) {
+        locations.push(new vscode.Location(other.uri, range));
+      }
+    }
+    return locations;
+  }
+}
+
+class FelidaeRenameProvider implements vscode.RenameProvider {
+  prepareRename(
+    document: vscode.TextDocument,
+    position: vscode.Position
+  ): vscode.ProviderResult<vscode.Range> {
+    const found = identifierAt(document, position);
+    if (!found) throw new Error("Select a Felidae identifier to rename.");
+    // Builtins live in the interpreter, not in the user's sources.
+    if (builtinDocs[found.name] || isLibraryNamespace(found.name)) {
+      throw new Error(`'${found.name}' is a Felidae builtin and cannot be renamed.`);
+    }
+    return found.range;
+  }
+
+  async provideRenameEdits(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    newName: string
+  ): Promise<vscode.WorkspaceEdit | undefined> {
+    const found = identifierAt(document, position);
+    if (!found) return undefined;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(newName)) {
+      throw new Error(`'${newName}' is not a valid Felidae identifier.`);
+    }
+
+    const edit = new vscode.WorkspaceEdit();
+    for (const range of symbolOccurrences(document, found.name)) {
+      edit.replace(document.uri, range, newName);
+    }
+
+    // Same reasoning as find-references: only a top-level name can be
+    // referenced from another file, so only then is a workspace rename
+    // correct. Renaming a local everywhere would corrupt unrelated files.
+    if (isTopLevelSymbol(document, found.name)) {
+      for (const other of await felidaeDocuments()) {
+        if (other.uri.toString() === document.uri.toString()) continue;
+        for (const range of symbolOccurrences(other, found.name)) {
+          edit.replace(other.uri, range, newName);
+        }
+      }
+    }
+    return edit;
+  }
+}
+
+class FelidaeWorkspaceSymbolProvider implements vscode.WorkspaceSymbolProvider {
+  async provideWorkspaceSymbols(query: string): Promise<vscode.SymbolInformation[]> {
+    const symbols: vscode.SymbolInformation[] = [];
+    const needle = query.toLowerCase();
+
+    for (const document of await felidaeDocuments()) {
+      const text = document.getText();
+      const declaration = new RegExp(DECLARATION_PATTERN);
+      let match: RegExpExecArray | null;
+      while ((match = declaration.exec(text)) !== null) {
+        const name = match[1];
+        if (needle && !name.toLowerCase().includes(needle)) continue;
+        const start = document.positionAt(match.index + match[0].indexOf(name));
+        symbols.push(
+          new vscode.SymbolInformation(
+            name,
+            match[4] === "=>" ? vscode.SymbolKind.Method : vscode.SymbolKind.Struct,
+            "",
+            new vscode.Location(document.uri, new vscode.Range(start, start.translate(0, name.length)))
+          )
+        );
+      }
+      const binding = new RegExp(GLOBAL_BINDING_PATTERN);
+      while ((match = binding.exec(text)) !== null) {
+        const name = match[1];
+        if (needle && !name.toLowerCase().includes(needle)) continue;
+        const start = document.positionAt(match.index);
+        symbols.push(
+          new vscode.SymbolInformation(
+            name,
+            vscode.SymbolKind.Constant,
+            "",
+            new vscode.Location(document.uri, new vscode.Range(start, start.translate(0, name.length)))
+          )
+        );
+      }
+    }
+    return symbols;
   }
 }
 
@@ -2247,10 +2775,29 @@ function escapeScriptJson(value: string): string {
     .replace(/&/g, "\\u0026");
 }
 
+// Felidae's binaries are `felidae.exe` on Windows and plain `felidae`
+// everywhere else. The defaults below (and any path a user carried over from
+// another machine) can therefore name a file that does not exist on this
+// platform, which previously meant every executable lookup silently failed on
+// Linux and macOS. Try the path as given, then the other platform's spelling,
+// before giving up - the caller still reports "not found" if neither exists.
+function withPlatformExecutableSuffix(resolved: string): string {
+  if (fs.existsSync(resolved)) return resolved;
+  const alternate = resolved.toLowerCase().endsWith(".exe")
+    ? resolved.slice(0, -4)
+    : `${resolved}.exe`;
+  return fs.existsSync(alternate) ? alternate : resolved;
+}
+
 function resolveInterpreterPath(documentUri: vscode.Uri): string {
   const config = vscode.workspace.getConfiguration("felidae");
-  const configuredPath = config.get<string>("interpreterPath", "build/felidae.exe");
-  return resolveConfiguredPath(documentUri, configuredPath);
+  const configuredPath = config.get<string>("interpreterPath", defaultExecutable("felidae"));
+  return withPlatformExecutableSuffix(resolveConfiguredPath(documentUri, configuredPath));
+}
+
+/** `build/<name>` plus the platform's executable suffix. */
+function defaultExecutable(name: string): string {
+  return `build/${name}${process.platform === "win32" ? ".exe" : ""}`;
 }
 
 function resolveDebugInterpreterPath(documentUri: vscode.Uri): string {
@@ -2258,10 +2805,10 @@ function resolveDebugInterpreterPath(documentUri: vscode.Uri): string {
   if (debuggerFromEnv && fs.existsSync(debuggerFromEnv)) return debuggerFromEnv;
 
   const config = vscode.workspace.getConfiguration("felidae");
-  return resolveConfiguredPath(
+  return withPlatformExecutableSuffix(resolveConfiguredPath(
     documentUri,
-    config.get<string>("debugInterpreterPath", "build/felidae_debug.exe")
-  );
+    config.get<string>("debugInterpreterPath", defaultExecutable("felidae_debug"))
+  ));
 }
 
 function resolveCelidaePath(documentUri: vscode.Uri): string {
@@ -2269,10 +2816,10 @@ function resolveCelidaePath(documentUri: vscode.Uri): string {
   if (celidaeFromEnv && fs.existsSync(celidaeFromEnv)) return celidaeFromEnv;
 
   const config = vscode.workspace.getConfiguration("felidae");
-  return resolveConfiguredPath(
+  return withPlatformExecutableSuffix(resolveConfiguredPath(
     documentUri,
-    config.get<string>("celidaePath", "build/celidae.exe")
-  );
+    config.get<string>("celidaePath", defaultExecutable("celidae"))
+  ));
 }
 
 function resolveConfiguredPath(documentUri: vscode.Uri, configuredPath: string): string {
@@ -2312,6 +2859,9 @@ interface FelidaeSymbolDefinition {
   name: string;
   count: number;
   spans: Array<{ startLine: number; startColumn: number; endLine: number; endColumn: number }>;
+  // Declared head parameters, added by felidae_debug --symbols-json. Optional
+  // because an older build of that binary simply omits the field.
+  params?: FelidaeParam[];
 }
 
 interface FelidaeSymbolSummary {
@@ -2617,9 +3167,14 @@ async function runQuery(uri?: vscode.Uri): Promise<void> {
   terminal.sendText(command);
 }
 
+// A `main` *declaration*, which like every Felidae declaration sits at column
+// 0 and is followed by `=>`. Anchoring matters: `^\s*` also matched an
+// indented `main(...)` call inside another method's body, which made Run and
+// Debug appear for files that have no entry point to run.
+const MAIN_DECLARATION_PATTERN = /^main[ \t]*\([^)]*\)[ \t]*=>/m;
+
 function hasMainMethod(document: vscode.TextDocument): boolean {
-  const text = document.getText();
-  return /^\s*main\s*\([^)]*\)\s*=>/m.test(text);
+  return MAIN_DECLARATION_PATTERN.test(document.getText());
 }
 
 async function runMain(uri?: vscode.Uri): Promise<void> {
@@ -3171,7 +3726,11 @@ class FelidaeDebugAdapter implements vscode.DebugAdapter {
     const variables = new Set<string>();
 
     for (let i = endIndex - 1; i >= 0; i--) {
-      const head = /^\s*[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)\s*=>/.exec(lines[i]);
+      // Anchored at column 0 like every Felidae declaration, and the name
+      // allows `.`/`:` so namespaced heads (`Dog.membership(...) =>`) are
+      // recognised - previously they were not, so stepping inside one fell
+      // back to scanning from line 0 and reported the wrong locals.
+      const head = /^[A-Za-z_][A-Za-z0-9_:.]*[ \t]*\((.*)\)[ \t]*=>/.exec(lines[i]);
       if (head) {
         scopeStart = i;
         this.collectHeadVariables(head[1], variables);
@@ -3258,26 +3817,61 @@ class FelidaeDebugConfigurationProvider implements vscode.DebugConfigurationProv
     config.name ??= "Debug Felidae Query";
     config.request ??= "launch";
     config.program ??= activeDocument?.uri.fsPath ?? "${file}";
-    config.interpreterPath ??= workspacePath ? path.join(workspacePath, "build", "felidae_debug.exe") : resolveDebugInterpreterPath(activeDocument?.uri ?? vscode.Uri.file(""));
+    config.interpreterPath ??= workspacePath ? withPlatformExecutableSuffix(path.join(workspacePath, "build", "felidae_debug" + (process.platform === "win32" ? ".exe" : ""))) : resolveDebugInterpreterPath(activeDocument?.uri ?? vscode.Uri.file(""));
     config.stopOnEntry ??= true;
     return config;
   }
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  // Ranking models are optional: if resources/models is absent the scorers
+  // report themselves disabled and completion behaves exactly as before.
+  ml.loadModels(context.extensionPath);
+
   const diagnostics = vscode.languages.createDiagnosticCollection("felidae");
+
+  // Start felidae_debug --lsp if it is available. Everything below keeps
+  // working when it is not; the client only takes over diagnostics, document
+  // symbols and go-to-definition, which it computes from the real parse.
+  const serverOutput = vscode.window.createOutputChannel("Felidae Language Server");
+  context.subscriptions.push(serverOutput);
+  // resolveDebugInterpreterPath resolves a configured relative path against
+  // the file's workspace folder, so give it whatever anchor exists.
+  const serverAnchor =
+    vscode.window.activeTextEditor?.document.uri ??
+    vscode.workspace.workspaceFolders?.[0]?.uri ??
+    vscode.Uri.file(process.cwd());
+  const serverPath = resolveDebugInterpreterPath(serverAnchor);
+  void languageClient.start(serverPath, serverOutput).then((started: boolean) => {
+    if (!started) return;
+    // The server's diagnostics supersede any the fallback path already
+    // published for files opened before it finished starting.
+    diagnostics.clear();
+  });
   const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const DIAGNOSTICS_DEBOUNCE_MS = 350;
 
-  const refreshDiagnostics = (document: vscode.TextDocument): void => {
+  const refreshDiagnostics = (document: vscode.TextDocument, fromEdit = false): void => {
     if (document.languageId !== "felidae") return;
-    const version = document.version;
-    diagnostics.set(document.uri, []);
-    void runtimeCheckDiagnostics(document).then((runtimeDiagnostics) => {
-      if (document.isClosed || document.version !== version) return;
-      diagnostics.set(document.uri, runtimeDiagnostics);
-    });
-    refreshSymbolCache(document);
+    // When the language server is running it publishes diagnostics itself,
+    // over one long-lived connection. Spawning felidae_debug again per edit
+    // would duplicate every message and undo the reason for having a server.
+    if (!languageClient.isRunning()) {
+      const version = document.version;
+      diagnostics.set(document.uri, []);
+      void runtimeCheckDiagnostics(document).then((runtimeDiagnostics) => {
+        if (document.isClosed || document.version !== version) return;
+        diagnostics.set(document.uri, runtimeDiagnostics);
+      });
+    }
+    // The symbol cache backs signature help with real parameter types. It is
+    // another felidae_debug spawn, so with the server running it refreshes on
+    // open/save rather than on every edit - otherwise the per-keystroke
+    // process cost the server was meant to remove just moves here. Signatures
+    // change rarely, and resolveCall falls back to a text scan meanwhile.
+    if (!(fromEdit && languageClient.isRunning())) {
+      refreshSymbolCache(document);
+    }
   };
 
   const scheduleDiagnosticsRefresh = (document: vscode.TextDocument): void => {
@@ -3289,7 +3883,7 @@ export function activate(context: vscode.ExtensionContext): void {
       key,
       setTimeout(() => {
         debounceTimers.delete(key);
-        refreshDiagnostics(document);
+        refreshDiagnostics(document, true);
       }, DIAGNOSTICS_DEBOUNCE_MS)
     );
   };
@@ -3350,6 +3944,11 @@ export function activate(context: vscode.ExtensionContext): void {
       new FelidaeCompletionItemProvider(),
       ".", "(", ","
     ),
+    vscode.languages.registerSignatureHelpProvider(
+      { language: "felidae" },
+      new FelidaeSignatureHelpProvider(),
+      { triggerCharacters: ["("], retriggerCharacters: [",", ":"] }
+    ),
     vscode.languages.registerCodeActionsProvider(
       { language: "felidae" },
       new FelidaeCodeActionProvider(),
@@ -3359,10 +3958,31 @@ export function activate(context: vscode.ExtensionContext): void {
       { language: "felidae" },
       new FelidaeDocumentFormattingEditProvider()
     ),
+    vscode.languages.registerDocumentRangeFormattingEditProvider(
+      { language: "felidae" },
+      new FelidaeDocumentRangeFormattingEditProvider()
+    ),
+    vscode.languages.registerDocumentHighlightProvider(
+      { language: "felidae" },
+      new FelidaeDocumentHighlightProvider()
+    ),
+    vscode.languages.registerReferenceProvider(
+      { language: "felidae" },
+      new FelidaeReferenceProvider()
+    ),
+    vscode.languages.registerRenameProvider(
+      { language: "felidae" },
+      new FelidaeRenameProvider()
+    ),
+    vscode.languages.registerWorkspaceSymbolProvider(new FelidaeWorkspaceSymbolProvider()),
     vscode.debug.registerDebugConfigurationProvider("felidae", new FelidaeDebugConfigurationProvider()),
     vscode.debug.registerDebugAdapterDescriptorFactory("felidae", new FelidaeDebugAdapterFactory())
   );
 }
 
-export function deactivate(): void {}
+export function deactivate(): Thenable<void> {
+  // Returned so VS Code waits for the server process to exit instead of
+  // leaving an orphaned felidae_debug behind on reload.
+  return languageClient.stop();
+}
 

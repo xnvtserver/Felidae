@@ -6,6 +6,17 @@ schema_version = 1
 authors = ["Felidae Project"]
 repository = "https://github.com/xnvtserver/Felidae"
 
+# Language server. Zed launches this itself once the extension is installed;
+# unlike the Emacs/Neovim/Sublime clients, no Rust code is needed for a
+# plain stdio server that requires no custom initialization.
+#
+# `felidae_debug` must be on $PATH (or give an absolute path here). It
+# provides diagnostics, document symbols and go-to-definition from the real
+# parse; the tree-sitter grammar below handles highlighting either way.
+[language_servers.felidae]
+name = "Felidae"
+language = "Felidae"
+
 [grammars.felidae]
 # tree-sitter-felidae/ (see ../tree-sitter-felidae, "intentionally kept
 # separate from the C++ parser" per its README) currently lives inside this

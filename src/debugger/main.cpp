@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -129,8 +130,9 @@ static void printDebugUsage(std::ostream& out) {
         << "                   instead of hand-maintaining a copy of the module list.\n"
         << "  --list-builtins  Print a JSON array of {name, effect} builtin functions.\n"
         << "  --symbols-json   Print a JSON symbol table (methods, facts, globals with\n"
-        << "                   source spans, plus resolved files and unresolved imports)\n"
-        << "                   for <file.fx>. Always follows imports, like --lsp diagnostics.\n"
+        << "                   source spans and declared params, plus resolved files and\n"
+        << "                   unresolved imports) for <file.fx>. Params back editor\n"
+        << "                   signature help. Always follows imports, like --lsp.\n"
         << "  --operators-json Print versioned, non-executing dynamic operator metadata\n"
         << "                   for <file.fx>, including imported public contracts.\n"
         << "  --version, -v    Print {name, version} as JSON.\n";
@@ -252,6 +254,13 @@ static std::string symbolDefinitionsJson(const std::vector<SymbolDefinition>& de
         for (size_t s = 0; s < definition.spans.size(); ++s) {
             if (s) out << ",";
             out << spanJson(definition.spans[s]);
+        }
+        out << "],\"params\":[";
+        for (size_t p = 0; p < definition.params.size(); ++p) {
+            if (p) out << ",";
+            out << "{\"name\":\"" << jsonEscape(definition.params[p].name)
+                << "\",\"type\":\"" << jsonEscape(definition.params[p].type)
+                << "\"}";
         }
         out << "]}";
     }
@@ -679,6 +688,62 @@ static void writeLspMessage(const std::string& body) {
     std::cout << "Content-Length: " << body.size() << "\r\n\r\n" << body << std::flush;
 }
 
+// LSP SymbolKind values used for Felidae declarations.
+constexpr int kSymbolKindMethod = 6;
+constexpr int kSymbolKindConstant = 14;
+constexpr int kSymbolKindStruct = 23;
+
+// Builds a textDocument/documentSymbol result from the analyzer's own symbol
+// table, so the outline comes from the real parse rather than each editor
+// re-deriving declarations from source text with its own regex.
+static std::string documentSymbolsJson(const SymbolSummary& symbols) {
+    std::ostringstream out;
+    out << "[";
+    bool first = true;
+    auto emit = [&](const std::vector<SymbolDefinition>& group, int kind) {
+        for (const auto& definition : group) {
+            if (definition.spans.empty()) continue;
+            const SourceSpan& span = definition.spans.back();
+            const int line = std::max(0, span.startLine - 1);
+            const int column = std::max(0, span.startColumn - 1);
+            const int endLine = std::max(line, span.endLine - 1);
+            const int endColumn = std::max(0, span.endColumn - 1);
+
+            std::string detail;
+            if (!definition.params.empty()) {
+                detail = "(";
+                for (size_t i = 0; i < definition.params.size(); ++i) {
+                    if (i) detail += ", ";
+                    detail += definition.params[i].name;
+                    if (!definition.params[i].type.empty()) {
+                        detail += ": " + definition.params[i].type;
+                    }
+                }
+                detail += ")";
+            }
+
+            if (!first) out << ",";
+            first = false;
+            out << "{\"name\":\"" << jsonEscape(definition.name)
+                << "\",\"kind\":" << kind
+                << ",\"detail\":\"" << jsonEscape(detail)
+                << "\",\"range\":{\"start\":{\"line\":" << line
+                << ",\"character\":" << column
+                << "},\"end\":{\"line\":" << endLine
+                << ",\"character\":" << endColumn
+                << "}},\"selectionRange\":{\"start\":{\"line\":" << line
+                << ",\"character\":" << column
+                << "},\"end\":{\"line\":" << line
+                << ",\"character\":" << column << "}}}";
+        }
+    };
+    emit(symbols.methods, kSymbolKindMethod);
+    emit(symbols.facts, kSymbolKindStruct);
+    emit(symbols.globals, kSymbolKindConstant);
+    out << "]";
+    return out.str();
+}
+
 static void publishDiagnostics(const std::string& uri, const std::string& checkJson) {
     std::ostringstream out;
     out << "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\""
@@ -719,7 +784,11 @@ static void publishDiagnostics(const std::string& uri, const std::string& checkJ
             << ",\"source\":\"Felidae Debugger\",\"message\":\"" << jsonEscape(message) << "\"}";
         pos += 9;
     }
-    out << "]}}}";
+    // `]` closes diagnostics, then one `}` for params and one for the
+    // envelope. This emitted a third `}`, so every publishDiagnostics
+    // notification was malformed JSON and a spec-compliant client dropped
+    // the connection on it.
+    out << "]}}";
     writeLspMessage(out.str());
 }
 
@@ -738,6 +807,123 @@ static bool readLspMessage(std::string& body) {
     body.assign(contentLength, '\0');
     std::cin.read(&body[0], static_cast<std::streamsize>(contentLength));
     return static_cast<size_t>(std::cin.gcount()) == contentLength;
+}
+
+// Reads params.position.line / .character out of a request body. The position
+// object is the only one carrying these keys in the requests handled here.
+static int lspPositionLine(const std::string& body) {
+    const size_t key = body.find("\"line\"");
+    if (key == std::string::npos) return 0;
+    const size_t colon = body.find(':', key);
+    return colon == std::string::npos ? 0 : std::max(0, std::atoi(body.c_str() + colon + 1));
+}
+
+static int lspPositionCharacter(const std::string& body) {
+    const size_t key = body.find("\"character\"");
+    if (key == std::string::npos) return 0;
+    const size_t colon = body.find(':', key);
+    return colon == std::string::npos ? 0 : std::max(0, std::atoi(body.c_str() + colon + 1));
+}
+
+// Analyses whichever text the server currently holds for `uri`, falling back
+// to reading the file when the client has not sent contents.
+static SymbolSummary symbolsForDocument(
+    const std::map<std::string, std::string>& documents,
+    const std::string& uri) {
+    AstAnalysisSession analysis;
+    try {
+        const auto existing = documents.find(uri);
+        if (existing != documents.end()) {
+            // Unsaved editor contents: parse what the client sent, so the
+            // outline tracks the buffer rather than the file on disk.
+            Program program = Tooling::parseText(existing->second);
+            for (const auto& statement : program.statements) analysis.consume(statement);
+        } else {
+            Tooling::loadProgramStatements(
+                fileUriToPath(uri),
+                false,
+                [&](const std::shared_ptr<Statement>& statement) { analysis.consume(statement); });
+        }
+    } catch (const std::exception&) {
+        // A syntax error mid-edit is normal; report whatever parsed.
+    }
+    return analysis.symbols();
+}
+
+// Namespaced declarations are written with either separator (`Dog.membership`
+// or `Dog:membership`), so compare on a single normalized form.
+static std::string normalizeSymbolLookupName(std::string name) {
+    for (char& ch : name) {
+        if (ch == '.') ch = ':';
+    }
+    return name;
+}
+
+// Word under the given zero-based position, using Felidae's identifier rules
+// (letters, digits, underscore, plus `.`/`:` for namespaced names).
+static std::string wordAtPosition(const std::string& text, int line, int character) {
+    size_t offset = 0;
+    for (int current = 0; current < line; ++current) {
+        const size_t newline = text.find('\n', offset);
+        if (newline == std::string::npos) return {};
+        offset = newline + 1;
+    }
+    const size_t lineStart = offset;
+    size_t lineEnd = text.find('\n', lineStart);
+    if (lineEnd == std::string::npos) lineEnd = text.size();
+    size_t cursor = std::min(lineStart + static_cast<size_t>(character), lineEnd);
+
+    auto isNameChar = [](char ch) {
+        return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_' || ch == '.' || ch == ':';
+    };
+    size_t start = cursor;
+    size_t end = cursor;
+    while (start > lineStart && isNameChar(text[start - 1])) --start;
+    while (end < lineEnd && isNameChar(text[end])) ++end;
+    if (start >= end) return {};
+    std::string word = text.substr(start, end - start);
+    while (!word.empty() && (word.front() == '.' || word.front() == ':')) word.erase(word.begin());
+    while (!word.empty() && (word.back() == '.' || word.back() == ':')) word.pop_back();
+    return word;
+}
+
+// textDocument/definition: resolve the name under the cursor against the
+// analyzer's symbol table, which already records every declaration's span.
+static std::string definitionJson(
+    const std::map<std::string, std::string>& documents,
+    const std::string& uri,
+    int line,
+    int character) {
+    std::string text;
+    const auto existing = documents.find(uri);
+    if (existing != documents.end()) {
+        text = existing->second;
+    } else {
+        std::ifstream input(fileUriToPath(uri), std::ios::binary);
+        if (input) {
+            text.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+        }
+    }
+    const std::string name = wordAtPosition(text, line, character);
+    if (name.empty()) return "null";
+
+    const SymbolSummary symbols = symbolsForDocument(documents, uri);
+    const std::string normalized = normalizeSymbolLookupName(name);
+    for (const auto* group : {&symbols.methods, &symbols.facts, &symbols.globals}) {
+        for (const auto& definition : *group) {
+            if (normalizeSymbolLookupName(definition.name) != normalized) continue;
+            if (definition.spans.empty()) continue;
+            const SourceSpan& span = definition.spans.back();
+            std::ostringstream out;
+            out << "{\"uri\":\"" << jsonEscape(uri)
+                << "\",\"range\":{\"start\":{\"line\":" << std::max(0, span.startLine - 1)
+                << ",\"character\":" << std::max(0, span.startColumn - 1)
+                << "},\"end\":{\"line\":" << std::max(0, span.endLine - 1)
+                << ",\"character\":" << std::max(0, span.endColumn - 1) << "}}}";
+            return out.str();
+        }
+    }
+    return "null";
 }
 
 static int runLspServer() {
@@ -759,9 +945,22 @@ static int runLspServer() {
         if (method == "initialize") {
             writeLspMessage(
                 "{\"jsonrpc\":\"2.0\",\"id\":" + id +
-                ",\"result\":{\"capabilities\":{\"textDocumentSync\":1},"
+                ",\"result\":{\"capabilities\":{\"textDocumentSync\":1,"
+                "\"documentSymbolProvider\":true,"
+                "\"definitionProvider\":true},"
                 "\"serverInfo\":{\"name\":\"felidae_debug\",\"version\":\"" +
                 jsonEscape(LANGUAGE_VERSION) + "\"}}}");
+        } else if (method == "textDocument/documentSymbol") {
+            const std::string uri = extractJsonString(body, "uri");
+            writeLspMessage(
+                "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":" +
+                documentSymbolsJson(symbolsForDocument(documents, uri)) + "}");
+        } else if (method == "textDocument/definition") {
+            const std::string uri = extractJsonString(body, "uri");
+            writeLspMessage(
+                "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":" +
+                definitionJson(documents, uri, lspPositionLine(body), lspPositionCharacter(body)) +
+                "}");
         } else if (method == "shutdown") {
             writeLspMessage("{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":null}");
         } else if (method == "exit") {
@@ -776,6 +975,10 @@ static int runLspServer() {
                 ? analyzeTextJson(fileUriToPath(uri), existing->second)
                 : analyzeFileJson(fileUriToPath(uri));
             publishDiagnostics(uri, result);
+        } else if (method == "textDocument/didClose") {
+            // Without this the server kept every document it had ever seen,
+            // growing without bound over a long editing session.
+            documents.erase(extractJsonString(body, "uri"));
         } else if (id != "null") {
             // A request (has an id, so the client is waiting on a reply) for
             // a method this diagnostics-only server doesn't implement, e.g.

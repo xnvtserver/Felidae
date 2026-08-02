@@ -47,11 +47,21 @@
                 language="Felidae"
                 implementationClass="local.felidae.intellij.editor.FelidaeBraceMatcher"/>
 
+        <lang.foldingBuilder
+                language="Felidae"
+                implementationClass="local.felidae.intellij.editor.FelidaeFoldingBuilder"/>
+
+        <lang.psiStructureViewFactory
+                language="Felidae"
+                implementationClass="local.felidae.intellij.editor.FelidaeStructureViewFactory"/>
+
         <lang.quoteHandler
                 fileType="Felidae"
                 implementationClass="local.felidae.intellij.editor.FelidaeQuoteHandler"/>
         <colorSettingsPage
                 implementation="local.felidae.intellij.highlighting.FelidaeColorSettingsPage"/>
+
+        <bundledColorScheme path="/colorSchemes/FelidaeDark"/>
 
         <defaultLiveTemplates file="/liveTemplates/Felidae.xml"/>
 
@@ -65,6 +75,10 @@
 
         <gotoDeclarationHandler
                 implementation="local.felidae.intellij.FelidaeGotoDeclarationHandler"/>
+
+        <codeInsight.parameterInfo
+                language="Felidae"
+                implementationClass="local.felidae.intellij.FelidaeParameterInfoHandler"/>
 
         <editorFactoryListener
                 implementation="local.felidae.intellij.editor.FelidaeRunGutterManager"/>

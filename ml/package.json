@@ -1,0 +1,13 @@
+{
+  "name": "felidae-ml",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Offline training pipeline for the Felidae editor extensions' ranking models. Produces checked-in JSON models that the VS Code and IntelliJ extensions score with tiny embedded evaluators - no ML runtime ships with either extension.",
+  "scripts": {
+    "train": "node train.js",
+    "evaluate": "node train.js --evaluate-only"
+  },
+  "dependencies": {
+    "ml-cart": "^2.1.1"
+  }
+}

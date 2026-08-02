@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <chrono>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <string>
 
@@ -19,18 +20,40 @@ struct Options {
     bool loadImports = false;
     bool metricsJson = false;
     Felidae::Celidae::DiagramType type = Felidae::Celidae::DiagramType::Schema;
+    // Which template --html emits. Unset means "all views in one file",
+    // preserving the behaviour --html had before templates existed.
+    std::optional<Felidae::Celidae::DiagramType> templateType;
     bool help = false;
     bool version = false;
     std::optional<fs::path> file;
 };
 
+std::string diagramTypeList() {
+    std::string names;
+    for (Felidae::Celidae::DiagramType candidate : Felidae::Celidae::kAllDiagramTypes) {
+        if (!names.empty()) names += ", ";
+        names += Felidae::Celidae::diagramTypeName(candidate);
+    }
+    return names;
+}
+
 Options parseOptions(int argc, char** argv) {
     Options options;
     auto parseType = [&](const std::string& value) {
-        if (value == "schema") options.type = Felidae::Celidae::DiagramType::Schema;
-        else if (value == "graph") options.type = Felidae::Celidae::DiagramType::Graph;
-        else if (value == "er") options.type = Felidae::Celidae::DiagramType::Er;
-        else throw std::runtime_error("Unknown Celidae diagram type '" + value + "'. Use schema, graph, or er");
+        Felidae::Celidae::DiagramType parsed;
+        if (!Felidae::Celidae::parseDiagramType(value, parsed)) {
+            throw std::runtime_error(
+                "Unknown Celidae diagram type '" + value + "'. Use one of: " + diagramTypeList());
+        }
+        options.type = parsed;
+    };
+    auto parseTemplate = [&](const std::string& value) {
+        Felidae::Celidae::DiagramType parsed;
+        if (!Felidae::Celidae::parseDiagramType(value, parsed)) {
+            throw std::runtime_error(
+                "Unknown Celidae template '" + value + "'. Use one of: " + diagramTypeList());
+        }
+        options.templateType = parsed;
     };
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -43,10 +66,15 @@ Options parseOptions(int argc, char** argv) {
         else if (arg == "--load-imports") options.loadImports = true;
         else if (arg == "--metrics-json") options.metricsJson = true;
         else if (arg == "--type") {
-            if (++i >= argc) throw std::runtime_error("--type requires schema, graph, or er");
+            if (++i >= argc) throw std::runtime_error("--type requires one of: " + diagramTypeList());
             parseType(argv[i]);
         }
         else if (arg.rfind("--type=", 0) == 0) parseType(arg.substr(7));
+        else if (arg == "--template") {
+            if (++i >= argc) throw std::runtime_error("--template requires one of: " + diagramTypeList());
+            parseTemplate(argv[i]);
+        }
+        else if (arg.rfind("--template=", 0) == 0) parseTemplate(arg.substr(11));
         else if (arg == "--check" || arg == "--check-json" || arg == "--lsp") {
             throw std::runtime_error(
                 "Diagnostics are owned by felidae_debug. Run felidae_debug program.fx --check-json");
@@ -76,7 +104,10 @@ void printHelp() {
         << "  celidae program.fx --svg --type=er [--load-imports]\n"
         << "  celidae --version\n\n"
         << "Output formats:\n"
-        << "  --inspect-graph / --json  JSON graph for one --type (schema/graph/er).\n"
+        << "  --template=<name>         With --html, emit just that one view instead of\n"
+        << "                            all of them. One of: schema, graph, er, timeline,\n"
+        << "                            hierarchy, stats.\n"
+        << "  --inspect-graph / --json  JSON graph for one --type.\n"
         << "  --html                    Self-contained interactive visualizer bundling all\n"
         << "                            three diagram types with force/tree/circle layouts.\n"
         << "  --svg                     Static vector export for one --type, suitable for\n"
@@ -116,10 +147,19 @@ int main(int argc, char** argv) {
         if (options.html) {
             // Bundle all three diagram types into one self-contained file so
             // a user can compare schema/graph/er without re-running Celidae.
-            const std::string schemaJson = graph.json(Felidae::Celidae::DiagramType::Schema, loaded.unresolvedImports);
-            const std::string graphTypeJson = graph.json(Felidae::Celidae::DiagramType::Graph, loaded.unresolvedImports);
-            const std::string erJson = graph.json(Felidae::Celidae::DiagramType::Er, loaded.unresolvedImports);
-            std::cout << Felidae::Celidae::standaloneHtml(schemaJson, graphTypeJson, erJson);
+            // --template=<name> emits that one view; without it the file
+            // carries every view, as --html always has.
+            std::map<Felidae::Celidae::DiagramType, std::string> payloads;
+            if (options.templateType) {
+                payloads.emplace(
+                    *options.templateType,
+                    graph.json(*options.templateType, loaded.unresolvedImports));
+            } else {
+                for (Felidae::Celidae::DiagramType type : Felidae::Celidae::kAllDiagramTypes) {
+                    payloads.emplace(type, graph.json(type, loaded.unresolvedImports));
+                }
+            }
+            std::cout << Felidae::Celidae::standaloneHtml(payloads);
         } else if (options.svg) {
             const auto rendered = graph.buildGraph(options.type, loaded.unresolvedImports);
             std::cout << Felidae::Celidae::standaloneSvg(rendered, options.type);
