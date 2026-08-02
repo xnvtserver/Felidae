@@ -19,12 +19,6 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onLanguage:felidae",
-    "onCommand:felidae.runMain",
-    "onCommand:felidae.debugMain",
-    "onCommand:felidae.runQuery",
-    "onCommand:felidae.visualize",
-    "onCommand:felidae.formatDocument",
     "onDebugInitialConfigurations:felidae",
     "onDebugResolve:felidae"
   ],
@@ -53,6 +47,13 @@
         "id": "felidae-icons",
         "label": "Felidae File Icons",
         "path": "./icons/felidae-icon-theme.json"
+      }
+    ],
+    "themes": [
+      {
+        "label": "Felidae Dark",
+        "uiTheme": "vs-dark",
+        "path": "./themes/felidae-dark-color-theme.json"
       }
     ],
     "configurationDefaults": {
@@ -188,6 +189,28 @@
       }
     },
     "menus": {
+      "commandPalette": [
+        {
+          "command": "felidae.runMain",
+          "when": "resourceLangId == felidae && felidaeHasMain"
+        },
+        {
+          "command": "felidae.debugMain",
+          "when": "resourceLangId == felidae && felidaeHasMain"
+        },
+        {
+          "command": "felidae.runQuery",
+          "when": "resourceLangId == felidae"
+        },
+        {
+          "command": "felidae.visualize",
+          "when": "resourceLangId == felidae"
+        },
+        {
+          "command": "felidae.formatDocument",
+          "when": "resourceLangId == felidae"
+        }
+      ],
       "editor/context": [
         {
           "command": "felidae.runMain",
@@ -220,19 +243,36 @@
   "scripts": {
     "generate:libraries": "node scripts/generate-libraries.js",
     "generate:builtin-docs": "node scripts/generate-builtin-docs.js",
-    "precompile": "npm run generate:libraries && npm run generate:builtin-docs",
+    "generate:models": "node scripts/generate-models.js",
+    "precompile": "npm run generate:libraries && npm run generate:builtin-docs && npm run generate:models && npm run generate:icon",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "node --check out/extension.js"
+    "lint": "node --check out/extension.js",
+    "generate:icon": "node scripts/generate-icon.js",
+    "test": "node test/run-all.js",
+    "test:lsp": "node scripts/verify-lsp.js"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
     "@vscode/vsce": "^3.9.2",
     "typescript": "^5.3.3"
   },
   "dependencies": {
-    "cytoscape": "^3.34.0"
+    "cytoscape": "^3.34.0",
+    "vscode-languageclient": "^9.0.1"
+  },
+  "icon": "icons/felidae-icon.png",
+  "keywords": [
+    "felidae",
+    "fx",
+    "logic programming",
+    "facts",
+    "language server"
+  ],
+  "galleryBanner": {
+    "color": "#0b1412",
+    "theme": "dark"
   }
 }
-

@@ -240,6 +240,36 @@ export function formatFelidaeSource(text: string): string {
   return formatFelidaeLines(lines).join("\n") + "\n";
 }
 
+/**
+ * "Format Selection". Indentation depends on everything above a line, so the
+ * whole document is still formatted; only the lines inside the selection are
+ * emitted as edits. That keeps a partial format consistent with what a full
+ * format would produce, instead of re-deriving structure from a fragment.
+ */
+export class FelidaeDocumentRangeFormattingEditProvider
+  implements vscode.DocumentRangeFormattingEditProvider
+{
+  provideDocumentRangeFormattingEdits(
+    document: vscode.TextDocument,
+    range: vscode.Range
+  ): vscode.TextEdit[] {
+    const originalLines: string[] = [];
+    for (let i = 0; i < document.lineCount; i++) originalLines.push(document.lineAt(i).text);
+
+    const formattedLines = formatFelidaeLines(originalLines);
+    const edits: vscode.TextEdit[] = [];
+    for (let line = range.start.line; line <= range.end.line && line < document.lineCount; line++) {
+      // formatFelidaeLines can drop trailing blank lines, so a line may have
+      // no counterpart; leaving it untouched is the safe choice for a
+      // range-limited format.
+      const replacement = formattedLines[line];
+      if (replacement === undefined || replacement === originalLines[line]) continue;
+      edits.push(vscode.TextEdit.replace(document.lineAt(line).range, replacement));
+    }
+    return edits;
+  }
+}
+
 export class FelidaeDocumentFormattingEditProvider implements vscode.DocumentFormattingEditProvider {
   provideDocumentFormattingEdits(document: vscode.TextDocument): vscode.TextEdit[] {
     const eol = document.eol === vscode.EndOfLine.CRLF ? "\r\n" : "\n";

@@ -17,6 +17,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -51,7 +52,7 @@ public final class FelidaeGotoDeclarationHandler implements GotoDeclarationHandl
         }
 
         Project project = file.getProject();
-        Pattern declaration = declarationPattern(name);
+        Pattern declaration = FelidaeCallResolver.declarationPatternFor(name);
         List<PsiElement> targets = new ArrayList<>();
 
         collectMatches(file.getVirtualFile(), project, declaration, targets);
@@ -90,11 +91,10 @@ public final class FelidaeGotoDeclarationHandler implements GotoDeclarationHandl
         }
     }
 
-    private static @NotNull Pattern declarationPattern(@NotNull String name) {
-        String escaped = Pattern.quote(name.replace('.', ':'));
-        String dotted = escaped.replace(":", "\\E[:.]\\Q");
-        return Pattern.compile("(?m)^[ \\t]*" + dotted + "\\s*\\(");
-    }
+    /** Language keywords are never declarations; navigating from one is noise. */
+    private static final Set<String> KEYWORDS = Set.of(
+            "import", "extend", "where", "if", "then", "else", "return", "lambda",
+            "true", "false", "nil");
 
     private static @Nullable String resolveName(@NotNull CharSequence text, int offset) {
         int start = Math.max(0, Math.min(offset, text.length()));
@@ -103,7 +103,8 @@ public final class FelidaeGotoDeclarationHandler implements GotoDeclarationHandl
         while (end < text.length() && isNameChar(text.charAt(end))) end++;
         if (start >= end) return null;
         String raw = text.subSequence(start, end).toString().replaceAll("^[.:]+|[.:]+$", "");
-        return raw.isEmpty() ? null : raw;
+        if (raw.isEmpty() || KEYWORDS.contains(raw)) return null;
+        return raw;
     }
 
     private static boolean isNameChar(char ch) {

@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.FelidaeDocumentFormattingEditProvider = void 0;
+exports.FelidaeDocumentFormattingEditProvider = exports.FelidaeDocumentRangeFormattingEditProvider = void 0;
 exports.formatFelidaeLines = formatFelidaeLines;
 exports.formatFelidaeSource = formatFelidaeSource;
 const vscode = __importStar(require("vscode"));
@@ -269,6 +269,32 @@ function formatFelidaeSource(text) {
     const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
     return formatFelidaeLines(lines).join("\n") + "\n";
 }
+/**
+ * "Format Selection". Indentation depends on everything above a line, so the
+ * whole document is still formatted; only the lines inside the selection are
+ * emitted as edits. That keeps a partial format consistent with what a full
+ * format would produce, instead of re-deriving structure from a fragment.
+ */
+class FelidaeDocumentRangeFormattingEditProvider {
+    provideDocumentRangeFormattingEdits(document, range) {
+        const originalLines = [];
+        for (let i = 0; i < document.lineCount; i++)
+            originalLines.push(document.lineAt(i).text);
+        const formattedLines = formatFelidaeLines(originalLines);
+        const edits = [];
+        for (let line = range.start.line; line <= range.end.line && line < document.lineCount; line++) {
+            // formatFelidaeLines can drop trailing blank lines, so a line may have
+            // no counterpart; leaving it untouched is the safe choice for a
+            // range-limited format.
+            const replacement = formattedLines[line];
+            if (replacement === undefined || replacement === originalLines[line])
+                continue;
+            edits.push(vscode.TextEdit.replace(document.lineAt(line).range, replacement));
+        }
+        return edits;
+    }
+}
+exports.FelidaeDocumentRangeFormattingEditProvider = FelidaeDocumentRangeFormattingEditProvider;
 class FelidaeDocumentFormattingEditProvider {
     provideDocumentFormattingEdits(document) {
         const eol = document.eol === vscode.EndOfLine.CRLF ? "\r\n" : "\n";

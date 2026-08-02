@@ -16,7 +16,7 @@ inline constexpr const char* kVisualizerTemplate = R"CELIDAEUI(<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Celidae Visualizer</title>
 <style>/*! tailwindcss v4.3.3 | MIT License | https://tailwindcss.com */
-@layer properties{@supports (((-webkit-hyphens:none)) and (not (margin-trim:inline))) or ((-moz-orient:inline) and (not (color:rgb(from red r g b)))){*,:before,:after,::backdrop{--tw-border-style:solid;--tw-leading:initial;--tw-font-weight:initial;--tw-outline-style:solid;--tw-duration:initial;--tw-tracking:initial}}}@layer theme{:root,:host{--font-sans:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";--font-mono:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;--spacing:.25rem;--text-xs:.75rem;--text-xs--line-height:calc(1 / .75);--text-sm:.875rem;--text-sm--line-height:calc(1.25 / .875);--text-lg:1.125rem;--text-lg--line-height:calc(1.75 / 1.125);--font-weight-medium:500;--font-weight-semibold:600;--tracking-wide:.025em;--leading-tight:1.25;--leading-relaxed:1.625;--radius-sm:.25rem;--radius-md:.375rem;--radius-lg:.5rem;--default-transition-duration:.15s;--default-transition-timing-function:cubic-bezier(.4, 0, .2, 1);--default-font-family:var(--font-sans);--default-mono-font-family:var(--font-mono)}}@layer base{*,:after,:before,::backdrop{box-sizing:border-box;border:0 solid;margin:0;padding:0}::file-selector-button{box-sizing:border-box;border:0 solid;margin:0;padding:0}html,:host{-webkit-text-size-adjust:100%;tab-size:4;line-height:1.5;font-family:var(--default-font-family,-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji");font-feature-settings:var(--default-font-feature-settings,normal);font-variation-settings:var(--default-font-variation-settings,normal);-webkit-tap-highlight-color:transparent}hr{height:0;color:inherit;border-top-width:1px}abbr:where([title]){-webkit-text-decoration:underline dotted;text-decoration:underline dotted}h1,h2,h3,h4,h5,h6{font-size:inherit;font-weight:inherit}a{color:inherit;-webkit-text-decoration:inherit;-webkit-text-decoration:inherit;-webkit-text-decoration:inherit;text-decoration:inherit}b,strong{font-weight:bolder}code,kbd,samp,pre{font-family:var(--default-mono-font-family,ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace);font-feature-settings:var(--default-mono-font-feature-settings,normal);font-variation-settings:var(--default-mono-font-variation-settings,normal);font-size:1em}small{font-size:80%}sub,sup{vertical-align:baseline;font-size:75%;line-height:0;position:relative}sub{bottom:-.25em}sup{top:-.5em}table{text-indent:0;border-color:inherit;border-collapse:collapse}:-moz-focusring:where(:not(iframe)){outline:auto}progress{vertical-align:baseline}summary{display:list-item}ol,ul,menu{list-style:none}img,svg,video,canvas,audio,iframe,embed,object{vertical-align:middle;display:block}img,video{max-width:100%;height:auto}button,input,select,optgroup,textarea{font:inherit;font-feature-settings:inherit;font-variation-settings:inherit;letter-spacing:inherit;color:inherit;opacity:1;background-color:#0000;border-radius:0}::file-selector-button{font:inherit;font-feature-settings:inherit;font-variation-settings:inherit;letter-spacing:inherit;color:inherit;opacity:1;background-color:#0000;border-radius:0}:where(select:is([multiple],[size])) optgroup{font-weight:bolder}:where(select:is([multiple],[size])) optgroup option{padding-inline-start:20px}::file-selector-button{margin-inline-end:4px}::placeholder{opacity:1}@supports (not ((-webkit-appearance:-apple-pay-button))) or (contain-intrinsic-size:1px){::placeholder{color:currentColor}@supports (color:color-mix(in lab, red, red)){::placeholder{color:color-mix(in oklab, currentcolor 50%, transparent)}}}textarea{resize:vertical}::-webkit-search-decoration{-webkit-appearance:none}::-webkit-date-and-time-value{min-height:1lh;text-align:inherit}::-webkit-datetime-edit{display:inline-flex}::-webkit-datetime-edit-fields-wrapper{padding:0}::-webkit-datetime-edit{padding-block:0}::-webkit-datetime-edit-year-field{padding-block:0}::-webkit-datetime-edit-month-field{padding-block:0}::-webkit-datetime-edit-day-field{padding-block:0}::-webkit-datetime-edit-hour-field{padding-block:0}::-webkit-datetime-edit-minute-field{padding-block:0}::-webkit-datetime-edit-second-field{padding-block:0}::-webkit-datetime-edit-millisecond-field{padding-block:0}::-webkit-datetime-edit-meridiem-field{padding-block:0}::-webkit-calendar-picker-indicator{line-height:1}:-moz-ui-invalid{box-shadow:none}button,input:where([type=button],[type=reset],[type=submit]){appearance:button}::file-selector-button{appearance:button}::-webkit-inner-spin-button{height:auto}::-webkit-outer-spin-button{height:auto}[hidden]:where(:not([hidden=until-found])){display:none!important}}@layer components{.tabbtn{cursor:pointer;align-items:center;gap:calc(var(--spacing) * 1.5);border-radius:var(--radius-md);border-style:var(--tw-border-style);padding-inline:calc(var(--spacing) * 2.5);padding-block:calc(var(--spacing) * 1.5);font-size:var(--text-xs);line-height:var(--tw-leading,var(--text-xs--line-height));transition-property:color,background-color,border-color,outline-color,text-decoration-color,fill,stroke,--tw-gradient-from,--tw-gradient-via,--tw-gradient-to;transition-timing-function:var(--tw-ease,var(--default-transition-timing-function));transition-duration:var(--tw-duration,var(--default-transition-duration));--tw-duration:.15s;border-width:1px;border-color:var(--line);background:var(--surface-2);color:var(--text);transition-duration:.15s;display:inline-flex}.tabbtn:hover{background:var(--surface-2)}@supports (color:color-mix(in lab, red, red)){.tabbtn:hover{background:color-mix(in srgb, var(--surface-2), white 8%)}}.tabbtn.active{background:var(--accent);color:#04120f;border-color:var(--accent);font-weight:600}.side-h{margin-top:calc(var(--spacing) * 4);margin-bottom:calc(var(--spacing) * 2);--tw-font-weight:var(--font-weight-medium);font-size:11px;font-weight:var(--font-weight-medium);--tw-tracking:var(--tracking-wide);letter-spacing:var(--tracking-wide);text-transform:uppercase;color:var(--muted)}.metric{border-radius:var(--radius-lg);border-style:var(--tw-border-style);padding:calc(var(--spacing) * 2);border-width:1px;border-color:var(--line);background:var(--surface)}.metric b{font-size:var(--text-lg);line-height:var(--tw-leading,var(--text-lg--line-height));--tw-leading:var(--leading-tight);line-height:var(--leading-tight);color:var(--text);display:block}.metric span{color:var(--muted);font-size:10px}.legend-pill{align-items:center;gap:var(--spacing);border-style:var(--tw-border-style);padding-inline:calc(var(--spacing) * 1.5);padding-block:calc(var(--spacing) * .5);border-width:1px;border-color:var(--line);border-radius:.25rem;font-size:11px;display:inline-flex}.legend-pill i{height:calc(var(--spacing) * 2.5);width:calc(var(--spacing) * 2.5);border-radius:var(--radius-sm);display:inline-block}.detail .k{color:var(--muted)}}@layer utilities{.fixed{position:fixed}.relative{position:relative}.container{width:100%}@media (min-width:40rem){.container{max-width:40rem}}@media (min-width:48rem){.container{max-width:48rem}}@media (min-width:64rem){.container{max-width:64rem}}@media (min-width:80rem){.container{max-width:80rem}}@media (min-width:96rem){.container{max-width:96rem}}.m-0{margin:0}.mt-0{margin-top:0}.mt-0\.5{margin-top:calc(var(--spacing) * .5)}.mt-3{margin-top:calc(var(--spacing) * 3)}.flex{display:flex}.grid{display:grid}.inline{display:inline}.h-screen{height:100vh}.min-h-0{min-height:0}.min-h-screen{min-height:100vh}.min-w-\[190px\]{min-width:190px}.grid-cols-2{grid-template-columns:repeat(2,minmax(0,1fr))}.grid-cols-\[1fr_320px\]{grid-template-columns:1fr 320px}.grid-rows-\[auto_1fr\]{grid-template-rows:auto 1fr}.flex-wrap{flex-wrap:wrap}.items-center{align-items:center}.justify-between{justify-content:space-between}.gap-1{gap:var(--spacing)}.gap-1\.5{gap:calc(var(--spacing) * 1.5)}.gap-2{gap:calc(var(--spacing) * 2)}.gap-3{gap:calc(var(--spacing) * 3)}.overflow-auto{overflow:auto}.overflow-hidden{overflow:hidden}.rounded-lg{border-radius:var(--radius-lg)}.rounded-md{border-radius:var(--radius-md)}.border{border-style:var(--tw-border-style);border-width:1px}.border-b{border-bottom-style:var(--tw-border-style);border-bottom-width:1px}.border-l{border-left-style:var(--tw-border-style);border-left-width:1px}.p-2{padding:calc(var(--spacing) * 2)}.p-2\.5{padding:calc(var(--spacing) * 2.5)}.p-3\.5{padding:calc(var(--spacing) * 3.5)}.px-2\.5{padding-inline:calc(var(--spacing) * 2.5)}.px-4{padding-inline:calc(var(--spacing) * 4)}.py-1\.5{padding-block:calc(var(--spacing) * 1.5)}.py-2\.5{padding-block:calc(var(--spacing) * 2.5)}.font-sans{font-family:var(--font-sans)}.text-sm{font-size:var(--text-sm);line-height:var(--tw-leading,var(--text-sm--line-height))}.text-xs{font-size:var(--text-xs);line-height:var(--tw-leading,var(--text-xs--line-height))}.text-\[11px\]{font-size:11px}.leading-relaxed{--tw-leading:var(--leading-relaxed);line-height:var(--leading-relaxed)}.font-semibold{--tw-font-weight:var(--font-weight-semibold);font-weight:var(--font-weight-semibold)}.text-wrap{text-wrap:wrap}.break-words{overflow-wrap:break-word}.outline{outline-style:var(--tw-outline-style);outline-width:1px}@media not all and (min-width:820px){.max-\[820px\]\:max-h-\[38vh\]{max-height:38vh}.max-\[820px\]\:grid-cols-1{grid-template-columns:repeat(1,minmax(0,1fr))}.max-\[820px\]\:border-t{border-top-style:var(--tw-border-style);border-top-width:1px}.max-\[820px\]\:border-l-0{border-left-style:var(--tw-border-style);border-left-width:0}}}@property --tw-border-style{syntax:"*";inherits:false;initial-value:solid}@property --tw-leading{syntax:"*";inherits:false}@property --tw-font-weight{syntax:"*";inherits:false}@property --tw-outline-style{syntax:"*";inherits:false;initial-value:solid}@property --tw-duration{syntax:"*";inherits:false}@property --tw-tracking{syntax:"*";inherits:false}</style>
+@layer properties{@supports (((-webkit-hyphens:none)) and (not (margin-trim:inline))) or ((-moz-orient:inline) and (not (color:rgb(from red r g b)))){*,:before,:after,::backdrop{--tw-border-style:solid;--tw-leading:initial;--tw-font-weight:initial;--tw-outline-style:solid;--tw-duration:initial;--tw-tracking:initial}}}@layer theme{:root,:host{--font-sans:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";--font-mono:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;--spacing:.25rem;--text-xs:.75rem;--text-xs--line-height:calc(1 / .75);--text-sm:.875rem;--text-sm--line-height:calc(1.25 / .875);--text-lg:1.125rem;--text-lg--line-height:calc(1.75 / 1.125);--font-weight-medium:500;--font-weight-semibold:600;--tracking-wide:.025em;--leading-tight:1.25;--leading-relaxed:1.625;--radius-sm:.25rem;--radius-md:.375rem;--radius-lg:.5rem;--default-transition-duration:.15s;--default-transition-timing-function:cubic-bezier(.4, 0, .2, 1);--default-font-family:var(--font-sans);--default-mono-font-family:var(--font-mono)}}@layer base{*,:after,:before,::backdrop{box-sizing:border-box;border:0 solid;margin:0;padding:0}::file-selector-button{box-sizing:border-box;border:0 solid;margin:0;padding:0}html,:host{-webkit-text-size-adjust:100%;tab-size:4;line-height:1.5;font-family:var(--default-font-family,-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji");font-feature-settings:var(--default-font-feature-settings,normal);font-variation-settings:var(--default-font-variation-settings,normal);-webkit-tap-highlight-color:transparent}hr{height:0;color:inherit;border-top-width:1px}abbr:where([title]){-webkit-text-decoration:underline dotted;text-decoration:underline dotted}h1,h2,h3,h4,h5,h6{font-size:inherit;font-weight:inherit}a{color:inherit;-webkit-text-decoration:inherit;-webkit-text-decoration:inherit;-webkit-text-decoration:inherit;text-decoration:inherit}b,strong{font-weight:bolder}code,kbd,samp,pre{font-family:var(--default-mono-font-family,ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace);font-feature-settings:var(--default-mono-font-feature-settings,normal);font-variation-settings:var(--default-mono-font-variation-settings,normal);font-size:1em}small{font-size:80%}sub,sup{vertical-align:baseline;font-size:75%;line-height:0;position:relative}sub{bottom:-.25em}sup{top:-.5em}table{text-indent:0;border-color:inherit;border-collapse:collapse}:-moz-focusring:where(:not(iframe)){outline:auto}progress{vertical-align:baseline}summary{display:list-item}ol,ul,menu{list-style:none}img,svg,video,canvas,audio,iframe,embed,object{vertical-align:middle;display:block}img,video{max-width:100%;height:auto}button,input,select,optgroup,textarea{font:inherit;font-feature-settings:inherit;font-variation-settings:inherit;letter-spacing:inherit;color:inherit;opacity:1;background-color:#0000;border-radius:0}::file-selector-button{font:inherit;font-feature-settings:inherit;font-variation-settings:inherit;letter-spacing:inherit;color:inherit;opacity:1;background-color:#0000;border-radius:0}:where(select:is([multiple],[size])) optgroup{font-weight:bolder}:where(select:is([multiple],[size])) optgroup option{padding-inline-start:20px}::file-selector-button{margin-inline-end:4px}::placeholder{opacity:1}@supports (not ((-webkit-appearance:-apple-pay-button))) or (contain-intrinsic-size:1px){::placeholder{color:currentColor}@supports (color:color-mix(in lab, red, red)){::placeholder{color:color-mix(in oklab, currentcolor 50%, transparent)}}}textarea{resize:vertical}::-webkit-search-decoration{-webkit-appearance:none}::-webkit-date-and-time-value{min-height:1lh;text-align:inherit}::-webkit-datetime-edit{display:inline-flex}::-webkit-datetime-edit-fields-wrapper{padding:0}::-webkit-datetime-edit{padding-block:0}::-webkit-datetime-edit-year-field{padding-block:0}::-webkit-datetime-edit-month-field{padding-block:0}::-webkit-datetime-edit-day-field{padding-block:0}::-webkit-datetime-edit-hour-field{padding-block:0}::-webkit-datetime-edit-minute-field{padding-block:0}::-webkit-datetime-edit-second-field{padding-block:0}::-webkit-datetime-edit-millisecond-field{padding-block:0}::-webkit-datetime-edit-meridiem-field{padding-block:0}::-webkit-calendar-picker-indicator{line-height:1}:-moz-ui-invalid{box-shadow:none}button,input:where([type=button],[type=reset],[type=submit]){appearance:button}::file-selector-button{appearance:button}::-webkit-inner-spin-button{height:auto}::-webkit-outer-spin-button{height:auto}[hidden]:where(:not([hidden=until-found])){display:none!important}}@layer components{.tabbtn{cursor:pointer;align-items:center;gap:calc(var(--spacing) * 1.5);border-radius:var(--radius-md);border-style:var(--tw-border-style);padding-inline:calc(var(--spacing) * 2.5);padding-block:calc(var(--spacing) * 1.5);font-size:var(--text-xs);line-height:var(--tw-leading,var(--text-xs--line-height));transition-property:color,background-color,border-color,outline-color,text-decoration-color,fill,stroke,--tw-gradient-from,--tw-gradient-via,--tw-gradient-to;transition-timing-function:var(--tw-ease,var(--default-transition-timing-function));transition-duration:var(--tw-duration,var(--default-transition-duration));--tw-duration:.15s;border-width:1px;border-color:var(--line);background:var(--surface-2);color:var(--text);transition-duration:.15s;display:inline-flex}.tabbtn:hover{background:var(--surface-2)}@supports (color:color-mix(in lab, red, red)){.tabbtn:hover{background:color-mix(in srgb, var(--surface-2), white 8%)}}.tabbtn.active{background:var(--accent);color:#04120f;border-color:var(--accent);font-weight:600}.side-h{margin-top:calc(var(--spacing) * 4);margin-bottom:calc(var(--spacing) * 2);--tw-font-weight:var(--font-weight-medium);font-size:11px;font-weight:var(--font-weight-medium);--tw-tracking:var(--tracking-wide);letter-spacing:var(--tracking-wide);text-transform:uppercase;color:var(--muted)}.metric{border-radius:var(--radius-lg);border-style:var(--tw-border-style);padding:calc(var(--spacing) * 2);border-width:1px;border-color:var(--line);background:var(--surface)}.metric b{font-size:var(--text-lg);line-height:var(--tw-leading,var(--text-lg--line-height));--tw-leading:var(--leading-tight);line-height:var(--leading-tight);color:var(--text);display:block}.metric span{color:var(--muted);font-size:10px}.legend-pill{align-items:center;gap:var(--spacing);border-style:var(--tw-border-style);padding-inline:calc(var(--spacing) * 1.5);padding-block:calc(var(--spacing) * .5);border-width:1px;border-color:var(--line);border-radius:.25rem;font-size:11px;display:inline-flex}.legend-pill i{height:calc(var(--spacing) * 2.5);width:calc(var(--spacing) * 2.5);border-radius:var(--radius-sm);display:inline-block}.detail .k{color:var(--muted)}}@layer utilities{.fixed{position:fixed}.relative{position:relative}.static{position:static}.container{width:100%}@media (min-width:40rem){.container{max-width:40rem}}@media (min-width:48rem){.container{max-width:48rem}}@media (min-width:64rem){.container{max-width:64rem}}@media (min-width:80rem){.container{max-width:80rem}}@media (min-width:96rem){.container{max-width:96rem}}.m-0{margin:0}.mt-0{margin-top:0}.mt-0\.5{margin-top:calc(var(--spacing) * .5)}.mt-3{margin-top:calc(var(--spacing) * 3)}.flex{display:flex}.grid{display:grid}.inline{display:inline}.h-screen{height:100vh}.min-h-0{min-height:0}.min-h-screen{min-height:100vh}.min-w-\[190px\]{min-width:190px}.grid-cols-2{grid-template-columns:repeat(2,minmax(0,1fr))}.grid-cols-\[1fr_320px\]{grid-template-columns:1fr 320px}.grid-rows-\[auto_1fr\]{grid-template-rows:auto 1fr}.flex-wrap{flex-wrap:wrap}.items-center{align-items:center}.justify-between{justify-content:space-between}.gap-1{gap:var(--spacing)}.gap-1\.5{gap:calc(var(--spacing) * 1.5)}.gap-2{gap:calc(var(--spacing) * 2)}.gap-3{gap:calc(var(--spacing) * 3)}.overflow-auto{overflow:auto}.overflow-hidden{overflow:hidden}.rounded-lg{border-radius:var(--radius-lg)}.rounded-md{border-radius:var(--radius-md)}.border{border-style:var(--tw-border-style);border-width:1px}.border-b{border-bottom-style:var(--tw-border-style);border-bottom-width:1px}.border-l{border-left-style:var(--tw-border-style);border-left-width:1px}.p-2{padding:calc(var(--spacing) * 2)}.p-2\.5{padding:calc(var(--spacing) * 2.5)}.p-3\.5{padding:calc(var(--spacing) * 3.5)}.px-2\.5{padding-inline:calc(var(--spacing) * 2.5)}.px-4{padding-inline:calc(var(--spacing) * 4)}.py-1\.5{padding-block:calc(var(--spacing) * 1.5)}.py-2\.5{padding-block:calc(var(--spacing) * 2.5)}.font-sans{font-family:var(--font-sans)}.text-sm{font-size:var(--text-sm);line-height:var(--tw-leading,var(--text-sm--line-height))}.text-xs{font-size:var(--text-xs);line-height:var(--tw-leading,var(--text-xs--line-height))}.text-\[11px\]{font-size:11px}.leading-relaxed{--tw-leading:var(--leading-relaxed);line-height:var(--leading-relaxed)}.font-semibold{--tw-font-weight:var(--font-weight-semibold);font-weight:var(--font-weight-semibold)}.text-wrap{text-wrap:wrap}.break-words{overflow-wrap:break-word}.outline{outline-style:var(--tw-outline-style);outline-width:1px}@media not all and (min-width:820px){.max-\[820px\]\:max-h-\[38vh\]{max-height:38vh}.max-\[820px\]\:grid-cols-1{grid-template-columns:repeat(1,minmax(0,1fr))}.max-\[820px\]\:border-t{border-top-style:var(--tw-border-style);border-top-width:1px}.max-\[820px\]\:border-l-0{border-left-style:var(--tw-border-style);border-left-width:0}}}@property --tw-border-style{syntax:"*";inherits:false;initial-value:solid}@property --tw-leading{syntax:"*";inherits:false}@property --tw-font-weight{syntax:"*";inherits:false}@property --tw-outline-style{syntax:"*";inherits:false;initial-value:solid}@property --tw-duration{syntax:"*";inherits:false}@property --tw-tracking{syntax:"*";inherits:false}</style>
 <style>
 /* Small bits Tailwind utilities don't cover cleanly: CSS custom-property
    driven theme surfaces, and third-party (cytoscape) container sizing. */
@@ -46,6 +46,15 @@ body{background:var(--surface);color:var(--text)}
       <button data-view="er" class="tabbtn"><svg class="icon-svg" width="15" height="15" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
   <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 7.125C2.25 6.504 2.754 6 3.375 6h6c.621 0 1.125.504 1.125 1.125v3.75c0 .621-.504 1.125-1.125 1.125h-6a1.125 1.125 0 0 1-1.125-1.125v-3.75ZM14.25 8.625c0-.621.504-1.125 1.125-1.125h5.25c.621 0 1.125.504 1.125 1.125v8.25c0 .621-.504 1.125-1.125 1.125h-5.25a1.125 1.125 0 0 1-1.125-1.125v-8.25ZM3.75 16.125c0-.621.504-1.125 1.125-1.125h5.25c.621 0 1.125.504 1.125 1.125v2.25c0 .621-.504 1.125-1.125 1.125h-5.25a1.125 1.125 0 0 1-1.125-1.125v-2.25Z"/>
 </svg> ER Diagram</button>
+      <button data-view="hierarchy" class="tabbtn"><svg class="icon-svg" width="15" height="15" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+  <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z"/>
+</svg> Hierarchy</button>
+      <button data-view="timeline" class="tabbtn"><svg class="icon-svg" width="15" height="15" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+  <path stroke-linecap="round" stroke-linejoin="round" d="M15.042 21.672 13.684 16.6m0 0-2.51 2.225.569-9.47 5.227 7.917-3.286-.672ZM12 2.25V4.5m5.834.166-1.591 1.591M20.25 10.5H18M7.757 14.743l-1.59 1.59M6 10.5H3.75m4.007-4.243-1.59-1.59"/>
+</svg> Timeline</button>
+      <button data-view="stats" class="tabbtn"><svg class="icon-svg" width="15" height="15" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+  <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z"/>
+</svg> Statistics</button>
     </div>
     <div class="flex flex-wrap gap-1.5 items-center" id="layoutTabs">
       <button data-layout="cose" class="tabbtn active"><svg class="icon-svg" width="15" height="15" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
@@ -91,7 +100,7 @@ body{background:var(--surface);color:var(--text)}
       <h2 class="side-h">Selection</h2>
       <div class="detail rounded-lg border p-2.5 text-xs leading-relaxed break-words" style="border-color:var(--line);background:var(--surface)" id="detail">Click a node to inspect it.</div>
       <h2 class="side-h">Tips</h2>
-      <p class="text-[11px] leading-relaxed" style="color:var(--muted)">Drag the background to pan, scroll to zoom, drag a node to pin it. Switch Schema/Graph/ER and Force/Tree/Circle freely &mdash; the same data is bundled in this one file.</p>
+      <p class="text-[11px] leading-relaxed" style="color:var(--muted)">Drag the background to pan, scroll to zoom, drag a node to pin it. Switch views and layouts freely &mdash; every view Celidae generated is bundled in this one file. Timeline and Hierarchy default to the tree layout, since a force layout scrambles the order they exist to show.</p>
     </aside>
   </div>
 </div>
@@ -145,16 +154,43 @@ var Xr=function(e){if(!(this instanceof Xr))return new Xr(e);this.id="Thenable/1
 <script type="application/json" id="data-schema">__DATA_SCHEMA__</script>
 <script type="application/json" id="data-graph">__DATA_GRAPH__</script>
 <script type="application/json" id="data-er">__DATA_ER__</script>
+<script type="application/json" id="data-timeline">__DATA_TIMELINE__</script>
+<script type="application/json" id="data-hierarchy">__DATA_HIERARCHY__</script>
+<script type="application/json" id="data-stats">__DATA_STATS__</script>
 <script>
 (function () {
   "use strict";
-  const COLORS = { fact: "#18f0d7", field: "#f7c948", method: "#6ca8ff", global: "#f27d9d", library: "#9ca3af", external: "#9ca3af" };
-  const payloads = {
-    schema: JSON.parse(document.getElementById("data-schema").textContent),
-    graph: JSON.parse(document.getElementById("data-graph").textContent),
-    er: JSON.parse(document.getElementById("data-er").textContent)
-  };
-  const state = { view: "schema", layout: "cose", query: "" };
+  // Keep in sync with kindColor() in src/celidae/Visualization.cpp - the SVG
+  // export and this page must agree on what colour a kind is.
+  const COLORS = { fact: "#18f0d7", field: "#f7c948", method: "#6ca8ff", global: "#f27d9d", library: "#9ca3af", external: "#9ca3af", event: "#c4a2ff" };
+
+  const VIEWS = ["schema", "graph", "er", "timeline", "hierarchy", "stats"];
+  // Views the file was actually built with. Celidae substitutes `null` for
+  // any view it did not emit, which is how `--template=<name>` produces a
+  // focused single-view page from this same template.
+  const payloads = {};
+  for (const view of VIEWS) {
+    const node = document.getElementById("data-" + view);
+    const parsed = node ? JSON.parse(node.textContent) : null;
+    if (parsed) payloads[view] = parsed;
+  }
+
+  // Hide tabs with no data, and start on the first view that has some.
+  for (const button of document.querySelectorAll("#viewTabs button[data-view]")) {
+    if (!payloads[button.dataset.view]) button.style.display = "none";
+  }
+  const available = VIEWS.filter(view => payloads[view]);
+  const initialView = available[0] || "schema";
+  for (const button of document.querySelectorAll("#viewTabs button[data-view]")) {
+    button.classList.toggle("active", button.dataset.view === initialView);
+  }
+  // A single-view export has nothing to switch between.
+  if (available.length < 2) {
+    const tabs = document.getElementById("viewTabs");
+    if (tabs) tabs.style.display = "none";
+  }
+
+  const state = { view: initialView, layout: "cose", query: "" };
   let kindChart = null, typeChart = null;
 
   const cy = cytoscape({
@@ -196,15 +232,26 @@ var Xr=function(e){if(!(this instanceof Xr))return new Xr(e);this.id="Thenable/1
     return { name: "cose", animate: false, randomize: true, nodeRepulsion: 9500, idealEdgeLength: 110, edgeElasticity: 80, gravity: 0.9, numIter: 1500 };
   }
 
+  // Timeline and hierarchy are inherently ordered, so a force layout scrambles
+  // exactly the structure they exist to show; both default to the directed
+  // tree layout. The layout tabs still override this if the user picks one.
+  const PREFERRED_LAYOUT = { timeline: "breadthfirst", hierarchy: "breadthfirst" };
+
   function loadView(view) {
     const data = payloads[view] || { nodes: [], edges: [] };
+    const preferred = PREFERRED_LAYOUT[view];
+    if (preferred && !state.layoutPinned) state.layout = preferred;
+    for (const button of document.querySelectorAll("#layoutTabs button[data-layout]")) {
+      button.classList.toggle("active", button.dataset.layout === state.layout);
+    }
     cy.elements().remove();
     cy.add(elementsFor(data));
     cy.layout(layoutOptions(state.layout)).run();
     renderMetrics(data);
-    renderLegend();
+    renderLegend(data);
     renderKindChart(data);
     renderTypeChart(view, data);
+    renderEmptyState(view, data);
     applyFilter();
   }
 
@@ -214,9 +261,55 @@ var Xr=function(e){if(!(this instanceof Xr))return new Xr(e);this.id="Thenable/1
       "<div class=\"metric\"><b>" + (data.edges || []).length + "</b><span>Relationships</span></div>";
   }
 
-  function renderLegend() {
-    document.getElementById("legend").innerHTML = Object.keys(COLORS).slice(0, 5).map(k =>
-      "<span class=\"legend-pill\"><i style=\"background:" + COLORS[k] + "\"></i>" + k + "</span>").join("");
+  // Lists the kinds actually present in the current view. This used to take
+  // the first five keys of COLORS, so any kind beyond that - `event`, which
+  // the timeline view is built from - was drawn on the graph with a colour the
+  // legend never explained.
+  function renderLegend(data) {
+    const present = [];
+    for (const node of (data && data.nodes) || []) {
+      if (node.kind && present.indexOf(node.kind) < 0) present.push(node.kind);
+    }
+    present.sort();
+    const legend = document.getElementById("legend");
+    legend.innerHTML = present.map(k =>
+      "<span class=\"legend-pill\"><i style=\"background:" + (COLORS[k] || COLORS.external) + "\"></i>" + k + "</span>").join("");
+  }
+
+  // A view can be legitimately empty - a timeline of facts that carry no
+  // date-like field, for instance. Saying so beats an unexplained blank canvas.
+  const EMPTY_HINTS = {
+    timeline: "No fact carries a date-like field (an ISO date such as 2025-09-08, or a bare year), so there is nothing to place on a timeline.",
+    hierarchy: "No fact uses `extend`, so there is no inheritance hierarchy to show.",
+    stats: "No fact declarations were found in this program.",
+    schema: "No fact declarations were found in this program.",
+    er: "No fact declarations were found in this program.",
+    graph: "No methods, globals or imports were found in this program."
+  };
+
+  function renderEmptyState(view, data) {
+    let overlay = document.getElementById("emptyState");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.id = "emptyState";
+      overlay.style.cssText =
+        "position:absolute;inset:0;display:none;align-items:center;justify-content:center;" +
+        "text-align:center;padding:2rem;pointer-events:none;font-size:13px;line-height:1.6;";
+      const host = document.getElementById("cy");
+      if (host && host.parentNode) {
+        if (getComputedStyle(host.parentNode).position === "static") {
+          host.parentNode.style.position = "relative";
+        }
+        host.parentNode.appendChild(overlay);
+      }
+    }
+    const isEmpty = !data || !(data.nodes || []).length;
+    overlay.style.display = isEmpty ? "flex" : "none";
+    if (isEmpty) {
+      overlay.innerHTML =
+        "<div style=\"max-width:34rem;color:var(--muted)\"><div style=\"font-size:15px;color:var(--text);margin-bottom:.5rem\">" +
+        "Nothing to show in this view</div>" + (EMPTY_HINTS[view] || "") + "</div>";
+    }
   }
 
   function chartTextColor() { return getComputedStyle(document.documentElement).getPropertyValue("--muted").trim() || "#8aa8a3"; }
@@ -257,6 +350,34 @@ var Xr=function(e){if(!(this instanceof Xr))return new Xr(e);this.id="Thenable/1
       (data.edges || []).forEach(e => { const k = e.label || "edge"; counts[k] = (counts[k] || 0) + 1; });
       const labels = Object.keys(counts);
       chartData = { labels, values: labels.map(k => counts[k]), color: COLORS.method, suffix: "" };
+    } else if (view === "timeline") {
+      label.textContent = "Events per period";
+      // Group dated events by year, read from the `<field>=<value>` detail
+      // Celidae writes for each event node.
+      const counts = {};
+      (data.nodes || []).filter(n => n.kind === "event").forEach(n => {
+        const m = /=(\d{4})/.exec(n.detail || "");
+        const key = m ? m[1] : "undated";
+        counts[key] = (counts[key] || 0) + 1;
+      });
+      const labels = Object.keys(counts).sort();
+      chartData = { labels, values: labels.map(k => counts[k]), color: COLORS.event, suffix: "" };
+    } else if (view === "hierarchy") {
+      label.textContent = "Direct subtypes";
+      const counts = {};
+      (data.edges || []).forEach(e => { if ((e.label || "") === "extends") counts[e.from] = (counts[e.from] || 0) + 1; });
+      const byId = new Map((data.nodes || []).map(n => [n.id, n]));
+      const entries = Object.keys(counts)
+        .map(id => ({ label: (byId.get(id) || {}).label || id, value: counts[id] }))
+        .sort((a, b) => b.value - a.value).slice(0, 12);
+      chartData = { labels: entries.map(e => e.label), values: entries.map(e => e.value), color: COLORS.fact, suffix: "" };
+    } else if (view === "stats") {
+      label.textContent = "Records per fact type";
+      const entries = (data.nodes || []).filter(n => n.kind === "fact").map(n => {
+        const m = /records=(\d+)/.exec(n.detail || "");
+        return { label: n.label, value: m ? parseInt(m[1], 10) : 0 };
+      }).sort((a, b) => b.value - a.value).slice(0, 12);
+      chartData = { labels: entries.map(e => e.label), values: entries.map(e => e.value), color: COLORS.fact, suffix: "" };
     } else {
       label.textContent = "Fields per entity";
       const counts = {};
@@ -321,6 +442,8 @@ var Xr=function(e){if(!(this instanceof Xr))return new Xr(e);this.id="Thenable/1
     if (!btn) return;
     document.querySelectorAll("#layoutTabs button[data-layout]").forEach(b => b.classList.toggle("active", b === btn));
     state.layout = btn.dataset.layout;
+    // An explicit choice sticks: stop applying each view's preferred layout.
+    state.layoutPinned = true;
     cy.layout(layoutOptions(state.layout)).run();
   });
   document.getElementById("search").addEventListener("input", ev => {

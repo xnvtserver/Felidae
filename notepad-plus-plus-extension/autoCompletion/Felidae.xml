@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<NotepadPlus>
+    <AutoComplete language="Felidae">
+        <Environment ignoreCase="no" startFunc="(" stopFunc=")" paramSeparator="," terminal=";" additionalWordChar="_.:" />
+        <KeyWord name="then" />
+        <KeyWord name="system:result" />
+        <KeyWord name="lambda" func="yes"><Overload retVal="" descr="Filters or maps an array/fact collection with a local immutable item variable. Example: Adults := lambda(Person, p =&gt; p.age &gt;= 18)"></Overload></KeyWord>
+        <KeyWord name="ParseDoc" func="yes"><Overload retVal="" descr="Demo parser function used by method-style examples to map document text. Example: parsed := lambda(docs, d =&gt; ParseDoc(d.doc))"></Overload></KeyWord>
+        <KeyWord name="count" func="yes"><Overload retVal="" descr="Returns the number of items in an array or fact/type collection. Example: count(Adults)"></Overload></KeyWord>
+        <KeyWord name="average" func="yes"><Overload retVal="" descr="Returns the average of a numeric array. Example: average(lambda(Person, p =&gt; p.age))"></Overload></KeyWord>
+        <KeyWord name="sort" func="yes"><Overload retVal="" descr="Sorts an array of numbers or strings. Example: sort(lambda(Person, p =&gt; p.name))"></Overload></KeyWord>
+        <KeyWord name="search" func="yes"><Overload retVal="" descr="Filters strings in an array using substring matching. Example: search(lambda(Person, p =&gt; p.name), &quot;Ra&quot;)"></Overload></KeyWord>
+        <KeyWord name="contains" func="yes"><Overload retVal="" descr="Checks a string substring or array membership. Example: contains(&quot;Ravi&quot;, &quot;Ra&quot;)"></Overload></KeyWord>
+        <KeyWord name="lower" func="yes"><Overload retVal="" descr="Converts a string to lowercase. Example: lower(&quot;HELLO&quot;)"></Overload></KeyWord>
+        <KeyWord name="upper" func="yes"><Overload retVal="" descr="Converts a string to uppercase. Example: upper(&quot;hello&quot;)"></Overload></KeyWord>
+        <KeyWord name="length" func="yes"><Overload retVal="" descr="Returns the length of a string or array. Example: length(&quot;hello&quot;)"></Overload></KeyWord>
+        <KeyWord name="throw" func="yes"><Overload retVal="" descr="Signals an exception reason. With target:, routes the message to a handler rule. Example: throw(msg: &quot;thrown from module a&quot;, target: DivideFailureHandler)"><Param name="msg" /><Param name="target" /></Overload></KeyWord>
+        <KeyWord name="type" func="yes"><Overload retVal="" descr="Reads the concrete fact/type name from a map value that carries runtime type metadata. Example: type(value: employee, name: TypeName)"><Param name="value" /><Param name="name" /></Overload></KeyWord>
+        <KeyWord name="instanceof" func="yes"><Overload retVal="" descr="Succeeds when a value is an instance of the requested fact/type, including parents declared with extend. Example: instanceof(value: employee, type: Person)"><Param name="value" /><Param name="type" /></Overload></KeyWord>
+        <KeyWord name="Fact:all" />
+        <KeyWord name="Fact:find" />
+        <KeyWord name="Fact:first" />
+        <KeyWord name="Fact:count" />
+        <KeyWord name="Fact:types" />
+        <KeyWord name="Fact:fields" />
+        <KeyWord name="Fact:exists" />
+        <KeyWord name="Fact:select" />
+        <KeyWord name="math:add" />
+        <KeyWord name="math:sub" />
+        <KeyWord name="math:mul" />
+        <KeyWord name="math:div" />
+        <KeyWord name="math:mod" />
+        <KeyWord name="probability:mean" />
+        <KeyWord name="probability:variance" />
+        <KeyWord name="probability:stddev" />
+        <KeyWord name="probability:normalize" />
+        <KeyWord name="probability:entropy" />
+        <KeyWord name="probability:covariance" />
+        <KeyWord name="probability:correlation" />
+        <KeyWord name="probability:bernoulli" />
+        <KeyWord name="probability:binomialPmf" />
+        <KeyWord name="probability:binomialCdf" />
+        <KeyWord name="probability:poissonPmf" />
+        <KeyWord name="probability:poissonCdf" />
+        <KeyWord name="probability:normalPdf" />
+        <KeyWord name="probability:normalCdf" />
+        <KeyWord name="probability:uniformPdf" />
+        <KeyWord name="probability:uniformCdf" />
+        <KeyWord name="probability:sample" />
+        <KeyWord name="probability:weightedChoice" />
+        <KeyWord name="str:len" />
+        <KeyWord name="str:contains" />
+        <KeyWord name="str:concat" />
+        <KeyWord name="str:lower" />
+        <KeyWord name="str:upper" />
+        <KeyWord name="str:trim" />
+        <KeyWord name="str:split" />
+        <KeyWord name="str:replace" />
+        <KeyWord name="str:startsWith" />
+        <KeyWord name="str:endsWith" />
+        <KeyWord name="array:get" />
+        <KeyWord name="array:len" />
+        <KeyWord name="array:push" />
+        <KeyWord name="fn:array" func="yes"><Overload retVal="" descr="Creates an immutable Felidae array value from the data argument. Example: array1 := fn:array(data: [1, 2, 3, 4])"><Param name="data" /></Overload></KeyWord>
+        <KeyWord name="fn:pair" func="yes"><Overload retVal="" descr="Creates an immutable pair value with first and last fields. Example: pair := fn:pair(first: &quot;web&quot;, last: 2.0)"><Param name="first" /><Param name="last" /></Overload></KeyWord>
+        <KeyWord name="fn:tuple" func="yes"><Overload retVal="" descr="Creates an immutable tuple-style value from named fields. Example: tuple := fn:tuple(first: &quot;hello&quot;, second: &quot;world&quot;)"><Param name="first" /><Param name="second" /></Overload></KeyWord>
+        <KeyWord name="pair:first" func="yes"><Overload retVal="" descr="Unifies the output argument with the first item of a pair. Example: pair:first(data: fn:pair(first: &quot;web&quot;, last: 2), access: key)"><Param name="data" /><Param name="access" /></Overload></KeyWord>
+        <KeyWord name="pair:second" func="yes"><Overload retVal="" descr="Unifies the output argument with the second item of a pair. Example: pair:second(data: fn:pair(first: &quot;web&quot;, last: 2), access: value)"><Param name="data" /><Param name="access" /></Overload></KeyWord>
+        <KeyWord name="json:parse" />
+        <KeyWord name="json:get" />
+        <KeyWord name="json:has" />
+        <KeyWord name="json:keys" />
+        <KeyWord name="json:set" />
+        <KeyWord name="json:remove" />
+        <KeyWord name="json:toText" />
+        <KeyWord name="csv:parse" />
+        <KeyWord name="csv:toFacts" />
+        <KeyWord name="csv:toText" />
+        <KeyWord name="csv:toFelidaeFacts" />
+        <KeyWord name="csv:addRow" />
+        <KeyWord name="csv:findRows" />
+        <KeyWord name="csv:updateRows" />
+        <KeyWord name="csv:deleteRows" />
+        <KeyWord name="console:readLine" />
+        <KeyWord name="console:write" />
+        <KeyWord name="console:writeLine" />
+        <KeyWord name="system:print" />
+        <KeyWord name="file:readFile" />
+        <KeyWord name="file:readLines" />
+        <KeyWord name="file:readLine" />
+        <KeyWord name="file:writeFile" />
+        <KeyWord name="file:writeLines" />
+        <KeyWord name="file:appendFile" />
+        <KeyWord name="file:exists" />
+        <KeyWord name="file:deleteFile" />
+        <KeyWord name="http:get" />
+        <KeyWord name="http:post" />
+        <KeyWord name="http:put" />
+        <KeyWord name="http:delete" />
+        <KeyWord name="http:serveStatic" />
+        <KeyWord name="process:platform" />
+        <KeyWord name="process:exec" />
+        <KeyWord name="process:sleep" />
+        <KeyWord name="math:sqrt" />
+        <KeyWord name="math:pow" />
+        <KeyWord name="math:sin" />
+        <KeyWord name="math:cos" />
+        <KeyWord name="math:tan" />
+        <KeyWord name="math:asin" />
+        <KeyWord name="math:acos" />
+        <KeyWord name="math:atan" />
+        <KeyWord name="math:atan2" />
+        <KeyWord name="math:log" />
+        <KeyWord name="math:log10" />
+        <KeyWord name="math:exp" />
+        <KeyWord name="math:abs" />
+        <KeyWord name="math:floor" />
+        <KeyWord name="math:ceil" />
+        <KeyWord name="math:round" />
+        <KeyWord name="math:pi" />
+        <KeyWord name="math:e" />
+        <KeyWord name="math:random" />
+        <KeyWord name="ml:sigmoid" />
+        <KeyWord name="ml:relu" />
+        <KeyWord name="ml:dot" />
+        <KeyWord name="ml:meanSquaredError" />
+        <KeyWord name="thread:createThread" />
+        <KeyWord name="thread:start" />
+        <KeyWord name="thread:result" />
+        <KeyWord name="thread:status" />
+        <KeyWord name="extend" />
+        <KeyWord name="where" />
+        <KeyWord name="if" />
+        <KeyWord name="else" />
+        <KeyWord name="return" />
+        <KeyWord name="import" />
+        <KeyWord name="nil" />
+        <KeyWord name="true" />
+        <KeyWord name="false" />
+        <KeyWord name="any" />
+        <KeyWord name="array" />
+        <KeyWord name="bool" />
+        <KeyWord name="boolean" />
+        <KeyWord name="decimal" />
+        <KeyWord name="double" />
+        <KeyWord name="float" />
+        <KeyWord name="int" />
+        <KeyWord name="number" />
+        <KeyWord name="string" />
+        <KeyWord name="comparison" />
+        <KeyWord name="console" />
+        <KeyWord name="csv" />
+        <KeyWord name="db" />
+        <KeyWord name="exception" />
+        <KeyWord name="fact" />
+        <KeyWord name="fact_analysis" />
+        <KeyWord name="file" />
+        <KeyWord name="flibrary" />
+        <KeyWord name="fn" />
+        <KeyWord name="group" />
+        <KeyWord name="gtk" />
+        <KeyWord name="http" />
+        <KeyWord name="json" />
+        <KeyWord name="list" />
+        <KeyWord name="logic" />
+        <KeyWord name="math" />
+        <KeyWord name="ml" />
+        <KeyWord name="package" />
+        <KeyWord name="pair" />
+        <KeyWord name="plot" />
+        <KeyWord name="prelude" />
+        <KeyWord name="probability" />
+        <KeyWord name="process" />
+        <KeyWord name="qt" />
+        <KeyWord name="set" />
+        <KeyWord name="smoke" />
+        <KeyWord name="str" />
+        <KeyWord name="system" />
+        <KeyWord name="thread" />
+        <KeyWord name="wordnet" />
+    </AutoComplete>
+</NotepadPlus>

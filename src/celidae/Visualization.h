@@ -2,6 +2,7 @@
 
 #include "AST.h"
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -9,10 +10,29 @@
 namespace Felidae::Celidae {
 
 enum class DiagramType {
-    Schema,
-    Graph,
-    Er
+    Schema,     // fact types and their fields
+    Graph,      // methods, globals, imports and the calls between them
+    Er,         // entity/relationship view: facts, fields, inheritance only
+    Timeline,   // fact records ordered by a date-like field's literal value
+    Hierarchy,  // inheritance tree, parents containing their children
+    Stats       // per-fact-type record and field statistics
 };
+
+// Every diagram type, in the order --help lists them.
+inline constexpr DiagramType kAllDiagramTypes[] = {
+    DiagramType::Schema,
+    DiagramType::Graph,
+    DiagramType::Er,
+    DiagramType::Timeline,
+    DiagramType::Hierarchy,
+    DiagramType::Stats
+};
+
+// Lower-case name used by --type/--template and as the JSON "mode" field.
+const char* diagramTypeName(DiagramType type);
+
+// Parses a --type/--template value; returns false when unrecognised.
+bool parseDiagramType(const std::string& name, DiagramType& out);
 
 struct RenderNode {
     std::string id;
@@ -66,13 +86,14 @@ std::string graphJsonEnvelope(const std::string& json);
 // copy of cytoscape/chart.js/heroicons/Tailwind CSS (see src/celidae/webui/,
 // vendored independently via npm and compiled into GeneratedVisualizerAssets.h
 // - not read from or shared with vs-code-extension). No network access or
-// external files are needed to open the result. schemaJson/graphJson/erJson
-// are the three DiagramType views bundled into one file so a user can switch
-// between them (and between force/tree/circle layouts within each) without
-// re-running Celidae.
-std::string standaloneHtml(const std::string& schemaJson,
-                           const std::string& graphJson,
-                           const std::string& erJson);
+// external files are needed to open the result.
+//
+// `payloads` carries one JSON document per DiagramType the caller wants
+// available in the produced file. Keyed by type rather than passed
+// positionally so adding a diagram type does not change this signature, and
+// so `--template` can emit a single-view file by supplying just one entry.
+// The template renders only the views it was given.
+std::string standaloneHtml(const std::map<DiagramType, std::string>& payloads);
 
 // Static vector export of one DiagramType using a server-computed layout —
 // portable, no JS, suitable for embedding directly in documents/slides.

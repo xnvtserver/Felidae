@@ -23,6 +23,39 @@ bool isLikelyTypeName(const std::string& name) {
     return isFelidaeLikelyTypeName(name) || name == "map";
 }
 
+// Head parameters in the shape editor integrations want for signature help.
+// A head writes either an annotation (`name: string`, `input: Person`) or a
+// plain binding (`employee: e`); only the former has a type worth showing,
+// which is exactly the distinction isLikelyTypeName already draws for the
+// unused-variable diagnostics below. A literal default contributes its own
+// kind as the type.
+std::vector<SymbolParameter> collectHeadParameters(const Call& head) {
+    std::vector<SymbolParameter> params;
+    params.reserve(head.args.size());
+    for (const auto& arg : head.args) {
+        SymbolParameter param;
+        param.name = arg.name;
+        if (auto var = std::dynamic_pointer_cast<VarExpr>(arg.value)) {
+            if (isLikelyTypeName(var->name)) {
+                param.type = var->name;
+            } else if (param.name.empty()) {
+                // Positional head argument: the bound variable is the only
+                // name this parameter has.
+                param.name = var->name;
+            }
+        } else if (std::dynamic_pointer_cast<StringExpr>(arg.value)) {
+            param.type = "string";
+        } else if (std::dynamic_pointer_cast<NumberExpr>(arg.value)) {
+            param.type = "number";
+        } else if (std::dynamic_pointer_cast<BoolExpr>(arg.value)) {
+            param.type = "bool";
+        }
+        if (param.name.empty()) continue;
+        params.push_back(std::move(param));
+    }
+    return params;
+}
+
 void addVarUse(const std::string& name, std::set<std::string>& uses) {
     if (!isIgnoredName(name)) uses.insert(name);
 }
@@ -399,6 +432,9 @@ struct AstAnalysisSession::Impl {
         size_t count = 0;
         SourceSpan span;
         std::vector<SourceSpan> spans;
+        // Head parameters of the last-seen declaration, mirroring how `span`
+        // also tracks the last one.
+        std::vector<SymbolParameter> params;
     };
 
     std::vector<AstDiagnostic> diagnostics;
@@ -446,6 +482,7 @@ void AstAnalysisSession::consume(const std::shared_ptr<Statement>& stmt) {
         ++definition.count;
         definition.span = clause->sourceSpan;
         definition.spans.push_back(clause->sourceSpan);
+        definition.params = collectHeadParameters(clause->head);
         ++impl_->factsSeen;
         if (impl_->factsSeen <= Impl::MaxExactDuplicateFacts) {
             const std::string signature = factSignature(*clause);
@@ -467,6 +504,7 @@ void AstAnalysisSession::consume(const std::shared_ptr<Statement>& stmt) {
     ++definition.count;
     definition.span = clause->sourceSpan;
     definition.spans.push_back(clause->sourceSpan);
+    definition.params = collectHeadParameters(clause->head);
     for (const auto& annotation : clause->annotations) {
         if (annotation.builtinId == BuiltinId::OverloadAnnotation ||
             annotation.builtinId == BuiltinId::MatcherAnnotation) {
@@ -571,7 +609,8 @@ SymbolSummary AstAnalysisSession::symbols() const {
         std::vector<SymbolDefinition> result;
         result.reserve(definitions.size());
         for (const auto& [name, definition] : definitions) {
-            result.push_back(SymbolDefinition{name, definition.count, definition.spans});
+            result.push_back(SymbolDefinition{
+                name, definition.count, definition.spans, definition.params});
         }
         return result;
     };

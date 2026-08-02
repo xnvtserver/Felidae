@@ -1,9 +1,10 @@
 package local.felidae.intellij.execution;
 
 import com.intellij.execution.configurations.GeneralCommandLine;
-import com.intellij.execution.process.OSProcessHandler;
-import com.intellij.execution.process.ProcessAdapter;
+import com.intellij.execution.process.ProcessHandlerFactory;
+// ProcessAdapter is deprecated: ProcessListener has default methods now.
 import com.intellij.execution.process.ProcessEvent;
+import com.intellij.execution.process.ProcessListener;
 import com.intellij.execution.process.ProcessHandler;
 import com.intellij.execution.ui.ConsoleView;
 import com.intellij.openapi.application.ApplicationManager;
@@ -174,8 +175,12 @@ public final class FelidaeProcessRunner {
         });
 
         try {
-            OSProcessHandler processHandler =
-                    new OSProcessHandler(commandLine);
+            // ProcessHandlerFactory rather than `new OSProcessHandler(...)`:
+            // that constructor is deprecated, and the factory additionally
+            // gives the console ANSI colour handling for free.
+            ProcessHandler processHandler =
+                    ProcessHandlerFactory.getInstance()
+                            .createColoredProcessHandler(commandLine);
 
             ConsoleView consoleView =
                     consoleService.getOrCreateConsole();
@@ -230,7 +235,7 @@ public final class FelidaeProcessRunner {
             @NotNull FelidaeConsoleService consoleService
     ) {
         processHandler.addProcessListener(
-                new ProcessAdapter() {
+                new ProcessListener() {
                     @Override
                     public void processTerminated(
                             @NotNull ProcessEvent event
