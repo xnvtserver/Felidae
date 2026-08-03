@@ -1,106 +1,158 @@
-# C++ audit — issues found while implementing the extension/ML round
+# C++ audit — issues found while implementing the extension/ML/analytics rounds
 
-Scope: the C++ files read during this round — `src/debugger/AstAnalyzer.{h,cpp}`,
+Scope: the C++ files read across these rounds — `src/debugger/AstAnalyzer.{h,cpp}`,
 `src/debugger/main.cpp`, `src/celidae/Visualization.{h,cpp}`,
 `src/celidae/main.cpp`, and the `Arg`/`Expr` shapes in `src/AST.h`. Findings are
-marked **fixed** (addressed this round), **open** (real, not yet addressed), or
+marked **fixed** (addressed), **open** (real, not yet addressed), or
 **note** (design observation worth a decision).
 
 ---
 
-## Fixed this round
+## Fixed
 
 ### 1. `SymbolDefinition` discarded parameters the analyzer already had — **fixed**
-`AstAnalyzer` walks `clause->head.args` at `AstAnalyzer.cpp:494` for its
-unused-variable diagnostics, but `SymbolDefinition` carried only
-`{name, count, spans}`. Every editor feature that needed a signature therefore
-re-derived parameters from source text with its own regex, and two of those
-regexes were wrong (see §5). Fixed by adding `SymbolParameter{name, type}`,
-populating it from the existing arg walk, and emitting it from
-`--symbols-json`. Additive, so older extension builds are unaffected.
+`AstAnalyzer` walks `clause->head.args` for its unused-variable diagnostics, but
+`SymbolDefinition` carried only `{name, count, spans}`. Every editor feature that
+needed a signature therefore re-derived parameters from source text with its own
+regex, and two of those regexes were wrong (see §7). Fixed by adding
+`SymbolParameter{name, type}`, populating it from the existing arg walk, and
+emitting it from `--symbols-json`. Additive, so older extension builds are
+unaffected.
+
+### 2. Parallel colour definitions that could silently drift — **fixed**
+`kindColor()` and the JS `COLORS` map in `webui/template.html` defined the same
+per-node-kind palette twice, in two languages, with no shared source. Fixed by
+making `kindColor()` the single source: every payload now carries a `"palette"`
+member built from it, and the page reads that instead of keeping its own table.
+A kind added in C++ is now coloured correctly in the browser with no JS change.
+
+### 3. `renderLegend()` hardcoded the first five kinds — **fixed**
+It listed `COLORS`' first five keys, so a sixth kind rendered on the graph but
+never appeared in the legend. It now lists exactly the kinds present in the
+current view, read from the payload.
+
+### 4. `computeLaneLayout()` hardcoded kind ordering — **fixed**
+Lanes were keyed to the literal sequence `fact, field, method, global, library`,
+so every later kind collapsed into one undifferentiated trailing column — and
+the analytics work added four (`event`, `record`, `segment`, `measure`). The
+order now comes from `allNodeKinds()`, the same list the palette comes from, and
+an unrecognised kind is given its own column rather than sharing one.
+
+### 5. `standaloneHtml()`'s fixed three-payload arity — **fixed**
+`standaloneHtml(schemaJson, graphJson, erJson)` meant every new diagram type
+forced a signature change, a new token, and a new call-site argument. It now
+takes a `std::map<DiagramType, std::string>`, and a type the caller omits is
+substituted with a JSON `null` that the page treats as "this view was not
+generated". That is exactly what makes `--template=<name>` able to emit a
+focused single-view file from the same template. `replaceToken()` still throws
+on a missing token, which is the desired behaviour — it fails loudly at export
+time rather than shipping a broken page — and `generate-template.js` now checks
+the full token list at build time too.
+
+### 6. `FactProfile` discarded every literal value — **fixed**
+`consume()` read only `argument.name` when profiling a fact, never
+`argument.value`, so **no value-based visualization was possible at all**.
+`FactProfile` now carries `samples` (capped at `kMaxFactSamples = 500` per fact
+type, with the truncation surfaced on the node and as an insight rather than
+silently). This unblocked the timeline, distribution, comparison and cluster
+views, and the whole `Analytics` layer.
+
+### 7. Duplicated declaration-scanning regexes across the toolchain — **fixed**
+The same "the parser knows, but nobody asks it" pattern as §1: the
+declaration-head regex existed in four near-identical variants with different
+capture-group numbering, so a fix in one did not reach the others. Consolidated
+behind `FelidaeCallResolver` (IntelliJ) and a single `DECLARATION_PATTERN`
+(VS Code).
+
+### 8. Hierarchy view double-prefixed its node ids — **fixed**
+Introduced during the analytics rewrite and caught by the new test suite:
+`consume()` stores a reference's *source* already qualified (`fact:Station`) but
+its *target* bare (`Reading`), and the hierarchy builder applied `nodeId()` to
+both. The result was an edge pointing at `fact:fact:Station`, which does not
+exist — cytoscape throws on a dangling endpoint and abandons the entire view.
+It also broke the depth calculation, so every type reported depth 0. Both sides
+are now reduced to bare names before `nodeId()` is applied once.
+
+### 9. `-Woverlength-strings` aborted the Windows build — **fixed**
+`GeneratedVisualizerAssets.h` is one deliberately enormous string literal, and
+`-Wpedantic` warns because the standard only *requires* support for 65536
+characters. Harmless in itself, but `build.ps1` runs under
+`$ErrorActionPreference = "Stop"`, where a native command writing to stderr
+aborts the build. Suppressed explicitly in both build scripts with the reasoning
+recorded there.
 
 ---
 
 ## Open
 
-### 2. Parallel colour definitions that can silently drift — **open**
-`kindColor()` (`Visualization.cpp:471`) and the JS `COLORS` map in
-`webui/template.html` define the same per-node-kind palette twice, in two
-languages, with no shared source. A new node kind, or a palette tweak in one
-place, diverges silently: SVG export and HTML export would disagree about what
-colour a "method" node is. Worth generating one from the other (the template is
-already produced by `generate-template.js`, which could substitute a
-`__KIND_COLORS__` token emitted from the C++ table).
+### 10. The lexer rejects a UTF-8 byte-order mark — **open, not addressed (core language)**
+A `.fx` file saved as "UTF-8 with BOM" — which is what Windows PowerShell's
+`Set-Content -Encoding utf8`, Notepad, and several editors produce by default —
+fails with `error: Unexpected character '' at 1:1`. Found while writing
+`scripts/test_celidae.ps1`, whose fixtures were rejected for this reason alone.
 
-### 3. `renderLegend()` hardcodes the first five kinds — **open**
-It lists `COLORS`' first five keys, so any sixth node kind renders on the graph
-but never appears in the legend — a silent omission rather than a visible bug.
+This is **not** a Celidae bug: it is in `Lexer::ensureChar`
+(`src/Lexer.cpp`), which feeds the interpreter, the debugger and Celidae alike.
+The fix is to skip a leading `EF BB BF` on the first read — four lines, purely
+additive, with no effect on any file that does not start with one. It is left
+open deliberately: whether `.fx` accepts a BOM is a language decision, and this
+round's scope was Celidae and the editor tooling, not core tokenization. Worth a
+decision, because the failure mode is a confusing error on a file that looks
+perfectly normal in every editor.
 
-### 4. `computeLaneLayout()` hardcodes kind ordering — **open**
-Lanes are keyed to the literal sequence `fact, field, method, global, library`;
-unknown kinds all collapse into one undifferentiated trailing column. Fine
-today, but it is the second place (with §2 and §3) that must be edited in
-lockstep whenever a kind is added — three edits, none of which fail loudly if
-forgotten.
+### 11. Five pre-existing failures in `scripts/test_felidae_examples.ps1` — **open, unrelated**
+`streaming file reader smoke`, `stdlib utilities`, `console input number true
+branch`, `console input number false branch`, and `repl query global builtin`
+fail at the current commit. All five exercise the interpreter's file-I/O and
+stdin paths (`csv_text: ""` and `deleted_count: 0` where non-empty values are
+expected). No interpreter source was modified in this round, so these predate
+it — recorded here so they are not mistaken for regressions.
 
-### 5. `standaloneHtml()`'s fixed three-payload arity — **open**
-`standaloneHtml(schemaJson, graphJson, erJson)` plus a `replaceToken()` that
-*throws* on a missing token means every new diagram type forces a signature
-change, a new token, and a new call-site argument. `replaceToken` throwing is
-good (it fails at build time rather than emitting a broken page), but the arity
-should be a `DiagramType`-keyed payload instead of positional parameters. This
-is the blocker for the selectable-template work that remains outstanding.
-
-### 6. `FactProfile` discards every literal value — **open**
-`consume()` reads only `argument.name` when profiling a fact
-(`Visualization.cpp`, `FactProfile{records, fields}`), never `argument.value`.
-`AST.h`'s `Arg` does carry `shared_ptr<Expr> value`, and `StringExpr`/
-`NumberExpr`/`BoolExpr` expose their literals, so the data is available — it is
-simply dropped. Consequence: **no value-based visualization is possible at
-all** (a timeline needs a date field's value; a distribution chart needs the
-values). Any such view requires extending `FactProfile` with sampled values
-first — with a cap, since a large fact set would otherwise retain every literal.
-
-### 7. Duplicated declaration-scanning regexes across the toolchain — **open (non-C++, same root cause)**
-Worth recording because it is the same "the parser knows, but nobody asks it"
-pattern as §1: the declaration-head regex existed in four near-identical
-variants (VS Code `DECLARATION_PATTERN`, IntelliJ's completion contributor,
-IntelliJ's goto-declaration handler, the run-gutter manager), with different
-capture-group numbering, so a fix in one did not reach the others. Two were
-consolidated this round; the goto-declaration and gutter variants remain.
+### 12. Panel types the SVG exporter cannot draw — **open, by design for now**
+`standaloneSvg` renders `bar`/`hbar`/`histogram`/`line`/`scatter` panels
+natively, and names the fields covered by a `boxplot`. `treemap`, `heatmap` and
+`parallel` are HTML-only: each needs a layout algorithm (squarified treemap,
+matrix binning, axis normalisation) that would roughly double the exporter for
+three charts whose value is largely interactive. The SVG says so rather than
+emitting an empty frame.
 
 ---
 
 ## Notes
 
-### 8. `--type` rejects unknown values by throwing — **note, correct as-is**
-`parseType()` throws on an unrecognised diagram name. That is the right
-behaviour (a typo should not silently produce a schema diagram), just worth
-knowing when adding types: the error message enumerates the valid set and must
-be updated alongside the enum.
+### 13. `--type` rejects unknown values by throwing — **note, correct as-is**
+`parseType()` throws on an unrecognised diagram name. That is right (a typo
+should not silently produce a schema diagram). The error message enumerates the
+valid set from `kAllDiagramTypes`, so it now stays correct automatically when a
+type is added — it no longer has to be updated by hand alongside the enum.
 
-### 9. `celidaeSources` / `debugSources` are explicit file lists — **note**
-`build.ps1` and `build.sh` each enumerate sources. Any new `.cpp` requires
-editing both, and forgetting one breaks only that platform. Keeping additions
-inside existing translation units avoids the trap; a glob would remove it
-entirely.
+### 14. `celidaeSources` / `debugSources` are explicit file lists — **note**
+`build.ps1` and `build.sh` each enumerate sources, so any new `.cpp` requires
+editing both and forgetting one breaks only that platform. This round added
+`src/celidae/Analytics.cpp` and therefore had to edit both — the trap is real.
+A glob would remove it entirely.
 
-### 10. Hand-rolled JSON emission has no escaping test — **note**
-`symbolsJson`/`symbolDefinitionsJson` build JSON by string concatenation with a
-`jsonEscape()` helper. It is correct for the current fields, but the parameter
-`type` values now flowing through it come from source text. A round-trip test
-(emit → parse) over the example corpus would cheaply guard this; note the
-precedent that the *previous* round found `jsonEscape()` being wrongly used for
-XML in `standaloneSvg()`, which is exactly this class of bug.
+### 15. Hand-rolled JSON emission — **note, now covered by tests**
+Both `symbolsJson`/`symbolDefinitionsJson` and Celidae's payload writer build
+JSON by string concatenation. This is the class of bug that previously produced
+a malformed `publishDiagnostics` notification (one `}` too many) and
+`jsonEscape()` being wrongly used for XML in `standaloneSvg()`. It is now
+guarded from both ends: `scripts/test_celidae.ps1` parses every payload for
+every diagram type across all 151 example programs, checks that no `NaN` or
+`Infinity` literal escapes (neither is valid JSON, and either would make the
+browser reject the whole document), and feeds through a fixture containing `&`,
+`<`, `]]>` and a literal `</script>` to confirm neither the XML nor the
+`<script>`-embedded JSON can be broken out of.
 
 ---
 
 ## Cross-cutting
 
-Findings §1, §6 and §7 share one root cause: **the C++ side already holds
-parsed, authoritative information that downstream consumers re-derive, less
-accurately, from text.** §1 is now fixed and demonstrably worth it — the
-regex-derived parameter list for builtins was returning the `:=` assignment
-target as a parameter (`Fact.all(` suggested `rows`), a bug that disappeared
-once the data came from one correct place. §6 is the same fix waiting to
-happen for fact values.
+Findings §1, §6 and §7 shared one root cause: **the C++ side already held
+parsed, authoritative information that downstream consumers re-derived, less
+accurately, from text.** All three are now fixed, and the same principle drove
+this round's main change — `RenderNode` carries `metrics`/`attributes` as
+structured values, so the HTML view reads `node.metrics.coverage` instead of
+running `/coverage=([\d.]+)%/` over a prose string whose wording was free to
+change at any time. `detail` still exists, but it is now *generated from* those
+values, so the tooltip and the data cannot disagree.

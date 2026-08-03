@@ -622,10 +622,14 @@ SymbolSummary AstAnalysisSession::symbols() const {
     for (const auto& name : impl_->globals) {
         // impl_->globals and impl_->globalSpanLists are always populated
         // together in consume(), so every global name has at least one span.
+        // A global binding has no parameter list; the empty vector is stated
+        // rather than left to aggregate initialization so adding a field to
+        // SymbolDefinition does not silently leave one uninitialized here.
         summary.globals.push_back(SymbolDefinition{
             name,
             1,
-            impl_->globalSpanLists.at(name)});
+            impl_->globalSpanLists.at(name),
+            {}});
     }
     return summary;
 }

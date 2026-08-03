@@ -82,7 +82,34 @@ build\celidae.exe examples\main.fx --json --load-imports
 build\celidae.exe examples\main.fx --html --load-imports
 ```
 
-Target-specific C++ files live under `src/celidae` and `src/debugger`.
+Celidae offers nine views. Four are structural — `schema`, `graph`, `er`,
+`hierarchy` — describing what the program declares. The other five analyse the
+literal values facts carry: `timeline` (records in date order, with per-period
+volume and a spike test), `stats` (coverage and data-quality findings),
+`distribution` (per-field histograms and robust outlier detection),
+`comparison` (correlation between fields), and `cluster` (records projected onto
+their principal components and grouped by k-means, with the number of segments
+chosen by silhouette rather than fixed).
+
+`--html` bundles every view into one self-contained file; `--template=<name>`
+emits just one. `--svg --type=<name>` produces a static export. To find out
+which views a program's data actually supports, and why:
+
+```powershell
+build\celidae.exe examples\main.fx --recommend
+```
+
+Celidae's own acceptance tests — payload integrity, analysis correctness against
+a fixture with known answers, XML/JSON escaping, determinism, and a sweep of
+every example program across every view:
+
+```powershell
+.\scripts\test_celidae.ps1          # add -Quick to skip the corpus sweep
+```
+
+Target-specific C++ files live under `src/celidae` and `src/debugger`. The
+analysis layer (`src/celidae/Analytics.cpp`) uses Eigen, vendored header-only in
+`third_party/Eigen`, for PCA and correlation.
 
 ## Build
 

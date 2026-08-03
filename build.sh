@@ -160,7 +160,13 @@ case "$TARGET" in
         ;;
 esac
 
-WARNING_FLAGS=(-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual)
+# -Wno-overlength-strings: src/celidae/GeneratedVisualizerAssets.h is one
+# deliberately enormous string literal (the self-contained visualizer page,
+# with Tailwind/cytoscape/ECharts inlined). -Wpedantic warns because the C++
+# standard only *requires* support for 65536-character literals; every
+# compiler this project targets handles megabyte literals fine. It also has to
+# be suppressed for -Werror builds to be usable at all.
+WARNING_FLAGS=(-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual -Wno-overlength-strings)
 if [[ "$WARNINGS_AS_ERRORS" -eq 1 ]]; then WARNING_FLAGS+=(-Werror); fi
 
 case "$CONFIGURATION" in
@@ -188,7 +194,8 @@ COMMON_SOURCES=(
     src/Memory.cpp src/NativeRuntime.cpp
 )
 CELIDAE_SOURCES=(
-    src/celidae/main.cpp src/celidae/Visualization.cpp src/tooling/SourceParser.cpp
+    src/celidae/main.cpp src/celidae/Visualization.cpp src/celidae/Analytics.cpp
+    src/tooling/SourceParser.cpp
     src/BuiltinRegistry.cpp src/Lexer.cpp src/Parser.cpp
 )
 DEBUG_SOURCES=(

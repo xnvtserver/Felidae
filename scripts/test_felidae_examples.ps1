@@ -265,14 +265,19 @@ $debugCheckTests = @(
 )
 
 $celidaeTests = @(
-    @{ Name = "celidae profiles country fact db"; Args = @("examples\data\converted_csv_country.fx", "--inspect-graph"); Expect = @('"detail":"records=249 fields=3"', '"detail":"present=249 missing=0 coverage=100.0%"') },
+    # Asserted against the structured "metrics" object rather than the human-
+    # readable "detail" prose. Celidae emits both; detail is a tooltip string
+    # whose wording is free to change, while metrics is the contract every
+    # renderer reads. These used to match on detail, so rewording a tooltip
+    # broke the test while an actually-wrong record count would not have.
+    @{ Name = "celidae profiles country fact db"; Args = @("examples\data\converted_csv_country.fx", "--inspect-graph"); Expect = @('"label":"Country","kind":"fact"', '"records":249', '"fields":3', '"coverage":100', '"missing":0') },
     @{ Name = "celidae ER diagram excludes execution nodes"; Args = @("examples\data\converted_csv_country.fx", "--json", "--type=er"); Expect = @('"mode":"er"', '"label":"Country","kind":"fact"', '"kind":"field"') },
     @{ Name = "celidae ER diagram preserves every direct parent"; Args = @("examples\multiple_inheritance_hierarchy.fx", "--json", "--type=er"); Expect = @('"from":"fact:Politician","to":"fact:Government","label":"extends"', '"from":"fact:Politician","to":"fact:People","label":"extends"') },
     @{ Name = "celidae dependency graph excludes ER fields"; Args = @("examples\country_query.fx", "--json", "--type=graph", "--load-imports"); Expect = @('"mode":"graph"', '"label":"IndiaCountry","kind":"method"', '"kind":"library"') },
     @{ Name = "celidae expert graph records fact attachments"; Args = @("examples\expert_intelligence_system.fx", "--json", "--type=graph"); Expect = @('"label":"Fact:depends","kind":"library"', '"label":"Fact:relate","kind":"library"', '"label":"attaches dependency"', '"label":"attaches relationship"') },
     @{ Name = "celidae graph records dynamic reference callables"; Args = @("examples\dynamic_fact_references.fx", "--json", "--type=graph"); Expect = @('"label":"Fact:references","kind":"library"', '"label":"Physics:velocity","kind":"method"', '"label":"references"') },
-    @{ Name = "celidae viewer json loads imported country schema"; Args = @("examples\country_query.fx", "--visualize-data-json", "--load-imports"); Expect = @("FELIDAE_GRAPH_BEGIN", '"mode":"schema"', '"label":"Country","kind":"fact","detail":"records=249 fields=3"', '"truncated":false') },
-    @{ Name = "celidae viewer html loads imported country fact db"; Args = @("examples\country_query.fx", "--visualize-data-html", "--load-imports"); Expect = @("<!doctype html>", "Celidae Visualizer", '"label":"Country","kind":"fact","detail":"records=249 fields=3"') }
+    @{ Name = "celidae viewer json loads imported country schema"; Args = @("examples\country_query.fx", "--visualize-data-json", "--load-imports"); Expect = @("FELIDAE_GRAPH_BEGIN", '"mode":"schema"', '"label":"Country","kind":"fact"', '"records":249', '"truncated":false') },
+    @{ Name = "celidae viewer html loads imported country fact db"; Args = @("examples\country_query.fx", "--visualize-data-html", "--load-imports"); Expect = @("<!doctype html>", "Celidae Visualizer", '"label":"Country","kind":"fact"', '"records":249') }
 )
 
 $directInputTests = @(
