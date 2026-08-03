@@ -57,9 +57,17 @@ for (const suite of suites) {
     // and any non-idempotent result, which is the invariant that must hold.
     const lines = out.trimEnd().split("\n");
     if (suite.name.startsWith("formatter")) {
-      const identical = lines.filter((l) => l.includes("identical=true")).length;
+      // Count per-file result lines specifically. Subtracting from
+      // lines.length counted every other line the suite printed - diff
+      // output, headers - as a "reformatted" file, so the reported figure
+      // was larger than the number of files that even exist.
+      const results = lines.filter((l) => l.includes("identical="));
+      const identical = results.filter((l) => l.includes("identical=true")).length;
       const broken = lines.filter((l) => l.includes("NOT IDEMPOTENT"));
-      console.log(`${identical} files already canonical, ${lines.length - identical} reformatted`);
+      console.log(
+        `${results.length} files checked: ${identical} already canonical, ` +
+        `${results.length - identical} reformatted`
+      );
       if (broken.length) {
         broken.forEach((l) => console.log("  " + l));
         throw new Error(`${broken.length} file(s) are not idempotent`);

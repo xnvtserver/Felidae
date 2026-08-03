@@ -25,6 +25,7 @@ $commonSources = @(
 $celidaeSources = @(
     "src/celidae/main.cpp",
     "src/celidae/Visualization.cpp",
+    "src/celidae/Analytics.cpp",
     "src/tooling/SourceParser.cpp",
     "src/BuiltinRegistry.cpp",
     "src/Lexer.cpp",
@@ -45,7 +46,14 @@ if ($env:FELIDAE_DLOPEN_LIBS) {
     $extraLibs = $env:FELIDAE_DLOPEN_LIBS -split "\s+"
 }
 
-$warningFlags = @("-Wall", "-Wextra", "-Wpedantic", "-Wshadow", "-Wnon-virtual-dtor", "-Wold-style-cast", "-Woverloaded-virtual")
+# -Wno-overlength-strings: src/celidae/GeneratedVisualizerAssets.h is one
+# deliberately enormous string literal (the self-contained visualizer page,
+# with Tailwind/cytoscape/ECharts inlined). -Wpedantic warns because the C++
+# standard only *requires* compilers to support 65536-character literals;
+# every compiler this project targets handles megabyte literals fine. Without
+# this the warning is emitted on every build, and under PowerShell's
+# ErrorActionPreference=Stop that stderr output aborts the build outright.
+$warningFlags = @("-Wall", "-Wextra", "-Wpedantic", "-Wshadow", "-Wnon-virtual-dtor", "-Wold-style-cast", "-Woverloaded-virtual", "-Wno-overlength-strings")
 if ($WarningsAsErrors) {
     $warningFlags += "-Werror"
 }

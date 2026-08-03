@@ -30,8 +30,20 @@ const ICONS = {
   __ICON_DOWNLOAD__: "arrow-down-tray",
   __ICON_SUN__: "sun",
   __ICON_MOON__: "moon",
-  __ICON_CHART__: "chart-bar"
+  __ICON_CHART__: "chart-bar",
+  __ICON_CLOCK__: "clock",
+  __ICON_SCALE__: "scale",
+  __ICON_SPARKLES__: "sparkles"
 };
+
+// Every DiagramType in src/celidae/Visualization.h needs a __DATA_<NAME>__
+// token, because standaloneHtml() substitutes one per type and throws if a
+// token is missing. Listing them here means a type added on the C++ side
+// fails this build with a clear message instead of at Celidae runtime.
+const DATA_TOKENS = [
+  "schema", "graph", "er", "hierarchy", "timeline",
+  "stats", "distribution", "comparison", "cluster"
+].map(name => `__DATA_${name.toUpperCase()}__`);
 
 function requireModuleFile(relativeFromNodeModules) {
   const full = path.join(here, "node_modules", relativeFromNodeModules);
@@ -89,7 +101,12 @@ function pickRawStringDelimiter(content) {
 
 function main() {
   const cytoscapeJs = requireModuleFile(path.join("cytoscape", "dist", "cytoscape.min.js"));
-  const chartJs = requireModuleFile(path.join("chart.js", "dist", "chart.umd.min.js"));
+  // ECharts replaced Chart.js here. Chart.js covers bar/line well but has no
+  // treemap, heatmap, boxplot, parallel-coordinates or grouped-scatter, which
+  // are exactly the chart types the distribution/comparison/cluster views
+  // are built from - and running two charting libraries in one page to cover
+  // one set of views is a cost with no benefit.
+  const echartsJs = requireModuleFile(path.join("echarts", "dist", "echarts.min.js"));
 
   let html = fs.readFileSync(path.join(here, "template.html"), "utf8");
 
@@ -103,15 +120,15 @@ function main() {
   }
 
   if (!html.includes("__CYTOSCAPE_JS__")) throw new Error("Template is missing __CYTOSCAPE_JS__");
-  if (!html.includes("__CHARTJS_JS__")) throw new Error("Template is missing __CHARTJS_JS__");
+  if (!html.includes("__ECHARTS_JS__")) throw new Error("Template is missing __ECHARTS_JS__");
   // Use a replacer function, not a replacement string: minified library
   // source commonly contains literal "$&"-style sequences, which
   // String.prototype.replace treats as special patterns (inserting the
   // matched substring, etc.) when the replacement argument is a string.
   html = html.replace("__CYTOSCAPE_JS__", () => cytoscapeJs);
-  html = html.replace("__CHARTJS_JS__", () => chartJs);
+  html = html.replace("__ECHARTS_JS__", () => echartsJs);
 
-  for (const token of ["__DATA_SCHEMA__", "__DATA_GRAPH__", "__DATA_ER__"]) {
+  for (const token of DATA_TOKENS) {
     if (!html.includes(token)) throw new Error(`Template is missing placeholder ${token}`);
   }
 
@@ -120,14 +137,15 @@ function main() {
 // Regenerate with (requires Node.js):
 //   cd src/celidae/webui && npm install && npm run generate
 // Source: src/celidae/webui/template.html + input.css (Tailwind CSS) +
-// cytoscape + chart.js + heroicons (see src/celidae/webui/package.json for
+// cytoscape + echarts + heroicons (see src/celidae/webui/package.json for
 // exact versions).
 #pragma once
 
 namespace Felidae::Celidae {
 
-// __DATA_SCHEMA__ / __DATA_GRAPH__ / __DATA_ER__ are substituted by
-// standaloneHtml() at runtime with the three DiagramType JSON payloads.
+// The __DATA_<TYPE>__ tokens (one per DiagramType) are substituted by
+// standaloneHtml() at runtime with that view's JSON payload, or with a JSON
+// null for a view the caller did not ask for.
 inline constexpr const char* kVisualizerTemplate = R"${delimiter}(${html})${delimiter}";
 
 } // namespace Felidae::Celidae

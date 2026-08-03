@@ -2,6 +2,7 @@
 #include "tooling/SourceParser.h"
 #include "Version.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <chrono>
 #include <iostream>
@@ -19,6 +20,7 @@ struct Options {
     bool envelope = true;
     bool loadImports = false;
     bool metricsJson = false;
+    bool recommend = false;
     Felidae::Celidae::DiagramType type = Felidae::Celidae::DiagramType::Schema;
     // Which template --html emits. Unset means "all views in one file",
     // preserving the behaviour --html had before templates existed.
@@ -65,6 +67,7 @@ Options parseOptions(int argc, char** argv) {
         else if (arg == "--inspect-graph" || arg == "--visualize-data-json") options.envelope = true;
         else if (arg == "--load-imports") options.loadImports = true;
         else if (arg == "--metrics-json") options.metricsJson = true;
+        else if (arg == "--recommend") options.recommend = true;
         else if (arg == "--type") {
             if (++i >= argc) throw std::runtime_error("--type requires one of: " + diagramTypeList());
             parseType(argv[i]);
@@ -105,14 +108,23 @@ void printHelp() {
         << "  celidae --version\n\n"
         << "Output formats:\n"
         << "  --template=<name>         With --html, emit just that one view instead of\n"
-        << "                            all of them. One of: schema, graph, er, timeline,\n"
-        << "                            hierarchy, stats.\n"
-        << "  --inspect-graph / --json  JSON graph for one --type.\n"
-        << "  --html                    Self-contained interactive visualizer bundling all\n"
-        << "                            three diagram types with force/tree/circle layouts.\n"
+        << "                            all of them.\n"
+        << "  --inspect-graph / --json  JSON payload for one --type.\n"
+        << "  --html                    Self-contained interactive visualizer bundling every\n"
+        << "                            diagram type, with charts, layouts and findings.\n"
         << "  --svg                     Static vector export for one --type, suitable for\n"
-        << "                            embedding directly in documents or slides.\n\n"
-        << "Diagram types: schema (default), graph (dependencies), er (facts, fields, inheritance).\n"
+        << "                            embedding directly in documents or slides.\n"
+        << "  --recommend               Print, as JSON, which views this program's data\n"
+        << "                            actually supports and why.\n\n"
+        << "Diagram types (--type / --template):\n";
+    for (Felidae::Celidae::DiagramType type : Felidae::Celidae::kAllDiagramTypes) {
+        const std::string name = Felidae::Celidae::diagramTypeName(type);
+        std::cout << "  " << name << std::string(14 - std::min<std::size_t>(13, name.size()), ' ')
+                  << Felidae::Celidae::diagramTypeSummary(type) << "\n";
+    }
+    std::cout
+        << "\nThe first four are structural (what the program declares); the rest analyse the\n"
+        << "literal values facts carry - distributions, outliers, correlations and segments.\n"
         << "Celidae parses facts, inheritance, properties, and rule references. "
         << "It never executes main(), methods, queries, or native libraries.\n";
 }
@@ -144,7 +156,22 @@ int main(int argc, char** argv) {
             });
         const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - started).count();
-        if (options.html) {
+        if (options.recommend) {
+            // Which views this program's data can actually support. Printed on
+            // its own so a script (or an editor extension) can pick a template
+            // without first rendering all nine and inspecting them.
+            const auto recommendations =
+                Felidae::Celidae::recommendViews(graph.shape());
+            std::cout << "{\"recommendations\":[";
+            for (std::size_t i = 0; i < recommendations.size(); ++i) {
+                if (i) std::cout << ",";
+                std::cout << "{\"view\":\""
+                          << Felidae::Celidae::diagramTypeName(recommendations[i].view)
+                          << "\",\"score\":" << recommendations[i].score
+                          << ",\"rationale\":\"" << recommendations[i].rationale << "\"}";
+            }
+            std::cout << "]}\n";
+        } else if (options.html) {
             // Bundle all three diagram types into one self-contained file so
             // a user can compare schema/graph/er without re-running Celidae.
             // --template=<name> emits that one view; without it the file

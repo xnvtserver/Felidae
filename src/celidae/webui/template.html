@@ -1,0 +1,681 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Celidae Visualizer</title>
+<style>__TAILWIND_CSS__</style>
+<style>
+/* Small bits Tailwind utilities don't cover cleanly: CSS custom-property
+   driven theme surfaces, and third-party (cytoscape/ECharts) container
+   sizing, which both need an explicit pixel height to lay out at all. */
+:root{--surface:#0b1210;--surface-2:#0f1a18;--line:#1f3d38;--text:#e6f7f4;--muted:#8aa8a3;--accent:#2dd9c0}
+:root.light{--surface:#f7faf9;--surface-2:#ffffff;--line:#dbe8e5;--text:#0b1210;--muted:#5b7570;--accent:#0e8f7a}
+body{background:var(--surface);color:var(--text)}
+#cy{width:100%;height:100%}
+.icon-svg{width:15px;height:15px;stroke:currentColor;display:inline-block;vertical-align:-3px}
+.panel-chart{width:100%;height:290px}
+.panel-card{border:1px solid var(--line);background:var(--surface-2);border-radius:.6rem;padding:.6rem .7rem;min-width:0}
+.panel-card.wide{grid-column:1/-1}
+.panel-card.wide .panel-chart{height:360px}
+.insight{border-left:3px solid var(--line);padding:.35rem .6rem;margin-bottom:.4rem;font-size:11px;line-height:1.55}
+.insight.warn{border-left-color:#f7c948}
+.insight.notice{border-left-color:#c4a2ff}
+.insight.info{border-left-color:var(--accent)}
+</style>
+</head>
+<body class="m-0 min-h-screen font-sans">
+<div class="grid grid-rows-[auto_1fr] h-screen">
+  <header class="flex items-center justify-between gap-3 px-4 py-2.5 border-b flex-wrap" style="border-color:var(--line);background:var(--surface-2)">
+    <div>
+      <h1 class="text-sm font-semibold flex items-center gap-1.5 m-0" style="color:var(--accent)">__ICON_MAP__ Celidae Visualizer</h1>
+      <p class="text-[11px] m-0 mt-0.5" style="color:var(--muted)" id="viewSummary">Interactive fact exploration &mdash; self-contained, no external files or network needed.</p>
+    </div>
+    <div class="flex flex-wrap gap-1.5 items-center" id="viewTabs">
+      <button data-view="schema" class="tabbtn">__ICON_CIRCLE_STACK__ Schema</button>
+      <button data-view="graph" class="tabbtn">__ICON_SHARE__ Dependencies</button>
+      <button data-view="er" class="tabbtn">__ICON_RECTANGLE_GROUP__ ER</button>
+      <button data-view="hierarchy" class="tabbtn">__ICON_SQUARES__ Hierarchy</button>
+      <button data-view="timeline" class="tabbtn">__ICON_CLOCK__ Timeline</button>
+      <button data-view="stats" class="tabbtn">__ICON_CHART__ Statistics</button>
+      <button data-view="distribution" class="tabbtn">__ICON_CHART__ Distribution</button>
+      <button data-view="comparison" class="tabbtn">__ICON_SCALE__ Comparison</button>
+      <button data-view="cluster" class="tabbtn">__ICON_SPARKLES__ Segments</button>
+    </div>
+    <div class="flex flex-wrap gap-1.5 items-center">
+      <div class="flex gap-1.5 items-center" id="renderTabs">
+        <button data-render="panels" class="tabbtn">__ICON_CHART__ Charts</button>
+        <button data-render="network" class="tabbtn">__ICON_SHARE__ Network</button>
+      </div>
+      <div class="flex gap-1.5 items-center" id="layoutTabs">
+        <button data-layout="cose" class="tabbtn active">__ICON_CURSOR__ Force</button>
+        <button data-layout="breadthfirst" class="tabbtn">__ICON_SQUARES__ Tree</button>
+        <button data-layout="circle" class="tabbtn">Circle</button>
+        <button id="fit" class="tabbtn">__ICON_FIT__ Fit</button>
+      </div>
+      <input id="search" type="search" placeholder="Filter&hellip;" aria-label="Filter nodes and charts"
+        class="rounded-md border px-2.5 py-1.5 text-xs min-w-[150px]" style="border-color:var(--line);background:var(--surface);color:var(--text)">
+      <button id="downloadPng" class="tabbtn">__ICON_DOWNLOAD__ PNG</button>
+      <button id="theme" class="tabbtn">__ICON_SUN__/__ICON_MOON__</button>
+    </div>
+  </header>
+  <div class="grid grid-cols-[1fr_330px] min-h-0 max-[820px]:grid-cols-1">
+    <div class="relative overflow-hidden min-h-0" style="background:var(--surface)">
+      <div id="cy" role="img" aria-label="Celidae fact relationship graph"></div>
+      <div id="panels" class="absolute inset-0 overflow-auto p-3 grid gap-3 grid-cols-[repeat(auto-fit,minmax(380px,1fr))] content-start" style="display:none"></div>
+    </div>
+    <aside class="border-l overflow-auto p-3.5 max-[820px]:border-l-0 max-[820px]:border-t max-[820px]:max-h-[38vh]" style="border-color:var(--line);background:var(--surface-2)">
+      <div id="recommendation" class="rounded-lg border p-2.5 text-[11px] leading-relaxed mb-3" style="border-color:var(--line);background:var(--surface);display:none"></div>
+      <h2 class="side-h flex items-center gap-1.5 mt-0">__ICON_CHART__ Summary</h2>
+      <div class="grid grid-cols-2 gap-2" id="metrics"></div>
+      <h2 class="side-h" id="findingsLabel">Findings</h2>
+      <div id="insights" class="text-xs"></div>
+      <h2 class="side-h">Legend</h2>
+      <div class="flex flex-wrap gap-1" id="legend"></div>
+      <h2 class="side-h">Selection</h2>
+      <div class="detail rounded-lg border p-2.5 text-xs leading-relaxed break-words" style="border-color:var(--line);background:var(--surface)" id="detail">Select a node or chart point to inspect it.</div>
+      <h2 class="side-h">Tips</h2>
+      <p class="text-[11px] leading-relaxed" style="color:var(--muted)">Charts and Network are two readings of the same view &mdash; switch freely. In Network mode, drag the background to pan, scroll to zoom, drag a node to pin it. Every view Celidae generated is bundled in this one file.</p>
+    </aside>
+  </div>
+</div>
+<script>__CYTOSCAPE_JS__</script>
+<script>__ECHARTS_JS__</script>
+<script type="application/json" id="data-schema">__DATA_SCHEMA__</script>
+<script type="application/json" id="data-graph">__DATA_GRAPH__</script>
+<script type="application/json" id="data-er">__DATA_ER__</script>
+<script type="application/json" id="data-hierarchy">__DATA_HIERARCHY__</script>
+<script type="application/json" id="data-timeline">__DATA_TIMELINE__</script>
+<script type="application/json" id="data-stats">__DATA_STATS__</script>
+<script type="application/json" id="data-distribution">__DATA_DISTRIBUTION__</script>
+<script type="application/json" id="data-comparison">__DATA_COMPARISON__</script>
+<script type="application/json" id="data-cluster">__DATA_CLUSTER__</script>
+<script>
+(function () {
+  "use strict";
+
+  const VIEWS = ["schema", "graph", "er", "hierarchy", "timeline", "stats",
+                 "distribution", "comparison", "cluster"];
+
+  // Views the file was actually built with. Celidae substitutes `null` for
+  // any view it did not emit, which is how `--template=<name>` produces a
+  // focused single-view page from this same template.
+  const payloads = {};
+  for (const view of VIEWS) {
+    const node = document.getElementById("data-" + view);
+    if (!node) continue;
+    let parsed = null;
+    try {
+      parsed = JSON.parse(node.textContent);
+    } catch (error) {
+      // One malformed payload must not take the whole page down with it -
+      // the other eight views are still readable.
+      console.error("Celidae: could not parse the " + view + " payload", error);
+    }
+    if (parsed) payloads[view] = parsed;
+  }
+
+  // Node colours come from the payload, generated by kindColor() in
+  // src/celidae/Visualization.cpp. This page used to keep its own copy of
+  // that table, which meant a kind added on the C++ side was drawn here in
+  // the fallback grey with no warning.
+  const FALLBACK = "#9ca3af";
+  let COLORS = {};
+  for (const view of VIEWS) {
+    if (payloads[view] && payloads[view].palette) COLORS = payloads[view].palette;
+  }
+  const SERIES_COLORS = ["#18f0d7", "#ff9f6b", "#6ca8ff", "#f7c948",
+                         "#c4a2ff", "#f27d9d", "#7bdcb5", "#8ed1fc"];
+  const colorOf = kind => COLORS[kind] || FALLBACK;
+
+  for (const button of document.querySelectorAll("#viewTabs button[data-view]")) {
+    if (!payloads[button.dataset.view]) button.style.display = "none";
+  }
+  const available = VIEWS.filter(view => payloads[view]);
+  const initialView = available[0] || "schema";
+  // A single-view export has nothing to switch between.
+  if (available.length < 2) {
+    const tabs = document.getElementById("viewTabs");
+    if (tabs) tabs.style.display = "none";
+  }
+
+  const state = { view: initialView, layout: "cose", query: "", render: null, layoutPinned: false };
+  const charts = [];
+
+  function cssVar(name, fallback) {
+    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return value || fallback;
+  }
+  const textColor = () => cssVar("--muted", "#8aa8a3");
+  const gridColor = () => cssVar("--line", "#1f3d38");
+  const strongColor = () => cssVar("--text", "#e6f7f4");
+
+  const cy = cytoscape({
+    container: document.getElementById("cy"),
+    minZoom: 0.1,
+    maxZoom: 3,
+    wheelSensitivity: 0.2,
+    style: [
+      { selector: "node", style: {
+        "shape": "round-rectangle", "width": "label", "height": "label", "padding": "10px",
+        "label": "data(label)", "font-size": 12, "font-family": "Segoe UI, Inter, sans-serif",
+        "text-valign": "center", "text-halign": "center", "text-wrap": "wrap", "text-max-width": 130,
+        "background-color": ele => colorOf(ele.data("kind")),
+        "background-opacity": 0.22, "border-color": ele => colorOf(ele.data("kind")),
+        "border-width": 1.6, "color": "#e6f7f4"
+      } },
+      { selector: "node[kind = 'field']", style: { "shape": "ellipse", "font-size": 10, "padding": "6px" } },
+      { selector: "node[kind = 'global']", style: { "shape": "hexagon" } },
+      { selector: "node[kind = 'library']", style: { "shape": "round-tag" } },
+      { selector: "node[kind = 'segment']", style: { "shape": "diamond", "padding": "14px" } },
+      { selector: "node[kind = 'record']", style: { "shape": "ellipse", "font-size": 10, "padding": "5px" } },
+      { selector: "edge", style: {
+        "curve-style": "bezier", "target-arrow-shape": "triangle", "target-arrow-color": "#376760",
+        "line-color": "#376760", "width": 1.4, "label": "data(label)", "font-size": 9, "color": "#7fa39e"
+      } },
+      { selector: ".dim", style: { "opacity": 0.12 } },
+      { selector: ":selected", style: { "border-width": 3, "border-color": "#f59e0b" } }
+    ],
+    layout: { name: "cose" }
+  });
+
+  function elementsFor(data) {
+    const nodes = (data.nodes || []).map(n => ({
+      data: { id: n.id, label: n.label, kind: n.kind, detail: n.detail || "",
+              metrics: n.metrics || {}, attributes: n.attributes || {} }
+    }));
+    const known = new Set(nodes.map(n => n.data.id));
+    // An edge whose endpoint was never emitted would make cytoscape throw and
+    // abandon the whole view; dropping it costs one relationship instead.
+    const edges = (data.edges || [])
+      .filter(e => known.has(e.from) && known.has(e.to))
+      .map((e, i) => ({ data: { id: "edge:" + i, source: e.from, target: e.to, label: e.label || "" } }));
+    return [...nodes, ...edges];
+  }
+
+  function layoutOptions(name) {
+    if (name === "breadthfirst") return { name: "breadthfirst", directed: true, spacingFactor: 1.2, animate: true, animationDuration: 300 };
+    if (name === "circle") return { name: "circle", animate: true, animationDuration: 300, spacingFactor: 1.2 };
+    return { name: "cose", animate: false, randomize: true, nodeRepulsion: 9500, idealEdgeLength: 110, edgeElasticity: 80, gravity: 0.9, numIter: 1500 };
+  }
+
+  // Timeline and hierarchy are inherently ordered, so a force layout scrambles
+  // exactly the structure they exist to show; both default to the directed
+  // tree layout. The layout tabs still override this if the user picks one.
+  const PREFERRED_LAYOUT = { timeline: "breadthfirst", hierarchy: "breadthfirst" };
+
+  // -------------------------------------------------------------------------
+  // Chart panels
+  //
+  // Celidae emits a panel *specification* (type, categories, series, points)
+  // rather than pre-rendered chart config, so adding a view on the C++ side
+  // needs no JavaScript here. Each branch below turns one specification into
+  // an ECharts option.
+  // -------------------------------------------------------------------------
+
+  function axisStyle() {
+    return {
+      axisLine: { lineStyle: { color: gridColor() } },
+      axisTick: { show: false },
+      axisLabel: { color: textColor(), fontSize: 10 },
+      splitLine: { lineStyle: { color: gridColor(), opacity: 0.45 } }
+    };
+  }
+
+  function baseOption(panel) {
+    return {
+      backgroundColor: "transparent",
+      animationDuration: 400,
+      grid: { left: 8, right: 18, top: 16, bottom: 8, containLabel: true },
+      tooltip: { trigger: "item", confine: true,
+                 backgroundColor: cssVar("--surface-2", "#0f1a18"),
+                 borderColor: gridColor(), textStyle: { color: strongColor(), fontSize: 11 } },
+      legend: (panel.series || []).length > 1
+        ? { textStyle: { color: textColor(), fontSize: 10 }, top: 0, type: "scroll" }
+        : { show: false }
+    };
+  }
+
+  function seriesColorAt(index, panel) {
+    if ((panel.series || []).length <= 1 && panel.color) return panel.color;
+    return SERIES_COLORS[index % SERIES_COLORS.length];
+  }
+
+  function optionForPanel(panel) {
+    const option = baseOption(panel);
+    const suffix = panel.valueSuffix || "";
+    const categories = panel.categories || [];
+
+    if (panel.type === "bar" || panel.type === "hbar" || panel.type === "histogram") {
+      const horizontal = panel.type === "hbar";
+      const valueAxis = Object.assign({ type: "value", name: suffix || undefined }, axisStyle());
+      const categoryAxis = Object.assign({ type: "category", data: categories }, axisStyle());
+      if (horizontal) {
+        // Long category names are unreadable rotated under a vertical bar, so
+        // horizontal bars carry them on the y axis at full length.
+        categoryAxis.axisLabel = Object.assign({}, categoryAxis.axisLabel, { width: 130, overflow: "truncate" });
+        option.xAxis = valueAxis;
+        option.yAxis = Object.assign({ inverse: true }, categoryAxis);
+      } else {
+        categoryAxis.axisLabel = Object.assign({}, categoryAxis.axisLabel, { rotate: categories.length > 7 ? 35 : 0 });
+        option.xAxis = categoryAxis;
+        option.yAxis = valueAxis;
+      }
+      option.tooltip.trigger = "axis";
+      option.tooltip.axisPointer = { type: "shadow" };
+      option.series = (panel.series || []).map((series, index) => ({
+        name: series.name,
+        type: "bar",
+        data: series.values,
+        itemStyle: { color: seriesColorAt(index, panel), borderRadius: horizontal ? [0, 3, 3, 0] : [3, 3, 0, 0] },
+        // A histogram's bars are contiguous buckets of one continuous scale;
+        // a gap between them would suggest gaps in the data that are not there.
+        barCategoryGap: panel.type === "histogram" ? "0%" : "22%",
+        barGap: 0
+      }));
+      return option;
+    }
+
+    if (panel.type === "line") {
+      option.xAxis = Object.assign({ type: "category", boundaryGap: false, data: categories }, axisStyle());
+      option.yAxis = Object.assign({ type: "value" }, axisStyle());
+      option.tooltip.trigger = "axis";
+      option.series = (panel.series || []).map((series, index) => ({
+        name: series.name,
+        type: "line",
+        smooth: index > 0,
+        symbolSize: 6,
+        data: series.values,
+        lineStyle: { width: index > 0 ? 1.5 : 2.2, type: index > 0 ? "dashed" : "solid" },
+        itemStyle: { color: seriesColorAt(index, panel) },
+        areaStyle: index === 0 ? { opacity: 0.12 } : undefined
+      }));
+      return option;
+    }
+
+    if (panel.type === "scatter") {
+      const groups = panel.groups || [];
+      option.xAxis = Object.assign({ type: "value", name: panel.xLabel, nameTextStyle: { color: textColor(), fontSize: 9 } }, axisStyle());
+      option.yAxis = Object.assign({ type: "value", name: panel.yLabel, nameTextStyle: { color: textColor(), fontSize: 9 } }, axisStyle());
+      option.tooltip.formatter = params =>
+        params.data[2] + "<br>" + params.seriesName +
+        "<br>" + panel.xLabel + ": " + params.data[0].toFixed(2) +
+        "<br>" + panel.yLabel + ": " + params.data[1].toFixed(2);
+      const byGroup = new Map(groups.map(g => [g, []]));
+      for (const point of panel.points || []) {
+        if (!byGroup.has(point.group)) byGroup.set(point.group, []);
+        byGroup.get(point.group).push([point.x, point.y, point.label]);
+      }
+      option.series = [...byGroup.entries()].map(([name, data], index) => ({
+        name, type: "scatter", data, symbolSize: 11,
+        itemStyle: { color: SERIES_COLORS[index % SERIES_COLORS.length], opacity: 0.82 }
+      }));
+      option.legend = { textStyle: { color: textColor(), fontSize: 10 }, top: 0, type: "scroll" };
+      return option;
+    }
+
+    if (panel.type === "heatmap") {
+      const columns = panel.columns || [];
+      const data = [];
+      (panel.values || []).forEach((row, i) => row.forEach((value, j) => data.push([j, i, value])));
+      option.grid = { left: 8, right: 60, top: 8, bottom: 8, containLabel: true };
+      option.xAxis = Object.assign({ type: "category", data: columns, axisLabel: { color: textColor(), fontSize: 9, rotate: 40 } }, axisStyle());
+      option.yAxis = Object.assign({ type: "category", data: columns, axisLabel: { color: textColor(), fontSize: 9 } }, axisStyle());
+      // A diverging scale centred on zero: correlation has a meaningful
+      // midpoint, and a sequential ramp would hide the sign.
+      option.visualMap = {
+        min: -1, max: 1, calculable: true, orient: "vertical", right: 0, top: "middle",
+        inRange: { color: ["#f27d9d", "#1f3d38", "#18f0d7"] },
+        textStyle: { color: textColor(), fontSize: 9 }
+      };
+      option.tooltip.formatter = params =>
+        columns[params.data[1]] + " &times; " + columns[params.data[0]] + "<br>r = " + params.data[2].toFixed(2);
+      option.series = [{ type: "heatmap", data, progressive: 0 }];
+      return option;
+    }
+
+    if (panel.type === "treemap") {
+      option.tooltip.formatter = params => params.name + "<br>" + params.value + " records";
+      option.series = [{
+        type: "treemap", data: panel.tree || [], roam: false, nodeClick: "zoomToNode",
+        breadcrumb: { show: true, textStyle: { color: textColor() } },
+        levels: [
+          { itemStyle: { borderColor: cssVar("--surface", "#0b1210"), borderWidth: 3, gapWidth: 3 } },
+          { colorSaturation: [0.35, 0.6], itemStyle: { borderColorSaturation: 0.7, gapWidth: 2, borderWidth: 2 } },
+          { colorSaturation: [0.3, 0.5], itemStyle: { borderColorSaturation: 0.6, gapWidth: 1 } }
+        ],
+        label: { color: "#0b1210", fontSize: 11 }
+      }];
+      return option;
+    }
+
+    if (panel.type === "boxplot") {
+      option.xAxis = Object.assign({ type: "category", data: categories }, axisStyle());
+      option.yAxis = Object.assign({ type: "value" }, axisStyle());
+      option.series = [{
+        type: "boxplot",
+        data: panel.boxes || [],
+        itemStyle: { color: "transparent", borderColor: panel.color || SERIES_COLORS[0], borderWidth: 1.6 }
+      }];
+      return option;
+    }
+
+    if (panel.type === "parallel") {
+      const dimensions = panel.dimensions || [];
+      option.parallelAxis = dimensions.map((name, index) => ({
+        dim: index, name,
+        nameTextStyle: { color: textColor(), fontSize: 9 },
+        axisLine: { lineStyle: { color: gridColor() } },
+        axisLabel: { color: textColor(), fontSize: 9 }
+      }));
+      option.parallel = { left: 40, right: 40, top: 30, bottom: 20 };
+      option.series = [{
+        type: "parallel", data: panel.rows || [], smooth: true,
+        lineStyle: { width: 1, opacity: 0.35, color: panel.color || SERIES_COLORS[0] }
+      }];
+      delete option.grid;
+      return option;
+    }
+
+    return null;
+  }
+
+  function renderPanels(data) {
+    const host = document.getElementById("panels");
+    while (charts.length) charts.pop().dispose();
+    host.innerHTML = "";
+    const panels = data.panels || [];
+    if (!panels.length) {
+      host.innerHTML = emptyStateHtml(data);
+      return;
+    }
+    const query = state.query;
+    let shown = 0;
+    for (const panel of panels) {
+      const haystack = (panel.title + " " + (panel.subtitle || "")).toLowerCase();
+      if (query && !haystack.includes(query)) continue;
+      const option = optionForPanel(panel);
+      if (!option) continue;
+      shown++;
+
+      const card = document.createElement("div");
+      // Matrix-shaped charts need the full row; squeezed into a third of it
+      // their axis labels overlap into illegibility.
+      const wide = panel.type === "heatmap" || panel.type === "parallel" ||
+                   panel.type === "treemap" || panel.type === "scatter";
+      card.className = "panel-card" + (wide ? " wide" : "");
+      const title = document.createElement("div");
+      title.className = "text-xs font-semibold";
+      title.textContent = panel.title;
+      const subtitle = document.createElement("div");
+      subtitle.className = "text-[10px] mb-1";
+      subtitle.style.color = "var(--muted)";
+      subtitle.textContent = panel.subtitle || "";
+      const canvas = document.createElement("div");
+      canvas.className = "panel-chart";
+      card.append(title, subtitle, canvas);
+      host.appendChild(card);
+
+      const chart = echarts.init(canvas, null, { renderer: "canvas" });
+      chart.setOption(option);
+      chart.on("click", params => showDetail({
+        kind: panel.type,
+        label: params.name || (params.data && params.data[2]) || panel.title,
+        metrics: { value: Array.isArray(params.value) ? params.value[params.value.length - 1] : params.value },
+        attributes: { chart: panel.title, series: params.seriesName || "" }
+      }));
+      charts.push(chart);
+    }
+    if (!shown) {
+      host.innerHTML = "<div class=\"panel-card wide text-xs\" style=\"color:var(--muted)\">" +
+        (query ? "No chart matches “" + escapeHtml(state.query) + "”."
+               : emptyStateHtml(data)) + "</div>";
+    }
+  }
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"]/g, ch =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" })[ch]);
+  }
+
+  // A view can be legitimately empty - a timeline of facts that carry no
+  // date-like field, for instance. Celidae explains why in an insight, so the
+  // explanation here is its text rather than a guess made in the browser.
+  function emptyStateHtml(data) {
+    const reason = (data.insights || []).map(i => i.text).join(" ");
+    return "<div style=\"max-width:40rem;color:var(--muted);font-size:12px;line-height:1.6\">" +
+      "<div style=\"font-size:14px;color:var(--text);margin-bottom:.4rem\">Nothing to show in this view</div>" +
+      escapeHtml(reason || "This program declares nothing this view can render.") + "</div>";
+  }
+
+  // -------------------------------------------------------------------------
+  // View wiring
+  // -------------------------------------------------------------------------
+
+  function activeRender(data) {
+    if (state.render) return state.render;
+    return data.render === "panels" && (data.panels || []).length ? "panels" : "network";
+  }
+
+  function loadView(view) {
+    const data = payloads[view] || { nodes: [], edges: [], panels: [], insights: [] };
+    const render = activeRender(data);
+    const hasNetwork = (data.nodes || []).length > 0;
+    const hasPanels = (data.panels || []).length > 0;
+
+    document.getElementById("viewSummary").textContent =
+      data.title || "Interactive fact exploration.";
+    for (const button of document.querySelectorAll("#viewTabs button[data-view]")) {
+      button.classList.toggle("active", button.dataset.view === view);
+    }
+    for (const button of document.querySelectorAll("#renderTabs button[data-render]")) {
+      button.classList.toggle("active", button.dataset.render === render);
+      // Offering "Network" on a view that emitted no nodes would hand the
+      // reader a blank canvas and no explanation.
+      button.style.display =
+        (button.dataset.render === "network" && !hasNetwork) ||
+        (button.dataset.render === "panels" && !hasPanels) ? "none" : "";
+    }
+    document.getElementById("renderTabs").style.display = hasNetwork && hasPanels ? "" : "none";
+    document.getElementById("layoutTabs").style.display = render === "network" ? "" : "none";
+    document.getElementById("cy").style.display = render === "network" ? "" : "none";
+    document.getElementById("panels").style.display = render === "network" ? "none" : "grid";
+
+    if (render === "network") {
+      const preferred = PREFERRED_LAYOUT[view];
+      if (preferred && !state.layoutPinned) state.layout = preferred;
+      for (const button of document.querySelectorAll("#layoutTabs button[data-layout]")) {
+        button.classList.toggle("active", button.dataset.layout === state.layout);
+      }
+      cy.elements().remove();
+      cy.add(elementsFor(data));
+      cy.layout(layoutOptions(state.layout)).run();
+      applyFilter();
+      while (charts.length) charts.pop().dispose();
+      document.getElementById("panels").innerHTML = "";
+    } else {
+      renderPanels(data);
+    }
+
+    renderMetrics(data);
+    renderLegend(data);
+    renderInsights(data);
+    renderRecommendation(data, view);
+  }
+
+  function renderMetrics(data) {
+    const cells = [
+      ["Nodes", (data.nodes || []).length],
+      ["Relationships", (data.edges || []).length],
+      ["Charts", (data.panels || []).length],
+      ["Findings", (data.insights || []).length]
+    ];
+    document.getElementById("metrics").innerHTML = cells
+      .map(([label, value]) => "<div class=\"metric\"><b>" + value + "</b><span>" + label + "</span></div>")
+      .join("");
+  }
+
+  // Lists the kinds actually present in the current view. This used to take
+  // the first five keys of a hardcoded colour table, so any kind beyond that
+  // was drawn on the graph with a colour the legend never explained.
+  function renderLegend(data) {
+    const present = [];
+    for (const node of (data && data.nodes) || []) {
+      if (node.kind && present.indexOf(node.kind) < 0) present.push(node.kind);
+    }
+    present.sort();
+    document.getElementById("legend").innerHTML = present.map(kind =>
+      "<span class=\"legend-pill\"><i style=\"background:" + colorOf(kind) + "\"></i>" +
+      escapeHtml(kind) + "</span>").join("");
+  }
+
+  // The analysis findings - outliers, weak clusterings, sparse fields. These
+  // are the point of the data views: a reader scanning a chart will miss a
+  // two-sigma spike that a sentence states outright.
+  function renderInsights(data) {
+    const insights = data.insights || [];
+    const host = document.getElementById("insights");
+    document.getElementById("findingsLabel").style.display = insights.length ? "" : "none";
+    host.innerHTML = insights.map(item =>
+      "<div class=\"insight " + escapeHtml(item.level) + "\">" + escapeHtml(item.text) + "</div>").join("");
+  }
+
+  // Which view this program's data actually supports, scored on the C++ side
+  // from the measured shape of the data. Nine tabs is a lot to land on cold.
+  function renderRecommendation(data, view) {
+    const host = document.getElementById("recommendation");
+    const list = (data.recommendations || []).filter(r => r.view !== view);
+    const best = list[0];
+    if (!best || !payloads[best.view]) { host.style.display = "none"; return; }
+    host.style.display = "";
+    host.innerHTML =
+      "<div style=\"color:var(--muted)\">Suggested next view</div>" +
+      "<button id=\"gotoSuggested\" class=\"tabbtn mt-1\">" + escapeHtml(best.view) + "</button>" +
+      "<div class=\"mt-1\" style=\"color:var(--muted)\">" + escapeHtml(best.rationale) + "</div>";
+    document.getElementById("gotoSuggested").addEventListener("click", () => {
+      state.render = null;
+      state.view = best.view;
+      loadView(state.view);
+    });
+  }
+
+  function showDetail(node) {
+    const rows = [];
+    rows.push("<div><span class=\"k\">Kind</span> " + escapeHtml(node.kind || "") + "</div>");
+    rows.push("<div><span class=\"k\">Label</span> " + escapeHtml(node.label || "") + "</div>");
+    for (const [key, value] of Object.entries(node.attributes || {})) {
+      if (value === "" || value === undefined) continue;
+      rows.push("<div><span class=\"k\">" + escapeHtml(key) + "</span> " + escapeHtml(value) + "</div>");
+    }
+    for (const [key, value] of Object.entries(node.metrics || {})) {
+      if (value === undefined || value === null) continue;
+      rows.push("<div><span class=\"k\">" + escapeHtml(key) + "</span> " + escapeHtml(value) + "</div>");
+    }
+    document.getElementById("detail").innerHTML = rows.join("");
+  }
+
+  function applyFilter() {
+    const query = state.query;
+    cy.nodes().forEach(node => {
+      const text = (node.data("label") + " " + (node.data("detail") || "")).toLowerCase();
+      node.toggleClass("dim", !!query && !text.includes(query));
+    });
+  }
+
+  cy.on("tap", "node", event => showDetail({
+    kind: event.target.data("kind"),
+    label: event.target.data("label"),
+    metrics: event.target.data("metrics"),
+    attributes: event.target.data("attributes")
+  }));
+
+  document.getElementById("viewTabs").addEventListener("click", event => {
+    const button = event.target.closest("button[data-view]");
+    if (!button) return;
+    state.view = button.dataset.view;
+    // Each view has its own natural representation; carrying the previous
+    // view's choice across would open Statistics as a node graph.
+    state.render = null;
+    loadView(state.view);
+  });
+  document.getElementById("renderTabs").addEventListener("click", event => {
+    const button = event.target.closest("button[data-render]");
+    if (!button) return;
+    state.render = button.dataset.render;
+    loadView(state.view);
+  });
+  document.getElementById("layoutTabs").addEventListener("click", event => {
+    if (event.target.closest("#fit")) { cy.fit(undefined, 30); return; }
+    const button = event.target.closest("button[data-layout]");
+    if (!button) return;
+    document.querySelectorAll("#layoutTabs button[data-layout]")
+      .forEach(other => other.classList.toggle("active", other === button));
+    state.layout = button.dataset.layout;
+    // An explicit choice sticks: stop applying each view's preferred layout.
+    state.layoutPinned = true;
+    cy.layout(layoutOptions(state.layout)).run();
+  });
+  document.getElementById("search").addEventListener("input", event => {
+    state.query = event.target.value.trim().toLowerCase();
+    const data = payloads[state.view] || {};
+    if (activeRender(data) === "network") applyFilter();
+    else renderPanels(data);
+  });
+  document.getElementById("theme").addEventListener("click", () => {
+    document.documentElement.classList.toggle("light");
+    // ECharts bakes the resolved colours into each option, so a theme switch
+    // has to rebuild them rather than just restyling the page.
+    loadView(state.view);
+  });
+
+  window.addEventListener("resize", () => {
+    for (const chart of charts) chart.resize();
+  });
+
+  document.getElementById("downloadPng").addEventListener("click", () => {
+    const background = cssVar("--surface", "#0b1210");
+    const data = payloads[state.view] || {};
+    const name = "celidae-" + state.view + ".png";
+    if (activeRender(data) === "network") {
+      const png = cy.png({ full: true, scale: 2, bg: background });
+      const link = document.createElement("a");
+      link.href = png;
+      link.download = name;
+      link.click();
+      return;
+    }
+    if (!charts.length) return;
+    // Stack every visible chart into one image, so exporting a data view
+    // gives the whole view rather than whichever panel happened to be first.
+    const images = charts.map(chart =>
+      chart.getDataURL({ pixelRatio: 2, backgroundColor: background }));
+    Promise.all(images.map(source => new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = reject;
+      image.src = source;
+    }))).then(loaded => {
+      const width = Math.max(...loaded.map(image => image.width));
+      const height = loaded.reduce((total, image) => total + image.height + 20, 20);
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      context.fillStyle = background;
+      context.fillRect(0, 0, width, height);
+      let y = 20;
+      for (const image of loaded) {
+        context.drawImage(image, 0, y);
+        y += image.height + 20;
+      }
+      const link = document.createElement("a");
+      link.href = canvas.toDataURL("image/png");
+      link.download = name;
+      link.click();
+    }).catch(error => console.error("Celidae: chart export failed", error));
+  });
+
+  loadView(state.view);
+})();
+</script>
+</body>
+</html>
