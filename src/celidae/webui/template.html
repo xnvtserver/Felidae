@@ -4,24 +4,7 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Celidae Visualizer</title>
 <style>__TAILWIND_CSS__</style>
-<style>
-/* Small bits Tailwind utilities don't cover cleanly: CSS custom-property
-   driven theme surfaces, and third-party (cytoscape/ECharts) container
-   sizing, which both need an explicit pixel height to lay out at all. */
-:root{--surface:#0b1210;--surface-2:#0f1a18;--line:#1f3d38;--text:#e6f7f4;--muted:#8aa8a3;--accent:#2dd9c0}
-:root.light{--surface:#f7faf9;--surface-2:#ffffff;--line:#dbe8e5;--text:#0b1210;--muted:#5b7570;--accent:#0e8f7a}
-body{background:var(--surface);color:var(--text)}
-#cy{width:100%;height:100%}
-.icon-svg{width:15px;height:15px;stroke:currentColor;display:inline-block;vertical-align:-3px}
-.panel-chart{width:100%;height:290px}
-.panel-card{border:1px solid var(--line);background:var(--surface-2);border-radius:.6rem;padding:.6rem .7rem;min-width:0}
-.panel-card.wide{grid-column:1/-1}
-.panel-card.wide .panel-chart{height:360px}
-.insight{border-left:3px solid var(--line);padding:.35rem .6rem;margin-bottom:.4rem;font-size:11px;line-height:1.55}
-.insight.warn{border-left-color:#f7c948}
-.insight.notice{border-left-color:#c4a2ff}
-.insight.info{border-left-color:var(--accent)}
-</style>
+<style>__TEMPLATE_CSS__</style>
 </head>
 <body class="m-0 min-h-screen font-sans">
 <div class="grid grid-rows-[auto_1fr] h-screen">
@@ -47,6 +30,7 @@ body{background:var(--surface);color:var(--text)}
         <button data-render="network" class="tabbtn">__ICON_SHARE__ Network</button>
       </div>
       <div class="flex gap-1.5 items-center" id="layoutTabs">
+        <button data-layout="spectral" class="tabbtn" title="Laplacian eigenmaps: connected nodes placed near each other, and the same every time">Spectral</button>
         <button data-layout="cose" class="tabbtn active">__ICON_CURSOR__ Force</button>
         <button data-layout="breadthfirst" class="tabbtn">__ICON_SQUARES__ Tree</button>
         <button data-layout="circle" class="tabbtn">Circle</button>
@@ -54,8 +38,16 @@ body{background:var(--surface);color:var(--text)}
       </div>
       <input id="search" type="search" placeholder="Filter&hellip;" aria-label="Filter nodes and charts"
         class="rounded-md border px-2.5 py-1.5 text-xs min-w-[150px]" style="border-color:var(--line);background:var(--surface);color:var(--text)">
-      <button id="downloadPng" class="tabbtn">__ICON_DOWNLOAD__ PNG</button>
-      <button id="theme" class="tabbtn">__ICON_SUN__/__ICON_MOON__</button>
+      <button id="downloadPng" class="tabbtn" title="Export the current view as a PNG">__ICON_DOWNLOAD__ PNG</button>
+      <label class="sr-only" for="theme">Colour theme</label>
+      <select id="theme" class="theme" title="Colour theme (T cycles)" aria-label="Colour theme">
+        <option value="dark">Celidae Dark</option>
+        <option value="light">Celidae Light</option>
+        <option value="midnight">Midnight</option>
+        <option value="slate">Slate</option>
+        <option value="paper">Paper</option>
+        <option value="contrast">High contrast</option>
+      </select>
     </div>
   </header>
   <div class="grid grid-cols-[1fr_330px] min-h-0 max-[820px]:grid-cols-1">
@@ -71,6 +63,10 @@ body{background:var(--surface);color:var(--text)}
       <div id="insights" class="text-xs"></div>
       <h2 class="side-h">Legend</h2>
       <div class="flex flex-wrap gap-1" id="legend"></div>
+      <details class="reasoning" id="reasoningBox" style="display:none">
+        <summary>How this view was decided</summary>
+        <div id="reasoning"></div>
+      </details>
       <h2 class="side-h">Selection</h2>
       <div class="detail rounded-lg border p-2.5 text-xs leading-relaxed break-words" style="border-color:var(--line);background:var(--surface)" id="detail">Select a node or chart point to inspect it.</div>
       <h2 class="side-h">Tips</h2>
@@ -80,15 +76,15 @@ body{background:var(--surface);color:var(--text)}
 </div>
 <script>__CYTOSCAPE_JS__</script>
 <script>__ECHARTS_JS__</script>
-<script type="application/json" id="data-schema">__DATA_SCHEMA__</script>
-<script type="application/json" id="data-graph">__DATA_GRAPH__</script>
-<script type="application/json" id="data-er">__DATA_ER__</script>
-<script type="application/json" id="data-hierarchy">__DATA_HIERARCHY__</script>
-<script type="application/json" id="data-timeline">__DATA_TIMELINE__</script>
-<script type="application/json" id="data-stats">__DATA_STATS__</script>
-<script type="application/json" id="data-distribution">__DATA_DISTRIBUTION__</script>
-<script type="application/json" id="data-comparison">__DATA_COMPARISON__</script>
-<script type="application/json" id="data-cluster">__DATA_CLUSTER__</script>
+<script type="application/json" id="data-schema"><# data.schema #></script>
+<script type="application/json" id="data-graph"><# data.graph #></script>
+<script type="application/json" id="data-er"><# data.er #></script>
+<script type="application/json" id="data-hierarchy"><# data.hierarchy #></script>
+<script type="application/json" id="data-timeline"><# data.timeline #></script>
+<script type="application/json" id="data-stats"><# data.stats #></script>
+<script type="application/json" id="data-distribution"><# data.distribution #></script>
+<script type="application/json" id="data-comparison"><# data.comparison #></script>
+<script type="application/json" id="data-cluster"><# data.cluster #></script>
 <script>
 (function () {
   "use strict";
@@ -123,15 +119,98 @@ body{background:var(--surface);color:var(--text)}
   for (const view of VIEWS) {
     if (payloads[view] && payloads[view].palette) COLORS = payloads[view].palette;
   }
-  const SERIES_COLORS = ["#18f0d7", "#ff9f6b", "#6ca8ff", "#f7c948",
-                         "#c4a2ff", "#f27d9d", "#7bdcb5", "#8ed1fc"];
   const colorOf = kind => COLORS[kind] || FALLBACK;
 
-  for (const button of document.querySelectorAll("#viewTabs button[data-view]")) {
-    if (!payloads[button.dataset.view]) button.style.display = "none";
+  // -------------------------------------------------------------------------
+  // Theme
+  //
+  // The stylesheet owns the colours; this only sets an attribute and lets the
+  // browser repaint. ECharts is the exception: it resolves colours into an
+  // option when the chart is built, so a theme change has to rebuild the
+  // charts, which is why setTheme re-runs loadView.
+  // -------------------------------------------------------------------------
+  const THEMES = ["dark", "light", "midnight", "slate", "paper", "contrast"];
+  const STORAGE_KEY = "celidae.theme";
+
+  function preferredTheme() {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved && THEMES.indexOf(saved) >= 0) return saved;
+    } catch (error) {
+      // A file:// page can have storage disabled entirely; that is not a
+      // reason to fail to render.
+    }
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
+      ? "light" : "dark";
   }
+
+  function setTheme(name, rerender) {
+    document.documentElement.setAttribute("data-theme", name);
+    const picker = document.getElementById("theme");
+    if (picker && picker.value !== name) picker.value = name;
+    try { localStorage.setItem(STORAGE_KEY, name); } catch (error) { /* see above */ }
+    if (rerender) loadView(state.view);
+  }
+
+  // Series colours come from the active theme so charts change with the page
+  // rather than staying on one fixed ramp. Resolved on each read because the
+  // theme can change at any time.
+  function seriesColors() {
+    const style = getComputedStyle(document.documentElement);
+    const ramp = [];
+    for (let i = 1; i <= 8; i++) {
+      ramp.push((style.getPropertyValue("--s" + i) || "").trim() || FALLBACK);
+    }
+    return ramp;
+  }
+
+  // Every payload carries the same verdict list: for each of the nine views,
+  // whether this program's data can support it, and why or why not. It is
+  // computed once on the C++ side from measured shape, so the page never
+  // decides for itself what a view is worth.
+  const VERDICTS = (() => {
+    const table = {};
+    for (const view of VIEWS) {
+      const data = payloads[view];
+      if (!data || !data.recommendations) continue;
+      for (const entry of data.recommendations) table[entry.view] = entry;
+      break;
+    }
+    return table;
+  })();
+
+  const applies = view => {
+    const verdict = VERDICTS[view];
+    // No verdict at all means an older payload, from before verdicts existed.
+    // Treating that as "applicable" keeps such a file working exactly as it
+    // did rather than presenting every view as unavailable.
+    return !verdict || verdict.applicable !== false;
+  };
+
+  for (const button of document.querySelectorAll("#viewTabs button[data-view]")) {
+    const view = button.dataset.view;
+    if (!payloads[view]) { button.style.display = "none"; continue; }
+    if (applies(view)) continue;
+    // Dimmed and labelled, not hidden. A reader who wonders where the
+    // timeline went is owed the answer, and "no fact field carries a date"
+    // is a fact about their data worth knowing - arguably more useful than
+    // the view would have been. The tab still opens, so nothing is locked
+    // away; it just no longer looks like a place answers are waiting.
+    button.classList.add("tab-unavailable");
+    button.title = (VERDICTS[view] && VERDICTS[view].rationale) || "does not apply to this data";
+    button.setAttribute("aria-disabled", "true");
+  }
+
   const available = VIEWS.filter(view => payloads[view]);
-  const initialView = available[0] || "schema";
+  // Open on the strongest view that actually applies. Landing on the schema
+  // tab by declaration order meant a program whose interesting content was a
+  // segmentation opened on a list of field names.
+  const applicable = available.filter(applies);
+  const ranked = applicable.slice().sort((a, b) => {
+    const scoreOf = view => (VERDICTS[view] ? VERDICTS[view].score : 0) || 0;
+    return scoreOf(b) - scoreOf(a);
+  });
+  const initialView = ranked[0] || available[0] || "schema";
   // A single-view export has nothing to switch between.
   if (available.length < 2) {
     const tabs = document.getElementById("viewTabs");
@@ -181,7 +260,8 @@ body{background:var(--surface);color:var(--text)}
   function elementsFor(data) {
     const nodes = (data.nodes || []).map(n => ({
       data: { id: n.id, label: n.label, kind: n.kind, detail: n.detail || "",
-              metrics: n.metrics || {}, attributes: n.attributes || {} }
+              metrics: n.metrics || {}, attributes: n.attributes || {},
+              position: n.position || null }
     }));
     const known = new Set(nodes.map(n => n.data.id));
     // An edge whose endpoint was never emitted would make cytoscape throw and
@@ -192,10 +272,36 @@ body{background:var(--surface);color:var(--text)}
     return [...nodes, ...edges];
   }
 
-  function layoutOptions(name) {
+  function layoutOptions(name, data) {
+    // Spectral positions are computed in C++ (Laplacian eigenmaps over the
+    // edge list) and arrive on the nodes, so this is a `preset` layout rather
+    // than an algorithm running here. Unlike the force layout it is
+    // deterministic: the same data lays out identically every time, which is
+    // what makes a position worth remembering.
+    if (name === "spectral" && hasPositions(data)) {
+      const span = 900;
+      return {
+        name: "preset",
+        animate: true,
+        animationDuration: 300,
+        fit: true,
+        padding: 40,
+        position: node => {
+          const source = node.data("position");
+          return { x: source.x * span, y: source.y * span };
+        }
+      };
+    }
     if (name === "breadthfirst") return { name: "breadthfirst", directed: true, spacingFactor: 1.2, animate: true, animationDuration: 300 };
     if (name === "circle") return { name: "circle", animate: true, animationDuration: 300, spacingFactor: 1.2 };
     return { name: "cose", animate: false, randomize: true, nodeRepulsion: 9500, idealEdgeLength: 110, edgeElasticity: 80, gravity: 0.9, numIter: 1500 };
+  }
+
+  // Celidae only emits positions where the graph has enough nodes and edges
+  // for the eigenproblem to say anything, so the button is hidden rather than
+  // silently falling back and leaving the reader thinking they picked it.
+  function hasPositions(data) {
+    return (data && data.nodes || []).some(node => node.position);
   }
 
   // Timeline and hierarchy are inherently ordered, so a force layout scrambles
@@ -237,7 +343,8 @@ body{background:var(--surface);color:var(--text)}
 
   function seriesColorAt(index, panel) {
     if ((panel.series || []).length <= 1 && panel.color) return panel.color;
-    return SERIES_COLORS[index % SERIES_COLORS.length];
+    const ramp = seriesColors();
+    return ramp[index % ramp.length];
   }
 
   function optionForPanel(panel) {
@@ -275,7 +382,11 @@ body{background:var(--surface);color:var(--text)}
       return option;
     }
 
-    if (panel.type === "line") {
+    // "area" is the line chart with every series filled, offered wherever a
+    // line is - the two are the same claim about the data, differing only in
+    // how much of the page they take up to make it.
+    if (panel.type === "line" || panel.type === "area") {
+      const filled = panel.type === "area";
       option.xAxis = Object.assign({ type: "category", boundaryGap: false, data: categories }, axisStyle());
       option.yAxis = Object.assign({ type: "value" }, axisStyle());
       option.tooltip.trigger = "axis";
@@ -287,7 +398,9 @@ body{background:var(--surface);color:var(--text)}
         data: series.values,
         lineStyle: { width: index > 0 ? 1.5 : 2.2, type: index > 0 ? "dashed" : "solid" },
         itemStyle: { color: seriesColorAt(index, panel) },
-        areaStyle: index === 0 ? { opacity: 0.12 } : undefined
+        areaStyle: filled
+          ? { opacity: (panel.series || []).length > 1 ? 0.22 : 0.35 }
+          : (index === 0 ? { opacity: 0.12 } : undefined)
       }));
       return option;
     }
@@ -305,9 +418,10 @@ body{background:var(--surface);color:var(--text)}
         if (!byGroup.has(point.group)) byGroup.set(point.group, []);
         byGroup.get(point.group).push([point.x, point.y, point.label]);
       }
+      const ramp = seriesColors();
       option.series = [...byGroup.entries()].map(([name, data], index) => ({
         name, type: "scatter", data, symbolSize: 11,
-        itemStyle: { color: SERIES_COLORS[index % SERIES_COLORS.length], opacity: 0.82 }
+        itemStyle: { color: ramp[index % ramp.length], opacity: 0.82 }
       }));
       option.legend = { textStyle: { color: textColor(), fontSize: 10 }, top: 0, type: "scroll" };
       return option;
@@ -315,21 +429,38 @@ body{background:var(--surface);color:var(--text)}
 
     if (panel.type === "heatmap") {
       const columns = panel.columns || [];
+      // A correlation matrix is square and symmetric, so both axes are the
+      // same list; a contingency table has its own row labels.
+      const rows = panel.rowLabels || columns;
+      const counts = panel.scale === "count";
       const data = [];
-      (panel.values || []).forEach((row, i) => row.forEach((value, j) => data.push([j, i, value])));
-      option.grid = { left: 8, right: 60, top: 8, bottom: 8, containLabel: true };
+      let peak = 0;
+      (panel.values || []).forEach((row, i) => row.forEach((value, j) => {
+        data.push([j, i, value]);
+        if (value > peak) peak = value;
+      }));
+      const ramp = seriesColors();
+      option.grid = { left: 8, right: 66, top: 8, bottom: 8, containLabel: true };
       option.xAxis = Object.assign({ type: "category", data: columns, axisLabel: { color: textColor(), fontSize: 9, rotate: 40 } }, axisStyle());
-      option.yAxis = Object.assign({ type: "category", data: columns, axisLabel: { color: textColor(), fontSize: 9 } }, axisStyle());
-      // A diverging scale centred on zero: correlation has a meaningful
-      // midpoint, and a sequential ramp would hide the sign.
-      option.visualMap = {
-        min: -1, max: 1, calculable: true, orient: "vertical", right: 0, top: "middle",
-        inRange: { color: ["#f27d9d", "#1f3d38", "#18f0d7"] },
-        textStyle: { color: textColor(), fontSize: 9 }
-      };
+      option.yAxis = Object.assign({ type: "category", data: rows, axisLabel: { color: textColor(), fontSize: 9 } }, axisStyle());
+      option.visualMap = counts
+        // Counts start at zero and only go up, so a sequential ramp is right;
+        // a diverging one would invent a midpoint that means nothing.
+        ? { min: 0, max: Math.max(1, peak), calculable: true, orient: "vertical", right: 0, top: "middle",
+            inRange: { color: [cssVar("--surface-2", "#0f1a18"), ramp[0]] },
+            textStyle: { color: textColor(), fontSize: 9 } }
+        // Correlation has a meaningful zero, so the scale diverges around it;
+        // a sequential ramp would hide the sign.
+        : { min: -1, max: 1, calculable: true, orient: "vertical", right: 0, top: "middle",
+            inRange: { color: [ramp[5], cssVar("--line", "#1f3d38"), ramp[0]] },
+            textStyle: { color: textColor(), fontSize: 9 } };
       option.tooltip.formatter = params =>
-        columns[params.data[1]] + " &times; " + columns[params.data[0]] + "<br>r = " + params.data[2].toFixed(2);
-      option.series = [{ type: "heatmap", data, progressive: 0 }];
+        rows[params.data[1]] + " &times; " + columns[params.data[0]] +
+        (counts ? "<br>" + params.data[2] + " records"
+                : "<br>r = " + params.data[2].toFixed(2));
+      option.series = [{ type: "heatmap", data, progressive: 0,
+        label: { show: counts && rows.length * columns.length <= 60,
+                 color: strongColor(), fontSize: 9 } }];
       return option;
     }
 
@@ -348,13 +479,35 @@ body{background:var(--surface);color:var(--text)}
       return option;
     }
 
+    if (panel.type === "tree") {
+      // An oblique decision tree: each branch is a weighted test across
+      // fields, each leaf a segment. Drawn as a tree because that is the
+      // shape of the thing - a bar chart of the same rules would lose the
+      // nesting that makes them readable.
+      option.tooltip.formatter = params =>
+        escapeHtml(params.name) + "<br>" + params.value + " records";
+      option.series = [{
+        type: "tree", data: panel.tree || [], orient: "LR",
+        top: "6%", bottom: "6%", left: "12%", right: "22%",
+        symbolSize: 9,
+        itemStyle: { color: panel.color || seriesColors()[0] },
+        lineStyle: { color: gridColor(), width: 1.2 },
+        label: { position: "left", verticalAlign: "middle", align: "right",
+                 color: textColor(), fontSize: 10 },
+        leaves: { label: { position: "right", verticalAlign: "middle", align: "left",
+                           color: strongColor(), fontSize: 10 } },
+        expandAndCollapse: false, animationDuration: 400
+      }];
+      return option;
+    }
+
     if (panel.type === "boxplot") {
       option.xAxis = Object.assign({ type: "category", data: categories }, axisStyle());
       option.yAxis = Object.assign({ type: "value" }, axisStyle());
       option.series = [{
         type: "boxplot",
         data: panel.boxes || [],
-        itemStyle: { color: "transparent", borderColor: panel.color || SERIES_COLORS[0], borderWidth: 1.6 }
+        itemStyle: { color: "transparent", borderColor: panel.color || seriesColors()[0], borderWidth: 1.6 }
       }];
       return option;
     }
@@ -370,13 +523,57 @@ body{background:var(--surface);color:var(--text)}
       option.parallel = { left: 40, right: 40, top: 30, bottom: 20 };
       option.series = [{
         type: "parallel", data: panel.rows || [], smooth: true,
-        lineStyle: { width: 1, opacity: 0.35, color: panel.color || SERIES_COLORS[0] }
+        lineStyle: { width: 1, opacity: 0.35, color: panel.color || seriesColors()[0] }
       }];
       delete option.grid;
       return option;
     }
 
     return null;
+  }
+
+  // Chart type chosen by hand, per panel title. Kept across theme switches
+  // and view changes within the session, since both rebuild every chart and
+  // losing the choice each time would make the control useless.
+  const chartTypeChoices = {};
+
+  const CHART_LABELS = {
+    bar: "Bars", hbar: "Bars (horizontal)", line: "Line", area: "Area",
+    histogram: "Histogram", boxplot: "Box plot", scatter: "Scatter",
+    heatmap: "Heatmap", treemap: "Treemap", parallel: "Parallel", tree: "Tree"
+  };
+
+  // The per-panel rendering selector.
+  //
+  // The list comes from the payload: Celidae decides which renderings a
+  // panel's data actually supports, because that is a question about the
+  // shape of the data and this page has only its values. Options the data
+  // does not support are shown disabled with the reason as their label,
+  // rather than omitted - the same choice the view tabs make, for the same
+  // reason. A panel with nothing to switch to gets no control at all.
+  function chartPicker(panel) {
+    const alternatives = panel.alternatives || [];
+    if (alternatives.length < 2) return null;
+    const current = chartTypeChoices[panel.title] || panel.type;
+
+    const select = document.createElement("select");
+    select.className = "theme text-[10px] shrink-0";
+    select.setAttribute("aria-label", "Chart type for " + panel.title);
+    select.title = "How to draw this chart";
+    for (const alternative of alternatives) {
+      const option = document.createElement("option");
+      option.value = alternative.type;
+      option.textContent = CHART_LABELS[alternative.type] || alternative.type;
+      if (!alternative.available) {
+        option.disabled = true;
+        if (alternative.reason) {
+          option.textContent += " — " + alternative.reason;
+        }
+      }
+      if (alternative.type === current) option.selected = true;
+      select.appendChild(option);
+    }
+    return select;
   }
 
   function renderPanels(data) {
@@ -393,7 +590,12 @@ body{background:var(--surface);color:var(--text)}
     for (const panel of panels) {
       const haystack = (panel.title + " " + (panel.subtitle || "")).toLowerCase();
       if (query && !haystack.includes(query)) continue;
-      const option = optionForPanel(panel);
+      // A type the reader picked earlier wins over the one Celidae chose,
+      // including after a theme change or a trip through another view, both
+      // of which rebuild every chart from scratch.
+      const chosen = chartTypeChoices[panel.title];
+      const drawn = chosen ? Object.assign({}, panel, { type: chosen }) : panel;
+      const option = optionForPanel(drawn);
       if (!option) continue;
       shown++;
 
@@ -401,22 +603,44 @@ body{background:var(--surface);color:var(--text)}
       // Matrix-shaped charts need the full row; squeezed into a third of it
       // their axis labels overlap into illegibility.
       const wide = panel.type === "heatmap" || panel.type === "parallel" ||
-                   panel.type === "treemap" || panel.type === "scatter";
+                   panel.type === "treemap" || panel.type === "scatter" ||
+                   panel.type === "tree";
       card.className = "panel-card" + (wide ? " wide" : "");
+
+      const head = document.createElement("div");
+      head.className = "flex items-start justify-between gap-2";
       const title = document.createElement("div");
       title.className = "text-xs font-semibold";
       title.textContent = panel.title;
+      head.appendChild(title);
+      const picker = chartPicker(panel);
+      if (picker) head.appendChild(picker);
+
       const subtitle = document.createElement("div");
       subtitle.className = "text-[10px] mb-1";
       subtitle.style.color = "var(--muted)";
       subtitle.textContent = panel.subtitle || "";
       const canvas = document.createElement("div");
       canvas.className = "panel-chart";
-      card.append(title, subtitle, canvas);
+      card.append(head, subtitle, canvas);
       host.appendChild(card);
 
       const chart = echarts.init(canvas, null, { renderer: "canvas" });
       chart.setOption(option);
+      if (picker) {
+        picker.addEventListener("change", () => {
+          const chosen = picker.value;
+          // Remembered per chart, not per view, and for the session only.
+          // Someone who prefers horizontal bars for one crowded panel does
+          // not want every bar chart in the file rotated.
+          chartTypeChoices[panel.title] = chosen;
+          const next = optionForPanel(Object.assign({}, panel, { type: chosen }));
+          // Replace rather than merge: switching between a horizontal and a
+          // vertical bar chart swaps the axis types, and setOption's default
+          // merge leaves the old axis in place and draws nothing.
+          if (next) chart.setOption(next, true);
+        });
+      }
       chart.on("click", params => showDetail({
         kind: panel.type,
         label: params.name || (params.data && params.data[2]) || panel.title,
@@ -488,7 +712,12 @@ body{background:var(--surface);color:var(--text)}
       }
       cy.elements().remove();
       cy.add(elementsFor(data));
-      cy.layout(layoutOptions(state.layout)).run();
+      // Offered only where Celidae emitted positions - below a handful of
+      // nodes and edges the eigenproblem has nothing to say.
+      const spectral = document.querySelector("#layoutTabs button[data-layout=\"spectral\"]");
+      if (spectral) spectral.style.display = hasPositions(data) ? "" : "none";
+      if (state.layout === "spectral" && !hasPositions(data)) state.layout = "cose";
+      cy.layout(layoutOptions(state.layout, data)).run();
       applyFilter();
       while (charts.length) charts.pop().dispose();
       document.getElementById("panels").innerHTML = "";
@@ -499,6 +728,7 @@ body{background:var(--surface);color:var(--text)}
     renderMetrics(data);
     renderLegend(data);
     renderInsights(data);
+    renderReasoning(data);
     renderRecommendation(data, view);
   }
 
@@ -539,11 +769,53 @@ body{background:var(--surface);color:var(--text)}
       "<div class=\"insight " + escapeHtml(item.level) + "\">" + escapeHtml(item.text) + "</div>").join("");
   }
 
+  // The recorded analysis chain: which measurement caused which decision.
+  // Collapsed by default - it is an audit trail, not the headline - but it is
+  // what makes the findings above checkable rather than merely assertive.
+  function renderReasoning(data) {
+    const steps = data.reasoning || [];
+    const box = document.getElementById("reasoningBox");
+    box.style.display = steps.length ? "" : "none";
+    if (!steps.length) return;
+    document.getElementById("reasoning").innerHTML = steps.map(step =>
+      "<div class=\"step\"><b>" + escapeHtml(step.stage) + "</b>" +
+      escapeHtml(step.finding) + "<i>&rarr; " + escapeHtml(step.decision) + "</i></div>").join("");
+  }
+
   // Which view this program's data actually supports, scored on the C++ side
   // from the measured shape of the data. Nine tabs is a lot to land on cold.
   function renderRecommendation(data, view) {
     const host = document.getElementById("recommendation");
-    const list = (data.recommendations || []).filter(r => r.view !== view);
+    const verdict = VERDICTS[view];
+
+    // When the reader is standing in a view that does not apply, the useful
+    // thing to say is why - not to suggest a different one and leave them
+    // wondering whether the empty panel was a bug.
+    if (verdict && verdict.applicable === false) {
+      const elsewhere = (data.recommendations || [])
+        .filter(r => r.applicable !== false && r.view !== view && payloads[r.view]);
+      host.style.display = "";
+      host.innerHTML =
+        "<div style=\"color:var(--muted)\">This view does not apply here</div>" +
+        "<div class=\"mt-1\">" + escapeHtml(verdict.rationale) + "</div>" +
+        (elsewhere.length
+          ? "<div class=\"mt-1\" style=\"color:var(--muted)\">Try instead</div>" +
+            "<button id=\"gotoSuggested\" class=\"tabbtn mt-1\">" +
+            escapeHtml(elsewhere[0].view) + "</button>"
+          : "");
+      const goto = document.getElementById("gotoSuggested");
+      if (goto) {
+        goto.addEventListener("click", () => {
+          state.render = null;
+          state.view = elsewhere[0].view;
+          loadView(state.view);
+        });
+      }
+      return;
+    }
+
+    const list = (data.recommendations || [])
+      .filter(r => r.view !== view && r.applicable !== false);
     const best = list[0];
     if (!best || !payloads[best.view]) { host.style.display = "none"; return; }
     host.style.display = "";
@@ -612,7 +884,7 @@ body{background:var(--surface);color:var(--text)}
     state.layout = button.dataset.layout;
     // An explicit choice sticks: stop applying each view's preferred layout.
     state.layoutPinned = true;
-    cy.layout(layoutOptions(state.layout)).run();
+    cy.layout(layoutOptions(state.layout, payloads[state.view] || {})).run();
   });
   document.getElementById("search").addEventListener("input", event => {
     state.query = event.target.value.trim().toLowerCase();
@@ -620,11 +892,30 @@ body{background:var(--surface);color:var(--text)}
     if (activeRender(data) === "network") applyFilter();
     else renderPanels(data);
   });
-  document.getElementById("theme").addEventListener("click", () => {
-    document.documentElement.classList.toggle("light");
-    // ECharts bakes the resolved colours into each option, so a theme switch
-    // has to rebuild them rather than just restyling the page.
-    loadView(state.view);
+  document.getElementById("theme").addEventListener("change", event => {
+    setTheme(event.target.value, true);
+  });
+
+  // Keyboard shortcuts, skipped while typing so they cannot swallow a filter
+  // query. Left/right move through the views the file actually contains.
+  document.addEventListener("keydown", event => {
+    const tag = (event.target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "select" || tag === "textarea") return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key === "t" || event.key === "T") {
+      const next = THEMES[(THEMES.indexOf(document.documentElement.getAttribute("data-theme")) + 1) % THEMES.length];
+      setTheme(next, true);
+      return;
+    }
+    if (event.key === "/") { event.preventDefault(); document.getElementById("search").focus(); return; }
+    if (event.key === "f" || event.key === "F") { cy.fit(undefined, 30); return; }
+    const order = VIEWS.filter(view => payloads[view]);
+    const at = order.indexOf(state.view);
+    if (event.key === "ArrowRight" && at >= 0 && at < order.length - 1) {
+      state.render = null; state.view = order[at + 1]; loadView(state.view);
+    } else if (event.key === "ArrowLeft" && at > 0) {
+      state.render = null; state.view = order[at - 1]; loadView(state.view);
+    }
   });
 
   window.addEventListener("resize", () => {
@@ -674,7 +965,20 @@ body{background:var(--surface);color:var(--text)}
     }).catch(error => console.error("Celidae: chart export failed", error));
   });
 
+  setTheme(preferredTheme(), false);
   loadView(state.view);
+
+  // Follow the OS setting only while the reader has not chosen for themselves.
+  if (window.matchMedia) {
+    const scheme = window.matchMedia("(prefers-color-scheme: light)");
+    const onChange = event => {
+      let chosen = null;
+      try { chosen = localStorage.getItem(STORAGE_KEY); } catch (error) { /* storage may be blocked */ }
+      if (!chosen) setTheme(event.matches ? "light" : "dark", true);
+    };
+    if (scheme.addEventListener) scheme.addEventListener("change", onChange);
+    else if (scheme.addListener) scheme.addListener(onChange);
+  }
 })();
 </script>
 </body>

@@ -41,6 +41,21 @@
     font-weight: 600;
     border-color: var(--accent);
   }
+  /* A view this program's data cannot support. Dimmed rather than hidden or
+     disabled: hiding it leaves a reader wondering where a view went, and
+     disabling it withholds the explanation, which is carried in the title
+     attribute and shown in full when the tab is opened. The tab still works.
+     Opacity alone would fail anyone who cannot perceive it, so the dashed
+     border carries the same information without relying on colour. */
+  .tabbtn.tab-unavailable {
+    opacity: 0.55;
+    border-style: dashed;
+    font-style: italic;
+  }
+  .tabbtn.tab-unavailable.active {
+    opacity: 1;
+    font-style: normal;
+  }
   .side-h {
     @apply text-[11px] uppercase tracking-wide mt-4 mb-2 font-medium;
     color: var(--muted);

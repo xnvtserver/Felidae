@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Regenerates ../GeneratedVisualizerAssets.h from template.html plus the
+// Regenerates ../GeneratedVisualizerAssets.h from template.html, its two
+// stylesheets (input.css via Tailwind, template.css verbatim), plus the
 // npm-installed cytoscape/chart.js/heroicons packages in this directory's
 // node_modules. Celidae's --html output embeds the result directly, so the
 // generated file is self-contained (no network, no external files) even
@@ -28,22 +29,27 @@ const ICONS = {
   __ICON_SQUARES__: "squares-2x2",
   __ICON_FIT__: "arrows-pointing-out",
   __ICON_DOWNLOAD__: "arrow-down-tray",
-  __ICON_SUN__: "sun",
-  __ICON_MOON__: "moon",
+  // The sun/moon pair went with the old two-state light/dark toggle. Themes
+  // are now a named list in a <select>, and an inline SVG inside an <option>
+  // is not rendered by browsers anyway.
   __ICON_CHART__: "chart-bar",
   __ICON_CLOCK__: "clock",
   __ICON_SCALE__: "scale",
   __ICON_SPARKLES__: "sparkles"
 };
 
-// Every DiagramType in src/celidae/Visualization.h needs a __DATA_<NAME>__
-// token, because standaloneHtml() substitutes one per type and throws if a
-// token is missing. Listing them here means a type added on the C++ side
-// fails this build with a clear message instead of at Celidae runtime.
+// Every DiagramType in src/celidae/Visualization.h needs a placeholder, since
+// standaloneHtml() renders one per type. Listing them here means a type added
+// on the C++ side fails this build with a clear message, rather than producing
+// a page with one permanently empty view at Celidae runtime.
+//
+// The delimiters are inja's, configured to <# #> in standaloneHtml(). Its
+// default {{ }} appears thousands of times inside the minified CSS and JS this
+// file inlines, and would be parsed as template syntax and corrupted.
 const DATA_TOKENS = [
   "schema", "graph", "er", "hierarchy", "timeline",
   "stats", "distribution", "comparison", "cluster"
-].map(name => `__DATA_${name.toUpperCase()}__`);
+].map(name => `<# data.${name} #>`);
 
 function requireModuleFile(relativeFromNodeModules) {
   const full = path.join(here, "node_modules", relativeFromNodeModules);
@@ -114,6 +120,18 @@ function main() {
   const tailwindCss = compileTailwind();
   html = html.replace("__TAILWIND_CSS__", () => tailwindCss);
 
+  // template.css is plain CSS and is inlined verbatim: it defines the theme
+  // custom properties and styles elements cytoscape and ECharts create at
+  // runtime, neither of which Tailwind can generate utilities for. input.css
+  // is the Tailwind source and goes through the compiler above.
+  if (!html.includes("__TEMPLATE_CSS__")) throw new Error("Template is missing __TEMPLATE_CSS__");
+  const templateCssPath = path.join(here, "template.css");
+  if (!fs.existsSync(templateCssPath)) {
+    throw new Error(`Missing ${templateCssPath}`);
+  }
+  const templateCss = fs.readFileSync(templateCssPath, "utf8");
+  html = html.replace("__TEMPLATE_CSS__", () => templateCss);
+
   for (const [token, iconName] of Object.entries(ICONS)) {
     if (!html.includes(token)) throw new Error(`Template is missing placeholder ${token}`);
     html = html.split(token).join(loadIcon(iconName));
@@ -136,7 +154,8 @@ function main() {
   const header = `// GENERATED FILE - do not edit by hand.
 // Regenerate with (requires Node.js):
 //   cd src/celidae/webui && npm install && npm run generate
-// Source: src/celidae/webui/template.html + input.css (Tailwind CSS) +
+// Source: src/celidae/webui/template.html + input.css (Tailwind source) +
+// template.css (plain CSS, inlined verbatim) +
 // cytoscape + echarts + heroicons (see src/celidae/webui/package.json for
 // exact versions).
 #pragma once

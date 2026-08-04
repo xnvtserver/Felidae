@@ -26,6 +26,7 @@ $celidaeSources = @(
     "src/celidae/main.cpp",
     "src/celidae/Visualization.cpp",
     "src/celidae/Analytics.cpp",
+    "src/celidae/Reasoning.cpp",
     "src/tooling/SourceParser.cpp",
     "src/BuiltinRegistry.cpp",
     "src/Lexer.cpp",
