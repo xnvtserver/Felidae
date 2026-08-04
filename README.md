@@ -78,8 +78,7 @@ build\felidae_debug.exe --lsp
 Create a visualization snapshot:
 
 ```powershell
-build\celidae.exe examples\main.fx --json --load-imports
-build\celidae.exe examples\main.fx --html --load-imports
+build\celidae.exe examples\main.fx --load-imports > snapshot.html
 ```
 
 Celidae offers nine views. Four are structural — `schema`, `graph`, `er`,
@@ -91,9 +90,14 @@ volume and a spike test), `stats` (coverage and data-quality findings),
 their principal components and grouped by k-means, with the number of segments
 chosen by silhouette rather than fixed).
 
-`--html` bundles every view into one self-contained file; `--template=<name>`
-emits just one. `--svg --type=<name>` produces a static export. To find out
-which views a program's data actually supports, and why:
+Running `celidae program.fx` bundles every view into one self-contained HTML
+file; `--template=<name>` narrows that to just one. This is the only output
+Celidae produces - there is no separate JSON or SVG export mode - because the
+charts that carry the analysis here (treemaps, heatmaps, parallel coordinates,
+decision trees, per-panel chart-type switching) are meant to be read by
+hovering, filtering and switching how they are drawn, and a static copy of
+them was a worse version of a better thing. To find out which views a
+program's data actually supports, and why:
 
 ```powershell
 build\celidae.exe examples\main.fx --recommend
@@ -107,9 +111,28 @@ every example program across every view:
 .\scripts\test_celidae.ps1          # add -Quick to skip the corpus sweep
 ```
 
-Target-specific C++ files live under `src/celidae` and `src/debugger`. The
-analysis layer (`src/celidae/Analytics.cpp`) uses Eigen, vendored header-only in
-`third_party/Eigen`, for PCA and correlation.
+Target-specific C++ files live under `src/celidae` and `src/debugger`, split so
+the two halves fail differently: `Analytics.cpp` holds the measurements (a bug
+there gives a wrong number) and `Reasoning.cpp` holds the explanations (a bug
+there gives a right number with a wrong story). Both run on Eigen, vendored
+header-only in `third_party/Eigen`:
+
+| Decomposition | Step |
+| --- | --- |
+| `SelfAdjointEigenSolver` | PCA projection for the segments view |
+| `JacobiSVD` | effective rank, condition number, collinearity |
+| `LDLT` | Mahalanobis multivariate outliers |
+| `CompleteOrthogonalDecomposition` | rank-revealing least squares for "what moves this number" |
+| `LDLT` | Fisher discriminant directions for oblique decision-tree splits |
+| `SelfAdjointEigenSolver` | Fiedler-vector seriation, so related fields adjoin in a heatmap |
+| `SelfAdjointEigenSolver` | Laplacian eigenmaps for the SVG network layout |
+| `JacobiSVD` | correspondence analysis: two categorical fields in one space |
+| `JacobiSVD` | latent semantic analysis over text values (TF-IDF) |
+
+Nothing about any particular dataset is written down. Which charts a fact type
+earns is decided by measuring its shape, and a view that cannot answer its own
+question declines and says why rather than substituting an axis it does not
+have — `celidae <file> --recommend` prints those verdicts.
 
 ## Build
 
@@ -201,7 +224,7 @@ Useful focused checks:
 ```powershell
 build\felidae_debug.exe examples\diagnostics_ast_warnings.fx --check-json
 build\felidae_debug.exe examples\invalid\undeclared_body_var.fx --check-json
-build\celidae.exe examples\main.fx --json --load-imports
+build\celidae.exe examples\main.fx --load-imports > snapshot.html
 ```
 
 Run the production quality gate:

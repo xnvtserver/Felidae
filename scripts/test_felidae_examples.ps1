@@ -270,13 +270,26 @@ $celidaeTests = @(
     # whose wording is free to change, while metrics is the contract every
     # renderer reads. These used to match on detail, so rewording a tooltip
     # broke the test while an actually-wrong record count would not have.
-    @{ Name = "celidae profiles country fact db"; Args = @("examples\data\converted_csv_country.fx", "--inspect-graph"); Expect = @('"label":"Country","kind":"fact"', '"records":249', '"fields":3', '"coverage":100', '"missing":0') },
-    @{ Name = "celidae ER diagram excludes execution nodes"; Args = @("examples\data\converted_csv_country.fx", "--json", "--type=er"); Expect = @('"mode":"er"', '"label":"Country","kind":"fact"', '"kind":"field"') },
-    @{ Name = "celidae ER diagram preserves every direct parent"; Args = @("examples\multiple_inheritance_hierarchy.fx", "--json", "--type=er"); Expect = @('"from":"fact:Politician","to":"fact:Government","label":"extends"', '"from":"fact:Politician","to":"fact:People","label":"extends"') },
-    @{ Name = "celidae dependency graph excludes ER fields"; Args = @("examples\country_query.fx", "--json", "--type=graph", "--load-imports"); Expect = @('"mode":"graph"', '"label":"IndiaCountry","kind":"method"', '"kind":"library"') },
-    @{ Name = "celidae expert graph records fact attachments"; Args = @("examples\expert_intelligence_system.fx", "--json", "--type=graph"); Expect = @('"label":"Fact:depends","kind":"library"', '"label":"Fact:relate","kind":"library"', '"label":"attaches dependency"', '"label":"attaches relationship"') },
-    @{ Name = "celidae graph records dynamic reference callables"; Args = @("examples\dynamic_fact_references.fx", "--json", "--type=graph"); Expect = @('"label":"Fact:references","kind":"library"', '"label":"Physics:velocity","kind":"method"', '"label":"references"') },
-    @{ Name = "celidae viewer json loads imported country schema"; Args = @("examples\country_query.fx", "--visualize-data-json", "--load-imports"); Expect = @("FELIDAE_GRAPH_BEGIN", '"mode":"schema"', '"label":"Country","kind":"fact"', '"records":249', '"truncated":false') },
+    # --json/--inspect-graph/--type are retired: Celidae's only output now is
+    # HTML, with each view's JSON embedded verbatim in a
+    # <script type="application/json" id="data-<view>"> element.
+    # --template=<name> narrows a run to one view, and the same substrings
+    # these tests always checked for still appear inside that element -
+    # nothing here changes except how the view is selected.
+    @{ Name = "celidae profiles country fact db"; Args = @("examples\data\converted_csv_country.fx", "--template=schema"); Expect = @('"label":"Country","kind":"fact"', '"records":249', '"fields":3', '"coverage":100', '"missing":0') },
+    # The ER view is entities and the relationships between them. It used to
+    # emit a node per field as well, which made it the schema view under a
+    # different name on any program without `extend` - so `"kind":"field"` is
+    # no longer expected here, and its absence is asserted by the schema test
+    # below still requiring it. What this test has always been for - that the
+    # ER view carries no methods or globals - is unchanged.
+    @{ Name = "celidae ER diagram excludes execution nodes"; Args = @("examples\data\converted_csv_country.fx", "--template=er"); Expect = @('"mode":"er"', '"label":"Country","kind":"fact"', '"keys=alpha_2, country_code, name'); Reject = @('"kind":"method"', '"kind":"global"', '"kind":"field"') },
+    @{ Name = "celidae schema diagram still declares every field"; Args = @("examples\data\converted_csv_country.fx", "--template=schema"); Expect = @('"mode":"schema"', '"kind":"field"', '"label":"alpha_2"') },
+    @{ Name = "celidae ER diagram preserves every direct parent"; Args = @("examples\multiple_inheritance_hierarchy.fx", "--template=er"); Expect = @('"from":"fact:Politician","to":"fact:Government","label":"extends"', '"from":"fact:Politician","to":"fact:People","label":"extends"') },
+    @{ Name = "celidae dependency graph excludes ER fields"; Args = @("examples\country_query.fx", "--template=graph", "--load-imports"); Expect = @('"mode":"graph"', '"label":"IndiaCountry","kind":"method"', '"kind":"library"') },
+    @{ Name = "celidae expert graph records fact attachments"; Args = @("examples\expert_intelligence_system.fx", "--template=graph"); Expect = @('"label":"Fact:depends","kind":"library"', '"label":"Fact:relate","kind":"library"', '"label":"attaches dependency"', '"label":"attaches relationship"') },
+    @{ Name = "celidae graph records dynamic reference callables"; Args = @("examples\dynamic_fact_references.fx", "--template=graph"); Expect = @('"label":"Fact:references","kind":"library"', '"label":"Physics:velocity","kind":"method"', '"label":"references"') },
+    @{ Name = "celidae viewer loads imported country schema"; Args = @("examples\country_query.fx", "--template=schema", "--load-imports"); Expect = @('"mode":"schema"', '"label":"Country","kind":"fact"', '"records":249', '"truncated":false') },
     @{ Name = "celidae viewer html loads imported country fact db"; Args = @("examples\country_query.fx", "--visualize-data-html", "--load-imports"); Expect = @("<!doctype html>", "Celidae Visualizer", '"label":"Country","kind":"fact"', '"records":249') }
 )
 
@@ -421,6 +434,17 @@ if (Test-Path -LiteralPath $CelidaeExe) {
         foreach ($expected in $test.Expect) {
             if (-not $text.Contains($expected)) {
                 $ok = $false
+                break
+            }
+        }
+        # Optional. Some of these views are defined as much by what they must
+        # not contain as by what they must: the ER view is only distinct from
+        # the schema view because it carries no field nodes, and an
+        # Expect-only harness cannot state that.
+        foreach ($rejected in $test.Reject) {
+            if ($text.Contains($rejected)) {
+                $ok = $false
+                Write-Host "  Unexpected: $rejected"
                 break
             }
         }

@@ -170,6 +170,13 @@ function Invoke-MeasuredTool {
     }
 }
 
+# CelidaeMs below used to measure --json output (schema analysis alone, no
+# templating). Celidae's only output is now HTML, so --template=schema is the
+# closest equivalent - one view rather than all nine - but every export still
+# inlines the ~1.6 MB Tailwind/cytoscape/ECharts bundle regardless of
+# --template, which --json never paid for. CelidaeMs is therefore no longer a
+# clean read on analysis time alone; it includes that fixed templating cost.
+# It should scale the same way across fact counts, just with a higher floor.
 $results = foreach ($count in ($Counts | Sort-Object -Unique)) {
     $program = New-LargeFactProgram -Count $count
     try {
@@ -177,7 +184,7 @@ $results = foreach ($count in ($Counts | Sort-Object -Unique)) {
         for ($warmup = 0; $warmup -lt $WarmupRuns; $warmup++) {
             [void](Invoke-MeasuredQuery -Program $program -Query $query -Repeat $RepeatedQueries)
             [void](Invoke-MeasuredTool -Executable $debugExe -Arguments @($program, "--check-json"))
-            [void](Invoke-MeasuredTool -Executable $celidaeExe -Arguments @($program, "--json"))
+            [void](Invoke-MeasuredTool -Executable $celidaeExe -Arguments @($program, "--template=schema"))
         }
         $measurements = @()
         $debugMeasurements = @()
@@ -185,7 +192,7 @@ $results = foreach ($count in ($Counts | Sort-Object -Unique)) {
         for ($run = 0; $run -lt $MeasuredRuns; $run++) {
             $measurements += Invoke-MeasuredQuery -Program $program -Query $query -Repeat $RepeatedQueries
             $debugMeasurements += Invoke-MeasuredTool -Executable $debugExe -Arguments @($program, "--check-json")
-            $celidaeMeasurements += Invoke-MeasuredTool -Executable $celidaeExe -Arguments @($program, "--json")
+            $celidaeMeasurements += Invoke-MeasuredTool -Executable $celidaeExe -Arguments @($program, "--template=schema")
         }
         $load = Get-Distribution $measurements "LoadMs"
         $firstQuery = Get-Distribution $measurements "FirstQueryMs"

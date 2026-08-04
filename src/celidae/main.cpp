@@ -15,15 +15,13 @@ namespace fs = std::filesystem;
 namespace {
 
 struct Options {
-    bool html = false;
-    bool svg = false;
-    bool envelope = true;
     bool loadImports = false;
     bool metricsJson = false;
     bool recommend = false;
-    Felidae::Celidae::DiagramType type = Felidae::Celidae::DiagramType::Schema;
-    // Which template --html emits. Unset means "all views in one file",
-    // preserving the behaviour --html had before templates existed.
+    // Which template --html emits. Unset means "all views in one file", which
+    // is also what running celidae with no other flag now does - HTML is the
+    // only visualization Celidae produces, so there is no longer a second
+    // flag to opt into it.
     std::optional<Felidae::Celidae::DiagramType> templateType;
     bool help = false;
     bool version = false;
@@ -41,14 +39,6 @@ std::string diagramTypeList() {
 
 Options parseOptions(int argc, char** argv) {
     Options options;
-    auto parseType = [&](const std::string& value) {
-        Felidae::Celidae::DiagramType parsed;
-        if (!Felidae::Celidae::parseDiagramType(value, parsed)) {
-            throw std::runtime_error(
-                "Unknown Celidae diagram type '" + value + "'. Use one of: " + diagramTypeList());
-        }
-        options.type = parsed;
-    };
     auto parseTemplate = [&](const std::string& value) {
         Felidae::Celidae::DiagramType parsed;
         if (!Felidae::Celidae::parseDiagramType(value, parsed)) {
@@ -61,18 +51,29 @@ Options parseOptions(int argc, char** argv) {
         const std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") options.help = true;
         else if (arg == "--version" || arg == "-v") options.version = true;
-        else if (arg == "--html" || arg == "--visualize-data-html") options.html = true;
-        else if (arg == "--svg") options.svg = true;
-        else if (arg == "--json") options.envelope = false;
-        else if (arg == "--inspect-graph" || arg == "--visualize-data-json") options.envelope = true;
+        // Accepted and ignored: HTML is the only output Celidae produces now,
+        // so asking for it explicitly is a no-op rather than an error. A
+        // script written against the old CLI keeps working.
+        else if (arg == "--html" || arg == "--visualize-data-html") { /* no-op */ }
+        else if (arg == "--json" || arg == "--inspect-graph" || arg == "--visualize-data-json") {
+            throw std::runtime_error(
+                "Celidae no longer produces a JSON output mode - it produces one visualization, "
+                "the interactive HTML page. Run: celidae program.fx [--template=<name>]");
+        }
+        else if (arg == "--svg") {
+            throw std::runtime_error(
+                "Celidae no longer produces a static SVG export - HTML is its only output. "
+                "Run: celidae program.fx [--template=<name>]");
+        }
         else if (arg == "--load-imports") options.loadImports = true;
         else if (arg == "--metrics-json") options.metricsJson = true;
         else if (arg == "--recommend") options.recommend = true;
-        else if (arg == "--type") {
-            if (++i >= argc) throw std::runtime_error("--type requires one of: " + diagramTypeList());
-            parseType(argv[i]);
+        // --type selected which single view a JSON/SVG export covered; with
+        // both gone the only per-view selector left is --template.
+        else if (arg == "--type" || arg.rfind("--type=", 0) == 0) {
+            throw std::runtime_error("--type was for --json/--svg, which Celidae no longer "
+                                     "produces. Use --template=<name> to select one view.");
         }
-        else if (arg.rfind("--type=", 0) == 0) parseType(arg.substr(7));
         else if (arg == "--template") {
             if (++i >= argc) throw std::runtime_error("--template requires one of: " + diagramTypeList());
             parseTemplate(argv[i]);
@@ -100,23 +101,21 @@ void printHelp() {
     std::cout
         << "Celidae fact relationship visualizer " << Felidae::LANGUAGE_VERSION << "\n"
         << "Pipeline: Lexer -> Parser -> Celidae Visualization\n\n"
+        << "Celidae produces one thing: a self-contained interactive HTML page. There is\n"
+        << "no separate JSON or SVG export mode - every view's data is embedded in the page\n"
+        << "for the browser to read, and that page is the only artifact worth keeping.\n\n"
         << "Usage:\n"
-        << "  celidae program.fx --inspect-graph [--load-imports]\n"
-        << "  celidae program.fx --json [--load-imports]\n"
-        << "  celidae program.fx --html [--load-imports]\n"
-        << "  celidae program.fx --svg --type=er [--load-imports]\n"
+        << "  celidae program.fx [--load-imports] > report.html\n"
+        << "  celidae program.fx --template=<name> [--load-imports] > view.html\n"
+        << "  celidae program.fx --recommend [--load-imports]\n"
         << "  celidae --version\n\n"
-        << "Output formats:\n"
-        << "  --template=<name>         With --html, emit just that one view instead of\n"
-        << "                            all of them.\n"
-        << "  --inspect-graph / --json  JSON payload for one --type.\n"
-        << "  --html                    Self-contained interactive visualizer bundling every\n"
-        << "                            diagram type, with charts, layouts and findings.\n"
-        << "  --svg                     Static vector export for one --type, suitable for\n"
-        << "                            embedding directly in documents or slides.\n"
+        << "Options:\n"
+        << "  --template=<name>         Emit just that one view instead of all of them.\n"
+        << "  --load-imports            Resolve and include imported fact declarations.\n"
         << "  --recommend               Print, as JSON, which views this program's data\n"
-        << "                            actually supports and why.\n\n"
-        << "Diagram types (--type / --template):\n";
+        << "                            actually supports and why - useful for choosing a\n"
+        << "                            --template without first rendering every view.\n\n"
+        << "Diagram types (--template):\n";
     for (Felidae::Celidae::DiagramType type : Felidae::Celidae::kAllDiagramTypes) {
         const std::string name = Felidae::Celidae::diagramTypeName(type);
         std::cout << "  " << name << std::string(14 - std::min<std::size_t>(13, name.size()), ' ')
@@ -165,17 +164,25 @@ int main(int argc, char** argv) {
             std::cout << "{\"recommendations\":[";
             for (std::size_t i = 0; i < recommendations.size(); ++i) {
                 if (i) std::cout << ",";
+                // `applicable` is the field a caller should branch on. A score
+                // of 0 means the same thing, but a caller reading only the
+                // score cannot tell "this view is a weak fit" from "this view
+                // cannot answer anything about this program", and those need
+                // different handling: the first is worth offering, the second
+                // is worth explaining.
                 std::cout << "{\"view\":\""
                           << Felidae::Celidae::diagramTypeName(recommendations[i].view)
                           << "\",\"score\":" << recommendations[i].score
+                          << ",\"applicable\":"
+                          << (recommendations[i].applicable ? "true" : "false")
                           << ",\"rationale\":\"" << recommendations[i].rationale << "\"}";
             }
             std::cout << "]}\n";
-        } else if (options.html) {
-            // Bundle all three diagram types into one self-contained file so
-            // a user can compare schema/graph/er without re-running Celidae.
-            // --template=<name> emits that one view; without it the file
-            // carries every view, as --html always has.
+        } else {
+            // The only visualization Celidae produces. Bundling every diagram
+            // type into one self-contained file lets a reader compare
+            // schema/er/segments/etc. without re-running Celidae;
+            // --template=<name> narrows that to one view for a focused export.
             std::map<Felidae::Celidae::DiagramType, std::string> payloads;
             if (options.templateType) {
                 payloads.emplace(
@@ -187,13 +194,6 @@ int main(int argc, char** argv) {
                 }
             }
             std::cout << Felidae::Celidae::standaloneHtml(payloads);
-        } else if (options.svg) {
-            const auto rendered = graph.buildGraph(options.type, loaded.unresolvedImports);
-            std::cout << Felidae::Celidae::standaloneSvg(rendered, options.type);
-        } else if (options.envelope) {
-            std::cout << Felidae::Celidae::graphJsonEnvelope(graph.json(options.type, loaded.unresolvedImports));
-        } else {
-            std::cout << graph.json(options.type, loaded.unresolvedImports) << "\n";
         }
         if (options.metricsJson) {
             std::cerr << "FELIDAE_CELIDAE_METRICS {\"analysisMs\":"
