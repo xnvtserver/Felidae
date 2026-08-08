@@ -1,7 +1,6 @@
 #include "celidae/Visualization.h"
 
 #include "BuiltinRegistry.h"
-#include "celidae/GeneratedVisualizerAssets.h"
 #include "celidae/Reasoning.h"
 #include <inja/inja.hpp>
 
@@ -12,6 +11,8 @@
 #include <cstdlib>
 #include <deque>
 #include <functional>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <map>
 #include <numeric>
@@ -24,6 +25,50 @@
 namespace Felidae::Celidae {
 
 namespace {
+
+std::string readVisualizerAsset(const std::string& name) {
+    namespace fs = std::filesystem;
+    std::vector<fs::path> candidates;
+#ifdef _WIN32
+    char* configured = nullptr;
+    std::size_t configuredSize = 0;
+    if (_dupenv_s(&configured, &configuredSize, "FELIDAE_CELIDAE_WEBUI") == 0 && configured) {
+        candidates.emplace_back(fs::path(configured) / name);
+        std::free(configured);
+    }
+#else
+    if (const char* configured = std::getenv("FELIDAE_CELIDAE_WEBUI")) {
+        candidates.emplace_back(fs::path(configured) / name);
+    }
+#endif
+    candidates.emplace_back(fs::path("src/celidae/webui") / name);
+    candidates.emplace_back(fs::path("celidae/webui") / name);
+    candidates.emplace_back(fs::path("../src/celidae/webui") / name);
+
+    for (const fs::path& candidate : candidates) {
+        std::ifstream input(candidate, std::ios::binary);
+        if (!input) continue;
+        std::ostringstream contents;
+        contents << input.rdbuf();
+        return contents.str();
+    }
+    throw std::runtime_error(
+        "Celidae could not load web UI asset '" + name +
+        "'. Set FELIDAE_CELIDAE_WEBUI to the directory containing "
+        "visualizer.template.html and visualizer.css.");
+}
+
+std::string loadVisualizerTemplate() {
+    std::string html = readVisualizerAsset("visualizer.template.html");
+    const std::string css = readVisualizerAsset("visualizer.css");
+    const std::string token = "__CELIDAE_CSS__";
+    const std::size_t position = html.find(token);
+    if (position == std::string::npos) {
+        throw std::runtime_error("Celidae visualizer template is missing __CELIDAE_CSS__");
+    }
+    html.replace(position, token.size(), css);
+    return html;
+}
 
 // ---------------------------------------------------------------------------
 // JSON serialization primitives
@@ -2921,10 +2966,9 @@ std::string SchemaGraphAccumulator::json(
 // ---------------------------------------------------------------------------
 
 std::string standaloneHtml(const std::map<DiagramType, std::string>& payloads) {
-    // kVisualizerTemplate is generated from src/celidae/webui/template.html
-    // (cytoscape + ECharts + heroicons, all npm-installed there - see
-    // GeneratedVisualizerAssets.h). This function only substitutes the
-    // DiagramType payloads into the pre-built, self-contained page.
+    // The template and stylesheet are generated from src/celidae/webui and
+    // loaded at runtime. Keeping them outside the executable makes the UI
+    // maintainable and avoids compiler limits on large string literals.
     //
     // Every type gets a token so the template's shape is fixed; a type the
     // caller did not supply is substituted with `null`, and the page renders
@@ -2984,7 +3028,7 @@ std::string standaloneHtml(const std::map<DiagramType, std::string>& payloads) {
     environment.set_trim_blocks(false);
     environment.set_lstrip_blocks(false);
     try {
-        return environment.render(kVisualizerTemplate, context);
+        return environment.render(loadVisualizerTemplate(), context);
     } catch (const std::exception& error) {
         throw std::runtime_error(
             std::string("Celidae could not render the visualizer template: ") + error.what());
