@@ -5,22 +5,6 @@
 
 namespace Felidae {
 
-namespace {
-
-bool isCustomOperatorCharacter(char value) {
-    switch (value) {
-        case '~':
-        case '^':
-        case '&':
-        case '$':
-            return true;
-        default:
-            return false;
-    }
-}
-
-} // namespace
-
 Lexer::Lexer(std::string source)
     : ownedInput_(std::make_unique<std::istringstream>(std::move(source))),
       input_(ownedInput_.get()) {}
@@ -128,7 +112,21 @@ Token Lexer::readIdentifier() {
     if (text == "true") return Token{TokenType::True, {}, startLine, startCol};
     if (text == "false") return Token{TokenType::False, {}, startLine, startCol};
     if (text == "nil") return Token{TokenType::Nil, {}, startLine, startCol};
-    return Token{TokenType::Ident, text, startLine, startCol, BuiltinId::Unknown, languageTypeIdForName(text)};
+    Token token{TokenType::Ident, text, startLine, startCol,
+                BuiltinId::Unknown, languageTypeIdForName(text)};
+    const auto virtualToken = virtualTokens_.find(token.symbolId);
+    if (virtualToken != virtualTokens_.end()) token.virtualTokenId = virtualToken->second;
+    return token;
+}
+
+void Lexer::registerVirtualToken(VirtualTokenDefinition token) {
+    if (token.symbolId != 0 && token.tokenId != 0) {
+        virtualTokens_.emplace(token.symbolId, token.tokenId);
+    }
+}
+
+void Lexer::registerVirtualTokens(const std::vector<VirtualTokenDefinition>& tokens) {
+    for (const auto& token : tokens) registerVirtualToken(token);
 }
 
 Token Lexer::readNumber() {

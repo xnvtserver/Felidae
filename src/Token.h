@@ -1,11 +1,38 @@
 #pragma once
 
 #include "Symbol.h"
+#include <algorithm>
 #include <cctype>
 #include <string>
 #include <utility>
 
 namespace Felidae {
+
+using VirtualTokenId = std::uint32_t;
+
+struct VirtualTokenDefinition {
+    SymbolId symbolId = 0;
+    VirtualTokenId tokenId = 0;
+};
+
+inline constexpr bool isCustomOperatorCharacter(char value) {
+    switch (value) {
+        case '~':
+        case '^':
+        case '&':
+        case '$':
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool isCustomOperatorSpelling(std::string_view spelling) {
+    return !spelling.empty() && std::all_of(
+        spelling.begin(), spelling.end(), [](char value) {
+            return isCustomOperatorCharacter(value);
+        });
+}
 
 enum class BuiltinId {
     Unknown = 0,
@@ -57,6 +84,7 @@ enum class BuiltinId {
     ConsoleWrite,
     SystemPrint,
     SystemPrintf,
+    SystemRun,
 
     FileReadFile,
     FileReadLines,
@@ -158,8 +186,9 @@ enum class BuiltinId {
 
     OverloadAnnotation,
     MatcherAnnotation,
+    MixfixAnnotation,
 
-    Last = MatcherAnnotation
+    Last = MixfixAnnotation
 };
 
 enum class LanguageTypeId {
@@ -176,6 +205,7 @@ enum class LanguageTypeId {
     Number,
     String,
     Expr,
+    Mixfix,
     Stmt,
     Statements
 };
@@ -194,6 +224,7 @@ inline constexpr std::string_view languageTypeName(LanguageTypeId type) {
         case LanguageTypeId::Number: return "number";
         case LanguageTypeId::String: return "string";
         case LanguageTypeId::Expr: return "expr";
+        case LanguageTypeId::Mixfix: return "mixfix";
         case LanguageTypeId::Stmt: return "stmt";
         case LanguageTypeId::Statements: return "stmts";
         case LanguageTypeId::Unknown: return {};
@@ -214,6 +245,7 @@ inline LanguageTypeId languageTypeIdForName(const std::string& name) {
     if (name == "number") return LanguageTypeId::Number;
     if (name == "string") return LanguageTypeId::String;
     if (name == "expr") return LanguageTypeId::Expr;
+    if (name == "mixfix") return LanguageTypeId::Mixfix;
     if (name == "stmt") return LanguageTypeId::Stmt;
     if (name == "stmts") return LanguageTypeId::Statements;
     return LanguageTypeId::Unknown;
@@ -295,7 +327,10 @@ struct Token {
           int column,
           BuiltinId builtinId = BuiltinId::Unknown,
           LanguageTypeId languageTypeId = LanguageTypeId::Unknown)
-        : type(type), text(std::move(text)), symbolId(type == TokenType::Ident ? symbolIdForName(this->text) : 0),
+        : type(type), text(std::move(text)),
+          symbolId((type == TokenType::Ident || type == TokenType::CustomOperator)
+                       ? symbolIdForName(this->text)
+                       : 0),
           builtinId(builtinId), languageTypeId(languageTypeId), line(line), column(column) {}
     Token(TokenType type,
           std::string text,
@@ -312,6 +347,9 @@ struct Token {
     SymbolId symbolId = 0;
     BuiltinId builtinId = BuiltinId::Unknown;
     LanguageTypeId languageTypeId = LanguageTypeId::Unknown;
+    // A non-zero value identifies an annotation-defined anchor. The token
+    // remains an identifier so declarations and field access stay unchanged.
+    VirtualTokenId virtualTokenId = 0;
     int line = 1;
     int column = 1;
 };

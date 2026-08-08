@@ -425,7 +425,7 @@ static bool exprAsArray(const std::shared_ptr<Expr>& expr, std::vector<std::shar
 }
 
 static std::string astNodeKind(const std::shared_ptr<AstNode>& node) {
-    if (std::dynamic_pointer_cast<TermExpr>(node)) return "function_call";
+    if (std::dynamic_pointer_cast<TermExpr>(node)) return "func_call";
     if (auto op = std::dynamic_pointer_cast<OperatorExpression>(node)) {
         if (isComparisonOperator(op->coreOperator) ||
             op->coreOperator == CoreOperator::LogicalAnd ||
@@ -438,7 +438,7 @@ static std::string astNodeKind(const std::shared_ptr<AstNode>& node) {
             op->coreOperator == CoreOperator::Modulo ||
             op->coreOperator == CoreOperator::UnaryPlus ||
             op->coreOperator == CoreOperator::UnaryMinus) return "arithmetic";
-        return "operator_expression";
+        return "expr";
     }
     if (std::dynamic_pointer_cast<LambdaExpr>(node)) return "lambda";
     if (std::dynamic_pointer_cast<AccessExpr>(node)) return "member_access";
@@ -450,23 +450,23 @@ static std::string astNodeKind(const std::shared_ptr<AstNode>& node) {
     if (std::dynamic_pointer_cast<NilExpr>(node)) return "nil_literal";
     if (std::dynamic_pointer_cast<VarExpr>(node)) return "variable";
     if (auto clause = std::dynamic_pointer_cast<ClauseStmt>(node)) {
-        if (clause->clauseKind == ClauseKind::Fact) return "fact_declaration";
-        if (clause->clauseKind == ClauseKind::NativeDeclaration) return "native_declaration";
-        if (clause->clauseKind == ClauseKind::EntryCall) return "entry_call";
-        return "method_declaration";
+        if (clause->clauseKind == ClauseKind::Fact) return "fact";
+        if (clause->clauseKind == ClauseKind::NativeDeclaration) return "native";
+        if (clause->clauseKind == ClauseKind::EntryCall) return "entry";
+        return "func";
     }
-    if (std::dynamic_pointer_cast<ImportStmt>(node)) return "import_statement";
-    if (std::dynamic_pointer_cast<GlobalBindingStmt>(node)) return "global_binding";
-    if (std::dynamic_pointer_cast<IfGoal>(node)) return "conditional";
+    if (std::dynamic_pointer_cast<ImportStmt>(node)) return "stmt";
+    if (std::dynamic_pointer_cast<GlobalBindingStmt>(node)) return "stmt";
+    if (std::dynamic_pointer_cast<IfGoal>(node)) return "stmt";
     if (std::dynamic_pointer_cast<AssignGoal>(node) ||
-        std::dynamic_pointer_cast<MultiAssignGoal>(node)) return "assignment";
-    if (std::dynamic_pointer_cast<ReturnGoal>(node)) return "return";
-    if (std::dynamic_pointer_cast<WhereGoal>(node)) return "where";
-    if (std::dynamic_pointer_cast<CallGoal>(node)) return "call_statement";
-    if (std::dynamic_pointer_cast<NotGoal>(node)) return "negation";
-    if (std::dynamic_pointer_cast<OrGoal>(node)) return "alternatives";
-    if (std::dynamic_pointer_cast<GroupGoal>(node)) return "statement_group";
-    return "ast";
+        std::dynamic_pointer_cast<MultiAssignGoal>(node)) return "stmt";
+    if (std::dynamic_pointer_cast<ReturnGoal>(node)) return "stmt";
+    if (std::dynamic_pointer_cast<WhereGoal>(node)) return "stmt";
+    if (std::dynamic_pointer_cast<CallGoal>(node)) return "stmt";
+    if (std::dynamic_pointer_cast<NotGoal>(node)) return "stmt";
+    if (std::dynamic_pointer_cast<OrGoal>(node)) return "stmts";
+    if (std::dynamic_pointer_cast<GroupGoal>(node)) return "stmts";
+    return "expr";
 }
 
 static bool valueMatchesBuiltinType(const std::shared_ptr<Expr>& value,
@@ -507,6 +507,10 @@ static bool valueMatchesBuiltinType(const std::shared_ptr<Expr>& value,
             }
             return ast->valueKind == AstValueKind::Statements;
         }
+        // mixfix is matched from retained OperatorExpression metadata during
+        // overload selection; it is not a runtime value category.
+        case LanguageTypeId::Mixfix:
+            return false;
         case LanguageTypeId::Bool:
         case LanguageTypeId::Boolean:
             return static_cast<bool>(std::dynamic_pointer_cast<BoolExpr>(value));
@@ -1068,6 +1072,11 @@ void Interpreter::collectExecutionGarbage() {
     envFramePool_.collectGarbage(kMaxCachedEnvFrames);
 }
 
+Env Interpreter::copyExecutionEnvironment(const Env& source) {
+    ++environmentCopies_;
+    return cloneEnv(source);
+}
+
 void Interpreter::loadNativeLibrary(const std::filesystem::path& file) {
     fs::path normalized = fs::absolute(file).lexically_normal();
     if (nativeLibraryPaths_.count(normalized)) return;
@@ -1267,7 +1276,8 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
     const std::string clauseName = clause->head.name;
     for (const auto& annotation : clause->annotations) {
         if (annotation.builtinId != BuiltinId::OverloadAnnotation &&
-            annotation.builtinId != BuiltinId::MatcherAnnotation) {
+            annotation.builtinId != BuiltinId::MatcherAnnotation &&
+            annotation.builtinId != BuiltinId::MixfixAnnotation) {
             if (!hasMethod(annotation.name) && !nativeDeclarationFor(annotation.name)) {
                 throw InterpreterError("Annotation method '" + annotation.name +
                                        "' is not declared before '" + clauseName + "'");
@@ -1303,7 +1313,7 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
                             for (const auto& branch : clause->fallbackBranches) {
                                 for (const auto& goal : branch) nodes.push_back(goal);
                             }
-                            nodeKind = "statement_block";
+                            nodeKind = "stmts";
                         }
                         invocation.args.push_back(Arg{
                             annotationClause->head.args[i].name,
@@ -1338,8 +1348,36 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
                 throw InterpreterError(error.what());
             }
         }
-        if (!clause->head.args.empty()) {
-            throw InterpreterError("Annotated operator methods receive captures implicitly and cannot declare parameters");
+        if (annotation.builtinId == BuiltinId::MixfixAnnotation &&
+            !clause->head.args.empty()) {
+            throw InterpreterError(
+                "@mixfix implementations receive captures implicitly; remove method parameters");
+        }
+        if (annotation.builtinId != BuiltinId::MixfixAnnotation &&
+            !clause->head.args.empty()) {
+            if (clause->head.args.size() != parsed.captures.size()) {
+                throw InterpreterError(
+                    "Annotated mixfix method parameters must match pattern capture count");
+            }
+            for (std::size_t index = 0; index < parsed.captures.size(); ++index) {
+                const auto& parameter = clause->head.args[index];
+                const auto type = std::dynamic_pointer_cast<VarExpr>(parameter.value);
+                if (parameter.name.empty() || !type ||
+                    !isFelidaeTypeAnnotationName(type->name)) {
+                    throw InterpreterError(
+                        "Annotated mixfix parameters must be named and typed");
+                }
+                const auto& capture = parsed.captures[index];
+                const bool sameBuiltin = capture.languageTypeId != LanguageTypeId::Unknown &&
+                    languageTypeIdForName(type->name) == capture.languageTypeId;
+                const bool sameFact = capture.languageTypeId == LanguageTypeId::Unknown &&
+                    type->name == capture.type;
+                if (!sameBuiltin && !sameFact) {
+                    throw InterpreterError(
+                        "Annotated mixfix parameter '" + parameter.name +
+                        "' type must match capture '" + capture.name + "'");
+                }
+            }
         }
         if (parsed.effect != OperatorEffect::Pure) {
             throw InterpreterError("Custom operator and matcher methods must be pure");
@@ -1439,8 +1477,10 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
     }
     if (clause->isFact() && globals_.count(clause->head.name) == 0) {
         const auto registrationStarted = std::chrono::steady_clock::now();
-        auto factMap = factToMap(*clause);
-        memory_.addFact(clause->head.name, clause->parentName, factMap, currentLoadingFile_);
+        auto materialized = factToMap(*clause);
+        memory_.addFact(clause->head.name, clause->parentName, materialized.value,
+                        currentLoadingFile_, std::nullopt, 1,
+                        std::move(materialized.parentFactIds));
         const auto& declaredParents = clause->parentNames.empty()
             ? std::vector<std::string>{clause->parentName}
             : clause->parentNames;
@@ -1705,15 +1745,42 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
             case GoalKind::Or: {
                 const auto disjunction = std::static_pointer_cast<OrGoal>(goal);
                 for (auto branch = disjunction->branches.rbegin(); branch != disjunction->branches.rend(); ++branch) {
+                    // The first source-order branch is pushed last and is
+                    // therefore processed first. It can consume the current
+                    // environment; only sibling branches need isolation.
+                    Env branchEnv = branch == (disjunction->branches.rend() - 1)
+                        ? std::move(frame.env)
+                        : copyExecutionEnvironment(frame.env);
                     work.push_back(WorkFrame{combinedGoals(*branch, *frame.goals, nextGoalIndex),
-                                             0, cloneEnv(frame.env), frame.depth + 1});
+                                             0, std::move(branchEnv), frame.depth + 1});
                 }
                 continue;
             }
             case GoalKind::If: {
                 const auto conditional = std::static_pointer_cast<IfGoal>(goal);
+                if (auto binary = std::dynamic_pointer_cast<BinaryGoal>(conditional->condition)) {
+                    BindingTrail trail;
+                    const auto previousTrail = activeBindingTrail_;
+                    activeBindingTrail_ = &trail;
+                    const auto checkpoint = trail.checkpoint();
+                    try {
+                        const bool matched = solveBinaryGoal(*binary, frame.env);
+                        if (!matched) trail.rollback(checkpoint);
+                        activeBindingTrail_ = previousTrail;
+                        const auto& branch = matched
+                            ? conditional->thenBranch : conditional->elseBranch;
+                        work.push_back(WorkFrame{
+                            combinedGoals(branch, *frame.goals, nextGoalIndex),
+                            0, std::move(frame.env), frame.depth + 1});
+                        continue;
+                    } catch (...) {
+                        trail.rollback(checkpoint);
+                        activeBindingTrail_ = previousTrail;
+                        throw;
+                    }
+                }
                 std::vector<Solution> conditionSolutions;
-                solveRecursive({conditional->condition}, cloneEnv(frame.env), conditionSolutions, 1, frame.depth + 1);
+                solveRecursive({conditional->condition}, copyExecutionEnvironment(frame.env), conditionSolutions, 1, frame.depth + 1);
                 const auto& branch = conditionSolutions.empty()
                     ? conditional->elseBranch : conditional->thenBranch;
                 Env branchEnv = conditionSolutions.empty()
@@ -1752,7 +1819,7 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
         std::vector<WorkFrame> continuations;
         const bool preferLocalClause = clauses && !nativeDeclarationFor(callGoal->call.name);
         if (!preferLocalClause) {
-            Env builtinEnv = cloneEnv(frame.env);
+            Env builtinEnv = copyExecutionEnvironment(frame.env);
             if (solveBuiltin(callGoal->call, builtinEnv)) {
                 continuations.push_back(WorkFrame{frame.goals, nextGoalIndex,
                                                   std::move(builtinEnv), frame.depth + 1});
@@ -1763,7 +1830,7 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
                 ++clauseAttempts_;
                 if (isMethodClause(*originalClause)) {
                     std::vector<Solution> methodSolutions;
-                    solveMethodCall(callGoal->call, originalClause, cloneEnv(frame.env),
+                    solveMethodCall(callGoal->call, originalClause, copyExecutionEnvironment(frame.env),
                                     methodSolutions, maxSolutions - out.size(), frame.depth + 1);
                     for (auto& solution : methodSolutions) {
                         continuations.push_back(WorkFrame{frame.goals, nextGoalIndex,
@@ -1843,7 +1910,7 @@ bool Interpreter::solveNotGoal(const NotGoal& goal, Env& env, size_t depth) {
         std::vector<Solution> matches;
         solveRecursive(std::vector<std::shared_ptr<Goal>>{
                            std::make_shared<CallGoal>(goal.call)},
-                       cloneEnv(env), matches, 1, depth + 1);
+                       copyExecutionEnvironment(env), matches, 1, depth + 1);
         activeNegatedPredicates_.erase(goal.call.name);
         return matches.empty();
     } catch (...) {
@@ -1894,25 +1961,39 @@ bool Interpreter::solveMultiAssignGoal(const MultiAssignGoal& goal, Env& env) {
             std::to_string(goal.targets.size()) + " value(s), got " + std::to_string(items.size()));
     }
 
-    Env attempt = env;
-    for (size_t i = 0; i < goal.targets.size(); ++i) {
-        const auto& target = goal.targets[i];
-        if (globals_.count(target.name)) {
-            throw InterpreterError("Variable '" + target.name + "' is already assigned and immutable");
+    BindingTrail trail;
+    const auto previousTrail = activeBindingTrail_;
+    activeBindingTrail_ = &trail;
+    const auto checkpoint = trail.checkpoint();
+    try {
+        for (size_t i = 0; i < goal.targets.size(); ++i) {
+            const auto& target = goal.targets[i];
+            if (globals_.count(target.name)) {
+                throw InterpreterError("Variable '" + target.name + "' is already assigned and immutable");
+            }
+            auto existing = env.find(target.name);
+            if (existing != env.end() &&
+                !std::dynamic_pointer_cast<NilExpr>(resolveExpr(existing->second, env))) {
+                throw InterpreterError("Variable '" + target.name + "' is already assigned and immutable");
+            }
+            if (!target.type.empty() && !valueMatchesBuiltinType(items[i], target.type)) {
+                throw InterpreterError(
+                    "ProgrammingError: tuple assignment target '" + target.name +
+                    "' expects " + target.type + ", got " + exprToString(items[i], env));
+            }
+            if (!unifyExpr(std::make_shared<VarExpr>(target.name), items[i], env)) {
+                trail.rollback(checkpoint);
+                activeBindingTrail_ = previousTrail;
+                return false;
+            }
         }
-        auto existing = attempt.find(target.name);
-        if (existing != attempt.end() && !std::dynamic_pointer_cast<NilExpr>(resolveExpr(existing->second, attempt))) {
-            throw InterpreterError("Variable '" + target.name + "' is already assigned and immutable");
-        }
-        if (!target.type.empty() && !valueMatchesBuiltinType(items[i], target.type)) {
-            throw InterpreterError(
-                "ProgrammingError: tuple assignment target '" + target.name +
-                "' expects " + target.type + ", got " + exprToString(items[i], attempt));
-        }
-        if (!unifyExpr(std::make_shared<VarExpr>(target.name), items[i], attempt)) return false;
+        activeBindingTrail_ = previousTrail;
+        return true;
+    } catch (...) {
+        trail.rollback(checkpoint);
+        activeBindingTrail_ = previousTrail;
+        throw;
     }
-    env = std::move(attempt);
-    return true;
 }
 
 bool Interpreter::solveBinaryGoal(const BinaryGoal& goal, Env& env) {
@@ -1926,13 +2007,27 @@ bool Interpreter::solveBinaryGoal(const BinaryGoal& goal, Env& env) {
             return unifyExpr(goal.left, goal.right, env);
         }
         case TokenType::NotEq: {
-            Env copy = env;
+            BindingTrail trail;
+            const auto previousTrail = activeBindingTrail_;
+            activeBindingTrail_ = &trail;
+            const auto checkpoint = trail.checkpoint();
             std::shared_ptr<Expr> leftValue;
             std::shared_ptr<Expr> rightValue;
-            if (evalExprValue(goal.left, copy, leftValue) && evalExprValue(goal.right, copy, rightValue)) {
-                return !unifyExpr(leftValue, rightValue, copy);
+            try {
+                bool result = false;
+                if (evalExprValue(goal.left, env, leftValue) && evalExprValue(goal.right, env, rightValue)) {
+                    result = !unifyExpr(leftValue, rightValue, env);
+                } else {
+                    result = !unifyExpr(goal.left, goal.right, env);
+                }
+                trail.rollback(checkpoint);
+                activeBindingTrail_ = previousTrail;
+                return result;
+            } catch (...) {
+                trail.rollback(checkpoint);
+                activeBindingTrail_ = previousTrail;
+                throw;
             }
-            return !unifyExpr(goal.left, goal.right, copy);
         }
         default:
             break;
@@ -2130,13 +2225,13 @@ bool Interpreter::solveMethodCall(const Call& call,
         const auto& paramPlan = paramPlans[paramIndex];
         std::vector<Env> nextCandidates;
         const Arg* callArg = findArg(call, param, paramIndex);
-        for (const auto& candidate : candidates) {
+        for (auto& candidate : candidates) {
             if (!callArg) {
                 if (paramPlan.typedParam && bodyHasReturnGoal(originalClause->body)) continue;
-                nextCandidates.push_back(candidate);
+                nextCandidates.push_back(std::move(candidate));
                 continue;
             }
-            Env attempt = candidate;
+            Env attempt = std::move(candidate);
             if (paramPlan.typeId == LanguageTypeId::Expr ||
                 paramPlan.typeId == LanguageTypeId::Stmt ||
                 paramPlan.typeId == LanguageTypeId::Statements) {
@@ -2841,6 +2936,15 @@ bool Interpreter::evalRelationCompare(const Call& call,
     };
     auto source = argument("left", 0);
     auto target = argument("right", 1);
+    std::size_t maxRelationshipDepth = 4;
+    if (const auto depthValue = argument("max_depth", 2)) {
+        const auto number = std::dynamic_pointer_cast<NumberExpr>(depthValue);
+        if (!number || number->value < 1.0 || number->value > 64.0 ||
+            std::floor(number->value) != number->value) {
+            throw InterpreterError("Relation.compare max_depth must be an integer from 1 to 64");
+        }
+        maxRelationshipDepth = static_cast<std::size_t>(number->value);
+    }
     auto sourceMap = std::dynamic_pointer_cast<MapExpr>(source);
     auto targetMap = std::dynamic_pointer_cast<MapExpr>(target);
     auto sourceTypeValue = findMapValue(source, internalSymbolString(InternalSymbolKind::Type));
@@ -3165,16 +3269,264 @@ bool Interpreter::evalRelationCompare(const Call& call,
         detail->factType = "AncestorComparisonEvidence";
         ancestorEvidence.push_back(std::move(detail));
     }
+
+    // Compare bounded relationship neighborhoods as facts, not words. This
+    // adds explainable multi-hop evidence while keeping cyclic knowledge
+    // graphs finite and deterministic.
+    struct RelationPath {
+        std::size_t depth = 0;
+        std::uint64_t terminal = 0;
+        double confidence = 1.0;
+    };
+    auto relationshipNeighborhood = [&](const std::optional<std::uint64_t>& root) {
+        std::unordered_map<std::string, RelationPath> paths;
+        if (!root) return paths;
+        struct PendingPath {
+            std::uint64_t factId = 0;
+            std::size_t depth = 0;
+            double confidence = 1.0;
+        };
+        std::deque<PendingPath> pending{{*root, 0, 1.0}};
+        std::unordered_map<std::uint64_t, std::pair<std::size_t, double>> visited;
+        while (!pending.empty()) {
+            const auto current = pending.front().factId;
+            const auto depth = pending.front().depth;
+            const auto pathConfidence = pending.front().confidence;
+            pending.pop_front();
+            const auto seen = visited.find(current);
+            if (seen != visited.end() &&
+                (seen->second.first < depth ||
+                 (seen->second.first == depth && seen->second.second >= pathConfidence))) {
+                continue;
+            }
+            visited[current] = {depth, pathConfidence};
+            if (depth >= maxRelationshipDepth) continue;
+            const auto visitRelationships = [&](const auto& relationships) {
+              for (const auto& relation : relationships) {
+                const std::uint64_t next = relation.sourceId == current
+                    ? relation.targetId : relation.sourceId;
+                if (next == 0 || next == current) continue;
+                const std::string signature = relation.relationship
+                    ? relation.relationship->debug() : std::string("nil");
+                double confidence = 1.0;
+                if (const auto number = std::dynamic_pointer_cast<NumberExpr>(relation.confidence)) {
+                    confidence = std::clamp(number->value, 0.0, 1.0);
+                }
+                const std::size_t nextDepth = depth + 1;
+                const double combinedConfidence = pathConfidence * confidence;
+                auto found = paths.find(signature);
+                if (found == paths.end() || nextDepth < found->second.depth ||
+                    (nextDepth == found->second.depth &&
+                     combinedConfidence > found->second.confidence)) {
+                    paths[signature] = RelationPath{nextDepth, next, combinedConfidence};
+                }
+                pending.push_back(PendingPath{next, nextDepth, combinedConfidence});
+              }
+            };
+            visitRelationships(memory_.outgoingRelationships(current));
+            visitRelationships(memory_.incomingRelationships(current));
+        }
+        return paths;
+    };
+    const auto sourceRelationships = relationshipNeighborhood(sourceId);
+    const auto targetRelationships = relationshipNeighborhood(targetId);
+    std::vector<std::shared_ptr<Expr>> relationshipEvidence;
+    std::vector<std::shared_ptr<Expr>> relationshipDifferences;
+    std::size_t sharedRelationships = 0;
+    double terminalSimilaritySum = 0.0;
+    std::size_t terminalComparisons = 0;
+    double sharedConfidenceSum = 0.0;
+    const auto factTypeForId = [&](std::uint64_t id) -> std::shared_ptr<Expr> {
+        const auto value = memory_.factValueById(id);
+        if (!value) return std::make_shared<NilExpr>();
+        const auto type = std::dynamic_pointer_cast<StringExpr>(
+            findMapValue(value, internalSymbolString(InternalSymbolKind::Type)));
+        return type ? std::static_pointer_cast<Expr>(type->clone())
+                    : std::make_shared<NilExpr>();
+    };
+    const auto factTypeNameForId = [&](std::uint64_t id) -> std::string {
+        const auto value = memory_.factValueById(id);
+        if (!value) return {};
+        const auto type = std::dynamic_pointer_cast<StringExpr>(
+            findMapValue(value, internalSymbolString(InternalSymbolKind::Type)));
+        return type ? type->value : std::string{};
+    };
+    const auto findMapValueById = [](const std::shared_ptr<Expr>& value,
+                                     SymbolId key) -> std::shared_ptr<Expr> {
+        const auto map = std::dynamic_pointer_cast<MapExpr>(value);
+        if (!map) return nullptr;
+        for (const auto& entry : map->entries) {
+            if (entry.keyId == key) return entry.value;
+        }
+        return nullptr;
+    };
+    std::function<double(const std::shared_ptr<Expr>&,
+                         const std::shared_ptr<Expr>&, std::size_t)> valueSimilarity;
+    valueSimilarity = [&](const std::shared_ptr<Expr>& left,
+                          const std::shared_ptr<Expr>& right,
+                          std::size_t depth) -> double {
+        if (!left || !right) return left == right ? 1.0 : 0.0;
+        if (exprEqualsLiteral(left, right)) return 1.0;
+        if (depth >= 3) return 0.0;
+        if (const auto leftMap = std::dynamic_pointer_cast<MapExpr>(left)) {
+            const auto rightMap = std::dynamic_pointer_cast<MapExpr>(right);
+            if (!rightMap) return 0.0;
+            std::set<SymbolId> keys;
+            for (const auto& entry : leftMap->entries) {
+                if (entry.keyId != InternalSymbol::TypeId &&
+                    entry.keyId != InternalSymbol::ParentId) keys.insert(entry.keyId);
+            }
+            for (const auto& entry : rightMap->entries) {
+                if (entry.keyId != InternalSymbol::TypeId &&
+                    entry.keyId != InternalSymbol::ParentId) keys.insert(entry.keyId);
+            }
+            if (keys.empty()) return 1.0;
+            double total = 0.0;
+            for (const SymbolId key : keys) {
+                const auto leftValue = findMapValueById(left, key);
+                const auto rightValue = findMapValueById(right, key);
+                total += valueSimilarity(leftValue, rightValue, depth + 1);
+            }
+            return total / static_cast<double>(keys.size());
+        }
+        if (const auto leftArray = std::dynamic_pointer_cast<ArrayExpr>(left)) {
+            const auto rightArray = std::dynamic_pointer_cast<ArrayExpr>(right);
+            if (!rightArray) return 0.0;
+            if (leftArray->items.empty() || rightArray->items.empty()) {
+                return leftArray->items.empty() && rightArray->items.empty() ? 1.0 : 0.0;
+            }
+            const std::size_t count = std::min(leftArray->items.size(), rightArray->items.size());
+            double total = 0.0;
+            for (std::size_t index = 0; index < count; ++index) {
+                total += valueSimilarity(leftArray->items[index], rightArray->items[index], depth + 1);
+            }
+            return total / static_cast<double>(std::max(leftArray->items.size(), rightArray->items.size()));
+        }
+        return 0.0;
+    };
+    const auto typeSimilarity = [&](const std::string& left,
+                                    const std::string& right,
+                                    std::string& commonAncestor) {
+        if (left.empty() || right.empty()) return 0.0;
+        const auto& leftDistances = typeAncestorDistances(left);
+        const auto& rightDistances = typeAncestorDistances(right);
+        double best = 0.0;
+        std::size_t bestDistance = std::numeric_limits<std::size_t>::max();
+        for (const auto& [ancestor, leftDistance] : leftDistances) {
+            const auto rightDistance = rightDistances.find(ancestor);
+            if (rightDistance == rightDistances.end() || ancestor == "Fact") continue;
+            const double denominator = typeHierarchyDepth(left) + typeHierarchyDepth(right);
+            const double score = denominator == 0.0 ? 0.0 :
+                (2.0 * typeHierarchyDepth(ancestor)) / denominator;
+            const std::size_t distance = leftDistance + rightDistance->second;
+            if (score > best || (score == best && distance < bestDistance)) {
+                best = score;
+                bestDistance = distance;
+                commonAncestor = ancestor;
+            }
+        }
+        return best;
+    };
+    for (const auto& [signature, sourcePath] : sourceRelationships) {
+        const auto targetPath = targetRelationships.find(signature);
+        if (targetPath == targetRelationships.end()) continue;
+        ++sharedRelationships;
+        const std::string sourceTerminalType = factTypeNameForId(sourcePath.terminal);
+        const std::string targetTerminalType = factTypeNameForId(targetPath->second.terminal);
+        std::string terminalAncestor;
+        const double terminalTypeSimilarity = typeSimilarity(
+            sourceTerminalType, targetTerminalType, terminalAncestor);
+        const auto sourceTerminal = memory_.factValueById(sourcePath.terminal);
+        const auto targetTerminal = memory_.factValueById(targetPath->second.terminal);
+        const double terminalPropertySimilarity = valueSimilarity(
+            sourceTerminal, targetTerminal, 0);
+        const double terminalSimilarity = sourceTerminal && targetTerminal
+            ? 0.5 * terminalTypeSimilarity + 0.5 * terminalPropertySimilarity
+            : terminalTypeSimilarity;
+        if (!sourceTerminalType.empty() && !targetTerminalType.empty()) {
+            terminalSimilaritySum += terminalSimilarity;
+            ++terminalComparisons;
+        }
+        const double pathConfidence = sourcePath.confidence * targetPath->second.confidence;
+        sharedConfidenceSum += pathConfidence;
+        auto detail = std::make_shared<MapExpr>(std::vector<MapEntry>{
+            {internalSymbolString(InternalSymbolKind::Type),
+                std::make_shared<StringExpr>("RelationshipComparisonEvidence")},
+            {"relationship", std::make_shared<StringExpr>(signature)},
+            {"source_depth", std::make_shared<NumberExpr>(
+                static_cast<double>(sourcePath.depth))},
+            {"target_depth", std::make_shared<NumberExpr>(
+                static_cast<double>(targetPath->second.depth))},
+            {"confidence", std::make_shared<NumberExpr>(pathConfidence)},
+            {"terminal_type_similarity", std::make_shared<NumberExpr>(terminalTypeSimilarity)},
+            {"terminal_property_similarity", std::make_shared<NumberExpr>(
+                terminalPropertySimilarity)},
+            {"source_terminal", factTypeForId(sourcePath.terminal)},
+            {"target_terminal", factTypeForId(targetPath->second.terminal)},
+            {"terminal_similarity", std::make_shared<NumberExpr>(terminalSimilarity)},
+            {"terminal_common_ancestor", terminalAncestor.empty()
+                ? std::shared_ptr<Expr>(std::make_shared<NilExpr>())
+                : std::shared_ptr<Expr>(std::make_shared<StringExpr>(terminalAncestor))},
+            {"matched", std::make_shared<BoolExpr>(true)}});
+        detail->factType = "RelationshipComparisonEvidence";
+        relationshipEvidence.push_back(std::move(detail));
+    }
+    auto appendRelationshipDifference = [&](const std::string& signature,
+                                            const RelationPath& path,
+                                            const std::string& side) {
+        auto detail = std::make_shared<MapExpr>(std::vector<MapEntry>{
+            {internalSymbolString(InternalSymbolKind::Type),
+                std::make_shared<StringExpr>("RelationshipDifferenceEvidence")},
+            {"relationship", std::make_shared<StringExpr>(signature)},
+            {"side", std::make_shared<StringExpr>(side)},
+            {"depth", std::make_shared<NumberExpr>(static_cast<double>(path.depth))},
+            {"terminal", factTypeForId(path.terminal)},
+            {"matched", std::make_shared<BoolExpr>(false)}});
+        detail->factType = "RelationshipDifferenceEvidence";
+        relationshipDifferences.push_back(std::move(detail));
+    };
+    for (const auto& [signature, path] : sourceRelationships) {
+        if (targetRelationships.find(signature) == targetRelationships.end()) {
+            appendRelationshipDifference(signature, path, "source");
+        }
+    }
+    for (const auto& [signature, path] : targetRelationships) {
+        if (sourceRelationships.find(signature) == sourceRelationships.end()) {
+            appendRelationshipDifference(signature, path, "target");
+        }
+    }
+    const std::size_t relationshipUnion = sourceRelationships.size() +
+        targetRelationships.size() - sharedRelationships;
+    const double pathSimilarity = relationshipUnion == 0 ? 0.0 :
+        static_cast<double>(sharedRelationships) /
+        static_cast<double>(relationshipUnion);
+    const double terminalSimilarity = terminalComparisons == 0 ? 0.0 :
+        terminalSimilaritySum / static_cast<double>(terminalComparisons);
+    const double relationalConfidence = sharedRelationships == 0 ? 0.0 :
+        sharedConfidenceSum / static_cast<double>(sharedRelationships);
+    const double relationshipSimilarity = terminalComparisons == 0 ? pathSimilarity :
+        0.5 * pathSimilarity + 0.5 * terminalSimilarity;
+    const double confidenceWeightedRelationshipSimilarity =
+        relationshipSimilarity * relationalConfidence;
     // Both hierarchy and properties are required. A geometric mean prevents
     // coincidentally equal fields in unrelated fact families from producing
     // a positive fact-similarity score.
-    const double similarity = std::sqrt(ancestorSimilarity * overlap);
+    const double structuralSimilarity = std::sqrt(ancestorSimilarity * overlap);
+    const double similarity = relationshipUnion == 0 ? structuralSimilarity :
+        (0.70 * structuralSimilarity +
+            0.30 * confidenceWeightedRelationshipSimilarity);
     std::vector<MapEntry> evidenceEntries{
         {"exact", std::make_shared<BoolExpr>(exact)},
         {"subset", std::make_shared<BoolExpr>(subset)},
         {"overlap", std::make_shared<NumberExpr>(overlap)},
         {"propertySimilarity", std::make_shared<NumberExpr>(overlap)},
         {"ancestorSimilarity", std::make_shared<NumberExpr>(ancestorSimilarity)},
+        {"relationshipSimilarity", std::make_shared<NumberExpr>(relationshipSimilarity)},
+        {"relationalConfidence", std::make_shared<NumberExpr>(relationalConfidence)},
+        {"relationshipMaxDepth", std::make_shared<NumberExpr>(
+            static_cast<double>(maxRelationshipDepth))},
+        {"sharedRelationshipCount", std::make_shared<NumberExpr>(
+            static_cast<double>(sharedRelationships))},
         {"similarity", std::make_shared<NumberExpr>(similarity)},
         {"matchedFields", std::make_shared<ArrayExpr>(std::move(matched))},
         {"missingFields", std::make_shared<ArrayExpr>(std::move(missingFields))},
@@ -3186,14 +3538,19 @@ bool Interpreter::evalRelationCompare(const Call& call,
         {"matchedAncestor", std::move(matchedAncestor)},
         {"ancestorDistance", std::make_shared<NumberExpr>(ancestorDistance)},
         {"ancestorEvidence", std::make_shared<ArrayExpr>(
-            std::move(ancestorEvidence))}};
+            std::move(ancestorEvidence))},
+        {"relationshipEvidence", std::make_shared<ArrayExpr>(
+            std::move(relationshipEvidence))},
+        {"relationshipDifferences", std::make_shared<ArrayExpr>(
+            std::move(relationshipDifferences))}};
     const auto evidence = std::make_shared<MapExpr>(std::move(evidenceEntries));
 
     std::vector<MapEntry> relationshipEntries;
     std::unordered_set<std::string> seenRelationships;
     auto appendRelationships = [&](const std::optional<std::uint64_t>& id, const std::string& direction) {
         if (!id) return;
-        for (const auto& relation : memory_.relationshipsFor(*id)) {
+        const auto append = [&](const auto& relationships) {
+          for (const auto& relation : relationships) {
             const std::string relationshipKey =
                 std::to_string(relation.sourceId) + "|" + std::to_string(relation.targetId) + "|" +
                 relation.relationship->debug() + "|" + cloneExprOrNil(relation.degree)->debug() + "|" +
@@ -3206,7 +3563,10 @@ bool Interpreter::evalRelationCompare(const Call& call,
                 {"degree", cloneExprOrNil(relation.degree)},
                 {"confidence", cloneExprOrNil(relation.confidence)},
                 {"direction", std::make_shared<StringExpr>(direction)}})});
-        }
+          }
+        };
+        append(memory_.outgoingRelationships(*id));
+        append(memory_.incomingRelationships(*id));
     };
     appendRelationships(sourceId, "source");
     if (targetId != sourceId) appendRelationships(targetId, "target");
@@ -4235,6 +4595,21 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
             }
         }
         args.push_back(value);
+    }
+
+    if (term.builtinId == BuiltinId::SystemRun) {
+        if (args.size() != 1) {
+            throw InterpreterError("system.run expects one Felidae source string");
+        }
+        const auto source = std::dynamic_pointer_cast<StringExpr>(args.front());
+        if (!source) throw InterpreterError("system.run expects a string source");
+        try {
+            Lexer lexer(source->value);
+            Parser parser(lexer, operators_, currentLoadingFile_.string());
+            return evalExprValue(parser.parseExpressionText(), env, out);
+        } catch (const ParserError& error) {
+            throw InterpreterError(std::string("system.run parse error: ") + error.what());
+        }
     }
 
     if (term.builtinId == BuiltinId::Type) {
@@ -5926,7 +6301,19 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
                                    const std::shared_ptr<Expr>& syntax,
                                    std::unordered_set<SymbolId>& resolving)
         -> std::shared_ptr<Expr> {
+        if (auto ast = std::dynamic_pointer_cast<AstValueExpr>(syntax)) {
+            if (ast->valueKind == AstValueKind::Expression && ast->nodes.size() == 1) {
+                if (const auto nested = std::dynamic_pointer_cast<Expr>(ast->nodes.front())) {
+                    return self(self, nested, resolving);
+                }
+            }
+            return syntax;
+        }
         if (auto variable = std::dynamic_pointer_cast<VarExpr>(syntax)) {
+            if (variable->nameId == InternalSymbol::SystemResultId &&
+                !pipelineResults_.empty()) {
+                return pipelineResults_.back();
+            }
             if (!resolving.insert(variable->nameId).second) return syntax;
             auto local = env.find(variable->name);
             if (local != env.end()) return self(self, local->second, resolving);
@@ -5935,11 +6322,23 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
             return syntax;
         }
         if (auto access = std::dynamic_pointer_cast<AccessExpr>(syntax)) {
+            const auto targetVariable = std::dynamic_pointer_cast<VarExpr>(access->target);
+            if (access->keyId == InternalSymbol::ResultId && targetVariable &&
+                targetVariable->nameId == InternalSymbol::SystemId &&
+                !pipelineResults_.empty()) {
+                return pipelineResults_.back();
+            }
             auto target = self(self, access->target, resolving);
             auto field = findMapValue(target, access->key);
             return field ? self(self, field, resolving) : syntax;
         }
         return syntax;
+    };
+    const auto isRegisteredMixfix = [&](const std::shared_ptr<Expr>& syntax) {
+        const auto nested = std::dynamic_pointer_cast<OperatorExpression>(syntax);
+        if (!nested || nested->coreOperator != CoreOperator::Unknown) return false;
+        const auto* pattern = operators_->findPatternById(nested->patternId);
+        return pattern != nullptr && pattern->isMixfixDeclaration;
     };
     const auto expressionType = [&](const std::shared_ptr<Expr>& syntax) {
         std::unordered_set<SymbolId> resolving;
@@ -5956,6 +6355,11 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
         if (auto nested = std::dynamic_pointer_cast<OperatorExpression>(metadata)) {
             if (nested->coreOperator != CoreOperator::Unknown) {
                 if (isComparisonOperator(nested->coreOperator)) {
+                    return builtinRuntimeType(LanguageTypeId::Bool);
+                }
+                if (nested->coreOperator == CoreOperator::LogicalAnd ||
+                    nested->coreOperator == CoreOperator::LogicalOr ||
+                    nested->coreOperator == CoreOperator::LogicalNot) {
                     return builtinRuntimeType(LanguageTypeId::Bool);
                 }
                 if (nested->coreOperator == CoreOperator::Add ||
@@ -6024,6 +6428,16 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
         for (size_t i = 0; i < captureTypes.size(); ++i) {
             const auto& actual = captureTypes[i];
             const auto& expected = captures[i];
+            if (expected.languageTypeId == LanguageTypeId::Mixfix) {
+                std::unordered_set<SymbolId> resolving;
+                const auto metadata = metadataValue(
+                    metadataValue, expression.capture(i), resolving);
+                if (!isRegisteredMixfix(metadata)) return false;
+                // mixfix is a structural refinement of expr, so it always
+                // outranks the broad code-as-data fallback.
+                score += 120;
+                continue;
+            }
             if (expected.languageTypeId == LanguageTypeId::Expr) {
                 // expr is the generic code-as-data fallback. A concrete fact
                 // type must win when the nested expression has a known result.
@@ -6034,7 +6448,10 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
                 score += 10;
                 continue;
             }
-            if (!actual.known()) continue;
+            // Unknown expression type cannot satisfy a concrete overload.
+            // Previously this path skipped validation, allowing a typed
+            // mixfix overload to win before runtime invocation failed.
+            if (!actual.known()) return false;
             if (expected.languageTypeId == LanguageTypeId::Fact) {
                 if (actual.factTypeId == 0) return false;
                 score += 10;
@@ -6303,13 +6720,18 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
     values.reserve(expression.captureCount());
     for (size_t i = 0; i < expression.captureCount(); ++i) {
         std::shared_ptr<Expr> value;
-        if (selected.overload->captures[i].languageTypeId ==
-            LanguageTypeId::Expr) {
+        const auto captureType = selected.overload->captures[i].languageTypeId;
+        std::unordered_set<SymbolId> resolving;
+        const auto metadata = metadataValue(
+            metadataValue, expression.capture(i), resolving);
+        const bool evaluateNestedMixfix = isRegisteredMixfix(metadata);
+        if (captureType == LanguageTypeId::Expr && !evaluateNestedMixfix) {
             value = std::make_shared<AstValueExpr>(
                 AstValueKind::Expression,
                 std::vector<std::shared_ptr<AstNode>>{expression.capture(i)},
                 astNodeKind(expression.capture(i)));
-        } else if (!evalExprValue(expression.capture(i), env, value)) {
+        } else if (!evalExprValue(
+                       evaluateNestedMixfix ? metadata : expression.capture(i), env, value)) {
             return false;
         }
         values.push_back(std::move(value));
@@ -6317,6 +6739,10 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
     Env methodEnv;
     for (size_t i = 0; i < values.size(); ++i) {
         methodEnv[selected.overload->captures[i].name] = values[i];
+        if (!selected.clause->head.args.empty()) {
+            const auto parameter = makeMethodParamPlan(selected.clause->head.args[i]);
+            methodEnv[parameter.localName] = values[i];
+        }
     }
     Env prototypeEnv;
     for (size_t i = 0; i < values.size(); ++i) {
@@ -6367,16 +6793,20 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
         }
         auto value = resolveExpr(returned->second, solution.env)->clone();
         const ResolvedOperatorType actual = valueType(value);
-        bool validResult = selected.overload->resultType.empty();
-        if (selected.overload->resultLanguageTypeId != LanguageTypeId::Unknown) {
-            validResult = valueMatchesBuiltinType(
-                value, selected.overload->resultLanguageTypeId);
-        } else if (actual.factTypeId != 0) {
-            validResult =
-                (actual.factTypeId == selected.overload->resultTypeId &&
-                 actual.factType == selected.overload->resultType) ||
-                memory_.isCompatibleType(
-                    actual.factType, selected.overload->resultType);
+        bool validResult = true;
+        if (!selected.overload->resultType.empty()) {
+            if (selected.overload->resultLanguageTypeId != LanguageTypeId::Unknown) {
+                validResult = valueMatchesBuiltinType(
+                    value, selected.overload->resultLanguageTypeId);
+            } else if (actual.factTypeId != 0) {
+                validResult =
+                    (actual.factTypeId == selected.overload->resultTypeId &&
+                     actual.factType == selected.overload->resultType) ||
+                    memory_.isCompatibleType(
+                        actual.factType, selected.overload->resultType);
+            } else {
+                validResult = false;
+            }
         }
         if (!validResult) {
             const std::string actualName =
@@ -6427,7 +6857,7 @@ bool Interpreter::compareResolved(const std::shared_ptr<Expr>& left,
 }
 
 bool Interpreter::unifyCall(const Call& goal, const Call& head, Env& env) {
-    if (goal.nameId != head.nameId || goal.name != head.name) return false;
+    if (goal.nameId != head.nameId) return false;
 
     bool headHasNamed = false;
     for (const auto& a : head.args) if (!a.name.empty()) headHasNamed = true;
@@ -6452,7 +6882,7 @@ bool Interpreter::unifyCall(const Call& goal, const Call& head, Env& env) {
 }
 
 std::vector<Env> Interpreter::unifyCallAlternatives(const Call& goal, const Call& head, const Env& env) {
-    if (goal.nameId != head.nameId || goal.name != head.name) return {};
+    if (goal.nameId != head.nameId) return {};
 
     bool headHasNamed = false;
     bool goalHasNamed = false;
@@ -6470,7 +6900,7 @@ std::vector<Env> Interpreter::unifyCallAlternatives(const Call& goal, const Call
         std::vector<const Arg*> candidates;
         if (!goalArg.name.empty()) {
             for (const auto& headArg : head.args) {
-                if (headArg.nameId == goalArg.nameId && headArg.name == goalArg.name) {
+                if (headArg.nameId == goalArg.nameId) {
                     candidates.push_back(&headArg);
                 }
             }
@@ -6496,31 +6926,44 @@ std::vector<Env> Interpreter::unifyCallAlternatives(const Call& goal, const Call
         return result;
     }
 
-    std::vector<Env> states{env};
-    for (size_t i = 0; i < goal.args.size(); ++i) {
-        const Arg& goalArg = goal.args[i];
-        const auto& candidates = candidatesByArg[i];
-
-        std::vector<Env> nextStates;
-        nextStates.reserve(states.size() * candidates.size());
-        for (const auto& state : states) {
-            for (const Arg* candidate : candidates) {
-                Env attempt = state;
-                if (unifyExpr(goalArg.value, candidate->value, attempt)) {
-                    nextStates.push_back(std::move(attempt));
-                }
+    std::vector<Env> results;
+    Env working = env;
+    BindingTrail trail;
+    BindingTrail* previousTrail = activeBindingTrail_;
+    activeBindingTrail_ = &trail;
+    const auto restoreTrail = [&]() {
+        trail.rollback(0);
+        activeBindingTrail_ = previousTrail;
+    };
+    const auto enumerate = [&](const auto& self, size_t argumentIndex) -> void {
+        if (argumentIndex == goal.args.size()) {
+            results.push_back(working);
+            return;
+        }
+        const auto checkpoint = trail.checkpoint();
+        const Arg& goalArg = goal.args[argumentIndex];
+        for (const Arg* candidate : candidatesByArg[argumentIndex]) {
+            trail.rollback(checkpoint);
+            if (unifyExpr(goalArg.value, candidate->value, working)) {
+                self(self, argumentIndex + 1);
             }
         }
-        states = std::move(nextStates);
-        if (states.empty()) return {};
+        trail.rollback(checkpoint);
+    };
+    try {
+        enumerate(enumerate, 0);
+    } catch (...) {
+        restoreTrail();
+        throw;
     }
-    return states;
+    restoreTrail();
+    return results;
 }
 
 const Arg* Interpreter::findArg(const Call& call, const Arg& wanted, size_t index) const {
     if (!wanted.name.empty()) {
         for (const auto& a : call.args) {
-            if (a.nameId == wanted.nameId && a.name == wanted.name) return &a;
+            if (a.nameId == wanted.nameId) return &a;
         }
         if (index < call.args.size() && call.args[index].name.empty()) return &call.args[index];
         return nullptr;
@@ -6547,12 +6990,16 @@ bool Interpreter::unifyExpr(const std::shared_ptr<Expr>& a,
 
     if (auto va = std::dynamic_pointer_cast<VarExpr>(ra)) {
         std::shared_ptr<Expr> value;
-        env[va->name] = evalExprValue(rb, env, value) ? value : rb->clone();
+        value = evalExprValue(rb, env, value) ? value : rb->clone();
+        if (activeBindingTrail_) activeBindingTrail_->assign(env, va->nameId, std::move(value));
+        else env[va->name] = std::move(value);
         return true;
     }
     if (auto vb = std::dynamic_pointer_cast<VarExpr>(rb)) {
         std::shared_ptr<Expr> value;
-        env[vb->name] = evalExprValue(ra, env, value) ? value : ra->clone();
+        value = evalExprValue(ra, env, value) ? value : ra->clone();
+        if (activeBindingTrail_) activeBindingTrail_->assign(env, vb->nameId, std::move(value));
+        else env[vb->name] = std::move(value);
         return true;
     }
 
@@ -6657,6 +7104,10 @@ std::string Interpreter::exprToString(const std::shared_ptr<Expr>& expr, const E
 
 std::shared_ptr<ClauseStmt> Interpreter::standardizeApart(const std::shared_ptr<ClauseStmt>& originalClause) {
     const ClauseStmt& clause = *originalClause;
+    const auto cachedRequirement = clauseRenameRequirements_.find(originalClause.get());
+    if (cachedRequirement != clauseRenameRequirements_.end() && !cachedRequirement->second) {
+        return originalClause;
+    }
     const auto goalNeedsRename = [&](const auto& self, const std::shared_ptr<Goal>& goal) -> bool {
         switch (goal->kind()) {
             case GoalKind::Call:
@@ -6720,6 +7171,7 @@ std::shared_ptr<ClauseStmt> Interpreter::standardizeApart(const std::shared_ptr<
             if (needsRename) break;
         }
     }
+    clauseRenameRequirements_[originalClause.get()] = needsRename;
     if (!needsRename) return originalClause;
     ++standardizedClauses_;
     std::string prefix = makeRenameSymbolPrefix(++renameCounter_);
@@ -7130,9 +7582,10 @@ const std::vector<Interpreter::MethodParamPlan>* Interpreter::hotMethodParamPlan
     return &info.params;
 }
 
-std::shared_ptr<MapExpr> Interpreter::factToMap(const ClauseStmt& clause) {
+Interpreter::FactMaterialization Interpreter::factToMap(const ClauseStmt& clause) {
     std::vector<MapEntry> entries;
     std::vector<MapEntry> inheritedFields;
+    std::vector<std::uint64_t> parentFactIds;
     const auto parentNames = clause.parentNames.empty()
         ? std::vector<std::string>{clause.parentName}
         : clause.parentNames;
@@ -7158,6 +7611,7 @@ std::shared_ptr<MapExpr> Interpreter::factToMap(const ClauseStmt& clause) {
         if (!parentValue) {
             throw InterpreterError("Cannot materialize parent fact/type '" + parentType + "'");
         }
+        parentFactIds.push_back(memory_.fact(*parent).id);
         for (const auto& inherited : parentValue->entries) {
             if (inherited.key == internalSymbolString(InternalSymbolKind::Type) ||
                 inherited.key == internalSymbolString(InternalSymbolKind::Parent)) {
@@ -7200,7 +7654,7 @@ std::shared_ptr<MapExpr> Interpreter::factToMap(const ClauseStmt& clause) {
     }
     auto fact = std::make_shared<MapExpr>(std::move(entries));
     fact->factType = clause.head.name;
-    return fact;
+    return FactMaterialization{std::move(fact), std::move(parentFactIds)};
 }
 
 std::vector<std::shared_ptr<Expr>> Interpreter::valuesForLambdaSource(const std::shared_ptr<Expr>& source,
@@ -7544,6 +7998,7 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
         std::string type;
         std::string parentType;
         std::shared_ptr<MapExpr> value;
+        std::vector<std::uint64_t> parentFactIds;
     };
     std::vector<StagedFact> staged;
     parseProgramFileChunks(normalized, [&](Program&& program) {
@@ -7553,10 +8008,12 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
                 throw InterpreterError("db.sync accepts fact-only .fx sources: " + normalized.string());
             }
             const auto clause = std::static_pointer_cast<ClauseStmt>(statement);
+            auto materialized = factToMap(*clause);
             staged.push_back(StagedFact{
                 clause->head.name,
                 clause->parentName,
-                factToMap(*clause)});
+                std::move(materialized.value),
+                std::move(materialized.parentFactIds)});
         }
     });
 
@@ -7611,7 +8068,8 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
                 row.value,
                 normalized,
                 existing ? std::optional<std::uint64_t>(existing->id) : std::nullopt,
-                existing ? existing->rowVersion + 1 : 1);
+                existing ? existing->rowVersion + 1 : 1,
+                std::move(row.parentFactIds));
             if (!row.parentType.empty()) {
                 memory_.setParent(row.type, row.parentType, normalized);
             }
@@ -7635,7 +8093,7 @@ std::string Interpreter::runtimeMetricsJson() const {
         << "\"factCandidates\":" << factCandidates_ << ","
         << "\"solutionMaterializations\":" << solutionMaterializations_ << ","
         << "\"environmentFramesCreated\":" << envFramePool_.created() << ","
-        << "\"environmentCopies\":" << envFramePool_.copies() << ","
+        << "\"environmentCopies\":" << environmentCopies_ << ","
         << "\"environmentFramesCached\":" << envFramePool_.cached() << ","
         << "\"standardizedClauses\":" << standardizedClauses_ << ","
         << "\"moduleLoads\":" << moduleLoads_ << ","

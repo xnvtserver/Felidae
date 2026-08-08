@@ -112,6 +112,9 @@ $negativeTests = @(
     @{ Name = "reject unknown annotation method"; File = "v2_examples\invalid\invalid_unknown_annotation.fx"; Query = ""; Expect = "Annotation method 'missingAnnotation' is not declared before 'decorated'" },
     @{ Name = "reject impure operator overload"; File = "v2_examples\invalid\invalid_impure_operator_overload.fx"; Query = ""; Expect = "is not transitively pure" },
     @{ Name = "reject operator call before declaration"; File = "v2_examples\invalid\invalid_operator_call_before_declaration.fx"; Query = ""; Expect = "No overload implementation is registered for operator pattern" },
+    @{ Name = "reject redundant mixfix declaration fields"; File = "v2_examples\invalid\invalid_mixfix_redundant_fields.fx"; Query = ""; Expect = "@mixfix derives its identity from the pattern; remove 'operator'" },
+    @{ Name = "reject non-mixfix value for mixfix capture"; File = "v2_examples\invalid\invalid_mixfix_capture_call.fx"; Query = ""; Expect = "No typed overload matches the operator captures" },
+    @{ Name = "reject mixfix call with missing literal anchor"; File = "v2_examples\invalid\invalid_mixfix_missing_anchor.fx"; Query = ""; Expect = "Expected operator anchor 'toward'" },
     @{ Name = "reject factor and factors together"; File = "v2_examples\invalid\invalid_factor_and_factors.fx"; Query = ""; Expect = "cannot use both 'factor' and 'factors'" },
     @{ Name = "reject duplicate Requirement types"; File = "v2_examples\invalid\invalid_duplicate_requirement_types.fx"; Query = ""; Expect = "Duplicate factor type 'BoundaryRequirement'" },
     @{ Name = "reject matcher without RequirementMatch"; File = "v2_examples\invalid\invalid_matcher_wrapper.fx"; Query = ""; Expect = "must return the RequirementMatch wrapper" },
@@ -121,7 +124,7 @@ $negativeTests = @(
     @{ Name = "reject operator fixity mismatch"; File = "v2_examples\invalid\invalid_operator_fixity.fx"; Query = ""; Expect = "Operator pattern shape does not match its declared type" },
     @{ Name = "reject missing cardinality one result"; File = "v2_examples\invalid\invalid_operator_cardinality_one.fx"; Query = ""; Expect = "cardinality 'one' requires exactly one result" },
     @{ Name = "reject matcher visibility above pattern"; File = "v2_examples\invalid\invalid_matcher_visibility.fx"; Query = ""; Expect = "Public operator matcher requires public operator syntax" },
-    @{ Name = "reject explicit operator method parameters"; File = "v2_examples\invalid\invalid_operator_explicit_parameters.fx"; Query = ""; Expect = "receive captures implicitly and cannot declare parameters" },
+    @{ Name = "reject explicit mixfix method parameters"; File = "v2_examples\invalid\invalid_operator_explicit_parameters.fx"; Query = ""; Expect = "@mixfix implementations receive captures implicitly; remove method parameters" },
     @{ Name = "reject invalid fact algorithm"; File = "examples\invalid\fact_invalid_algorithm.fx"; Query = ""; Expect = "FactConfigError: unsupported algorithm 'approximate_magic' before calling native library" },
     @{ Name = "reject invalid fact threshold"; File = "examples\invalid\fact_invalid_threshold.fx"; Query = ""; Expect = "FactConfigError: 'threshold' must be between 0 and 1 before calling native library" },
     @{ Name = "reject invalid fact analysis required fields"; File = "examples\invalid\fact_analysis_invalid_required_fields.fx"; Query = ""; Expect = "expects argument 'required_fields' to be array" },
@@ -183,6 +186,12 @@ $directTests = @(
     @{ Name = "v2 custom operator overload"; Args = @("v2_examples\custom_operator_overload.fx"); Expect = @("combined: 5", "chained: 7", "next_chained: 100") },
     @{ Name = "v2 typed builtin operator overload"; Args = @("v2_examples\typed_builtin_operator_overload.fx"); Expect = @('Element(name: "combined", x: 7, y: 10)', "numeric: 5") },
     @{ Name = "v2 mixfix operator overload"; Args = @("v2_examples\mixfix_operator_overload.fx"); Expect = "{result: 14, nested: 8}" },
+    @{ Name = "v2 nested mixfix overload resolution"; Args = @("v2_examples\nested_mixfix_overload_resolution.fx"); Expect = @('direct: Resolution(kind: "mixfix", value: Built(value: "first:one"))', 'alternate: Resolution(kind: "mixfix", value: Label(value: "second:two"))', 'plain: Resolution(kind: "expr", value: "string_literal")', 'bound: Resolution(kind: "mixfix", value: Built(value: "bound:three"))', 'deep: Resolution(kind: "mixfix", value: Resolution(kind: "mixfix", value: Built(value: "deep:four")))', 'branches: Pair(left: Built(value: "left:five"), right: Label(value: "right:six"))', 'fallback_result: Resolution(kind: "fallback", value: Built(value: "fallback:seven"))') },
+    @{ Name = "v2 deep chained mixfix stress"; Args = @("v2_examples\mixfix_deep_chain_stress.fx"); Expect = @('chain: Stage(depth: 12)', 'assembly: Assembly(depth: 21)') },
+    @{ Name = "v2 mixfix anchor and capture shape matrix"; Args = @("v2_examples\mixfix_shape_matrix.fx"); Expect = @('ending_two: Shape(name: "a-b-operator", first: "a", second: "b")', 'ending_three: Shape(name: "a-b-c-operator", first: "a", second: "b", third: "c")', 'right_adjacent: Shape(name: "a-operator-b-c", first: "a", second: "b", third: "c")', 'interleaved: Shape(name: "a-operator-b-operator-c", first: "a", second: "b", third: "c")', 'leading: Shape(name: "operator-operator-a-b", first: "a", second: "b")', 'multi_word: Shape(name: "a-operator-operator-operator-b-c", first: "a", second: "b", third: "c")') },
+    @{ Name = "v2 heterogeneous mixfix captures and nested dispatch"; Args = @("v2_examples\mixfix_heterogeneous_stress.fx"); Expect = @('{route: "felidae", inspected: "felidae", nested: "felidae"', 'decision: Plan(name: 7, strategy: "accepted")') },
+    @{ Name = "v2 mixfix captures nested mixfix expression"; Args = @("v2_examples\mixfix_nested_expression.fx"); Expect = @("direct: Validation(claim: Explanation(subject: <expr:string_literal>", "bound: Validation(claim: <expr:variable>") },
+    @{ Name = "v2 mixfix pattern shape inference"; Args = @("v2_examples\mixfix_shape_inference.fx"); Expect = "5" },
     @{ Name = "v2 prefix Requirement operator composition"; Args = @("v2_examples\prefix_requirement_operator.fx"); Expect = "7" },
     @{ Name = "v2 leading mixfix operator"; Args = @("v2_examples\leading_mixfix_operator.fx"); Expect = "5" },
     @{ Name = "v2 symbolic operator overload"; Args = @("v2_examples\symbolic_operator_overload.fx"); Expect = "9" },
@@ -191,8 +200,11 @@ $directTests = @(
     @{ Name = "v2 logical operator expressions"; Args = @("v2_examples\logical_operator_expression.fx"); Expect = @("conjunction: true", "disjunction: true", "short_and: false", "short_or: true") },
     @{ Name = "v2 animal fact similarity evidence"; Args = @("v2_examples\animal_fact_similarity_evidence.fx"); Expect = @('evidence: [AnimalSimilarityEvidence(', 'left_type: "TigerFemale"', 'right_type: "CatFemale"', 'common_ancestor: "Mammal"', 'score: 0.612372435695794', 'score: 0.433012701892219', 'common_ancestor: "Tiger"', 'ancestor_similarity: 0.5', 'ancestor_similarity: 0.75', 'property_similarity: 0.75', 'matched_properties: ["legs", "warm_blooded", "diet"', 'differing_properties: ["species", "habitat", "sex", "produces_milk", "nurtures_young"]', 'ancestor_evidence: [AncestorComparisonEvidence(', 'ancestor: "Mammal"', 'ancestor: "Animal"', 'property_evidence: [PropertyComparisonEvidence(', 'status: "matched"', 'status: "conflicting"', 'decisions: {female_tiger_to_female_cat: true', 'male_tiger_to_female_cat: false', 'male_tiger_to_male_cat: true', 'male_tiger_to_female_tiger: true') },
     @{ Name = "v2 fact similarity requires common ancestry"; Args = @("v2_examples\fact_similarity_requires_ancestry.fx"); Expect = '{property_similarity: 1, ancestor_similarity: 0, similarity: 0, common_ancestor: nil}' },
+    @{ Name = "v2 mixfix multi-ancestor fact analysis"; Args = @("v2_examples\mixfix_multi_ancestor_fact_analysis.fx"); Expect = @('SimilarityReport(context: "shared-feline-lineage"', 'common_ancestor: "Feline"', 'SimilarityReport(context: "shared-mammal-lineage"', 'common_ancestor: "Mammal"', 'EvidenceSummary(ancestor_count:') },
+    @{ Name = "v2 fact expression result contract"; Args = @("v2_examples\fact_expression_result_contract.fx"); Expect = @('crisp: true', 'probability: Probability(fact: Cat(name: "sony", legs: 4), chance: 0.2)', 'error: Error(reason: "unsupported classification", code: "UnsupportedMode")', 'derived: Classification(fact: Cat(name: "sony", legs: 4), category: "companion")', 'evidence: [Classification(', 'Evidence(subject: Cat(name: "sony", legs: 4), field: "legs", value: 4)') },
+    @{ Name = "v2 mixfix expert control flow"; Args = @("v2_examples\mixfix_expert_control_flow.fx"); Expect = @('ApprovalDecision(applicant: Applicant(name: "ava"', 'score: 1', 'RuleEvidence(rule: "credit", satisfied: true, contribution: 0.45)', 'Error(reason: "policy evidence did not reach the required score", code: "InsufficientEvidence", subject: Applicant(name: "mira"') },
     @{ Name = "v2 contextual fact intelligence"; Args = @("v2_examples\contextual_fact_intelligence.fx"); Expect = @('felidae: ContextualAnswer(query: "felidae", state: "resolved", learned: true, confidence: 1, crisp: true', 'unlearned: ContextualAnswer(query: "quantum", state: "unknown", learned: false, confidence: 0, crisp: false', 'ambiguous_bank: ContextualAnswer(query: "bank", state: "ambiguous", learned: true, confidence: 0.25, crisp: false', 'financial_bank: ContextualAnswer(query: "bank", state: "context-resolved"', 'article: "a"', 'answer: FinancialBank(', 'sony_legs: QuantityAnswer(query: "how-many", state: "resolved", learned: true, confidence: 1, crisp: true', 'subject: SonyKnowledge(', 'property: "legs", value: 4', 'evidence: [ResolutionEvidence(') },
-    @{ Name = "v2 AST typed methods and postfix operator"; Args = @("v2_examples\ast_typed_methods.fx"); Expect = @('function_call: "call"', 'logical: "logical"', 'arithmetic: "arithmetic"', 'postfix_logical: "logical"', 'annotation: "decorated"') },
+    @{ Name = "v2 AST typed methods and postfix operator"; Args = @("v2_examples\ast_typed_methods.fx"); Expect = @('func_call: "call"', 'logical: "logical"', 'arithmetic: "arithmetic"', 'postfix_logical: "logical"', 'annotation: "decorated"') },
     @{ Name = "v2 imported public operator"; Args = @("v2_examples\imported_public_operator.fx"); Expect = "{blended: 12, difference: 10}" },
     @{ Name = "v2 private operator specializes public operator"; Args = @("v2_examples\private_operator_specialization.fx"); Expect = '"private"' },
     @{ Name = "v2 operator type specificity"; Args = @("v2_examples\operator_type_specificity.fx"); Expect = @('exact: "child"', 'inherited: "parent"') },
@@ -341,7 +353,11 @@ foreach ($test in $tests) {
 foreach ($test in $negativeTests) {
     $output = & $Exe $test.File $test.Query 2>&1
     $text = ($output | Out-String).Trim()
-    $ok = $LASTEXITCODE -ne 0 -and $text -like "*$($test.Expect)*"
+    # Native stderr is formatted into wrapped ErrorRecords by PowerShell.
+    # Matching normalized text keeps the asserted diagnostic contract stable.
+    $normalizedText = $text -replace '\s+', ' '
+    $normalizedExpected = $test.Expect -replace '\s+', ' '
+    $ok = $LASTEXITCODE -ne 0 -and $normalizedText.Contains($normalizedExpected)
 
     if ($ok) {
         Write-Host "[PASS] $($test.Name)"

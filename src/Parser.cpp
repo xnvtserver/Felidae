@@ -57,8 +57,30 @@ bool isNameStartToken(TokenType type) {
     return type == TokenType::Ident || type == TokenType::BuiltinFunction;
 }
 
-bool isOperatorAnchorToken(TokenType type) {
-    return type == TokenType::Ident || type == TokenType::CustomOperator;
+bool isOperatorAnchorToken(const Token& token) {
+    return token.type == TokenType::CustomOperator ||
+           (token.type == TokenType::Ident && token.virtualTokenId != 0);
+}
+
+bool isExpressionStartToken(TokenType type) {
+    switch (type) {
+        case TokenType::Ident:
+        case TokenType::BuiltinFunction:
+        case TokenType::String:
+        case TokenType::Number:
+        case TokenType::True:
+        case TokenType::False:
+        case TokenType::Nil:
+        case TokenType::LParen:
+        case TokenType::LBrace:
+        case TokenType::LBracket:
+        case TokenType::Minus:
+        case TokenType::Plus:
+        case TokenType::Not:
+            return true;
+        default:
+            return false;
+    }
 }
 
 bool isSystemResultExpr(const std::shared_ptr<Expr>& expr) {
@@ -100,12 +122,21 @@ bool containsValueReturnGoal(const std::shared_ptr<Goal>& goal) {
 
 void Parser::ensureToken(size_t index) const {
     while (tokens_.size() <= index && lexer_) {
+        syncLexerVirtualAnchors();
         Token token = lexer_->nextToken();
         const bool end = token.type == TokenType::End;
         rejectUnsupportedToken(token);
         tokens_.push_back(std::move(token));
         if (end) break;
     }
+}
+
+void Parser::syncLexerVirtualAnchors() const {
+    if (!lexer_) return;
+    const std::size_t available = operators_->virtualAnchorCount();
+    if (available <= virtualAnchorCount_) return;
+    lexer_->registerVirtualTokens(operators_->virtualTokensSince(virtualAnchorCount_));
+    virtualAnchorCount_ = available;
 }
 
 const Token& Parser::tokenAt(size_t index) const {
@@ -244,7 +275,8 @@ void Parser::bootstrapOperatorPatterns() {
             continue;
         }
         Call annotation = parseAnnotation();
-        if (annotation.builtinId != BuiltinId::OverloadAnnotation) continue;
+        if (annotation.builtinId != BuiltinId::OverloadAnnotation &&
+            annotation.builtinId != BuiltinId::MixfixAnnotation) continue;
         ParsedOperatorAnnotation parsed;
         try {
             parsed = decodeOperatorAnnotation(annotation);
@@ -255,16 +287,46 @@ void Parser::bootstrapOperatorPatterns() {
         OperatorPatternDefinition pattern;
         pattern.operatorName = parsed.operatorName;
         pattern.pattern = parsed.pattern;
+        for (const auto& capture : parsed.captures) {
+            pattern.captureTypeNames.push_back(capture.type);
+        }
         pattern.precedence = parsed.precedence;
         pattern.associativity = parsed.associativity;
         pattern.fixity = parsed.fixity;
         pattern.hasDeclaredFixity = parsed.hasFixity;
+        pattern.inferFixityFromPattern = parsed.kind == BuiltinId::MixfixAnnotation;
+        pattern.isMixfixDeclaration = parsed.kind == BuiltinId::MixfixAnnotation;
         pattern.visibility = parsed.visibility;
         pattern.module = module_;
         try {
-            operators_->registerPattern(std::move(pattern));
+            registerOperatorPattern(std::move(pattern));
         } catch (const std::runtime_error& error) {
             throw ParserError(error.what());
+        }
+    }
+}
+
+const OperatorPatternDefinition& Parser::registerOperatorPattern(OperatorPatternDefinition pattern) {
+    const auto& registered = operators_->registerPattern(std::move(pattern));
+    if (lexer_) {
+        for (const auto& anchor : registered.anchorLexemes) {
+            for (const auto& lexeme : anchor) {
+                if (lexeme.tokenType == TokenType::Ident) {
+                    lexer_->registerVirtualToken({
+                        lexeme.symbolId, operators_->virtualTokenId(lexeme.symbolId)});
+                }
+            }
+        }
+    }
+    virtualAnchorCount_ = operators_->virtualAnchorCount();
+    markVirtualAnchorsInBufferedTokens();
+    return registered;
+}
+
+void Parser::markVirtualAnchorsInBufferedTokens() {
+    for (auto& token : tokens_) {
+        if (token.type == TokenType::Ident) {
+            token.virtualTokenId = operators_->virtualTokenId(token.symbolId);
         }
     }
 }
@@ -321,7 +383,8 @@ Call Parser::parseAnnotation() {
     const BuiltinId annotationId = builtinIdForName(name);
     parsingOperatorAnnotation_ =
         annotationId == BuiltinId::OverloadAnnotation ||
-        annotationId == BuiltinId::MatcherAnnotation;
+        annotationId == BuiltinId::MatcherAnnotation ||
+        annotationId == BuiltinId::MixfixAnnotation;
     try {
         Call annotation = parseCallFromName(name, false);
         parsingOperatorAnnotation_ = previous;
@@ -438,6 +501,7 @@ std::shared_ptr<ClauseStmt> Parser::parseClause(std::vector<Call> annotations) {
 
 void Parser::prepareOperatorAnnotation(const Call& annotation) {
     if (annotation.builtinId != BuiltinId::OverloadAnnotation &&
+        annotation.builtinId != BuiltinId::MixfixAnnotation &&
         annotation.builtinId != BuiltinId::MatcherAnnotation) {
         return;
     }
@@ -474,13 +538,18 @@ void Parser::prepareOperatorAnnotation(const Call& annotation) {
             OperatorPatternDefinition pattern;
             pattern.operatorName = parsed.operatorName;
             pattern.pattern = parsed.pattern;
+            for (const auto& capture : parsed.captures) {
+                pattern.captureTypeNames.push_back(capture.type);
+            }
             pattern.precedence = parsed.precedence;
             pattern.associativity = parsed.associativity;
             pattern.fixity = parsed.fixity;
             pattern.hasDeclaredFixity = parsed.hasFixity;
+            pattern.inferFixityFromPattern = parsed.kind == BuiltinId::MixfixAnnotation;
+            pattern.isMixfixDeclaration = parsed.kind == BuiltinId::MixfixAnnotation;
             pattern.visibility = parsed.visibility;
             pattern.module = module_;
-            registeredPtr = &operators_->registerPattern(std::move(pattern));
+            registeredPtr = &registerOperatorPattern(std::move(pattern));
         } else {
             if ((parsed.hasPrecedence && parsed.precedence != registeredPtr->precedence) ||
                 (parsed.hasAssociativity && parsed.associativity != registeredPtr->associativity) ||
@@ -677,7 +746,21 @@ std::shared_ptr<Goal> Parser::parseIfGoal() {
     consume(TokenType::If, "Expected if");
     auto conditionExpr = parseOperatorExpr(
         static_cast<int>(OperatorPrecedence::Control), true);
-    auto condition = comparisonGoal(conditionExpr, "Expected comparison expression after if");
+    std::shared_ptr<Goal> condition;
+    if (const auto comparison = std::dynamic_pointer_cast<OperatorExpression>(conditionExpr);
+        comparison && isComparisonOperator(comparison->coreOperator) &&
+        comparison->captureCount() == 2) {
+        condition = std::make_shared<BinaryGoal>(
+            comparison->capture(0),
+            coreOperatorDefinition(comparison->coreOperator).token,
+            comparison->capture(1));
+    } else {
+        // A boolean expression is a valid condition.  Keep the existing
+        // BinaryGoal runtime path by making the truth test explicit.
+        condition = std::make_shared<BinaryGoal>(
+            std::move(conditionExpr), TokenType::EqEq,
+            std::make_shared<BoolExpr>(true));
+    }
     consume(TokenType::Then, "Expected 'then' after if condition");
     if (!matchGoalSeparator()) {
         throw ParserError("Expected a newline after 'then' in if condition");
@@ -942,37 +1025,245 @@ std::shared_ptr<Expr> Parser::parseExpr() {
     return expr;
 }
 
+bool Parser::patternLexemeMatches(size_t position, const PatternLexeme& lexeme) const {
+    if (!hasToken(position)) return false;
+    const Token& token = tokenAt(position);
+    return token.type == lexeme.tokenType &&
+           (lexeme.tokenType != TokenType::Ident || token.symbolId == lexeme.symbolId);
+}
+
+namespace {
+bool patternTypeCanStart(TokenType tokenType, std::string_view typeName) {
+    if (typeName.empty() || typeName == "any" || typeName == "expr" ||
+        typeName == "mixfix" || typeName == "stmts") return true;
+    // Grouped expressions are typed after their inner expression is parsed.
+    // Keep them viable for candidate selection instead of rejecting a valid
+    // pattern before the recursive parser can inspect the value.
+    if (tokenType == TokenType::LParen) return true;
+    if (typeName == "string") return tokenType == TokenType::String;
+    if (typeName == "number" || typeName == "int" || typeName == "float" ||
+        typeName == "decimal" || typeName == "double") {
+        return tokenType == TokenType::Number || tokenType == TokenType::Minus || tokenType == TokenType::Plus;
+    }
+    if (typeName == "bool" || typeName == "boolean") {
+        return tokenType == TokenType::True || tokenType == TokenType::False;
+    }
+    if (typeName == "array") return tokenType == TokenType::LBracket;
+    return tokenType == TokenType::Ident || tokenType == TokenType::BuiltinFunction;
+}
+}
+
+const OperatorPatternDefinition* Parser::selectScoredPattern(
+    const std::vector<const OperatorPatternDefinition*>& candidates,
+    size_t start) const {
+    if (candidates.empty()) return nullptr;
+    if (candidates.size() == 1) return candidates.front();
+
+    // The first capture is a cheap, deterministic discriminator for the
+    // common case of same-anchor patterns (for example string vs number).
+    // Resolve it before scanning later anchors so the parser does not need to
+    // speculate across unrelated expressions.
+    std::vector<const OperatorPatternDefinition*> typeMatches;
+    for (const auto* candidate : candidates) {
+        if (!candidate || candidate->startsWithCapture || candidate->anchorLexemes.empty() ||
+            candidate->captureTypeNames.empty()) continue;
+        size_t cursor = start;
+        bool anchorMatches = true;
+        for (const auto& lexeme : candidate->anchorLexemes.front()) {
+            if (!patternLexemeMatches(cursor, lexeme)) {
+                anchorMatches = false;
+                break;
+            }
+            ++cursor;
+        }
+        if (anchorMatches && hasToken(cursor) &&
+            patternTypeCanStart(tokenAt(cursor).type, candidate->captureTypeNames.front())) {
+            typeMatches.push_back(candidate);
+        }
+    }
+    if (typeMatches.size() == 1) return typeMatches.front();
+
+    const OperatorPatternDefinition* best = nullptr;
+    int bestScore = -1;
+    bool tied = false;
+    for (const auto* candidate : candidates) {
+        if (!candidate || candidate->anchorLexemes.empty()) continue;
+        size_t cursor = start;
+        int score = 0;
+        bool viable = true;
+
+        auto consumeAnchor = [&](size_t anchorIndex) {
+            if (anchorIndex >= candidate->anchorLexemes.size()) return false;
+            for (const auto& lexeme : candidate->anchorLexemes[anchorIndex]) {
+                if (!patternLexemeMatches(cursor, lexeme)) return false;
+                ++cursor;
+                score += 10;
+            }
+            return true;
+        };
+        auto captureStartsCorrectly = [&](size_t captureIndex) {
+            if (!hasToken(cursor)) return false;
+            if (captureIndex >= candidate->captureTypeNames.size()) return true;
+            return patternTypeCanStart(tokenAt(cursor).type,
+                                       candidate->captureTypeNames[captureIndex]);
+        };
+
+        // A trailing pattern is selected after its first capture has already
+        // been parsed as the left operand. Its first literal anchor is at the
+        // current cursor, so do not try to type-check that capture against
+        // the anchor token. Runtime overload dispatch validates the complete
+        // typed capture set after evaluation.
+        size_t firstCapture = 0;
+        if (candidate->startsWithCapture) {
+            if (!consumeAnchor(0)) viable = false;
+            firstCapture = 1;
+        } else if (!consumeAnchor(0)) {
+            viable = false;
+        }
+        for (size_t captureIndex = firstCapture;
+             viable && captureIndex < candidate->captureNames.size(); ++captureIndex) {
+            if (!captureStartsCorrectly(captureIndex)) {
+                viable = false;
+                break;
+            }
+            score += 2;
+            const auto following = captureIndex < candidate->followingAnchorIndices.size()
+                ? candidate->followingAnchorIndices[captureIndex]
+                : std::nullopt;
+            if (!following) {
+                if (hasToken(cursor)) ++cursor;
+                continue;
+            }
+            bool found = false;
+            int nesting = 0;
+            for (size_t probe = cursor; hasToken(probe); ++probe) {
+                const auto type = tokenAt(probe).type;
+                if (type == TokenType::Newline && nesting == 0) break;
+                if (type == TokenType::LParen || type == TokenType::LBracket || type == TokenType::LBrace) ++nesting;
+                else if (type == TokenType::RParen || type == TokenType::RBracket || type == TokenType::RBrace) {
+                    if (nesting > 0) --nesting;
+                }
+                if (nesting == 0) {
+                    cursor = probe;
+                    if (consumeAnchor(*following)) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (!found) viable = false;
+        }
+        if (!viable) continue;
+        score += static_cast<int>(candidate->captureNames.size());
+        if (best == nullptr || score > bestScore) {
+            best = candidate;
+            bestScore = score;
+            tied = false;
+        } else if (score == bestScore) {
+            tied = true;
+        }
+    }
+    if (tied && best != nullptr) {
+        throw ParserError("Ambiguous operator syntax at '" + peek().text +
+                          "'; add a distinguishing anchor or capture type");
+    }
+    return best;
+}
+
+std::shared_ptr<Expr> Parser::tryParseDeferredTrailingCapturePattern(
+    const std::shared_ptr<Expr>& firstCapture,
+    int minimumPrecedence,
+    bool stopAtThen) {
+    struct ParsedCandidate {
+        const OperatorPatternDefinition* pattern = nullptr;
+        std::shared_ptr<Expr> expression;
+        size_t end = 0;
+    };
+    const size_t start = pos_;
+    std::vector<ParsedCandidate> parsed;
+    for (const auto* pattern : operators_->deferredTrailingCapturePatterns(module_)) {
+        if (!pattern) continue;
+        pos_ = start;
+        try {
+            std::vector<OperatorCapture> captures;
+            captures.reserve(pattern->captureNames.size());
+            captures.emplace_back(pattern->captureNames.front(), firstCapture->clone());
+            for (size_t captureIndex = 1; captureIndex < pattern->captureNames.size(); ++captureIndex) {
+                const auto following = captureIndex < pattern->followingAnchorIndices.size()
+                    ? pattern->followingAnchorIndices[captureIndex]
+                    : std::nullopt;
+                const PatternLexeme* stopAnchor = nullptr;
+                if (following && *following < pattern->anchorLexemes.size() &&
+                    !pattern->anchorLexemes[*following].empty()) {
+                    stopAnchor = &pattern->anchorLexemes[*following].front();
+                }
+                const bool adjacentCapture = stopAnchor == nullptr &&
+                    captureIndex + 1 < pattern->captureNames.size();
+                auto captured = adjacentCapture
+                    ? parseUnaryExpr()
+                    : parseOperatorExpr(
+                        std::max(minimumPrecedence, static_cast<int>(pattern->precedence)),
+                        stopAtThen, stopAnchor);
+                captures.emplace_back(pattern->captureNames[captureIndex], std::move(captured));
+                if (stopAnchor) consumePatternAnchor(pattern->anchorLexemes[*following]);
+            }
+            auto expression = std::make_shared<OperatorExpression>(
+                pattern->operatorId, pattern->patternId, std::move(captures));
+            expression->module = module_;
+            parsed.push_back(ParsedCandidate{pattern, std::move(expression), pos_});
+        } catch (const ParserError&) {
+            // This candidate did not consume its required literal anchors.
+        }
+    }
+    pos_ = start;
+    if (parsed.empty()) return {};
+    if (parsed.size() > 1) {
+        throw ParserError("Ambiguous operator syntax at '" + peek().text +
+                          "'; add a distinguishing anchor or capture type");
+    }
+    pos_ = parsed.front().end;
+    return std::move(parsed.front().expression);
+}
+
 std::shared_ptr<Expr> Parser::parseOperatorExpr(int minimumPrecedence,
                                                bool stopAtThen,
-                                               std::string_view stopAnchor) {
+                                               const PatternLexeme* stopAnchor) {
     const int startLine = peek().line;
     const int startColumn = peek().column;
     auto expr = parseUnaryExpr();
     while (true) {
         const size_t beforeSeparator = pos_;
         consumeLogicalNewline();
-        if (!stopAnchor.empty() && peek().text == stopAnchor) {
+        if (stopAnchor && patternLexemeMatches(pos_, *stopAnchor)) {
             pos_ = beforeSeparator;
             break;
         }
         auto definition = infixOperatorForToken(peek().type);
         const auto customPatterns = definition || parsingOperatorAnnotation_ ||
-            !isOperatorAnchorToken(peek().type)
+            !isOperatorAnchorToken(peek())
             ? std::vector<const OperatorPatternDefinition*>{}
-            : operators_->trailingPatternsForAnchor(peek().text, module_);
-        if (customPatterns.size() > 1) {
-            throw ParserError("Ambiguous operator syntax at '" + peek().text + "'");
-        }
+            : operators_->trailingPatternsForAnchor(peek().type, peek().symbolId, module_);
+        const auto* selectedPattern = selectScoredPattern(customPatterns, pos_);
         if (definition && stopAtThen && definition->id == CoreOperator::Then) {
             pos_ = beforeSeparator;
             break;
         }
         const int precedence = definition
             ? static_cast<int>(definition->precedence)
-            : customPatterns.empty() ? -1 : static_cast<int>(customPatterns.front()->precedence);
-        if (!definition && customPatterns.empty() && peek().type == TokenType::Ident &&
+            : selectedPattern == nullptr ? -1 : static_cast<int>(selectedPattern->precedence);
+        if (!definition && selectedPattern == nullptr &&
+            isExpressionStartToken(peek().type)) {
+            if (auto deferred = tryParseDeferredTrailingCapturePattern(
+                    expr, minimumPrecedence, stopAtThen)) {
+                expr = std::move(deferred);
+                continue;
+            }
+        }
+        if (!definition && customPatterns.empty() && stopAnchor == nullptr &&
+            peek().type == TokenType::Ident &&
             pos_ > 0 && previous().line == peek().line) {
-            throw ParserError("Unknown or inaccessible operator '" + peek().text + "'");
+            throw ParserError("Unknown or inaccessible operator '" + peek().text +
+                              "'");
         }
         if (precedence < minimumPrecedence) {
             pos_ = beforeSeparator;
@@ -981,7 +1272,7 @@ std::shared_ptr<Expr> Parser::parseOperatorExpr(int minimumPrecedence,
 
         advance();
         const auto associativity = definition
-            ? definition->associativity : customPatterns.front()->associativity;
+            ? definition->associativity : selectedPattern->associativity;
         const int rightMinimum = associativity == OperatorAssociativity::Right
             ? precedence
             : precedence + 1;
@@ -989,11 +1280,8 @@ std::shared_ptr<Expr> Parser::parseOperatorExpr(int minimumPrecedence,
             auto right = parseOperatorExpr(rightMinimum, stopAtThen, stopAnchor);
             expr = makeOperatorExpr(definition->id, std::move(expr), std::move(right));
         } else {
-            const auto& pattern = *customPatterns.front();
-            const auto firstSpace = pattern.anchors.front().find(' ');
-            if (firstSpace != std::string::npos) {
-                consumePatternAnchor(pattern.anchors.front().substr(firstSpace + 1));
-            }
+            const auto& pattern = *selectedPattern;
+            consumePatternAnchor(pattern.anchorLexemes.front(), 1);
             std::vector<OperatorCapture> captures;
             captures.emplace_back(pattern.captureNames[0], std::move(expr));
             if (pattern.fixity == OperatorFixity::Postfix) {
@@ -1003,20 +1291,20 @@ std::shared_ptr<Expr> Parser::parseOperatorExpr(int minimumPrecedence,
                 continue;
             }
             for (size_t captureIndex = 1; captureIndex < pattern.captureNames.size(); ++captureIndex) {
-                std::string_view nextStop;
-                const auto& nextAnchor = pattern.followingAnchors[captureIndex];
-                if (!nextAnchor.empty()) {
-                    const auto split = nextAnchor.find(' ');
-                    nextStop = std::string_view(nextAnchor).substr(0, split);
+                const PatternLexeme* nextStop = nullptr;
+                const auto anchorIndex = captureIndex;
+                if (anchorIndex < pattern.anchorLexemes.size() &&
+                    !pattern.anchorLexemes[anchorIndex].empty()) {
+                    nextStop = &pattern.anchorLexemes[anchorIndex].front();
                 }
-                const bool adjacentCapture = nextAnchor.empty() &&
+                const bool adjacentCapture = nextStop == nullptr &&
                     captureIndex + 1 < pattern.captureNames.size();
                 auto captured = adjacentCapture
                     ? parseUnaryExpr()
                     : parseOperatorExpr(rightMinimum, stopAtThen, nextStop);
                 captures.emplace_back(pattern.captureNames[captureIndex], std::move(captured));
-                if (!nextAnchor.empty()) {
-                    consumePatternAnchor(nextAnchor);
+                if (nextStop) {
+                    consumePatternAnchor(pattern.anchorLexemes[captureIndex]);
                 }
             }
             expr = std::make_shared<OperatorExpression>(
@@ -1028,19 +1316,16 @@ std::shared_ptr<Expr> Parser::parseOperatorExpr(int minimumPrecedence,
     return expr;
 }
 
-void Parser::consumePatternAnchor(std::string_view anchor) {
-    std::size_t cursor = 0;
-    while (cursor < anchor.size()) {
-        while (cursor < anchor.size() && anchor[cursor] == ' ') ++cursor;
-        if (cursor >= anchor.size()) break;
-        const auto end = anchor.find(' ', cursor);
-        const std::string word(anchor.substr(cursor, end == std::string_view::npos
-            ? anchor.size() - cursor : end - cursor));
-        if (peek().text != word) {
-            throw ParserError("Expected operator anchor '" + word + "'");
+void Parser::consumePatternAnchor(const std::vector<PatternLexeme>& lexemes,
+                                  size_t offset) {
+    if (offset > lexemes.size()) {
+        throw ParserError("Invalid compiled mixfix anchor offset");
+    }
+    for (size_t index = offset; index < lexemes.size(); ++index) {
+        if (!patternLexemeMatches(pos_, lexemes[index])) {
+            throw ParserError("Expected operator anchor '" + lexemes[index].spelling + "'");
         }
         advance();
-        cursor = end == std::string_view::npos ? anchor.size() : end + 1;
     }
 }
 
@@ -1063,26 +1348,39 @@ std::shared_ptr<Expr> Parser::parseAccessExpr() {
 }
 
 std::shared_ptr<Expr> Parser::parseUnaryExpr() {
-    const auto leadingPatterns = parsingOperatorAnnotation_ ||
-        !isOperatorAnchorToken(peek().type)
+    auto leadingPatterns = parsingOperatorAnnotation_ ||
+        !isOperatorAnchorToken(peek())
         ? std::vector<const OperatorPatternDefinition*>{}
-        : operators_->leadingPatternsForAnchor(peek().text, module_);
-    if (leadingPatterns.size() > 1) {
-        throw ParserError("Ambiguous leading operator syntax at '" + peek().text + "'");
+        : operators_->leadingPatternsForAnchor(peek().type, peek().symbolId, module_);
+    if (!leadingPatterns.empty() && !leadingPatterns.front()->captureNames.empty()) {
+        const auto& anchor = leadingPatterns.front()->anchorLexemes.front();
+        const size_t operandStart = pos_ + anchor.size();
+        if (!hasToken(operandStart) || !isExpressionStartToken(tokenAt(operandStart).type)) {
+            leadingPatterns.clear();
+        }
     }
-    if (!leadingPatterns.empty()) {
-        const auto& pattern = *leadingPatterns.front();
-        consumePatternAnchor(pattern.anchors.front());
+    const auto* selectedPattern = selectScoredPattern(leadingPatterns, pos_);
+    if (selectedPattern != nullptr && !selectedPattern->captureNames.empty()) {
+        const std::size_t operandStart = pos_ + selectedPattern->anchorLexemes.front().size();
+        if (!hasToken(operandStart) || !isExpressionStartToken(tokenAt(operandStart).type)) {
+            selectedPattern = nullptr;
+        }
+    }
+    if (selectedPattern != nullptr) {
+        const auto& pattern = *selectedPattern;
+        consumePatternAnchor(pattern.anchorLexemes.front());
         std::vector<OperatorCapture> captures;
         captures.reserve(pattern.captureNames.size());
         for (size_t captureIndex = 0; captureIndex < pattern.captureNames.size(); ++captureIndex) {
-            std::string_view nextStop;
-            const auto& nextAnchor = pattern.followingAnchors[captureIndex];
-            if (!nextAnchor.empty()) {
-                const auto split = nextAnchor.find(' ');
-                nextStop = std::string_view(nextAnchor).substr(0, split);
+            const PatternLexeme* nextStop = nullptr;
+            const auto following = captureIndex < pattern.followingAnchorIndices.size()
+                ? pattern.followingAnchorIndices[captureIndex]
+                : std::nullopt;
+            if (following && *following < pattern.anchorLexemes.size() &&
+                !pattern.anchorLexemes[*following].empty()) {
+                nextStop = &pattern.anchorLexemes[*following].front();
             }
-            const bool adjacentCapture = nextAnchor.empty() &&
+            const bool adjacentCapture = nextStop == nullptr &&
                 captureIndex + 1 < pattern.captureNames.size();
             captures.emplace_back(
                 pattern.captureNames[captureIndex],
@@ -1090,8 +1388,8 @@ std::shared_ptr<Expr> Parser::parseUnaryExpr() {
                     ? parseUnaryExpr()
                     : parseOperatorExpr(
                         static_cast<int>(pattern.precedence), false, nextStop));
-            if (!nextAnchor.empty()) {
-                consumePatternAnchor(nextAnchor);
+            if (nextStop) {
+                consumePatternAnchor(pattern.anchorLexemes[*following]);
             }
         }
         auto expression = std::make_shared<OperatorExpression>(

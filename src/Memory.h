@@ -23,6 +23,7 @@ struct FactRecord {
     SymbolId typeId = 0;
     std::string parentType;
     SymbolId parentTypeId = 0;
+    std::vector<std::uint64_t> parentFactIds;
     std::filesystem::path origin;
     std::size_t stableHash = 0;
     // Logical identity and physical row version are intentionally separate.
@@ -105,13 +106,16 @@ public:
     std::vector<std::shared_ptr<MapExpr>> missingDependencies(std::uint64_t sourceId) const;
     bool hasDependencyCycle(std::uint64_t sourceId) const;
     std::vector<FactRelationship> relationshipsFor(std::uint64_t factId) const;
+    const std::vector<FactRelationship>& outgoingRelationships(std::uint64_t factId) const;
+    const std::vector<FactRelationship>& incomingRelationships(std::uint64_t factId) const;
 
     size_t addFact(std::string type,
                    std::string parentType,
                    std::shared_ptr<MapExpr> value,
                    std::filesystem::path origin = {},
                    std::optional<std::uint64_t> logicalId = std::nullopt,
-                   std::uint64_t rowVersion = 1);
+                   std::uint64_t rowVersion = 1,
+                   std::vector<std::uint64_t> parentFactIds = {});
     void setParent(const std::string& child, const std::string& parent);
     void setParent(const std::string& child,
                    const std::string& parent,

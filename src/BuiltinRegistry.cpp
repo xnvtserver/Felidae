@@ -50,6 +50,7 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::ConsoleWrite, "console:write", BuiltinEffect::WritesExternalState},
         {BuiltinId::SystemPrint, "system:print", BuiltinEffect::WritesExternalState},
         {BuiltinId::SystemPrintf, "system:printf", BuiltinEffect::WritesExternalState},
+        {BuiltinId::SystemRun, "system:run", BuiltinEffect::Volatile},
         {BuiltinId::FileReadFile, "file:readFile", BuiltinEffect::ReadsExternalState},
         {BuiltinId::FileReadLines, "file:readLines", BuiltinEffect::ReadsExternalState},
         {BuiltinId::FileReadLine, "file:readLine", BuiltinEffect::ReadsExternalState},
@@ -141,7 +142,8 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::MlDot, "ml:dot", BuiltinEffect::Pure},
         {BuiltinId::MlMeanSquaredError, "ml:meanSquaredError", BuiltinEffect::Pure},
         {BuiltinId::OverloadAnnotation, "overload", BuiltinEffect::Pure},
-        {BuiltinId::MatcherAnnotation, "matcher", BuiltinEffect::Pure}
+        {BuiltinId::MatcherAnnotation, "matcher", BuiltinEffect::Pure},
+        {BuiltinId::MixfixAnnotation, "mixfix", BuiltinEffect::Pure}
 };
 
 constexpr std::size_t builtinInfoCount() {
