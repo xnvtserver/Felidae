@@ -9,6 +9,7 @@ struct ParsedOperatorAnnotation {
     BuiltinId kind = BuiltinId::Unknown;
     std::string operatorName;
     std::string pattern;
+    std::vector<std::string> anchors;
     std::vector<OperatorTypeBinding> captures;
     std::vector<OperatorTypeBinding> factors;
     std::vector<OperatorTypeBinding> produces;
@@ -33,6 +34,7 @@ struct ParsedOperatorAnnotation {
 
 inline ParsedOperatorAnnotation decodeOperatorAnnotation(const Call& annotation) {
     if (annotation.builtinId != BuiltinId::OverloadAnnotation &&
+        annotation.builtinId != BuiltinId::MixfixAnnotation &&
         annotation.builtinId != BuiltinId::MatcherAnnotation) {
         throw std::runtime_error("Call is not an operator annotation");
     }
@@ -116,9 +118,94 @@ inline ParsedOperatorAnnotation decodeOperatorAnnotation(const Call& annotation)
     parsed.hasResult = static_cast<bool>(argument("result"));
     parsed.hasFactor = static_cast<bool>(argument("factor"));
     parsed.hasFactors = static_cast<bool>(argument("factors"));
-    parsed.operatorName = text("operator", true);
+    parsed.operatorName = text(
+        "operator", annotation.builtinId != BuiltinId::MixfixAnnotation);
     parsed.pattern = text("pattern");
-    parsed.captures = bindings("captures");
+    if (annotation.builtinId == BuiltinId::MixfixAnnotation) {
+        if (argument("operator")) {
+            throw std::runtime_error(
+                "@mixfix derives its identity from the pattern; remove 'operator'");
+        }
+        if (argument("captures")) {
+            throw std::runtime_error(
+                "@mixfix declares captures inside 'pattern'; remove 'captures'");
+        }
+        if (parsed.pattern.empty()) {
+            throw std::runtime_error("@mixfix requires a typed pattern string");
+        }
+        std::string normalized;
+        std::size_t cursor = 0;
+        while (cursor < parsed.pattern.size()) {
+            const std::size_t open = parsed.pattern.find('{', cursor);
+            if (open == std::string::npos) {
+                normalized.append(parsed.pattern, cursor, std::string::npos);
+                break;
+            }
+            normalized.append(parsed.pattern, cursor, open - cursor);
+            const std::size_t close = parsed.pattern.find('}', open + 1);
+            if (close == std::string::npos) {
+                throw std::runtime_error("@mixfix pattern has an unterminated capture");
+            }
+            std::string declaration = parsed.pattern.substr(open + 1, close - open - 1);
+            const std::size_t colon = declaration.find(':');
+            if (colon == std::string::npos) {
+                throw std::runtime_error("@mixfix captures must use '{name: type}'");
+            }
+            auto trim = [](std::string value) {
+                const auto first = value.find_first_not_of(" \t");
+                const auto last = value.find_last_not_of(" \t");
+                if (first == std::string::npos) return std::string{};
+                return value.substr(first, last - first + 1);
+            };
+            const std::string name = trim(declaration.substr(0, colon));
+            const std::string type = trim(declaration.substr(colon + 1));
+            if (name.empty() || type.empty() || !isFelidaeTypeAnnotationName(type)) {
+                throw std::runtime_error("@mixfix capture requires a valid '{name: type}' declaration");
+            }
+            const SymbolId nameId = symbolIdForName(name);
+            for (const auto& existing : parsed.captures) {
+                if (existing.nameId == nameId) {
+                    throw std::runtime_error("@mixfix repeats capture '" + name + "'");
+                }
+            }
+            parsed.captures.push_back({name, nameId, type, symbolIdForName(type),
+                                       languageTypeIdForName(type)});
+            normalized += "{" + name + "}";
+            cursor = close + 1;
+        }
+        parsed.pattern = std::move(normalized);
+        if (parsed.operatorName.empty()) {
+            // A mixfix declaration is identified by its pattern.  Derive a
+            // stable display/lookup name from its first literal anchor so the
+            // annotation does not need a redundant operator field.
+            std::size_t anchorStart = 0;
+            while (anchorStart < parsed.pattern.size()) {
+                while (anchorStart < parsed.pattern.size() &&
+                       (parsed.pattern[anchorStart] == ' ' ||
+                        parsed.pattern[anchorStart] == '\t')) {
+                    ++anchorStart;
+                }
+                if (anchorStart >= parsed.pattern.size() || parsed.pattern[anchorStart] != '{') break;
+                const auto close = parsed.pattern.find('}', anchorStart + 1);
+                if (close == std::string::npos) {
+                    throw std::runtime_error("@mixfix pattern has an unterminated capture");
+                }
+                anchorStart = close + 1;
+            }
+            const auto anchorEnd = parsed.pattern.find_first_of(" \t{", anchorStart);
+            if (anchorStart >= parsed.pattern.size() || anchorStart == anchorEnd) {
+                throw std::runtime_error(
+                    "@mixfix pattern must contain a literal operator anchor");
+            }
+            parsed.operatorName = parsed.pattern.substr(
+                anchorStart,
+                anchorEnd == std::string::npos
+                    ? std::string::npos : anchorEnd - anchorStart);
+        }
+    }
+    if (annotation.builtinId != BuiltinId::MixfixAnnotation) {
+        parsed.captures = bindings("captures");
+    }
     if (parsed.hasFactor && parsed.hasFactors) {
         throw std::runtime_error("@" + annotation.name + " cannot use both 'factor' and 'factors'");
     }
@@ -131,6 +218,7 @@ inline ParsedOperatorAnnotation decodeOperatorAnnotation(const Call& annotation)
     else if (precedence == "multiplicative") parsed.precedence = OperatorPrecedence::Multiplicative;
     else if (precedence == "ordering") parsed.precedence = OperatorPrecedence::Ordering;
     else if (precedence == "prefix") parsed.precedence = OperatorPrecedence::Prefix;
+    else if (precedence == "postfix") parsed.precedence = OperatorPrecedence::Postfix;
     else if (precedence == "relationship" || precedence.empty()) {}
     else throw std::runtime_error("Unknown operator precedence '" + precedence + "'");
 

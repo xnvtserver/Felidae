@@ -232,6 +232,7 @@ private:
     std::unordered_map<std::string, std::shared_ptr<ThreadTask>> threadTasks_;
     mutable std::mutex threadMutex_;
     EnvFramePool envFramePool_;
+    BindingTrail* activeBindingTrail_ = nullptr;
     size_t solveEpoch_ = 0;
     std::uint64_t programGeneration_ = 1;
     std::unordered_map<SymbolId, std::uint64_t> symbolGenerations_;
@@ -249,7 +250,9 @@ private:
     std::size_t unificationAttempts_ = 0;
     std::size_t factCandidates_ = 0;
     std::size_t solutionMaterializations_ = 0;
+    std::size_t environmentCopies_ = 0;
     std::size_t standardizedClauses_ = 0;
+    std::unordered_map<const ClauseStmt*, bool> clauseRenameRequirements_;
     std::size_t moduleLoads_ = 0;
     std::size_t nativeCalls_ = 0;
     std::size_t nativeFactProjectionCalls_ = 0;
@@ -404,6 +407,7 @@ private:
         const std::shared_ptr<TableEvaluation>& negativeEvaluation) const;
 
     std::shared_ptr<ClauseStmt> standardizeApart(const std::shared_ptr<ClauseStmt>& clause);
+    Env copyExecutionEnvironment(const Env& source);
     bool exprNeedsRename(const std::shared_ptr<Expr>& expr) const;
     Call renameCall(const Call& call, const std::string& prefix);
     std::shared_ptr<Goal> renameGoal(const std::shared_ptr<Goal>& goal, const std::string& prefix);
@@ -419,7 +423,11 @@ private:
     MethodParamPlan makeMethodParamPlan(const Arg& param) const;
     std::vector<MethodParamPlan> buildMethodParamPlan(const ClauseStmt& clause) const;
     const std::vector<MethodParamPlan>* hotMethodParamPlan(const std::shared_ptr<ClauseStmt>& clause);
-    std::shared_ptr<MapExpr> factToMap(const ClauseStmt& clause);
+    struct FactMaterialization {
+        std::shared_ptr<MapExpr> value;
+        std::vector<std::uint64_t> parentFactIds;
+    };
+    FactMaterialization factToMap(const ClauseStmt& clause);
     std::shared_ptr<ArrayExpr> materializeFactSelection(const std::shared_ptr<Expr>& selection);
     const std::vector<std::string>& typeAncestry(const std::string& type) const;
     const std::unordered_map<std::string, std::size_t>& typeAncestorDistances(

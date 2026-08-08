@@ -154,21 +154,33 @@ std::shared_ptr<MapExpr> FactMemory::materializeFact(
             additionalParents->second.begin(),
             additionalParents->second.end());
     }
-    for (const auto& parentType : parentTypes) {
+    for (std::size_t parentIndex = 0; parentIndex < parentTypes.size(); ++parentIndex) {
+        const auto& parentType = parentTypes[parentIndex];
         const SymbolId parentId = symbolIdForName(parentType);
         const auto parentRelation = store.relations.find(parentId);
         if (parentRelation == store.relations.end() ||
             !parentRelation->second) continue;
-        const auto parentRow = std::find_if(
-            parentRelation->second->rows.begin(),
-            parentRelation->second->rows.end(),
-            [&](const std::size_t candidate) {
-                return candidate < store.facts.size() &&
-                    store.facts.at(candidate).active &&
-                    store.facts.at(candidate).type == parentType;
-            });
-        if (parentRow == parentRelation->second->rows.end()) continue;
-        const auto parent = materializeFact(store, *parentRow);
+        std::optional<std::size_t> explicitParentRow;
+        if (parentIndex < record.parentFactIds.size()) {
+            const auto parentIdRow = store.factIndexById.find(record.parentFactIds[parentIndex]);
+            if (parentIdRow && *parentIdRow < store.facts.size() &&
+                store.facts.at(*parentIdRow).active &&
+                store.facts.at(*parentIdRow).type == parentType) {
+                explicitParentRow = *parentIdRow;
+            }
+        }
+        const auto parentRow = explicitParentRow ?
+            parentRelation->second->rows.end() : std::find_if(
+                parentRelation->second->rows.begin(),
+                parentRelation->second->rows.end(),
+                [&](const std::size_t candidate) {
+                    return candidate < store.facts.size() &&
+                        store.facts.at(candidate).active &&
+                        store.facts.at(candidate).type == parentType;
+                });
+        if (!explicitParentRow && parentRow == parentRelation->second->rows.end()) continue;
+        const auto parent = materializeFact(store,
+            explicitParentRow ? *explicitParentRow : *parentRow);
         if (!parent) continue;
         for (const auto& inherited : parent->entries) {
             if (inherited.keyId == InternalSymbol::TypeId ||
@@ -599,6 +611,20 @@ std::vector<FactRelationship> FactMemory::relationshipsFor(std::uint64_t factId)
     return result;
 }
 
+const std::vector<FactRelationship>& FactMemory::outgoingRelationships(
+    std::uint64_t factId) const {
+    static const std::vector<FactRelationship> empty;
+    const auto it = data_->attachments->relationshipsBySource.find(factId);
+    return it == data_->attachments->relationshipsBySource.end() ? empty : it->second;
+}
+
+const std::vector<FactRelationship>& FactMemory::incomingRelationships(
+    std::uint64_t factId) const {
+    static const std::vector<FactRelationship> empty;
+    const auto it = data_->attachments->relationshipsByTarget.find(factId);
+    return it == data_->attachments->relationshipsByTarget.end() ? empty : it->second;
+}
+
 std::vector<size_t> FactMemory::selectionIndexes(const std::string& type,
                                                   const std::string& property,
                                                   const std::shared_ptr<Expr>& value,
@@ -747,7 +773,8 @@ size_t FactMemory::addFact(std::string type,
                            std::shared_ptr<MapExpr> value,
                            std::filesystem::path origin,
                            std::optional<std::uint64_t> logicalId,
-                           std::uint64_t rowVersion) {
+                           std::uint64_t rowVersion,
+                           std::vector<std::uint64_t> parentFactIds) {
     if (!value) throw std::invalid_argument("Fact value cannot be null");
     const SymbolId typeId = symbolIdForName(type);
     const SymbolId parentTypeId = parentType.empty() ? 0 : symbolIdForName(parentType);
@@ -761,6 +788,7 @@ size_t FactMemory::addFact(std::string type,
         typeId,
         std::move(parentType),
         parentTypeId,
+        std::move(parentFactIds),
         std::move(origin),
         structuralHash,
         rowVersion,

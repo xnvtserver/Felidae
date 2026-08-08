@@ -23,11 +23,17 @@ public:
     explicit Parser(std::vector<Token> tokens,
                     std::shared_ptr<OperatorRegistry> operators = std::make_shared<OperatorRegistry>(),
                     std::string module = {})
-        : tokens_(std::move(tokens)), operators_(std::move(operators)), module_(std::move(module)) {}
+        : tokens_(std::move(tokens)), operators_(std::move(operators)), module_(std::move(module)) {
+        virtualAnchorCount_ = operators_->virtualAnchorCount();
+        markVirtualAnchorsInBufferedTokens();
+    }
     explicit Parser(Lexer& lexer,
                     std::shared_ptr<OperatorRegistry> operators = std::make_shared<OperatorRegistry>(),
                     std::string module = {})
-        : lexer_(&lexer), operators_(std::move(operators)), module_(std::move(module)) {}
+        : lexer_(&lexer), operators_(std::move(operators)), module_(std::move(module)) {
+        lexer_->registerVirtualTokens(operators_->virtualTokens());
+        virtualAnchorCount_ = operators_->virtualAnchorCount();
+    }
 
     Program parseProgram();
     void parseProgram(const std::function<void(std::shared_ptr<Statement>)>& consume);
@@ -49,8 +55,10 @@ private:
     size_t anonymousCounter_ = 0;
     bool parsingOperatorAnnotation_ = false;
     std::uint64_t nodeCounter_ = 0;
+    mutable std::size_t virtualAnchorCount_ = 0;
 
     void ensureToken(size_t index) const;
+    void syncLexerVirtualAnchors() const;
     const Token& tokenAt(size_t index) const;
     bool hasToken(size_t index) const;
     const Token& peek() const;
@@ -103,8 +111,19 @@ private:
     std::shared_ptr<Expr> parseExpr();
     std::shared_ptr<Expr> parseOperatorExpr(int minimumPrecedence,
                                            bool stopAtThen = false,
-                                           std::string_view stopAnchor = {});
-    void consumePatternAnchor(std::string_view anchor);
+                                           const PatternLexeme* stopAnchor = nullptr);
+    bool patternLexemeMatches(size_t position, const PatternLexeme& lexeme) const;
+    const OperatorPatternDefinition* selectScoredPattern(
+        const std::vector<const OperatorPatternDefinition*>& candidates,
+        size_t start) const;
+    std::shared_ptr<Expr> tryParseDeferredTrailingCapturePattern(
+        const std::shared_ptr<Expr>& firstCapture,
+        int minimumPrecedence,
+        bool stopAtThen);
+    void consumePatternAnchor(const std::vector<PatternLexeme>& lexemes,
+                              size_t offset = 0);
+    const OperatorPatternDefinition& registerOperatorPattern(OperatorPatternDefinition pattern);
+    void markVirtualAnchorsInBufferedTokens();
     std::shared_ptr<Expr> parseAccessExpr();
     std::shared_ptr<Expr> parseUnaryExpr();
     std::shared_ptr<Expr> parsePrimaryExpr();

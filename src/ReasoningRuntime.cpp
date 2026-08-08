@@ -1021,10 +1021,44 @@ bool Interpreter::evalReasoningGrade(
             reasoningMapValue(evidence, "__type"));
         if (!type ||
             (type->value != "Evidence" &&
-             type->value != "FuzzyMembership")) {
+             type->value != "FuzzyMembership" &&
+             type->value != "Comparison")) {
             throw InterpreterError(
-                "Reasoning.grade entries must be Evidence(...) or "
-                "FuzzyMembership(...)");
+                "Reasoning.grade entries must be Evidence(...), "
+                "FuzzyMembership(...), or Comparison(...)");
+        }
+        if (type->value == "Comparison") {
+            const auto similarity = std::dynamic_pointer_cast<NumberExpr>(
+                reasoningMapValue(evidence, "similarity"));
+            const auto confidenceValue = std::dynamic_pointer_cast<NumberExpr>(
+                reasoningMapValue(evidence, "relationalConfidence"));
+            const auto contradictory = std::dynamic_pointer_cast<BoolExpr>(
+                reasoningMapValue(evidence, "contradictory"));
+            const auto conflicting = std::dynamic_pointer_cast<ArrayExpr>(
+                reasoningMapValue(evidence, "conflictingFields"));
+            if (!similarity || !finiteUnitInterval(similarity->value)) {
+                throw InterpreterError(
+                    "Comparison evidence similarity must be finite and between 0 and 1");
+            }
+            const double reliability = confidenceValue
+                ? confidenceValue->value : 1.0;
+            if (!finiteUnitInterval(reliability)) {
+                throw InterpreterError(
+                    "Comparison evidence relationalConfidence must be between 0 and 1");
+            }
+            const bool opposed = (contradictory && contradictory->value) ||
+                (conflicting && !conflicting->items.empty());
+            confidence = std::max(confidence, reliability);
+            if (opposed) {
+                hasOpposition = true;
+                opposition = std::max(opposition,
+                    (1.0 - similarity->value) * reliability);
+            }
+            if (similarity->value > 0.0) {
+                hasSupport = true;
+                support = std::max(support, similarity->value * reliability);
+            }
+            continue;
         }
         const auto degree = std::dynamic_pointer_cast<NumberExpr>(
             reasoningMapValue(evidence, "degree"));

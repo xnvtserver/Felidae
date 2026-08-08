@@ -1,31 +1,22 @@
 amount := 3
 
 inspect(value: expr) =>
-    if type(value) == "function_call" then
+    if type(value) == "func_call" then
         return "call"
     else
         return type(value)
 
 validateDeclaration(target: stmt, body: stmts) =>
-    where type(target) == "method_declaration"
-    where type(body) == "statement_block"
+    where type(target) == "func"
+    where type(body) == "stmts"
     return true
 
 @validateDeclaration()
 decorated() =>
     return "decorated"
 
-@overload(
-    operator: inspectExpression,
-    pattern: "{value} inspected",
-    type: postfix,
-    captures: {value: expr},
-    result: string,
-    precedence: prefix,
-    associativity: none,
-    cardinality: one,
-    effects: pure,
-    visibility: private
+@mixfix(
+    pattern: "{value: expr} inspected"
 )
 inspectExpressionKind() =>
     return type(value)
@@ -37,7 +28,7 @@ main() =>
     postfixLogical := (2 < 3) inspected
     testing := inspect(value: print("Hello"))
     return (
-        function_call: functionCall,
+        func_call: functionCall,
         logical: logical,
         arithmetic: arithmetic,
         postfix_logical: postfixLogical,

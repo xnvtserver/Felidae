@@ -104,7 +104,7 @@ Mammal.membership(input: Mammal, against: Mammal) =>
     visibility: private
 )
 compareMammals() =>
-    comparison := Relation.compare(left: left, right: right)
+    comparison := Relation.compare(left: left, right: right, max_depth: 8)
     evidence := comparison.evidence
     return AnimalSimilarityEvidence(
         left_type: type(left),

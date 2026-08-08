@@ -7,6 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Felidae {
@@ -23,6 +24,8 @@ public:
 
     Token nextToken();
     std::vector<Token> tokenize();
+    void registerVirtualToken(VirtualTokenDefinition token);
+    void registerVirtualTokens(const std::vector<VirtualTokenDefinition>& tokens);
 
 private:
     std::unique_ptr<std::istringstream> ownedInput_;
@@ -33,6 +36,7 @@ private:
     bool endEmitted_ = false;
     int nestingDepth_ = 0;
     bool emittedLogicalNewline_ = false;
+    std::unordered_map<SymbolId, VirtualTokenId> virtualTokens_;
     int line_ = 1;
     int col_ = 1;
 

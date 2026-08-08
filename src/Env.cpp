@@ -9,6 +9,26 @@ constexpr std::size_t kMaxPooledEnvBuckets = 4096;
 
 }
 
+void BindingTrail::assign(Env& env, SymbolId id, std::shared_ptr<Expr> value) {
+    const auto found = env.values_.find(id);
+    entries_.push_back(Entry{
+        &env,
+        id,
+        found != env.values_.end(),
+        found == env.values_.end() ? nullptr : found->second});
+    env.values_[id] = std::move(value);
+}
+
+void BindingTrail::rollback(Checkpoint checkpoint) {
+    while (entries_.size() > checkpoint) {
+        Entry entry = std::move(entries_.back());
+        entries_.pop_back();
+        if (!entry.env) continue;
+        if (entry.existed) entry.env->values_[entry.id] = std::move(entry.previous);
+        else entry.env->values_.erase(entry.id);
+    }
+}
+
 Env cloneEnv(const Env& env) {
     // Runtime values are immutable. A branch needs its own binding directory,
     // not deep copies of every bound value graph.

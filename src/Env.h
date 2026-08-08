@@ -46,20 +46,47 @@ public:
     std::shared_ptr<Expr>& operator[](const std::string& name) {
         return values_[symbolIdForName(name)];
     }
-    std::shared_ptr<Expr>& operator[](SymbolId id) { return values_[id]; }
+    std::shared_ptr<Expr>& operator[](SymbolId id) {
+        return values_[id];
+    }
     std::size_t erase(const std::string& name) {
         return values_.erase(symbolIdForName(name));
     }
-    std::size_t erase(SymbolId id) { return values_.erase(id); }
+    std::size_t erase(SymbolId id) {
+        return values_.erase(id);
+    }
     void clear() { values_.clear(); }
     void reserve(std::size_t size) { values_.reserve(size); }
     template <typename Iterator>
-    void insert(Iterator begin, Iterator end) { values_.insert(begin, end); }
+    void insert(Iterator begin, Iterator end) {
+        values_.insert(begin, end);
+    }
     std::size_t size() const { return values_.size(); }
     std::size_t bucket_count() const { return values_.bucket_count(); }
 
 private:
+    friend class BindingTrail;
     Map values_;
+};
+
+// Reversible bindings for recursive search. Values remain shared and
+// immutable; only changed symbol slots are recorded.
+class BindingTrail {
+public:
+    using Checkpoint = std::size_t;
+
+    Checkpoint checkpoint() const { return entries_.size(); }
+    void assign(Env& env, SymbolId id, std::shared_ptr<Expr> value);
+    void rollback(Checkpoint checkpoint);
+
+private:
+    struct Entry {
+        Env* env = nullptr;
+        SymbolId id = 0;
+        bool existed = false;
+        std::shared_ptr<Expr> previous;
+    };
+    std::vector<Entry> entries_;
 };
 
 class GlobalEnv {
