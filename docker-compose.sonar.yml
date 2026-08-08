@@ -1,0 +1,49 @@
+services:
+  sonarqube:
+    image: sonarqube:latest
+    container_name: felidae-sonarqube
+    ports:
+      - "9000:9000"
+    environment:
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_logs:/opt/sonarqube/logs
+      - sonarqube_extensions:/opt/sonarqube/extensions
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/api/system/status | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  sonar-scanner:
+    build:
+      context: .
+      dockerfile: docker/sonar-scanner/Dockerfile
+    profiles: ["scan"]
+    depends_on:
+      sonarqube:
+        condition: service_healthy
+    environment:
+      SONAR_HOST_URL: http://sonarqube:9000
+      # Compose interpolates profile services during `up sonarqube`, so the
+      # token cannot be required here. The helper script validates it before
+      # it starts the scanner profile.
+      SONAR_TOKEN: ${SONAR_TOKEN:-}
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    command:
+      - bash
+      - -lc
+      - >-
+        cmake -S . -B build/sonar -G Ninja -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON &&
+        cmake --build build/sonar --target felidae &&
+        sonar-scanner
+
+volumes:
+  sonarqube_data:
+  sonarqube_logs:
+  sonarqube_extensions:
