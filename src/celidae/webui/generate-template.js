@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Regenerates ../GeneratedVisualizerAssets.h from template.html, its two
+// Regenerates runtime assets from template.html, its two
 // stylesheets (input.css via Tailwind, template.css verbatim), plus the
 // npm-installed cytoscape/chart.js/heroicons packages in this directory's
 // node_modules. Celidae's --html output embeds the result directly, so the
@@ -14,11 +14,14 @@
 
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const { execFileSync } = require("child_process");
 
 const here = __dirname;
 const repoRoot = path.resolve(here, "..", "..", "..");
-const outPath = path.join(repoRoot, "src", "celidae", "GeneratedVisualizerAssets.h");
+const outputDir = process.env.FELIDAE_ASSET_OUTPUT_DIR || path.join(repoRoot, "src", "celidae", "webui");
+const outHtmlPath = path.join(outputDir, "visualizer.template.html");
+const outCssPath = path.join(outputDir, "visualizer.css");
 
 const ICONS = {
   __ICON_MAP__: "map",
@@ -85,7 +88,9 @@ function compileTailwind() {
       "(requires Node.js - install it from https://nodejs.org if 'npm'/'npx' is not recognized)."
     );
   }
-  const outCssPath = path.join(here, ".output.css");
+  // OneDrive can briefly lock files created beside the source tree. Generate
+  // the transient compiler output in the OS temp directory instead.
+  const outCssPath = path.join(os.tmpdir(), `felidae-celidae-${process.pid}.css`);
   execFileSync(
     process.execPath,
     [cliEntry, "-i", path.join(here, "input.css"), "-o", outCssPath, "--minify"],
@@ -94,15 +99,6 @@ function compileTailwind() {
   const css = fs.readFileSync(outCssPath, "utf8");
   fs.rmSync(outCssPath, { force: true });
   return css;
-}
-
-function pickRawStringDelimiter(content) {
-  const candidates = ["CELIDAEUI", "CELIDAEUI2", "CELIDAEUI3", "CELIDAEWEB", "CELIDAEWEB2"];
-  for (const candidate of candidates) {
-    if (candidate.length > 16) continue;
-    if (!content.includes(`)${candidate}"`)) return candidate;
-  }
-  throw new Error("no collision-free raw string delimiter found among candidates");
 }
 
 function main() {
@@ -118,7 +114,6 @@ function main() {
 
   if (!html.includes("__TAILWIND_CSS__")) throw new Error("Template is missing __TAILWIND_CSS__");
   const tailwindCss = compileTailwind();
-  html = html.replace("__TAILWIND_CSS__", () => tailwindCss);
 
   // template.css is plain CSS and is inlined verbatim: it defines the theme
   // custom properties and styles elements cytoscape and ECharts create at
@@ -130,7 +125,9 @@ function main() {
     throw new Error(`Missing ${templateCssPath}`);
   }
   const templateCss = fs.readFileSync(templateCssPath, "utf8");
-  html = html.replace("__TEMPLATE_CSS__", () => templateCss);
+  html = html.replace("<style>__TAILWIND_CSS__</style>\n<style>__TEMPLATE_CSS__</style>",
+    "<style>__CELIDAE_CSS__</style>");
+  if (!html.includes("__CELIDAE_CSS__")) throw new Error("Template is missing CSS asset placeholder");
 
   for (const [token, iconName] of Object.entries(ICONS)) {
     if (!html.includes(token)) throw new Error(`Template is missing placeholder ${token}`);
@@ -150,29 +147,11 @@ function main() {
     if (!html.includes(token)) throw new Error(`Template is missing placeholder ${token}`);
   }
 
-  const delimiter = pickRawStringDelimiter(html);
-  const header = `// GENERATED FILE - do not edit by hand.
-// Regenerate with (requires Node.js):
-//   cd src/celidae/webui && npm install && npm run generate
-// Source: src/celidae/webui/template.html + input.css (Tailwind source) +
-// template.css (plain CSS, inlined verbatim) +
-// cytoscape + echarts + heroicons (see src/celidae/webui/package.json for
-// exact versions).
-#pragma once
-
-namespace Felidae::Celidae {
-
-// The __DATA_<TYPE>__ tokens (one per DiagramType) are substituted by
-// standaloneHtml() at runtime with that view's JSON payload, or with a JSON
-// null for a view the caller did not ask for.
-inline constexpr const char* kVisualizerTemplate = R"${delimiter}(${html})${delimiter}";
-
-} // namespace Felidae::Celidae
-`;
-
-  fs.mkdirSync(path.dirname(outPath), { recursive: true });
-  fs.writeFileSync(outPath, header, "utf8");
-  console.log(`generate-template: wrote ${header.length} chars -> ${outPath}`);
+  fs.mkdirSync(path.dirname(outHtmlPath), { recursive: true });
+  fs.writeFileSync(outHtmlPath, html, "utf8");
+  fs.writeFileSync(outCssPath, `${tailwindCss}\n${templateCss}`, "utf8");
+  console.log(`generate-template: wrote ${html.length} chars -> ${outHtmlPath}`);
+  console.log(`generate-template: wrote ${tailwindCss.length + templateCss.length} chars -> ${outCssPath}`);
 }
 
 main();

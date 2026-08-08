@@ -2,7 +2,7 @@
   "name": "celidae-webui",
   "private": true,
   "version": "1.0.0",
-  "description": "Celidae's own JS/icon dependencies for its self-contained --html visualizer. Not part of the C++ build; run 'npm run generate' after changing template.html or upgrading a dependency to regenerate the checked-in ../GeneratedVisualizerAssets.h.",
+  "description": "Celidae's UI assets. Run 'npm run generate' after changing template.html, CSS, or a dependency to regenerate the runtime template and stylesheet.",
   "scripts": {
     "generate": "node generate-template.js"
   },
