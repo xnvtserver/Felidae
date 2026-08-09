@@ -1,7 +1,11 @@
 #include "Memory.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cmath>
+#include <ctime>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -311,11 +315,15 @@ FactMemoryStats FactMemory::stats() const {
     result.generation = data_->generation;
     result.adaptiveEqualityIndexes = adaptiveEqualityIndexes_;
     result.adaptiveIndexBuildMicros = adaptiveIndexBuildMicros_;
+    result.temporalLineages = data_->temporalLineageIndexes.size();
     for (std::size_t index = 0; index < data_->facts.size(); ++index) {
         const auto& fact = data_->facts.at(index);
         ++result.rowVersions;
         if (fact.active) ++result.activeFacts;
         else ++result.tombstonedFacts;
+        const auto state = temporalStateInData(*data_, index, static_cast<std::int64_t>(std::time(nullptr)));
+        if (state == TemporalState::Past) ++result.temporalPastFacts;
+        else if (state == TemporalState::Future) ++result.temporalFutureFacts;
     }
     for (const auto& entry : data_->relations) {
         if (!entry.second) continue;
@@ -350,6 +358,195 @@ const FactMemory::Data& FactMemory::dataForSnapshot(std::uint64_t snapshotGenera
         throw std::runtime_error("FactSelection snapshot expired; materialize or recreate the selection");
     }
     return *found->second;
+}
+
+bool FactMemory::parseTemporalValue(const std::shared_ptr<Expr>& value, std::int64_t& out) {
+    if (const auto number = std::dynamic_pointer_cast<NumberExpr>(value)) {
+        if (!std::isfinite(number->value) || std::floor(number->value) != number->value) return false;
+        const auto raw = static_cast<std::int64_t>(number->value);
+        // A four-digit numeric value is commonly a calendar year. Larger
+        // values are already Unix seconds (or milliseconds) and retain their
+        // original temporal ordering.
+        if (raw >= 1900 && raw <= 9999) {
+            const auto daysFromCivil = [](int year, unsigned month, unsigned day) {
+                year -= month <= 2;
+                const int era = (year >= 0 ? year : year - 399) / 400;
+                const unsigned yoe = static_cast<unsigned>(year - era * 400);
+                const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+                const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+                return static_cast<std::int64_t>(era * 146097 + static_cast<int>(doe) - 719468);
+            };
+            out = daysFromCivil(static_cast<int>(raw), 1, 1) * 86400;
+        } else if (std::llabs(raw) > 100000000000LL) {
+            out = raw / 1000;
+        } else {
+            out = raw;
+        }
+        return true;
+    }
+    const auto text = std::dynamic_pointer_cast<StringExpr>(value);
+    if (!text || text->value.size() < 10) return false;
+    const auto parseDigits = [&](size_t offset, size_t count, int& parsed) {
+        if (offset + count > text->value.size()) return false;
+        parsed = 0;
+        for (size_t i = 0; i < count; ++i) {
+            const unsigned char c = static_cast<unsigned char>(text->value[offset + i]);
+            if (!std::isdigit(c)) return false;
+            parsed = parsed * 10 + static_cast<int>(c - '0');
+        }
+        return true;
+    };
+    int year = 0;
+    int monthValue = 0;
+    int dayValue = 0;
+    if (text->value[4] != '-' || text->value[7] != '-' ||
+        !parseDigits(0, 4, year) || !parseDigits(5, 2, monthValue) ||
+        !parseDigits(8, 2, dayValue) || year < 1 || monthValue < 1 ||
+        monthValue > 12 || dayValue < 1 || dayValue > 31) {
+        return false;
+    }
+    const auto daysFromCivil = [](int y, unsigned m, unsigned d) {
+        y -= m <= 2;
+        const int era = (y >= 0 ? y : y - 399) / 400;
+        const unsigned yoe = static_cast<unsigned>(y - era * 400);
+        const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+        const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        return static_cast<std::int64_t>(era * 146097 + static_cast<int>(doe) - 719468);
+    };
+    std::int64_t seconds = daysFromCivil(
+        year, static_cast<unsigned>(monthValue), static_cast<unsigned>(dayValue)) * 86400;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+    if (text->value.size() >= 19) {
+        if ((text->value[10] != 'T' && text->value[10] != ' ') ||
+            text->value[13] != ':' || text->value[16] != ':' ||
+            !parseDigits(11, 2, hour) || !parseDigits(14, 2, minute) ||
+            !parseDigits(17, 2, second)) return false;
+        if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) return false;
+        seconds += hour * 3600 + minute * 60 + second;
+    }
+    out = seconds;
+    return true;
+}
+
+TemporalOrigin FactMemory::temporalOriginFor(const std::shared_ptr<MapExpr>& value) {
+    if (!value) return TemporalOrigin::Observed;
+    for (const auto& entry : value->entries) {
+        if (entry.key != "fx:provenance") {
+            continue;
+        }
+        const auto text = std::dynamic_pointer_cast<StringExpr>(entry.value);
+        if (!text) continue;
+        std::string origin = text->value;
+        std::transform(origin.begin(), origin.end(), origin.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        if (origin == "scheduled") return TemporalOrigin::Scheduled;
+        if (origin == "derived") return TemporalOrigin::Derived;
+        if (origin == "predicted" || origin == "prediction") return TemporalOrigin::Predicted;
+        if (origin == "required") return TemporalOrigin::Required;
+    }
+    return TemporalOrigin::Observed;
+}
+
+FactTemporalMetadata FactMemory::temporalMetadataFor(
+    const std::string& type,
+    std::uint64_t logicalId,
+    const std::shared_ptr<MapExpr>& value,
+    const std::shared_ptr<MapExpr>& temporalMetadata,
+    std::int64_t registrationTime,
+    std::uint64_t registrationSequence) {
+    FactTemporalMetadata metadata;
+    metadata.registrationTime = registrationTime;
+    metadata.effectiveTime = registrationTime;
+    metadata.registrationSequence = registrationSequence;
+    metadata.origin = temporalOriginFor(temporalMetadata);
+    std::string lineagePart;
+    if (logicalId != 0) lineagePart = "fact:" + std::to_string(logicalId);
+    if (temporalMetadata) {
+        for (const auto& entry : temporalMetadata->entries) {
+            if (entry.key == "fx:effective_at" || entry.key == "fx:effective_time" ||
+                entry.key == "fx:timestamp" || entry.key == "fx:time") {
+                std::int64_t parsed = 0;
+                if (parseTemporalValue(entry.value, parsed)) {
+                    metadata.effectiveTime = parsed;
+                    metadata.hasExplicitEffectiveTime = true;
+                    break;
+                }
+            }
+        }
+    }
+    // Public identity determines lineage. Metadata only controls time and
+    // provenance, never the fact's semantic identity.
+    for (const auto& entry : value->entries) {
+        if (entry.key == "fx:effective_at" || entry.key == "fx:effective_time" ||
+            entry.key == "fx:timestamp" || entry.key == "fx:time") {
+            continue;
+        }
+        if (lineagePart.empty() &&
+            (entry.key == "id" || entry.key == "uuid" || entry.key == "identity" || entry.key == "key")) {
+            lineagePart = entry.key + ":" + (entry.value ? entry.value->debug() : std::string("nil"));
+        }
+    }
+    if (lineagePart.empty()) lineagePart = "row:" + std::to_string(registrationSequence);
+    metadata.lineageKey = type + "\x1f" + lineagePart;
+    return metadata;
+}
+
+TemporalState FactMemory::temporalStateInData(const Data& store,
+                                               size_t index,
+                                               std::int64_t reasoningTime) const {
+    if (index >= store.facts.size()) return TemporalState::Past;
+    if (reasoningTime == 0) reasoningTime = static_cast<std::int64_t>(std::time(nullptr));
+    const auto& record = store.facts.at(index);
+    if (record.temporal.effectiveTime > reasoningTime) return TemporalState::Future;
+    const auto lineage = store.temporalLineageIndexes.find(record.temporal.lineageKey);
+    if (lineage == store.temporalLineageIndexes.end() || !lineage->second) return TemporalState::Current;
+    const FactRecord* current = nullptr;
+    for (const size_t row : *lineage->second) {
+        if (row >= store.facts.size()) continue;
+        const auto& candidate = store.facts.at(row);
+        if (candidate.temporal.effectiveTime > reasoningTime) continue;
+        if (!current || candidate.temporal.effectiveTime > current->temporal.effectiveTime ||
+            (candidate.temporal.effectiveTime == current->temporal.effectiveTime &&
+             candidate.temporal.registrationSequence > current->temporal.registrationSequence)) {
+            current = &candidate;
+        }
+    }
+    return current == &record ? TemporalState::Current : TemporalState::Past;
+}
+
+TemporalState FactMemory::temporalState(size_t index,
+                                        std::int64_t reasoningTime,
+                                        std::uint64_t snapshotGeneration) const {
+    return temporalStateInData(dataForSnapshot(snapshotGeneration), index, reasoningTime);
+}
+
+std::vector<size_t> FactMemory::currentFactIndexes(const std::vector<size_t>& candidates,
+                                                    std::uint64_t snapshotGeneration) const {
+    const Data& store = dataForSnapshot(snapshotGeneration);
+    std::vector<size_t> current;
+    current.reserve(candidates.size());
+    for (const size_t index : candidates) {
+        if (index >= store.facts.size() || !store.facts.at(index).active) continue;
+        if (temporalStateInData(store, index, 0) == TemporalState::Current) current.push_back(index);
+    }
+    return current;
+}
+
+std::vector<size_t> FactMemory::relevantPastFactIndexes(const std::string& type,
+                                                         SymbolId typeId,
+                                                         std::uint64_t snapshotGeneration) const {
+    const Data& store = dataForSnapshot(snapshotGeneration);
+    std::vector<size_t> past;
+    for (size_t index = 0; index < store.facts.size(); ++index) {
+        const auto& record = store.facts.at(index);
+        if (!isCompatibleTypeInData(store, record.type, type)) continue;
+        if (temporalStateInData(store, index, 0) == TemporalState::Past) past.push_back(index);
+    }
+    (void)typeId;
+    return past;
 }
 
 const FactRecord& FactMemory::snapshotFact(std::uint64_t snapshotGeneration, size_t index) const {
@@ -476,6 +673,23 @@ std::shared_ptr<MapExpr> FactMemory::factValueById(std::uint64_t id) const {
     const auto& fact = data_->facts.at(*indexed);
     if (!fact.active) return {};
     return materializeFact(*data_, *indexed);
+}
+
+std::optional<size_t> FactMemory::factIndexById(
+    std::uint64_t id,
+    std::uint64_t snapshotGeneration) const {
+    const Data& store = dataForSnapshot(snapshotGeneration);
+    return store.factIndexById.find(id);
+}
+
+std::vector<size_t> FactMemory::temporalLineageIndexesForFact(
+    size_t index,
+    std::uint64_t snapshotGeneration) const {
+    const Data& store = dataForSnapshot(snapshotGeneration);
+    if (index >= store.facts.size()) return {};
+    const auto found = store.temporalLineageIndexes.find(store.facts.at(index).temporal.lineageKey);
+    if (found == store.temporalLineageIndexes.end() || !found->second) return {};
+    return *found->second;
 }
 
 bool FactMemory::addDependency(std::uint64_t sourceId, std::shared_ptr<MapExpr> required) {
@@ -775,7 +989,8 @@ size_t FactMemory::addFact(std::string type,
                            std::optional<std::uint64_t> logicalId,
                            std::uint64_t rowVersion,
                            std::vector<std::uint64_t> parentFactIds,
-                           std::vector<SymbolId> designations) {
+                           std::vector<SymbolId> designations,
+                           std::shared_ptr<MapExpr> temporalMetadata) {
     if (!value) throw std::invalid_argument("Fact value cannot be null");
     const SymbolId typeId = symbolIdForName(type);
     const SymbolId parentTypeId = parentType.empty() ? 0 : symbolIdForName(parentType);
@@ -821,6 +1036,13 @@ size_t FactMemory::addFact(std::string type,
     }
     const std::uint64_t factId = logicalId ? *logicalId : data_->nextFactId++;
     if (logicalId && *logicalId >= data_->nextFactId) data_->nextFactId = *logicalId + 1;
+    const auto temporal = temporalMetadataFor(
+        type,
+        logicalId.value_or(0),
+        value,
+        temporalMetadata,
+        static_cast<std::int64_t>(std::time(nullptr)),
+        data_->nextTemporalSequence++);
     auto& record = data_->facts.append(FactRecord{
         factId,
         std::move(type),
@@ -833,6 +1055,7 @@ size_t FactMemory::addFact(std::string type,
         structuralHash,
         rowVersion,
         data_->generation + 1,
+        temporal,
         0,
         true});
     const size_t index = data_->facts.size() - 1;
@@ -1146,12 +1369,25 @@ void FactMemory::rebuildIndexes(
     data_->factIndexById.clear();
     data_->factsByOrigin.clear();
     data_->designationIndexes.clear();
+    data_->temporalLineageIndexes.clear();
     data_->typeNamesById.clear();
     data_->relations.clear();
     for (size_t index = 0; index < data_->facts.size(); ++index) {
         if (data_->facts.at(index).active && index < values.size()) {
             indexFact(index, values[index]);
         }
+    }
+    // Inactive rows retained for a live lineage are temporal history, not
+    // ordinary query/index rows. Keep only their lineage membership here.
+    for (size_t index = 0; index < data_->facts.size(); ++index) {
+        const auto& fact = data_->facts.at(index);
+        if (fact.active) continue;
+        auto& lineageRows = data_->temporalLineageIndexes[fact.temporal.lineageKey];
+        if (!lineageRows) lineageRows = std::make_shared<std::vector<size_t>>();
+        else if (lineageRows.use_count() != 1) {
+            lineageRows = std::make_shared<std::vector<size_t>>(*lineageRows);
+        }
+        lineageRows->push_back(index);
     }
     data_->childrenByParent.clear();
     for (const auto& entry : data_->parentOf) {
@@ -1312,6 +1548,12 @@ void FactMemory::indexFact(
     }
     rememberTypeName(fact.typeId, fact.type);
     data_->factIndexById.assign(fact.id, index);
+    auto& lineageRows = data_->temporalLineageIndexes[fact.temporal.lineageKey];
+    if (!lineageRows) lineageRows = std::make_shared<std::vector<size_t>>();
+    else if (lineageRows.use_count() != 1) {
+        lineageRows = std::make_shared<std::vector<size_t>>(*lineageRows);
+    }
+    lineageRows->push_back(index);
     for (const SymbolId designation : fact.designations) {
         if (designation == 0) continue;
         auto& rows = data_->designationIndexes[designation];
@@ -1425,12 +1667,17 @@ void FactMemory::compactInactiveIfSafe() {
         tombstones * 2 < data_->facts.size()) return;
 
     ensureUnique();
+    std::unordered_set<std::string> liveLineages;
+    for (std::size_t index = 0; index < data_->facts.size(); ++index) {
+        const auto& fact = data_->facts.at(index);
+        if (fact.active) liveLineages.insert(fact.temporal.lineageKey);
+    }
     FactRows compacted;
     std::vector<std::shared_ptr<MapExpr>> compactedValues;
     compactedValues.reserve(data_->facts.size() - tombstones);
     for (std::size_t index = 0; index < data_->facts.size(); ++index) {
         const auto& fact = data_->facts.at(index);
-        if (fact.active) {
+        if (fact.active || liveLineages.count(fact.temporal.lineageKey) > 0) {
             compactedValues.push_back(materializeFact(*data_, index));
             compacted.append(fact);
         }

@@ -128,6 +128,10 @@ public:
 
     std::optional<std::uint64_t> logicalFactId(const std::shared_ptr<Expr>& value) const;
     std::shared_ptr<MapExpr> factValueById(std::uint64_t id) const;
+    std::optional<size_t> factIndexById(std::uint64_t id,
+                                        std::uint64_t snapshotGeneration = 0) const;
+    std::vector<size_t> temporalLineageIndexesForFact(size_t index,
+                                                       std::uint64_t snapshotGeneration = 0) const;
     bool addDependency(std::uint64_t sourceId, std::shared_ptr<MapExpr> required);
     bool addRelationship(std::uint64_t sourceId,
                          std::uint64_t targetId,
@@ -147,7 +151,8 @@ public:
                    std::optional<std::uint64_t> logicalId = std::nullopt,
                    std::uint64_t rowVersion = 1,
                    std::vector<std::uint64_t> parentFactIds = {},
-                   std::vector<SymbolId> designations = {});
+                   std::vector<SymbolId> designations = {},
+                   std::shared_ptr<MapExpr> temporalMetadata = {});
     std::vector<size_t> designationIndexes(const std::vector<SymbolId>& designations,
                                            std::uint64_t snapshotGeneration = 0) const;
     bool hasDesignation(SymbolId designation,
@@ -368,6 +373,7 @@ private:
     static FactTemporalMetadata temporalMetadataFor(const std::string& type,
                                                      std::uint64_t logicalId,
                                                      const std::shared_ptr<MapExpr>& value,
+                                                     const std::shared_ptr<MapExpr>& temporalMetadata,
                                                      std::int64_t registrationTime,
                                                      std::uint64_t registrationSequence);
     static bool parseTemporalValue(const std::shared_ptr<Expr>& value, std::int64_t& out);

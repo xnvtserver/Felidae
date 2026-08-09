@@ -177,11 +177,11 @@ static void runRepl(Interpreter& interpreter) {
                 continue;
             }
             if (isBareIdentifier(line) && interpreter.hasGlobal(line)) {
-                std::cout << interpreter.valueToString(interpreter.evaluateGlobal(line)) << "\n";
+                std::cout << interpreter.valueToDisplayString(interpreter.evaluateGlobal(line)) << "\n";
                 continue;
             }
             auto value = interpreter.evaluateExpressionText(line);
-            std::cout << interpreter.valueToString(value) << "\n";
+            std::cout << interpreter.valueToDisplayString(value) << "\n";
         } catch (const std::exception& e) {
             std::cout << "error: " << e.what() << "\n";
         }
@@ -296,7 +296,7 @@ int main(int argc, char** argv) {
                 repeatedQueryAverageMs =
                     repeatedEntryTotalMs / static_cast<double>(options.benchmarkRepeat - 1);
             }
-            std::cout << interpreter.valueToString(result) << "\n";
+            std::cout << interpreter.valueToDisplayString(result) << "\n";
         } else {
             std::cout << "Program loaded successfully. No main() method found.\n"
                       << "Use a query argument, add a zero-argument entry call, or run with --repl.\n";

@@ -243,6 +243,53 @@ static std::string publicValueString(const std::shared_ptr<Expr>& value) {
     return value->debug();
 }
 
+static bool isStructuredPublicValue(const std::shared_ptr<Expr>& value) {
+    return std::dynamic_pointer_cast<ArrayExpr>(value) ||
+           std::dynamic_pointer_cast<MapExpr>(value);
+}
+
+static std::string publicDisplayString(const std::shared_ptr<Expr>& value, size_t indent = 0) {
+    if (!value) return "nil";
+    const std::string compact = publicValueString(value);
+    const bool structured = isStructuredPublicValue(value);
+    if (!structured || compact.size() + indent <= 96) return compact;
+
+    const std::string padding(indent, ' ');
+    const std::string childPadding(indent + 2, ' ');
+    if (const auto array = std::dynamic_pointer_cast<ArrayExpr>(value)) {
+        std::ostringstream out;
+        out << "[\n";
+        for (size_t index = 0; index < array->items.size(); ++index) {
+            out << childPadding << publicDisplayString(array->items[index], indent + 2);
+            if (index + 1 < array->items.size()) out << ",";
+            out << "\n";
+        }
+        out << padding << "]";
+        return out.str();
+    }
+
+    const auto map = std::dynamic_pointer_cast<MapExpr>(value);
+    const bool fact = !map->factType.empty();
+    std::vector<const MapEntry*> entries;
+    entries.reserve(map->entries.size());
+    for (const auto& entry : map->entries) {
+        if (fact && (entry.keyId == InternalSymbol::TypeId ||
+                     entry.keyId == InternalSymbol::ParentId)) {
+            continue;
+        }
+        entries.push_back(&entry);
+    }
+    std::ostringstream out;
+    out << (fact ? map->factType + "(\n" : "{\n");
+    for (size_t index = 0; index < entries.size(); ++index) {
+        out << childPadding << entries[index]->key << ": "
+            << publicDisplayString(entries[index]->value, indent + 2);
+        if (index + 1 < entries.size()) out << ",";
+        out << "\n";
+    }
+    out << padding << (fact ? ")" : "}");
+    return out.str();
+}
 static std::vector<MapEntry> cloneEntries(const std::vector<MapEntry>& entries) {
     std::vector<MapEntry> copied;
     copied.reserve(entries.size());
@@ -1491,7 +1538,8 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
         auto materialized = factToMap(*clause);
         memory_.addFact(clause->head.name, clause->parentName, materialized.value,
                         currentLoadingFile_, std::nullopt, 1,
-                        std::move(materialized.parentFactIds), clause->designationIds);
+                        std::move(materialized.parentFactIds), clause->designationIds,
+                        std::move(materialized.temporalMetadata));
         const auto& declaredParents = clause->parentNames.empty()
             ? std::vector<std::string>{clause->parentName}
             : clause->parentNames;
@@ -1657,6 +1705,16 @@ std::string Interpreter::valueToString(const std::shared_ptr<Expr>& value) const
     return publicValueString(resolved);
 }
 
+
+std::string Interpreter::valueToDisplayString(const std::shared_ptr<Expr>& value) const {
+    Env env;
+    auto resolved = resolveExpr(value, env);
+    std::shared_ptr<Expr> evaluated;
+    if (const_cast<Interpreter*>(this)->evalExprValue(resolved, env, evaluated)) {
+        return publicDisplayString(evaluated);
+    }
+    return publicDisplayString(resolved);
+}
 void Interpreter::solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals,
                                  Env env,
                                  std::vector<Solution>& out,
@@ -1919,9 +1977,20 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
         if (!factCandidates) {
             factCandidates = &memory_.compatibleFactIndexes(callGoal->call.name, callGoal->call.nameId);
         }
-        for (size_t factIndex : *factCandidates) {
+        const auto solveFactCandidates = [&](const std::vector<size_t>& candidates,
+                                             bool allowHistorical) {
+            for (size_t factIndex : candidates) {
             const auto& fact = memory_.fact(factIndex);
-            if (!fact.active || !memory_.isCompatibleType(fact.type, callGoal->call.name)) continue;
+            if ((!allowHistorical && !fact.active) ||
+                !memory_.isCompatibleType(fact.type, callGoal->call.name)) continue;
+            if (!callGoal->call.designationIds.empty() && !std::all_of(
+                    callGoal->call.designationIds.begin(), callGoal->call.designationIds.end(),
+                    [&](SymbolId designation) {
+                        return std::find(fact.designations.begin(), fact.designations.end(), designation) !=
+                            fact.designations.end();
+                    })) {
+                continue;
+            }
             ++factCandidates_;
             Call factHead(callGoal->call.name, {});
             factHead.args = memory_.factArguments(factIndex);
@@ -1929,6 +1998,17 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
                 continuations.push_back(WorkFrame{frame.goals, nextGoalIndex,
                                                   std::move(nextEnv), frame.depth + 1});
             }
+            }
+        };
+        const auto currentCandidates = memory_.currentFactIndexes(*factCandidates);
+        const size_t factContinuationStart = continuations.size();
+        solveFactCandidates(currentCandidates, false);
+        // History stays cold: only when the current lineage/context cannot
+        // satisfy the call do we inspect relevant past rows. Future records
+        // are deliberately excluded from ordinary reasoning.
+        if (continuations.size() == factContinuationStart) {
+            solveFactCandidates(memory_.relevantPastFactIndexes(
+                callGoal->call.name, callGoal->call.nameId), true);
         }
         for (auto continuation = continuations.rbegin(); continuation != continuations.rend(); ++continuation) {
             work.push_back(std::move(*continuation));
@@ -5870,7 +5950,8 @@ bool Interpreter::evalCallAsValueOnce(
         builtin == BuiltinId::FactCount || builtin == BuiltinId::FactFirst ||
         builtin == BuiltinId::FactTypes || builtin == BuiltinId::FactFields ||
         builtin == BuiltinId::FactExists || builtin == BuiltinId::FactSelect ||
-        builtin == BuiltinId::FactMaterialize || builtin == BuiltinId::FactRelease;
+        builtin == BuiltinId::FactMaterialize || builtin == BuiltinId::FactRelease ||
+        builtin == BuiltinId::FactTimeline;
     if (factStoreBuiltin || builtin == BuiltinId::DbSync) {
         std::string_view op;
         switch (builtin) {
@@ -5885,6 +5966,7 @@ bool Interpreter::evalCallAsValueOnce(
             case BuiltinId::FactSelect: op = "select"; break;
             case BuiltinId::FactMaterialize: op = "materialize"; break;
             case BuiltinId::FactRelease: op = "release"; break;
+            case BuiltinId::FactTimeline: op = "timeline"; break;
             default: break;
         }
         if (op == "sync") {
@@ -5917,6 +5999,144 @@ bool Interpreter::evalCallAsValueOnce(
                 static_cast<std::uint64_t>(generation->value)));
             return true;
         }
+        if (op == "timeline") {
+            std::shared_ptr<Expr> source;
+            if (!evalNamed("selection", 0, source) && !evalNamed("fact", 0, source) &&
+                !evalNamed("value", 0, source)) {
+                throw InterpreterError("Fact.timeline expects a FactSelection or stored fact");
+            }
+
+            std::uint64_t snapshotGeneration = 0;
+            std::vector<size_t> roots;
+            if (const auto selection = std::dynamic_pointer_cast<FactSelectionExpr>(source)) {
+                snapshotGeneration = selection->snapshotGeneration;
+                const auto candidates = selection->designationIds.empty()
+                    ? memory_.selectionIndexes(selection->factType, selection->field,
+                        selection->equals && isGroundLiteral(selection->equals)
+                            ? selection->equals : nullptr, snapshotGeneration)
+                    : memory_.designationIndexes(selection->designationIds, snapshotGeneration);
+                // A timeline is an explicit history request: begin from every
+                // selected live lineage, including one whose newest version is
+                // future, then expand only within that lineage.
+                for (const size_t index : candidates) {
+                    const auto& record = memory_.snapshotFact(snapshotGeneration, index);
+                    if (!record.active || (!selection->factType.empty() &&
+                        !memory_.isCompatibleType(record.type, selection->factType))) {
+                        continue;
+                    }
+                    if (!selection->designationIds.empty() && !std::all_of(
+                            selection->designationIds.begin(), selection->designationIds.end(),
+                            [&](SymbolId designation) {
+                                return std::find(record.designations.begin(), record.designations.end(), designation) !=
+                                    record.designations.end();
+                            })) {
+                        continue;
+                    }
+                    const auto fact = memory_.factValue(index, snapshotGeneration);
+                    if (!fact) continue;
+                    if (!selection->field.empty()) {
+                        const auto actual = findMapValue(fact, selection->field);
+                        if (!actual || !selection->equals ||
+                            !exprContainsLiteral(actual, selection->equals)) continue;
+                    }
+                    bool matches = true;
+                    for (const auto& filter : selection->filters) {
+                        const auto actual = findMapValue(fact, filter.field);
+                        if (!actual || !filter.value) {
+                            matches = false;
+                            break;
+                        }
+                        if (filter.op == TokenType::EqEq) {
+                            matches = exprContainsLiteral(actual, filter.value);
+                        } else if (filter.op == TokenType::NotEq) {
+                            matches = !exprContainsLiteral(actual, filter.value);
+                        } else {
+                            matches = compareResolved(actual, filter.op, filter.value);
+                        }
+                        if (!matches) break;
+                    }
+                    if (matches) roots.push_back(index);
+                }
+            } else if (const auto fact = std::dynamic_pointer_cast<MapExpr>(source)) {
+                if (fact->factIdentity == 0) {
+                    throw InterpreterError("Fact.timeline expects a fact stored in the active knowledge base");
+                }
+                const auto index = memory_.factIndexById(fact->factIdentity);
+                if (!index) throw InterpreterError("Fact.timeline cannot find the stored fact");
+                roots.push_back(*index);
+            } else {
+                throw InterpreterError("Fact.timeline expects a FactSelection or stored fact");
+            }
+
+            const auto stateName = [](TemporalState state) -> std::string {
+                switch (state) {
+                    case TemporalState::Past: return "past";
+                    case TemporalState::Current: return "current";
+                    case TemporalState::Future: return "future";
+                }
+                return "past";
+            };
+            const auto originName = [](TemporalOrigin origin) -> std::string {
+                switch (origin) {
+                    case TemporalOrigin::Observed: return "observed";
+                    case TemporalOrigin::Scheduled: return "scheduled";
+                    case TemporalOrigin::Derived: return "derived";
+                    case TemporalOrigin::Predicted: return "predicted";
+                    case TemporalOrigin::Required: return "required";
+                }
+                return "observed";
+            };
+
+            std::unordered_set<std::string> seenLineages;
+            std::vector<std::shared_ptr<Expr>> events;
+            for (const size_t root : roots) {
+                const auto& rootRecord = memory_.snapshotFact(snapshotGeneration, root);
+                if (!seenLineages.insert(rootRecord.temporal.lineageKey).second) continue;
+                auto lineage = memory_.temporalLineageIndexesForFact(root, snapshotGeneration);
+                std::sort(lineage.begin(), lineage.end(), [&](size_t left, size_t right) {
+                    const auto& a = memory_.snapshotFact(snapshotGeneration, left).temporal;
+                    const auto& b = memory_.snapshotFact(snapshotGeneration, right).temporal;
+                    if (a.effectiveTime != b.effectiveTime) return a.effectiveTime < b.effectiveTime;
+                    return a.registrationSequence < b.registrationSequence;
+                });
+                for (const size_t index : lineage) {
+                    const auto& record = memory_.snapshotFact(snapshotGeneration, index);
+                    const auto value = memory_.factValue(index, snapshotGeneration);
+                    if (!value) continue;
+                    std::vector<std::shared_ptr<Expr>> microFacts;
+                    microFacts.reserve(value->entries.size());
+                    for (const auto& field : value->entries) {
+                        if (field.keyId == InternalSymbol::TypeId || field.keyId == InternalSymbol::ParentId) continue;
+                        auto micro = std::make_shared<MapExpr>(std::vector<MapEntry>{
+                            MapEntry{"field", std::make_shared<StringExpr>(field.key)},
+                            MapEntry{"value", field.value ? field.value->clone() : std::make_shared<NilExpr>()},
+                            MapEntry{"state", std::make_shared<StringExpr>(stateName(memory_.temporalState(index, 0, snapshotGeneration)))},
+                            MapEntry{"fx:effective_at", std::make_shared<NumberExpr>(static_cast<double>(record.temporal.effectiveTime))}
+                        });
+                        micro->factType = "TemporalMicroFact";
+                        microFacts.push_back(std::move(micro));
+                    }
+                    auto event = std::make_shared<MapExpr>(std::vector<MapEntry>{
+                        MapEntry{"fact", value},
+                        MapEntry{"state", std::make_shared<StringExpr>(stateName(memory_.temporalState(index, 0, snapshotGeneration)))},
+                        MapEntry{"active", std::make_shared<BoolExpr>(record.active)},
+                        MapEntry{"fx:effective_at", std::make_shared<NumberExpr>(static_cast<double>(record.temporal.effectiveTime))},
+                        MapEntry{"fx:registered_at", std::make_shared<NumberExpr>(static_cast<double>(record.temporal.registrationTime))},
+                        MapEntry{"fx:registration_sequence", std::make_shared<NumberExpr>(static_cast<double>(record.temporal.registrationSequence))},
+                        MapEntry{"fx:provenance", std::make_shared<StringExpr>(originName(record.temporal.origin))},
+                        MapEntry{"micro_facts", std::make_shared<ArrayExpr>(std::move(microFacts))}
+                    });
+                    event->factType = "FactTimelineEvent";
+                    events.push_back(std::move(event));
+                }
+            }
+            auto timeline = std::make_shared<MapExpr>(std::vector<MapEntry>{
+                MapEntry{"events", std::make_shared<ArrayExpr>(std::move(events))}
+            });
+            timeline->factType = "FactTimeline";
+            out = std::move(timeline);
+            return true;
+        }
         if (op == "types") {
             std::set<std::string> types;
             for (const size_t factIndex : memory_.activeFactIndexes()) {
@@ -5939,7 +6159,8 @@ bool Interpreter::evalCallAsValueOnce(
 
         auto matchingFacts = [&]() {
             std::vector<std::shared_ptr<Expr>> rows;
-            for (size_t factIndex : memory_.compatibleFactIndexes(typeName)) {
+            const auto current = memory_.currentFactIndexes(memory_.compatibleFactIndexes(typeName));
+            for (size_t factIndex : current) {
                 if (const auto value = memory_.factValue(factIndex)) {
                     rows.push_back(value);
                 }
@@ -8141,6 +8362,7 @@ const std::vector<Interpreter::MethodParamPlan>* Interpreter::hotMethodParamPlan
 
 Interpreter::FactMaterialization Interpreter::factToMap(const ClauseStmt& clause) {
     std::vector<MapEntry> entries;
+    std::vector<MapEntry> temporalEntries;
     std::vector<MapEntry> inheritedFields;
     std::vector<std::uint64_t> parentFactIds;
     const auto parentNames = clause.parentNames.empty()
@@ -8207,11 +8429,18 @@ Interpreter::FactMaterialization Interpreter::factToMap(const ClauseStmt& clause
         // Explicit child fields always override inherited values.  This also
         // supplies the required disambiguation for two parents that expose
         // the same field with different values.
-        upsertEntry(entries, arg.name, value->clone());
+        if (arg.name.rfind("fx:", 0) == 0) {
+            upsertEntry(temporalEntries, arg.name, value->clone());
+        } else {
+            upsertEntry(entries, arg.name, value->clone());
+        }
     }
     auto fact = std::make_shared<MapExpr>(std::move(entries));
     fact->factType = clause.head.name;
-    return FactMaterialization{std::move(fact), std::move(parentFactIds)};
+    auto temporal = temporalEntries.empty()
+        ? std::shared_ptr<MapExpr>{}
+        : std::make_shared<MapExpr>(std::move(temporalEntries));
+    return FactMaterialization{std::move(fact), std::move(temporal), std::move(parentFactIds)};
 }
 
 std::vector<std::shared_ptr<Expr>> Interpreter::valuesForLambdaSource(const std::shared_ptr<Expr>& source,
@@ -8224,7 +8453,7 @@ std::vector<std::shared_ptr<Expr>> Interpreter::valuesForLambdaSource(const std:
     if (const auto typeName = std::dynamic_pointer_cast<StringExpr>(source)) {
         ensurePredicateLoaded(typeName->value);
         std::vector<std::shared_ptr<Expr>> values;
-        for (size_t factIndex : memory_.compatibleFactIndexes(typeName->value)) {
+        for (size_t factIndex : memory_.currentFactIndexes(memory_.compatibleFactIndexes(typeName->value))) {
             if (const auto value = memory_.factValue(factIndex)) values.push_back(value);
         }
         return values;
@@ -8240,7 +8469,7 @@ std::vector<std::shared_ptr<Expr>> Interpreter::valuesForLambdaSource(const std:
         const SymbolId designationId = symbolIdForName(var->name);
         if (memory_.hasDesignation(designationId)) {
             std::vector<std::shared_ptr<Expr>> values;
-            for (const size_t factIndex : memory_.designationIndexes({designationId})) {
+            for (const size_t factIndex : memory_.currentFactIndexes(memory_.designationIndexes({designationId}))) {
                 if (const auto value = memory_.factValue(factIndex)) values.push_back(value);
             }
             return values;
@@ -8249,7 +8478,7 @@ std::vector<std::shared_ptr<Expr>> Interpreter::valuesForLambdaSource(const std:
     if (var && !var->name.empty() && std::isupper(static_cast<unsigned char>(var->name.front()))) {
         ensurePredicateLoaded(var->name);
         std::vector<std::shared_ptr<Expr>> values;
-        for (size_t factIndex : memory_.compatibleFactIndexes(var->name)) {
+        for (size_t factIndex : memory_.currentFactIndexes(memory_.compatibleFactIndexes(var->name))) {
             if (const auto value = memory_.factValue(factIndex)) values.push_back(value);
         }
         return values;
@@ -8507,12 +8736,20 @@ std::shared_ptr<ArrayExpr> Interpreter::materializeFactSelection(
             : memory_.designationIndexes(lazy->designationIds, lazy->snapshotGeneration);
         std::vector<std::shared_ptr<Expr>> rows;
         rows.reserve(indexes.size());
-        for (const auto index : indexes) {
+        const auto appendMatches = [&](const std::vector<size_t>& candidates,
+                                       bool allowHistorical) {
+        for (const auto index : candidates) {
             const auto& record = memory_.snapshotFact(lazy->snapshotGeneration, index);
-            if (!record.active || (!lazy->factType.empty() &&
+            if ((!allowHistorical && !record.active) || (!lazy->factType.empty() &&
                 !memory_.isCompatibleType(record.type, lazy->factType))) {
                 continue;
             }
+            if (!lazy->designationIds.empty() && !std::all_of(
+                    lazy->designationIds.begin(), lazy->designationIds.end(),
+                    [&](SymbolId designation) {
+                        return std::find(record.designations.begin(), record.designations.end(), designation) !=
+                            record.designations.end();
+                    })) continue;
             const auto fact =
                 memory_.factValue(index, lazy->snapshotGeneration);
             if (!fact) continue;
@@ -8539,6 +8776,14 @@ std::shared_ptr<ArrayExpr> Interpreter::materializeFactSelection(
             if (!matches) continue;
             ++factCandidates_;
             rows.push_back(fact);
+        }
+        };
+        appendMatches(memory_.currentFactIndexes(indexes, lazy->snapshotGeneration), false);
+        if (rows.empty()) {
+            appendMatches(memory_.relevantPastFactIndexes(
+                lazy->factType.empty() ? "Fact" : lazy->factType,
+                lazy->factTypeId,
+                lazy->snapshotGeneration), true);
         }
         return std::make_shared<ArrayExpr>(std::move(rows));
     }
@@ -8595,6 +8840,7 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
         std::string type;
         std::string parentType;
         std::shared_ptr<MapExpr> value;
+        std::shared_ptr<MapExpr> temporalMetadata;
         std::vector<std::uint64_t> parentFactIds;
         std::vector<SymbolId> designationIds;
     };
@@ -8611,6 +8857,7 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
                 clause->head.name,
                 clause->parentName,
                 std::move(materialized.value),
+                std::move(materialized.temporalMetadata),
                 std::move(materialized.parentFactIds),
                 clause->designationIds});
         }
@@ -8669,7 +8916,8 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
                 existing ? std::optional<std::uint64_t>(existing->id) : std::nullopt,
                 existing ? existing->rowVersion + 1 : 1,
                 std::move(row.parentFactIds),
-                std::move(row.designationIds));
+                std::move(row.designationIds),
+                std::move(row.temporalMetadata));
             if (!row.parentType.empty()) {
                 memory_.setParent(row.type, row.parentType, normalized);
             }
@@ -8723,6 +8971,9 @@ std::string Interpreter::runtimeMetricsJson() const {
         << "\"activeFacts\":" << factStats.activeFacts << ","
         << "\"tombstonedFacts\":" << factStats.tombstonedFacts << ","
         << "\"factRowVersions\":" << factStats.rowVersions << ","
+        << "\"temporalLineages\":" << factStats.temporalLineages << ","
+        << "\"temporalPastFacts\":" << factStats.temporalPastFacts << ","
+        << "\"temporalFutureFacts\":" << factStats.temporalFutureFacts << ","
         << "\"factRelations\":" << factStats.relations << ","
         << "\"relationRows\":" << factStats.relationRows << ","
         << "\"relationColumnValues\":" << factStats.relationColumnValues << ","

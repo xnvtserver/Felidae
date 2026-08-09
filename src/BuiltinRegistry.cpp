@@ -69,6 +69,7 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::FactSelect, "Fact:select", BuiltinEffect::Pure},
         {BuiltinId::FactMaterialize, "Fact:materialize", BuiltinEffect::Pure},
         {BuiltinId::FactRelease, "Fact:release", BuiltinEffect::WritesExternalState},
+        {BuiltinId::FactTimeline, "Fact:timeline", BuiltinEffect::Pure},
         // Reference evaluation is explicit and can replace the attachment's
         // private canonical result, so it must never be query-cached.
         {BuiltinId::FactReferences, "Fact:references", BuiltinEffect::WritesExternalState},

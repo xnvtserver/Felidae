@@ -261,6 +261,7 @@ $directTests = @(
     @{ Name = "direct tied ancestor analysis"; Args = @("v2_examples\direct_ancestor_analysis.fx"); Expect = @('operation: "common"', 'operation: "lowest"', 'operation: "highest"', 'ancestor: "Alpha"', 'ancestor: "Beta"', 'status: "ambiguous"', 'selected: nil', 'ancestor: "Root"', 'status: "unique"') },
     @{ Name = "selective indexed fact query"; Args = @("v2_examples\selective_fact_query.fx"); Expect = @('QueryResult(', 'QuerySolution(', 'Id: "c01"', 'count: 1') },
     @{ Name = "semantic designation fact selection"; Args = @("v2_examples\fact_semantic_designations.fx"); Expect = @('allWest: [Candidate(', 'Contractor(id: "x01"', 'runtimeSelection: {__type: "FactSelection"', 'designations: ["westEmployee"]', 'rich: [Candidate(', 'Manager(id: "m01"', 'richSelection: {__type: "FactSelection"', 'filters: 1', 'audited: [Candidate(', 'typed: QueryResult(', 'count: 3') },
+    @{ Name = "temporal fact reasoning"; Args = @("v2_examples\temporal_fact_reasoning.fx"); Expect = @('current_employee: Employee(id: "e1", role: "engineer", salary: 50000)', 'unrelated_current_employee: Employee(id: "e2", role: "analyst", salary: 42000)', 'automatic_current_employee: Employee(id: "auto", role: "staff")', 'employee_history: FactTimeline(events: [FactTimelineEvent(fact: Employee(id: "e1", role: "analyst"', 'TemporalMicroFact(field: "salary", value: 40000, state: "past"', 'state: "current"', 'scheduled_knowledge: FactTimeline(events: [FactTimelineEvent(fact: Employee(id: "future", role: "architect")', 'state: "future"', 'fx:provenance: "scheduled"', 'predicted_knowledge: FactTimeline(events: [FactTimelineEvent(fact: Employee(id: "projection", role: "lead")', 'fx:provenance: "predicted"') },
     @{ Name = "selective relationship reasoning"; Args = @("v2_examples\selective_relationship_reasoning.fx"); Expect = @('relationshipSelector: Relationship(name: "causal")', 'relationshipEvidence: [RelationshipComparisonEvidence(', 'name: "causal"', 'sharedRelationshipCount: 1') },
     @{ Name = "sentiment fact expert system"; Args = @("v2_examples\sentiment_fact_expert_system.fx"); Expect = @('label: "positive"', 'label: "negative"', 'label: "mixed"', 'positive-cue-facts', 'negative-cue-facts', 'operation: "common"', 'ancestor: "SentimentCue"', 'conflicting cue facts and negation') },
     @{ Name = "deep direct fact reasoning analysis"; Args = @("v2_examples\deep_fact_reasoning_analysis.fx"); Expect = @('DeepReasoningReport(', 'ancestor: "Feline"', 'ancestor: "Carnivore"', 'ancestor: "Mammal"', 'status: "ambiguous"', 'status: "unique"', 'FactPropagation(', 'state: "partially_overridden"', 'status: "propagated"', 'status: "overridden"', 'habitat: "reserve"', 'mode: "symmetric"', 'forward: Comparison(', 'reverse: Comparison(', 'state: "directional_difference"', 'ancestorMaxDepth: 2', 'shared-carnivore-evidence', 'relationshipEvidence: [') },
@@ -335,9 +336,11 @@ foreach ($test in $tests) {
     $output = & $Exe $test.File $test.Query 2>&1
     $text = ($output | Out-String).Trim()
     $ok = $LASTEXITCODE -eq 0
+    $normalizedText = $text -replace '\s+', ''
 
     foreach ($expected in $test.Expect) {
-        if (-not $text.Contains($expected)) {
+        $normalizedExpected = $expected -replace '\s+', ''
+        if (-not $normalizedText.Contains($normalizedExpected)) {
             $ok = $false
             break
         }
@@ -400,9 +403,11 @@ foreach ($test in $directTests) {
     $output = & $Exe @($test.Args) 2>&1
     $text = ($output | Out-String).Trim()
     $ok = $LASTEXITCODE -eq 0
+    $normalizedText = $text -replace '\s+', ''
 
     foreach ($expected in $test.Expect) {
-        if (-not $text.Contains($expected)) {
+        $normalizedExpected = $expected -replace '\s+', ''
+        if (-not $normalizedText.Contains($normalizedExpected)) {
             $ok = $false
             break
         }
