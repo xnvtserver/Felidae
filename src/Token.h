@@ -105,6 +105,7 @@ enum class BuiltinId {
     FactSelect,
     FactMaterialize,
     FactRelease,
+    FactTimeline,
     FactReferences,
     DbSync,
 

@@ -759,11 +759,35 @@ std::vector<Arg> Parser::parseArgList() {
 }
 
 Arg Parser::parseArg() {
+    // Parsing is incremental, so the separator can still be unread when an
+    // argument begins. Ensure enough lookahead before inspecting a qualified
+    // field name (for example fx.provenance: "observed").
+    ensureToken(pos_ + 3);
     if (isNameStartToken(peek().type)) {
-        // named argument: name: expr
-        if (hasToken(pos_ + 1) &&
-            tokenAt(pos_ + 1).type == TokenType::Colon) {
-            std::string name = advance().text;
+        // Field labels use dot or :: namespaces. A colon is always the
+        // label/value delimiter here, otherwise `answer: result` is
+        // indistinguishable from a callable-style `answer:result` chain.
+        std::vector<std::string> parts{peek().text};
+        size_t end = pos_ + 1;
+        while (true) {
+            ensureToken(end + 1);
+            if (tokenAt(end).type != TokenType::Dot &&
+                tokenAt(end).type != TokenType::DoubleColon) {
+                break;
+            }
+            if (!isNameStartToken(tokenAt(end + 1).type) ||
+                (tokenAt(end).type == TokenType::Dot &&
+                 tokenAt(end).line != tokenAt(end + 1).line)) {
+                break;
+            }
+            parts.push_back(tokenAt(end + 1).text);
+            end += 2;
+        }
+        ensureToken(end);
+        if (tokenAt(end).type == TokenType::Colon) {
+            pos_ = end;
+            std::string name = parts.front();
+            for (size_t i = 1; i < parts.size(); ++i) name += ":" + parts[i];
             consume(TokenType::Colon, "Expected ':' after argument name");
             if (name == "factor" && isNameStartToken(peek().type) && hasToken(pos_ + 1) &&
                 tokenAt(pos_ + 1).type == TokenType::Colon) {

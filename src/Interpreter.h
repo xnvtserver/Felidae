@@ -57,6 +57,7 @@ public:
     std::shared_ptr<Expr> callMain(const std::shared_ptr<Expr>& systemInput);
     std::shared_ptr<Expr> callAutoEntry();
     std::string valueToString(const std::shared_ptr<Expr>& value) const;
+    std::string valueToDisplayString(const std::shared_ptr<Expr>& value) const;
     std::string runtimeMetricsJson() const;
     void recordStreamedModuleMicros(std::size_t micros);
     void recordParserMetrics(const ParserMetrics& metrics);
@@ -436,6 +437,9 @@ private:
     const std::vector<MethodParamPlan>* hotMethodParamPlan(const std::shared_ptr<ClauseStmt>& clause);
     struct FactMaterialization {
         std::shared_ptr<MapExpr> value;
+        // Interpreter metadata is carried alongside a fact, never as part of
+        // its public property map.
+        std::shared_ptr<MapExpr> temporalMetadata;
         std::vector<std::uint64_t> parentFactIds;
     };
     FactMaterialization factToMap(const ClauseStmt& clause);
