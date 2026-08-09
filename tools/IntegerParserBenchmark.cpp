@@ -1,0 +1,58 @@
+#include "IntegerParser.h"
+#include "Operator.h"
+#include "SentencePieceModel.h"
+
+#include <chrono>
+#include <fstream>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+
+int main(int argc, char** argv) {
+    const bool dumpIds = argc == 3 && std::string_view(argv[1]) == "--dump-ids";
+    const int sourceArgument = dumpIds ? 2 : 1;
+    if (argc != 2 && !dumpIds) {
+        std::cerr << "usage: felidae_integer_parser_benchmark [--dump-ids] <source.fx>\n";
+        return 2;
+    }
+    std::ifstream input(argv[sourceArgument], std::ios::binary);
+    if (!input) throw std::runtime_error("cannot open benchmark source");
+    const std::string source((std::istreambuf_iterator<char>(input)), {});
+
+    const auto started = std::chrono::steady_clock::now();
+    const auto modelStarted = started;
+    const auto& model = Felidae::felidaeSentencePieceModel();
+    const auto modelReady = std::chrono::steady_clock::now();
+    Felidae::IntegerTokenList tokens(model, source);
+    const auto encoded = std::chrono::steady_clock::now();
+    if (dumpIds) {
+        for (const auto& entry : tokens.entries()) {
+            std::cout << entry.id << '\t' << entry.begin << '\t' << entry.end << '\t'
+                      << Felidae::builtinTokenSpelling(entry.id) << '\n';
+        }
+        return 0;
+    }
+    // The benchmark must exercise the same single parser path as runtime:
+    // declarations register their compiled ID anchors before later uses in
+    // the same source stream are assembled.
+    auto operators = std::make_shared<Felidae::OperatorRegistry>();
+    Felidae::IntegerParser parser(tokens, std::move(operators));
+    const auto program = parser.parseProgram();
+    const auto finished = std::chrono::steady_clock::now();
+    const auto micros = [](auto begin, auto end) {
+        return std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
+    };
+    const auto& metrics = parser.metrics();
+    std::cout << "{\"encodeCount\":" << metrics.sourceEncodeCount
+              << ",\"tokenCount\":" << tokens.entries().size()
+              << ",\"statementCount\":" << program.statements.size()
+              << ",\"modelInitMicros\":" << micros(modelStarted, modelReady)
+              << ",\"sourceEncodeMicros\":" << micros(modelReady, encoded)
+              << ",\"parseMicros\":" << micros(encoded, finished)
+              << ",\"totalMicros\":" << micros(started, finished)
+              << ",\"iterations\":" << metrics.iterations
+              << ",\"peakRecursionDepth\":" << metrics.peakRecursionDepth
+              << ",\"backtrackingAttempts\":" << metrics.backtrackingAttempts
+              << "}\n";
+}

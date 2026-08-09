@@ -98,7 +98,7 @@ static DebugOptions parseDebugCli(int argc, char** argv) {
         if (arg == "--inspect-graph" || arg == "--visualize-data-json" ||
             arg == "--visualize-data-html" || arg == "--json" || arg == "--html") {
             throw std::runtime_error(
-                "Visualization is owned by Celidae. Run celidae program.fx --json or --html");
+                "Visualization options are no longer supported");
         }
         if (arg == "--query" || (!arg.empty() && arg.front() == '?')) {
             throw std::runtime_error(
@@ -115,7 +115,7 @@ static DebugOptions parseDebugCli(int argc, char** argv) {
 
 static void printDebugUsage(std::ostream& out) {
     out << "Felidae AST debugger " << LANGUAGE_VERSION << "\n"
-        << "Pipeline: Lexer -> Parser -> AST Analyzer\n"
+        << "Pipeline: SentencePiece IDs -> Integer Parser -> AST Analyzer\n"
         << "Usage: felidae_debug <file.fx> [--check|--check-json] [--load-imports]\n"
         << "\n"
         << "Options:\n"

@@ -10,6 +10,7 @@ native_modules/**/*.exp
 *.exp
 *.lock
 *.o
+*.so
 *.pdb
 *.ilk
 *.dll

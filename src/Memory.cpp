@@ -19,13 +19,21 @@ namespace Felidae {
 
 FactMemory::FactMemory() : data_(std::make_shared<Data>()) {}
 
-FactMemory::FactMemory(const FactMemory& other) : data_(other.data_) {}
+FactMemory::FactMemory(const FactMemory& other)
+    : data_(other.data_),
+      snapshots_{},
+      compatibleFactCache_{},
+      propertyQueryCache_{},
+      adaptiveEqualityIndexes_(0),
+      adaptiveIndexBuildMicros_(0) {}
 
 FactMemory& FactMemory::operator=(const FactMemory& other) {
     if (this != &other) {
         data_ = other.data_;
         snapshots_.clear();
         invalidateCaches();
+        adaptiveEqualityIndexes_ = 0;
+        adaptiveIndexBuildMicros_ = 0;
     }
     return *this;
 }
@@ -227,10 +235,10 @@ std::vector<Arg> FactMemory::factArguments(size_t index) const {
             if (const auto array =
                     std::dynamic_pointer_cast<ArrayExpr>(entry.value)) {
                 for (const auto& item : array->items) {
-                    args.emplace_back(entry.key, item);
+                    args.emplace_back(entry.key, entry.keyId, item);
                 }
             } else {
-                args.emplace_back(entry.key, entry.value);
+                args.emplace_back(entry.key, entry.keyId, entry.value);
             }
         }
         return args;
@@ -285,7 +293,7 @@ std::vector<size_t> FactMemory::activeFactIndexes() const {
 bool FactMemory::hasActiveRelation(const std::string& type, SymbolId typeId) const {
     if (typeId == 0) typeId = symbolIdForName(type);
     const auto relation = data_->relations.find(typeId);
-    if (relation == data_->relations.end() || !relation->second || relation->second->type != type) return false;
+    if (relation == data_->relations.end() || !relation->second) return false;
     return std::any_of(relation->second->rows.begin(), relation->second->rows.end(),
                        [&](size_t index) { return index < data_->facts.size() && data_->facts.at(index).active; });
 }
@@ -299,8 +307,7 @@ std::uint64_t FactMemory::relationGeneration(
     SymbolId typeId) const {
     if (typeId == 0) typeId = symbolIdForName(type);
     const auto relation = data_->relations.find(typeId);
-    if (relation == data_->relations.end() || !relation->second ||
-        relation->second->type != type) return 0;
+    if (relation == data_->relations.end() || !relation->second) return 0;
     return relation->second->generation;
 }
 
@@ -581,8 +588,7 @@ bool FactMemory::structurallyEqual(const std::shared_ptr<Expr>& left,
             const auto found = std::find_if(
                 r->entries.begin(), r->entries.end(),
                 [&](const MapEntry& item) {
-                    return wanted.keyId == item.keyId &&
-                           wanted.key == item.key;
+                    return wanted.keyId == item.keyId;
                 });
             if (found == r->entries.end() ||
                 !structurallyEqual(wanted.value, found->value)) return false;
@@ -591,11 +597,9 @@ bool FactMemory::structurallyEqual(const std::shared_ptr<Expr>& left,
     }
     if (const auto l = std::dynamic_pointer_cast<TermExpr>(left)) {
         const auto r = std::static_pointer_cast<TermExpr>(right);
-        if (l->nameId != r->nameId || l->name != r->name ||
-            l->args.size() != r->args.size()) return false;
+        if (l->nameId != r->nameId || l->args.size() != r->args.size()) return false;
         for (std::size_t index = 0; index < l->args.size(); ++index) {
             if (l->args[index].nameId != r->args[index].nameId ||
-                l->args[index].name != r->args[index].name ||
                 !structurallyEqual(
                     l->args[index].value, r->args[index].value)) return false;
         }
@@ -1273,26 +1277,27 @@ bool FactMemory::isCompatibleType(const std::string& actual, const std::string& 
 bool FactMemory::isCompatibleTypeInData(const Data& data,
                                         const std::string& actual,
                                         const std::string& expected) {
-    if (expected == "Fact") return !actual.empty();
+    return isCompatibleTypeIdInData(data, symbolIdForName(actual), symbolIdForName(expected));
+}
+
+bool FactMemory::isCompatibleTypeIdInData(const Data& data,
+                                          SymbolId actual,
+                                          SymbolId expected) {
+    if (actual == 0 || expected == 0) return false;
+    if (expected == symbolIdForName("Fact")) return true;
     if (actual == expected) return true;
-    std::set<std::string> seen;
-    std::vector<std::string> pending{actual};
+    std::unordered_set<SymbolId> seen;
+    std::vector<SymbolId> pending{actual};
     for (size_t index = 0; index < pending.size(); ++index) {
         // Copy before appending parents: vector growth must not invalidate the
         // current node while multi-parent traversal is expanding its frontier.
-        const std::string current = pending[index];
+        const SymbolId current = pending[index];
         if (!seen.insert(current).second) continue;
-        const auto primary = data.parentOf.find(current);
-        if (primary != data.parentOf.end()) {
-            if (primary->second == expected) return true;
-            pending.push_back(primary->second);
-        }
-        const auto additional = data.additionalParentsOf.find(current);
-        if (additional != data.additionalParentsOf.end()) {
-            for (const auto& parent : additional->second) {
-                if (parent == expected) return true;
-                pending.push_back(parent);
-            }
+        const auto parents = data.parentsByChild.find(current);
+        if (parents == data.parentsByChild.end()) continue;
+        for (const SymbolId parent : parents->second) {
+            if (parent == expected) return true;
+            pending.push_back(parent);
         }
     }
     return false;
@@ -1300,11 +1305,8 @@ bool FactMemory::isCompatibleTypeInData(const Data& data,
 
 const std::vector<size_t>& FactMemory::compatibleFactIndexes(const std::string& type, SymbolId typeId) {
     if (typeId == 0) typeId = symbolIdForName(type);
-    auto cacheBucket = compatibleFactCache_.find(typeId);
-    if (cacheBucket != compatibleFactCache_.end()) {
-        auto cached = cacheBucket->second.find(type);
-        if (cached != cacheBucket->second.end()) return cached->second;
-    }
+    const auto cached = compatibleFactCache_.find(typeId);
+    if (cached != compatibleFactCache_.end()) return cached->second;
 
     std::vector<size_t> indexes;
     std::deque<SymbolId> pending;
@@ -1319,7 +1321,7 @@ const std::vector<size_t>& FactMemory::compatibleFactIndexes(const std::string& 
         if (direct != data_->relations.end() && direct->second) {
             for (size_t index : direct->second->rows) {
                 if (!isActive(index)) continue;
-                if (isCompatibleType(data_->facts.at(index).type, type)) {
+                if (isCompatibleTypeIdInData(*data_, data_->facts.at(index).typeId, typeId)) {
                     indexes.push_back(index);
                 }
             }
@@ -1329,8 +1331,7 @@ const std::vector<size_t>& FactMemory::compatibleFactIndexes(const std::string& 
             for (SymbolId child : children->second) pending.push_back(child);
         }
     }
-    auto inserted = compatibleFactCache_[typeId].emplace(type, std::move(indexes));
-    return inserted.first->second;
+    return compatibleFactCache_.emplace(typeId, std::move(indexes)).first->second;
 }
 
 const std::vector<size_t>& FactMemory::propertyFactIndexes(
@@ -1347,7 +1348,7 @@ const std::vector<size_t>& FactMemory::propertyFactIndexes(
     if (typeId == 0) typeId = symbolIdForName(type);
     if (propertyId == 0) propertyId = symbolIdForName(property);
 
-    PropertyQueryKey queryKey{typeId, propertyId, type, property, valueKey};
+    PropertyQueryKey queryKey{typeId, propertyId, valueKey};
     auto cached = propertyQueryCache_.find(queryKey);
     if (cached != propertyQueryCache_.end()) return cached->second;
 
@@ -1412,8 +1413,6 @@ void FactMemory::rebuildIndexes(
 std::size_t FactMemory::PropertyQueryKeyHash::operator()(const PropertyQueryKey& key) const {
     std::size_t seed = std::hash<SymbolId>{}(key.typeId);
     seed ^= std::hash<SymbolId>{}(key.propertyId) + 0x9e3779b9U + (seed << 6U) + (seed >> 2U);
-    seed ^= std::hash<std::string>{}(key.type) + 0x9e3779b9U + (seed << 6U) + (seed >> 2U);
-    seed ^= std::hash<std::string>{}(key.property) + 0x9e3779b9U + (seed << 6U) + (seed >> 2U);
     seed ^= std::hash<std::string>{}(key.value) + 0x9e3779b9U + (seed << 6U) + (seed >> 2U);
     return seed;
 }
@@ -1493,13 +1492,13 @@ std::size_t FactMemory::stableExprHash(const std::shared_ptr<Expr>& value) {
         for (const auto& item : array->items) combine(stableExprHash(item));
     } else if (auto map = std::dynamic_pointer_cast<MapExpr>(value)) {
         for (const auto& entry : map->entries) {
-            combine(std::hash<std::string>{}(entry.key));
+            combine(std::hash<SymbolId>{}(entry.keyId));
             combine(stableExprHash(entry.value));
         }
     } else if (auto term = std::dynamic_pointer_cast<TermExpr>(value)) {
-        combine(std::hash<std::string>{}(term->name));
+        combine(std::hash<SymbolId>{}(term->nameId));
         for (const auto& argument : term->args) {
-            combine(std::hash<std::string>{}(argument.name));
+            combine(std::hash<SymbolId>{}(argument.nameId));
             combine(stableExprHash(argument.value));
         }
     } else {
@@ -1697,7 +1696,7 @@ void FactMemory::invalidateCachesForFact(
     // remain reusable across fact registrations.
     for (auto cache = propertyQueryCache_.begin(); cache != propertyQueryCache_.end();) {
         const auto& key = cache->first;
-        if (!isCompatibleType(fact.type, key.type) || !value) {
+        if (!isCompatibleTypeIdInData(*data_, fact.typeId, key.typeId) || !value) {
             ++cache;
             continue;
         }
@@ -1722,16 +1721,12 @@ void FactMemory::invalidateCachesForFact(
 }
 
 void FactMemory::invalidateCachesForType(const std::string& type, SymbolId typeId) {
+    (void)type;
     (void)typeId;
-    for (auto bucket = compatibleFactCache_.begin(); bucket != compatibleFactCache_.end();) {
-        auto& byName = bucket->second;
-        for (auto entry = byName.begin(); entry != byName.end();) {
-            if (isCompatibleType(type, entry->first)) entry = byName.erase(entry);
-            else ++entry;
-        }
-        if (byName.empty()) bucket = compatibleFactCache_.erase(bucket);
-        else ++bucket;
-    }
+    // The cache is keyed solely by collision-free SymbolId. Hierarchy writes
+    // are uncommon and can affect descendants in either direction, so a
+    // complete invalidation is simpler and avoids a parallel spelling walk.
+    compatibleFactCache_.clear();
 }
 
 void FactMemory::ensureUnique() {

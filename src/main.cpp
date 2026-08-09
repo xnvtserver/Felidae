@@ -58,7 +58,7 @@ static CliOptions parseCli(int argc, char** argv) {
         if (arg == "--visualize-data-json" || arg == "--visualize-data-html" ||
             arg == "--inspect-graph" || arg == "--load-imports") {
             throw std::runtime_error(
-                "Visualization is owned by Celidae. Run celidae program.fx --json or --html --load-imports");
+                "Visualization options are no longer supported");
         }
         if (arg == "--benchmark-repeat") {
             if (i + 1 >= argc) {

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Token.h"
+#include "FelidaeGrammar.h"
 #include <string>
 #include <string_view>
 #include <vector>
@@ -23,6 +23,11 @@ struct BuiltinInfo {
 BuiltinId builtinIdForName(const std::string& name);
 BuiltinId builtinIdForName(std::string_view name);
 BuiltinId builtinIdForName(const char* name);
+// Parser-facing native resolution.  The input is a complete qualified source
+// name from the SentencePiece stream (including atomic separator IDs), not a
+// decoded spelling.  This keeps grammar assembly independent of string
+// comparisons while retaining BuiltinId as the interpreter's semantic ID.
+BuiltinId builtinIdForPieceIds(const std::vector<TokenId::Id>& pieceIds);
 bool isBuiltinFunctionName(const std::string& name);
 const char* builtinName(BuiltinId id);
 BuiltinEffect builtinEffect(BuiltinId id);
@@ -31,8 +36,6 @@ bool isBuiltinPure(BuiltinId id);
 bool isBuiltinPure(const std::string& name);
 
 // Every registered builtin except the Unknown sentinel, in table order.
-// Editor/tooling integrations should call this (via `celidae --list-builtins`)
-// instead of hand-maintaining a copy of the builtin name list.
 const std::vector<BuiltinInfo>& allBuiltins();
 
 } // namespace Felidae

@@ -1,4 +1,4 @@
-#include "Token.h"
+#include "FelidaeGrammar.h"
 
 #include <sentencepiece_model.pb.h>
 #include <sentencepiece_processor.h>
@@ -28,6 +28,15 @@ void writeFile(const std::string& path, const std::string& data) {
     if (!out || !out.write(data.data(), static_cast<std::streamsize>(data.size()))) {
         throw std::runtime_error("unable to write " + path);
     }
+}
+
+bool beginsWithAsciiUppercase(const std::string& piece) {
+    if (piece.size() == 1 && piece.front() >= 'A' && piece.front() <= 'Z') return true;
+    // Byte-fallback pieces are serialized by SentencePiece as <0xNN>.
+    return piece.size() == 6 && piece[0] == '<' && piece[1] == '0' && piece[2] == 'x' &&
+           piece[5] == '>' &&
+           ((piece[3] == '4' && piece[4] >= '1' && piece[4] <= '9') ||
+            (piece[3] == '5' && piece[4] >= '0' && piece[4] <= 'A'));
 }
 } // namespace
 
@@ -84,7 +93,9 @@ int main(int argc, char** argv) {
                 if (model.pieces(index).piece() == token.spelling) { id = index; break; }
             }
             if (id < 0) throw std::runtime_error("missing built-in " + std::string(token.spelling));
-            ids += "    " + std::to_string(id) + ", // " + std::string(token.spelling) + "\n";
+            // idName is source-safe even when a grammar symbol itself is a
+            // line-comment escape such as a backslash.
+            ids += "    " + std::to_string(id) + ", // " + std::string(token.idName) + "\n";
         }
         ids += "};\n\nnamespace TokenId {\nusing Id = std::int32_t;\n";
         ids += "constexpr Id UNKNOWN = 0;\n";
@@ -95,7 +106,15 @@ int main(int argc, char** argv) {
             }
             ids += "constexpr Id " + std::string(token.idName) + " = " + std::to_string(id) + ";\n";
         }
-        ids += "} // namespace TokenId\n} // namespace Felidae\n";
+        ids += "} // namespace TokenId\n\ninline constexpr bool isCapitalizedIdentifierStartId(TokenId::Id id) {\n";
+        ids += "    switch (id) {\n";
+        for (int index = 0; index < model.pieces_size(); ++index) {
+            if (beginsWithAsciiUppercase(model.pieces(index).piece())) {
+                ids += "        case " + std::to_string(index) + ": return true;\n";
+            }
+        }
+        ids += "        default: return false;\n    }\n}\n";
+        ids += "} // namespace Felidae\n";
         writeFile(argv[1], serialized);
         writeFile(argv[2], ids);
     } catch (const std::exception& error) {

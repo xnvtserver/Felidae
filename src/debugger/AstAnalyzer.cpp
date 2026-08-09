@@ -16,7 +16,7 @@ namespace {
 bool isIgnoredName(const std::string& name) {
     return name.empty() || name == "_" ||
            name == internalSymbolName(InternalSymbolKind::SystemResult) ||
-           isInternalGeneratedSymbolName(name);
+           isInternalGeneratedSymbolId(symbolIdForName(name));
 }
 
 bool isLikelyTypeName(const std::string& name) {

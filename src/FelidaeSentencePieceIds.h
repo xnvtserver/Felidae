@@ -5,46 +5,64 @@
 
 namespace Felidae {
 inline constexpr int kFelidaeBuiltinSentencePieceIds[] = {
-    1, // import
-    2, // not
-    3, // and
-    4, // or
-    5, // then
-    6, // if
-    7, // else
-    8, // return
-    9, // where
-    10, // extend
-    11, // lambda
-    12, // true
-    13, // false
-    14, // nil
-    15, // (
-    16, // )
-    17, // {
-    18, // }
-    19, // [
-    20, // ]
-    21, // ,
-    22, // :
-    23, // .
-    24, // |
-    25, // ?
-    26, // @
-    27, // :=
-    28, // ::
-    29, // =>
-    30, // +
-    31, // -
-    32, // *
-    33, // /
-    34, // %
-    35, // ==
-    36, // !=
-    37, // <
-    38, // <=
-    39, // >
-    40, // >=
+    1, // IMPORT
+    2, // NOT
+    3, // AND
+    4, // OR
+    5, // THEN
+    6, // AS
+    7, // IF
+    8, // ELSE
+    9, // RETURN
+    10, // WHERE
+    11, // EXTEND
+    12, // LAMBDA
+    13, // TRUE
+    14, // FALSE
+    15, // NIL
+    16, // LPAREN
+    17, // RPAREN
+    18, // LBRACE
+    19, // RBRACE
+    20, // LBRACKET
+    21, // RBRACKET
+    22, // COMMA
+    23, // COLON
+    24, // DOT
+    25, // PIPE
+    26, // QUESTION
+    27, // AT
+    28, // ASSIGN
+    29, // DOUBLE_COLON
+    30, // ARROW
+    31, // PLUS
+    32, // MINUS
+    33, // STAR
+    34, // SLASH
+    35, // PERCENT
+    36, // EQUAL
+    37, // NOT_EQUAL
+    38, // LESS
+    39, // LESS_EQUAL
+    40, // GREATER
+    41, // GREATER_EQUAL
+    42, // QUOTE
+    43, // BACKSLASH
+    44, // COMMENT
+    45, // SPACE
+    46, // TAB
+    47, // NEWLINE
+    48, // CARRIAGE_RETURN
+    49, // DIGIT_0
+    50, // DIGIT_1
+    51, // DIGIT_2
+    52, // DIGIT_3
+    53, // DIGIT_4
+    54, // DIGIT_5
+    55, // DIGIT_6
+    56, // DIGIT_7
+    57, // DIGIT_8
+    58, // DIGIT_9
 };
 
 namespace TokenId {
@@ -55,40 +73,84 @@ constexpr Id NOT = 2;
 constexpr Id AND = 3;
 constexpr Id OR = 4;
 constexpr Id THEN = 5;
-constexpr Id IF = 6;
-constexpr Id ELSE = 7;
-constexpr Id RETURN = 8;
-constexpr Id WHERE = 9;
-constexpr Id EXTEND = 10;
-constexpr Id LAMBDA = 11;
-constexpr Id TRUE = 12;
-constexpr Id FALSE = 13;
-constexpr Id NIL = 14;
-constexpr Id LPAREN = 15;
-constexpr Id RPAREN = 16;
-constexpr Id LBRACE = 17;
-constexpr Id RBRACE = 18;
-constexpr Id LBRACKET = 19;
-constexpr Id RBRACKET = 20;
-constexpr Id COMMA = 21;
-constexpr Id COLON = 22;
-constexpr Id DOT = 23;
-constexpr Id PIPE = 24;
-constexpr Id QUESTION = 25;
-constexpr Id AT = 26;
-constexpr Id ASSIGN = 27;
-constexpr Id DOUBLE_COLON = 28;
-constexpr Id ARROW = 29;
-constexpr Id PLUS = 30;
-constexpr Id MINUS = 31;
-constexpr Id STAR = 32;
-constexpr Id SLASH = 33;
-constexpr Id PERCENT = 34;
-constexpr Id EQUAL = 35;
-constexpr Id NOT_EQUAL = 36;
-constexpr Id LESS = 37;
-constexpr Id LESS_EQUAL = 38;
-constexpr Id GREATER = 39;
-constexpr Id GREATER_EQUAL = 40;
+constexpr Id AS = 6;
+constexpr Id IF = 7;
+constexpr Id ELSE = 8;
+constexpr Id RETURN = 9;
+constexpr Id WHERE = 10;
+constexpr Id EXTEND = 11;
+constexpr Id LAMBDA = 12;
+constexpr Id TRUE = 13;
+constexpr Id FALSE = 14;
+constexpr Id NIL = 15;
+constexpr Id LPAREN = 16;
+constexpr Id RPAREN = 17;
+constexpr Id LBRACE = 18;
+constexpr Id RBRACE = 19;
+constexpr Id LBRACKET = 20;
+constexpr Id RBRACKET = 21;
+constexpr Id COMMA = 22;
+constexpr Id COLON = 23;
+constexpr Id DOT = 24;
+constexpr Id PIPE = 25;
+constexpr Id QUESTION = 26;
+constexpr Id AT = 27;
+constexpr Id ASSIGN = 28;
+constexpr Id DOUBLE_COLON = 29;
+constexpr Id ARROW = 30;
+constexpr Id PLUS = 31;
+constexpr Id MINUS = 32;
+constexpr Id STAR = 33;
+constexpr Id SLASH = 34;
+constexpr Id PERCENT = 35;
+constexpr Id EQUAL = 36;
+constexpr Id NOT_EQUAL = 37;
+constexpr Id LESS = 38;
+constexpr Id LESS_EQUAL = 39;
+constexpr Id GREATER = 40;
+constexpr Id GREATER_EQUAL = 41;
+constexpr Id QUOTE = 42;
+constexpr Id BACKSLASH = 43;
+constexpr Id COMMENT = 44;
+constexpr Id SPACE = 45;
+constexpr Id TAB = 46;
+constexpr Id NEWLINE = 47;
+constexpr Id CARRIAGE_RETURN = 48;
+constexpr Id DIGIT_0 = 49;
+constexpr Id DIGIT_1 = 50;
+constexpr Id DIGIT_2 = 51;
+constexpr Id DIGIT_3 = 52;
+constexpr Id DIGIT_4 = 53;
+constexpr Id DIGIT_5 = 54;
+constexpr Id DIGIT_6 = 55;
+constexpr Id DIGIT_7 = 56;
+constexpr Id DIGIT_8 = 57;
+constexpr Id DIGIT_9 = 58;
 } // namespace TokenId
+
+inline constexpr bool isCapitalizedIdentifierStartId(TokenId::Id id) {
+    switch (id) {
+        case 124: return true;
+        case 125: return true;
+        case 126: return true;
+        case 127: return true;
+        case 128: return true;
+        case 129: return true;
+        case 130: return true;
+        case 131: return true;
+        case 132: return true;
+        case 139: return true;
+        case 140: return true;
+        case 141: return true;
+        case 142: return true;
+        case 143: return true;
+        case 144: return true;
+        case 145: return true;
+        case 146: return true;
+        case 147: return true;
+        case 148: return true;
+        case 149: return true;
+        default: return false;
+    }
+}
 } // namespace Felidae

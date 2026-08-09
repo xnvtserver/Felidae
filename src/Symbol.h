@@ -3,7 +3,9 @@
 #include <cstdint>
 #include <array>
 #include <functional>
+#include <limits>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -55,6 +57,16 @@ inline std::string internalSymbolString(InternalSymbolKind kind) {
 // on AST nodes for diagnostics and serialization.
 class SymbolInterner {
 public:
+    static constexpr SymbolId GeneratedIdBase = SymbolId{1} << 63U;
+    SymbolInterner() {
+        reserve(InternalSymbol::TypeId, internalSymbolName(InternalSymbolKind::Type));
+        reserve(InternalSymbol::ParentId, internalSymbolName(InternalSymbolKind::Parent));
+        reserve(InternalSymbol::ReturnId, internalSymbolName(InternalSymbolKind::Return));
+        reserve(InternalSymbol::SystemId, internalSymbolName(InternalSymbolKind::System));
+        reserve(InternalSymbol::ResultId, internalSymbolName(InternalSymbolKind::Result));
+        reserve(InternalSymbol::SystemResultId, internalSymbolName(InternalSymbolKind::SystemResult));
+    }
+
     SymbolId intern(std::string_view name) {
         if (name.empty()) return 0;
         const std::string key(name);
@@ -67,29 +79,41 @@ public:
         return id;
     }
 
+    SymbolId makeGenerated() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (nextGeneratedId_ == std::numeric_limits<SymbolId>::max()) {
+            throw std::overflow_error("Felidae generated SymbolId space exhausted");
+        }
+        const SymbolId id = nextGeneratedId_++;
+        generatedNames_.emplace(id, "$g" + std::to_string(id - GeneratedIdBase));
+        return id;
+    }
+
     std::string name(SymbolId id) const {
         if (id == 0) return {};
-        if (id < 1024) {
-            switch (id) {
-                case InternalSymbol::TypeId: return "__type";
-                case InternalSymbol::ParentId: return "__parent";
-                case InternalSymbol::ReturnId: return "__return";
-                case InternalSymbol::SystemId: return "system";
-                case InternalSymbol::ResultId: return "result";
-                case InternalSymbol::SystemResultId: return "system:result";
-                default: return {};
-            }
-        }
         std::lock_guard<std::mutex> lock(mutex_);
+        const auto reserved = reservedNames_.find(id);
+        if (reserved != reservedNames_.end()) return reserved->second;
+        const auto generated = generatedNames_.find(id);
+        if (generated != generatedNames_.end()) return generated->second;
+        if (id < 1024) return {};
         const std::size_t index = static_cast<std::size_t>(id - 1024);
         return index < names_.size() ? names_[index] : std::string{};
     }
 
 private:
+    void reserve(SymbolId id, std::string_view name) {
+        ids_.emplace(std::string(name), id);
+        reservedNames_.emplace(id, std::string(name));
+    }
+
     mutable std::mutex mutex_;
     std::unordered_map<std::string, SymbolId> ids_;
+    std::unordered_map<SymbolId, std::string> reservedNames_;
+    std::unordered_map<SymbolId, std::string> generatedNames_;
     std::vector<std::string> names_;
     SymbolId nextId_ = 1024;
+    SymbolId nextGeneratedId_ = GeneratedIdBase;
 };
 
 inline SymbolInterner& symbolInterner() {
@@ -98,12 +122,6 @@ inline SymbolInterner& symbolInterner() {
 }
 
 inline SymbolId symbolIdForName(std::string_view name) {
-    if (name == internalSymbolName(InternalSymbolKind::Type)) return InternalSymbol::TypeId;
-    if (name == internalSymbolName(InternalSymbolKind::Parent)) return InternalSymbol::ParentId;
-    if (name == internalSymbolName(InternalSymbolKind::Return)) return InternalSymbol::ReturnId;
-    if (name == internalSymbolName(InternalSymbolKind::System)) return InternalSymbol::SystemId;
-    if (name == internalSymbolName(InternalSymbolKind::Result)) return InternalSymbol::ResultId;
-    if (name == internalSymbolName(InternalSymbolKind::SystemResult)) return InternalSymbol::SystemResultId;
     // Parsing fact-heavy sources repeatedly sees the same small set of type
     // and field identifiers. Avoid taking the process-wide interner mutex for
     // every occurrence while still confirming the spelling on hash collision.
@@ -137,29 +155,8 @@ inline std::string symbolNameForId(SymbolId id) {
     return symbolInterner().name(id);
 }
 
-inline std::string makeAnonymousSymbolName(std::size_t id) {
-    return "__anon" + std::to_string(id);
-}
-
-inline std::string makeRenameSymbolPrefix(std::size_t id) {
-    return "__r" + std::to_string(id) + "_";
-}
-
-inline bool hasInternalPrefix(const std::string& name, std::string_view prefix) {
-    return name.size() >= prefix.size() &&
-           name.compare(0, prefix.size(), prefix.data(), prefix.size()) == 0;
-}
-
-inline bool isAnonymousSymbolName(const std::string& name) {
-    return hasInternalPrefix(name, "__anon");
-}
-
-inline bool isRenamedSymbolName(const std::string& name) {
-    return hasInternalPrefix(name, "__r");
-}
-
-inline bool isInternalGeneratedSymbolName(const std::string& name) {
-    return isAnonymousSymbolName(name) || isRenamedSymbolName(name);
+inline bool isInternalGeneratedSymbolId(SymbolId id) {
+    return id != 0 && id >= SymbolInterner::GeneratedIdBase;
 }
 
 } // namespace Felidae

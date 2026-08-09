@@ -4,7 +4,7 @@
 #include "Env.h"
 #include "Memory.h"
 #include "NativeRuntime.h"
-#include "Parser.h"
+#include "ParserMetrics.h"
 #include <filesystem>
 #include <list>
 #include <memory>
@@ -243,7 +243,6 @@ private:
     size_t solveEpoch_ = 0;
     std::uint64_t programGeneration_ = 1;
     std::unordered_map<SymbolId, std::uint64_t> symbolGenerations_;
-    size_t renameCounter_ = 0;
     size_t threadCounter_ = 0;
     size_t cacheInvalidationDepth_ = 0;
     bool pendingCacheInvalidation_ = false;
@@ -357,7 +356,7 @@ private:
     bool evalExprValue(const std::shared_ptr<Expr>& expr, const Env& env, std::shared_ptr<Expr>& out);
     std::shared_ptr<Expr> executeEntryCall(const Call& entryCall);
     bool compareResolved(const std::shared_ptr<Expr>& left,
-                         TokenType op,
+                         TokenId::Id op,
                          const std::shared_ptr<Expr>& right) const;
 
     bool unifyCall(const Call& goal, const Call& head, Env& env);
@@ -421,9 +420,11 @@ private:
     std::shared_ptr<ClauseStmt> standardizeApart(const std::shared_ptr<ClauseStmt>& clause);
     Env copyExecutionEnvironment(const Env& source);
     bool exprNeedsRename(const std::shared_ptr<Expr>& expr) const;
-    Call renameCall(const Call& call, const std::string& prefix);
-    std::shared_ptr<Goal> renameGoal(const std::shared_ptr<Goal>& goal, const std::string& prefix);
-    std::shared_ptr<Expr> renameExpr(const std::shared_ptr<Expr>& expr, const std::string& prefix);
+    using RenameMap = std::unordered_map<SymbolId, SymbolId>;
+    SymbolId renamedId(SymbolId original, RenameMap& names);
+    Call renameCall(const Call& call, RenameMap& names);
+    std::shared_ptr<Goal> renameGoal(const std::shared_ptr<Goal>& goal, RenameMap& names);
+    std::shared_ptr<Expr> renameExpr(const std::shared_ptr<Expr>& expr, RenameMap& names);
 
     bool isSameVariable(const std::shared_ptr<Expr>& a, const std::shared_ptr<Expr>& b) const;
     bool isGroundLiteral(const std::shared_ptr<Expr>& expr) const;

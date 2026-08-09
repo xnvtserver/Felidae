@@ -1,7 +1,7 @@
 #include "FelidaeRuntime.h"
 
-#include "Lexer.h"
-#include "Parser.h"
+#include "IntegerParser.h"
+#include "SentencePieceModel.h"
 #include "Symbol.h"
 
 #include <algorithm>
@@ -10,9 +10,7 @@
 #include <cstdint>
 #include <fstream>
 #include <functional>
-#include <mutex>
 #include <sstream>
-#include <unordered_map>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -23,51 +21,6 @@ namespace {
 
 constexpr std::uintmax_t kStreamingReadThresholdBytes = 10ull * 1024ull * 1024ull;
 constexpr std::size_t kReadChunkBytes = 1024ull * 1024ull;
-constexpr std::size_t kMaxProgramCacheEntries = 256;
-
-struct CachedProgram {
-    std::uintmax_t size = 0;
-    fs::file_time_type modified;
-    std::uint64_t lastUsed = 0;
-    Program program;
-};
-
-std::mutex& programCacheMutex() {
-    static std::mutex mutex;
-    return mutex;
-}
-
-std::unordered_map<std::string, CachedProgram>& programCache() {
-    static auto* cache = new std::unordered_map<std::string, CachedProgram>();
-    return *cache;
-}
-
-bool& programCacheEnabled() {
-    static bool enabled = false;
-    return enabled;
-}
-
-std::uint64_t& programCacheClock() {
-    static std::uint64_t clock = 0;
-    return clock;
-}
-
-std::string normalizedCacheKey(const fs::path& path) {
-    return fs::absolute(path).lexically_normal().string();
-}
-
-void evictProgramCacheIfNeeded() {
-    auto& cache = programCache();
-    if (cache.size() <= kMaxProgramCacheEntries) return;
-    auto oldest = cache.end();
-    for (auto it = cache.begin(); it != cache.end(); ++it) {
-        if (oldest == cache.end() || it->second.lastUsed < oldest->second.lastUsed) {
-            oldest = it;
-        }
-    }
-    if (oldest != cache.end()) cache.erase(oldest);
-}
-
 } // namespace
 
 std::string readSourceFile(const fs::path& path) {
@@ -109,21 +62,6 @@ void readSourceLines(const fs::path& path, const std::function<void(const std::s
     if (!in.eof()) throw std::runtime_error("Cannot read file: " + path.string());
 }
 
-void setProgramAstCacheEnabled(bool enabled) {
-    std::lock_guard<std::mutex> lock(programCacheMutex());
-    programCacheEnabled() = enabled;
-    if (!enabled) {
-        programCache().clear();
-        programCacheClock() = 0;
-    }
-}
-
-void clearProgramAstCache() {
-    std::lock_guard<std::mutex> lock(programCacheMutex());
-    programCache().clear();
-    programCacheClock() = 0;
-}
-
 std::filesystem::path resolveProgramEntryPath(const fs::path& path) {
     fs::path normalized = fs::absolute(path).lexically_normal();
     std::error_code ec;
@@ -140,45 +78,12 @@ std::filesystem::path resolveProgramEntryPath(const fs::path& path) {
 Program parseProgramFile(const fs::path& path) {
     std::error_code ec;
     const auto normalized = resolveProgramEntryPath(path);
-    const auto key = normalizedCacheKey(normalized);
-    const auto size = fs::file_size(normalized, ec);
-    if (ec) throw std::runtime_error("Cannot inspect file: " + normalized.string() + ": " + ec.message());
-    const auto modified = fs::last_write_time(normalized, ec);
-    if (ec) throw std::runtime_error("Cannot inspect file: " + normalized.string() + ": " + ec.message());
-
-    {
-        std::lock_guard<std::mutex> lock(programCacheMutex());
-        auto& cache = programCache();
-        if (programCacheEnabled()) {
-            auto found = cache.find(key);
-            if (found != cache.end() &&
-                found->second.size == size &&
-                found->second.modified == modified) {
-                found->second.lastUsed = ++programCacheClock();
-                return found->second.program;
-            }
-        }
-    }
-
-    Program program = parseProgramText(readSourceFile(normalized));
-    {
-        std::lock_guard<std::mutex> lock(programCacheMutex());
-        if (programCacheEnabled()) {
-            programCache()[key] = CachedProgram{size, modified, ++programCacheClock(), program};
-            evictProgramCacheIfNeeded();
-        }
-    }
-    return program;
+    return parseProgramText(readSourceFile(normalized));
 }
 
 Program parseProgramText(std::string text) {
-    auto operators = std::make_shared<OperatorRegistry>();
-    Lexer bootstrapLexer(text);
-    Parser bootstrapParser(bootstrapLexer, operators);
-    bootstrapParser.bootstrapOperatorPatterns();
-    Lexer lexer(std::move(text));
-    Parser parser(lexer, std::move(operators));
-    return parser.parseProgram();
+    IntegerTokenList input(felidaeSentencePieceModel(), std::move(text));
+    return IntegerParser(input).parseProgram();
 }
 
 void parseProgramFileStatements(
@@ -187,20 +92,17 @@ void parseProgramFileStatements(
     std::shared_ptr<OperatorRegistry> operators,
     ParserMetrics* metrics) {
     const fs::path normalized = resolveProgramEntryPath(path);
-    auto registry = operators ? std::move(operators) : std::make_shared<OperatorRegistry>();
-    std::ifstream bootstrapInput(normalized, std::ios::binary);
-    if (!bootstrapInput) throw std::runtime_error("Cannot open file: " + normalized.string());
-    Lexer bootstrapLexer(bootstrapInput);
-    Parser bootstrapParser(bootstrapLexer, registry, normalized.string());
-    bootstrapParser.bootstrapOperatorPatterns();
-    if (metrics) *metrics += bootstrapParser.metrics();
-
-    std::ifstream input(normalized, std::ios::binary);
-    if (!input) throw std::runtime_error("Cannot open file: " + normalized.string());
-    Lexer lexer(input);
-    Parser parser(lexer, std::move(registry), normalized.string());
-    parser.parseProgram(consume);
-    if (metrics) *metrics += parser.metrics();
+    IntegerTokenList input(felidaeSentencePieceModel(), readSourceFile(normalized));
+    IntegerParser parser(input, std::move(operators));
+    Program program = parser.parseProgram();
+    for (auto& statement : program.statements) consume(std::move(statement));
+    if (metrics) {
+        metrics->tokensLexed += input.entries().size();
+        metrics->iterations += parser.metrics().iterations;
+        metrics->peakRecursionDepth = std::max(metrics->peakRecursionDepth,
+                                                parser.metrics().peakRecursionDepth);
+        metrics->backtrackingAttempts += parser.metrics().backtrackingAttempts;
+    }
 }
 
 void parseProgramFileChunks(const fs::path& path,
@@ -311,20 +213,16 @@ std::vector<std::string> listCoreLibraries(const fs::path& startDir) {
 }
 
 std::vector<std::shared_ptr<Goal>> parseQueryText(const std::string& query) {
-    Lexer lexer(query);
-    auto tokens = lexer.tokenize();
-    Parser parser(std::move(tokens));
-    return parser.parseQuery();
+    IntegerTokenList input(felidaeSentencePieceModel(), query);
+    return IntegerParser(input).parseQuery();
 }
 
-static void collectVarsExpr(const std::shared_ptr<Expr>& expr, std::vector<std::string>& vars) {
+static void collectVarsExpr(const std::shared_ptr<Expr>& expr, std::vector<SymbolId>& vars) {
     if (auto v = std::dynamic_pointer_cast<VarExpr>(expr)) {
         if (v->nameId != InternalSymbol::SystemResultId &&
-            !isInternalGeneratedSymbolName(v->name)) {
-            for (const auto& existing : vars) {
-                if (existing == v->name) return;
-            }
-            vars.push_back(v->name);
+            !isInternalGeneratedSymbolId(v->nameId) &&
+            std::find(vars.begin(), vars.end(), v->nameId) == vars.end()) {
+            vars.push_back(v->nameId);
         }
     } else if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
         for (const auto& arg : term->args) collectVarsExpr(arg.value, vars);
@@ -345,18 +243,13 @@ static void collectVarsExpr(const std::shared_ptr<Expr>& expr, std::vector<std::
     }
 }
 
-static void collectVarsGoal(const std::shared_ptr<Goal>& goal, std::vector<std::string>& vars) {
+static void collectVarsGoal(const std::shared_ptr<Goal>& goal, std::vector<SymbolId>& vars) {
     if (auto cg = std::dynamic_pointer_cast<CallGoal>(goal)) {
         for (const auto& arg : cg->call.args) collectVarsExpr(arg.value, vars);
     } else if (auto ag = std::dynamic_pointer_cast<AssignGoal>(goal)) {
-        bool seen = false;
-        for (const auto& existing : vars) {
-            if (existing == ag->name) {
-                seen = true;
-                break;
-            }
+        if (std::find(vars.begin(), vars.end(), ag->nameId) == vars.end()) {
+            vars.push_back(ag->nameId);
         }
-        if (!seen) vars.push_back(ag->name);
         if (ag->expr) collectVarsExpr(ag->expr, vars);
     } else if (auto bg = std::dynamic_pointer_cast<BinaryGoal>(goal)) {
         collectVarsExpr(bg->left, vars);
@@ -378,8 +271,8 @@ static void collectVarsGoal(const std::shared_ptr<Goal>& goal, std::vector<std::
     }
 }
 
-static std::vector<std::string> collectQueryVars(const std::vector<std::shared_ptr<Goal>>& goals) {
-    std::vector<std::string> vars;
+static std::vector<SymbolId> collectQueryVars(const std::vector<std::shared_ptr<Goal>>& goals) {
+    std::vector<SymbolId> vars;
     for (const auto& g : goals) collectVarsGoal(g, vars);
     return vars;
 }
@@ -401,8 +294,9 @@ void printSolutions(Interpreter& interpreter,
         out << "Solution " << (i + 1) << ": ";
         for (size_t j = 0; j < queryVars.size(); ++j) {
             if (j) out << ", ";
-            auto varExpr = std::make_shared<VarExpr>(queryVars[j]);
-            out << queryVars[j] << " = " << interpreter.exprToString(varExpr, solutions[i].env);
+            const auto name = symbolNameForId(queryVars[j]);
+            auto varExpr = std::make_shared<VarExpr>(name, queryVars[j]);
+            out << name << " = " << interpreter.exprToString(varExpr, solutions[i].env);
         }
         out << "\n";
     }
