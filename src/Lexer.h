@@ -14,7 +14,7 @@ namespace Felidae {
 
 class LexerError : public std::runtime_error {
 public:
-    explicit LexerError(const std::string& msg) : std::runtime_error(msg) {}```````````````````````````````````````````````````````````````````````````````
+    explicit LexerError(const std::string& msg) : std::runtime_error(msg) {}
 };
 
 class Lexer {
