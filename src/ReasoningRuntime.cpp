@@ -469,7 +469,7 @@ Interpreter::buildTableEvaluation(
                                 break;
                             }
                             answer.args.push_back(
-                                Arg{argument.name, resolved->clone()});
+                                Arg{argument.name, argument.nameId, resolved->clone()});
                         }
                         if (!ground) continue;
                         if (evaluation->provenance.size() >=
@@ -826,7 +826,7 @@ bool Interpreter::evalReasoningProve(
                 throw InterpreterError(
                     "Reasoning.prove query arguments must be ground");
             }
-            query.args.emplace_back(argument.name, std::move(value));
+            query.args.emplace_back(argument.name, argument.nameId, std::move(value));
         }
     } else {
         std::shared_ptr<Expr> resolved;
@@ -850,7 +850,7 @@ bool Interpreter::evalReasoningProve(
                 throw InterpreterError(
                     "Reasoning.prove query arguments must be ground");
             }
-            query.args.emplace_back(entry.key, entry.value->clone());
+            query.args.emplace_back(entry.key, entry.keyId, entry.value->clone());
         }
     }
 
@@ -935,7 +935,7 @@ bool Interpreter::evalReasoningGrade(
                 for (const auto& field : conclusion->args) {
                     std::shared_ptr<Expr> resolved;
                     if (!evalExprValue(field.value, env, resolved)) return false;
-                    fields.emplace_back(field.name, std::move(resolved));
+                    fields.emplace_back(field.name, field.nameId, std::move(resolved));
                 }
                 value = markFact(
                     std::make_shared<MapExpr>(std::move(fields)),
@@ -1130,7 +1130,7 @@ bool Interpreter::evalReasoningGrade(
     if (exact) {
         resultEntries.reserve(exact->entries.size() + 8);
         for (const auto& entry : exact->entries) {
-            resultEntries.emplace_back(entry.key, entry.value->clone());
+            resultEntries.emplace_back(entry.key, entry.keyId, entry.value->clone());
         }
     }
     reasoningSetValue(resultEntries, "__type",

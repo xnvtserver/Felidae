@@ -1,6 +1,11 @@
 #include "BuiltinRegistry.h"
 
+#include "SentencePieceModel.h"
+
 #include <cstddef>
+#include <functional>
+#include <sentencepiece.pb.h>
+#include <sentencepiece_processor.h>
 #include <unordered_map>
 
 namespace Felidae {
@@ -180,6 +185,53 @@ const std::unordered_map<std::string_view, BuiltinId>& builtinsByName() {
     return builtins;
 }
 
+struct PieceSequenceHash {
+    std::size_t operator()(const std::vector<TokenId::Id>& ids) const noexcept {
+        std::size_t hash = ids.size();
+        for (const auto id : ids) {
+            hash ^= std::hash<TokenId::Id>{}(id) + 0x9e3779b9U + (hash << 6U) + (hash >> 2U);
+        }
+        return hash;
+    }
+};
+
+std::vector<TokenId::Id> encodeBuiltinPieceIds(const std::string& spelling) {
+    sentencepiece::SentencePieceText encoded;
+    const auto status = felidaeSentencePieceModel().Encode(spelling, &encoded);
+    if (!status.ok()) {
+        throw std::runtime_error("Unable to encode Felidae builtin vocabulary");
+    }
+    std::vector<TokenId::Id> ids;
+    ids.reserve(static_cast<std::size_t>(encoded.pieces_size()));
+    for (const auto& piece : encoded.pieces()) {
+        if (piece.id() == TokenId::UNKNOWN) {
+            throw std::runtime_error("Felidae builtin vocabulary encoded as unknown piece");
+        }
+        ids.push_back(static_cast<TokenId::Id>(piece.id()));
+    }
+    return ids;
+}
+
+const std::unordered_map<std::vector<TokenId::Id>, BuiltinId, PieceSequenceHash>& builtinsByPieceIds() {
+    static const std::unordered_map<std::vector<TokenId::Id>, BuiltinId, PieceSequenceHash> builtins = [] {
+        std::unordered_map<std::vector<TokenId::Id>, BuiltinId, PieceSequenceHash> map;
+        map.reserve((builtinInfoCount() - 1) * 2U);
+        map.max_load_factor(0.7F);
+        for (std::size_t index = 1; index < builtinInfoCount(); ++index) {
+            const auto& info = kBuiltinInfos[index];
+            const std::string canonical(info.name);
+            map.emplace(encodeBuiltinPieceIds(canonical), info.id);
+            std::string dotted = canonical;
+            for (char& character : dotted) {
+                if (character == ':') character = '.';
+            }
+            map.emplace(encodeBuiltinPieceIds(dotted), info.id);
+        }
+        return map;
+    }();
+    return builtins;
+}
+
 } // namespace
 
 BuiltinId builtinIdForName(const std::string& name) {
@@ -193,6 +245,12 @@ BuiltinId builtinIdForName(std::string_view name) {
 
 BuiltinId builtinIdForName(const char* name) {
     return name ? builtinIdForName(std::string_view(name)) : BuiltinId::Unknown;
+}
+
+BuiltinId builtinIdForPieceIds(const std::vector<TokenId::Id>& pieceIds) {
+    const auto& builtins = builtinsByPieceIds();
+    const auto found = builtins.find(pieceIds);
+    return found == builtins.end() ? BuiltinId::Unknown : found->second;
 }
 
 bool isBuiltinFunctionName(const std::string& name) {

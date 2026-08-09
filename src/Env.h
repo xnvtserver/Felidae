@@ -96,13 +96,17 @@ public:
     using const_iterator = Map::const_iterator;
 
     size_t count(const std::string& name) const;
+    size_t count(SymbolId id) const;
     iterator find(const std::string& name);
+    iterator find(SymbolId id);
     const_iterator find(const std::string& name) const;
+    const_iterator find(SymbolId id) const;
     iterator end();
     const_iterator end() const;
     iterator begin();
     const_iterator begin() const;
     std::shared_ptr<Expr>& operator[](const std::string& name);
+    std::shared_ptr<Expr>& operator[](SymbolId id);
     void bind(const std::string& name,
               const std::shared_ptr<Expr>& value,
               std::filesystem::path origin = {});

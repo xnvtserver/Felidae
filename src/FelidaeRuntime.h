@@ -2,6 +2,7 @@
 
 #include "AST.h"
 #include "Interpreter.h"
+#include "ParserMetrics.h"
 
 #include <filesystem>
 #include <memory>
@@ -26,8 +27,6 @@ void parseProgramFileStatements(
 std::string readSourceFile(const std::filesystem::path& path);
 void readSourceLines(const std::filesystem::path& path,
                      const std::function<void(const std::string&)>& onLine);
-void setProgramAstCacheEnabled(bool enabled);
-void clearProgramAstCache();
 std::filesystem::path resolveProgramEntryPath(const std::filesystem::path& path);
 void loadProgramRoot(const std::filesystem::path& file, Interpreter& interpreter);
 void loadProgramRoot(
@@ -48,9 +47,7 @@ bool isBareIdentifier(const std::string& text);
 
 // Bare-import library names resolvable from `startDir` (the directory a
 // program is loaded from), i.e. the set of valid `import "name"` values that
-// resolve to a declaration file under `core/`. Editor/tooling integrations
-// should call this (via `celidae --list-libraries`) instead of hand-maintaining
-// a copy of the core module list.
+// resolve to a declaration file under `core/`.
 std::vector<std::string> listCoreLibraries(const std::filesystem::path& startDir);
 
 } // namespace Felidae

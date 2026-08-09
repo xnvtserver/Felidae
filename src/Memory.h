@@ -193,15 +193,11 @@ private:
     struct PropertyQueryKey {
         SymbolId typeId = 0;
         SymbolId propertyId = 0;
-        std::string type;
-        std::string property;
         std::string value;
 
         bool operator==(const PropertyQueryKey& other) const {
             return typeId == other.typeId &&
                    propertyId == other.propertyId &&
-                   type == other.type &&
-                   property == other.property &&
                    value == other.value;
         }
     };
@@ -359,7 +355,7 @@ private:
 
     std::shared_ptr<Data> data_;
     std::unordered_map<std::uint64_t, std::shared_ptr<const Data>> snapshots_;
-    std::unordered_map<SymbolId, std::unordered_map<std::string, std::vector<size_t>>> compatibleFactCache_;
+    std::unordered_map<SymbolId, std::vector<size_t>> compatibleFactCache_;
     std::unordered_map<PropertyQueryKey, std::vector<size_t>, PropertyQueryKeyHash> propertyQueryCache_;
     mutable std::size_t adaptiveEqualityIndexes_ = 0;
     mutable std::size_t adaptiveIndexBuildMicros_ = 0;
@@ -384,6 +380,9 @@ private:
     static bool isCompatibleTypeInData(const Data& data,
                                        const std::string& actual,
                                        const std::string& expected);
+    static bool isCompatibleTypeIdInData(const Data& data,
+                                         SymbolId actual,
+                                         SymbolId expected);
     const Data& dataForSnapshot(std::uint64_t snapshotGeneration) const;
     void ensureUnique();
     void ensureAttachmentsUnique();

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Token.h"
+#include "FelidaeGrammar.h"
 #include <algorithm>
 #include <cstdint>
 #include <optional>
@@ -250,29 +250,6 @@ public:
         return matches;
     }
 
-    std::vector<const OperatorPatternDefinition*> patternsForAnchor(
-        const Token& token, std::string_view module = {}) const {
-        return patternsForAnchor(token.pieceIds, module);
-    }
-
-    std::vector<const OperatorPatternDefinition*> leadingPatternsForAnchor(
-        const Token& token, std::string_view module = {}) const {
-        auto matches = patternsForAnchor(token, module);
-        matches.erase(std::remove_if(matches.begin(), matches.end(), [](const auto* pattern) {
-            return pattern->startsWithCapture;
-        }), matches.end());
-        return matches;
-    }
-
-    std::vector<const OperatorPatternDefinition*> trailingPatternsForAnchor(
-        const Token& token, std::string_view module = {}) const {
-        auto matches = patternsForAnchor(token, module);
-        matches.erase(std::remove_if(matches.begin(), matches.end(), [](const auto* pattern) {
-            return pattern->fixity == OperatorFixity::Prefix;
-        }), matches.end());
-        return matches;
-    }
-
     std::vector<const OperatorPatternDefinition*> deferredTrailingCapturePatterns(
         std::string_view module = {}) const {
         std::vector<const OperatorPatternDefinition*> matches;
@@ -436,6 +413,7 @@ public:
         std::size_t cursor = 0;
         bool sawSegment = false;
         bool lastWasCapture = false;
+        pattern.anchors.clear();
         while (cursor < pattern.pattern.size()) {
             while (cursor < pattern.pattern.size() && pattern.pattern[cursor] == ' ') ++cursor;
             if (cursor >= pattern.pattern.size()) break;
@@ -576,7 +554,7 @@ public:
 struct CoreOperatorDefinition {
     CoreOperator id = CoreOperator::Unknown;
     PatternId patternId = 0;
-    TokenType token = TokenType::End;
+    TokenId::Id token = TokenId::UNKNOWN;
     std::string_view spelling;
     OperatorPrecedence precedence = OperatorPrecedence::Relationship;
     OperatorAssociativity associativity = OperatorAssociativity::None;
@@ -595,55 +573,55 @@ inline constexpr OperatorId operatorId(CoreOperator id) {
 inline constexpr CoreOperatorDefinition coreOperatorDefinition(CoreOperator id) {
     switch (id) {
         case CoreOperator::Add:
-            return {id, corePatternId(id), TokenType::Plus, "+", OperatorPrecedence::Additive,
+            return {id, corePatternId(id), TokenId::PLUS, "+", OperatorPrecedence::Additive,
                     OperatorAssociativity::Left, OperatorFixity::Infix, true};
         case CoreOperator::Subtract:
-            return {id, corePatternId(id), TokenType::Minus, "-", OperatorPrecedence::Additive,
+            return {id, corePatternId(id), TokenId::MINUS, "-", OperatorPrecedence::Additive,
                     OperatorAssociativity::Left, OperatorFixity::Infix, true};
         case CoreOperator::Multiply:
-            return {id, corePatternId(id), TokenType::Star, "*", OperatorPrecedence::Multiplicative,
+            return {id, corePatternId(id), TokenId::STAR, "*", OperatorPrecedence::Multiplicative,
                     OperatorAssociativity::Left, OperatorFixity::Infix, true};
         case CoreOperator::Divide:
-            return {id, corePatternId(id), TokenType::Slash, "/", OperatorPrecedence::Multiplicative,
+            return {id, corePatternId(id), TokenId::SLASH, "/", OperatorPrecedence::Multiplicative,
                     OperatorAssociativity::Left, OperatorFixity::Infix, true};
         case CoreOperator::Modulo:
-            return {id, corePatternId(id), TokenType::Percent, "%", OperatorPrecedence::Multiplicative,
+            return {id, corePatternId(id), TokenId::PERCENT, "%", OperatorPrecedence::Multiplicative,
                     OperatorAssociativity::Left, OperatorFixity::Infix, true};
         case CoreOperator::Less:
-            return {id, corePatternId(id), TokenType::LT, "<", OperatorPrecedence::Ordering,
+            return {id, corePatternId(id), TokenId::LESS, "<", OperatorPrecedence::Ordering,
                     OperatorAssociativity::None, OperatorFixity::Infix, true};
         case CoreOperator::LessEqual:
-            return {id, corePatternId(id), TokenType::LTE, "<=", OperatorPrecedence::Ordering,
+            return {id, corePatternId(id), TokenId::LESS_EQUAL, "<=", OperatorPrecedence::Ordering,
                     OperatorAssociativity::None, OperatorFixity::Infix, true};
         case CoreOperator::Greater:
-            return {id, corePatternId(id), TokenType::GT, ">", OperatorPrecedence::Ordering,
+            return {id, corePatternId(id), TokenId::GREATER, ">", OperatorPrecedence::Ordering,
                     OperatorAssociativity::None, OperatorFixity::Infix, true};
         case CoreOperator::GreaterEqual:
-            return {id, corePatternId(id), TokenType::GTE, ">=", OperatorPrecedence::Ordering,
+            return {id, corePatternId(id), TokenId::GREATER_EQUAL, ">=", OperatorPrecedence::Ordering,
                     OperatorAssociativity::None, OperatorFixity::Infix, true};
         case CoreOperator::StrictEqual:
-            return {id, corePatternId(id), TokenType::EqEq, "==", OperatorPrecedence::Ordering,
+            return {id, corePatternId(id), TokenId::EQUAL, "==", OperatorPrecedence::Ordering,
                     OperatorAssociativity::None, OperatorFixity::Infix, false};
         case CoreOperator::StrictNotEqual:
-            return {id, corePatternId(id), TokenType::NotEq, "!=", OperatorPrecedence::Ordering,
+            return {id, corePatternId(id), TokenId::NOT_EQUAL, "!=", OperatorPrecedence::Ordering,
                     OperatorAssociativity::None, OperatorFixity::Infix, false};
         case CoreOperator::Then:
-            return {id, corePatternId(id), TokenType::Then, "then", OperatorPrecedence::Pipeline,
+            return {id, corePatternId(id), TokenId::THEN, "then", OperatorPrecedence::Pipeline,
                     OperatorAssociativity::Left, OperatorFixity::Infix, false};
         case CoreOperator::UnaryPlus:
-            return {id, corePatternId(id), TokenType::Plus, "+", OperatorPrecedence::Prefix,
+            return {id, corePatternId(id), TokenId::PLUS, "+", OperatorPrecedence::Prefix,
                     OperatorAssociativity::Right, OperatorFixity::Prefix, false};
         case CoreOperator::UnaryMinus:
-            return {id, corePatternId(id), TokenType::Minus, "-", OperatorPrecedence::Prefix,
+            return {id, corePatternId(id), TokenId::MINUS, "-", OperatorPrecedence::Prefix,
                     OperatorAssociativity::Right, OperatorFixity::Prefix, false};
         case CoreOperator::LogicalAnd:
-            return {id, corePatternId(id), TokenType::And, "and", OperatorPrecedence::LogicalAnd,
+            return {id, corePatternId(id), TokenId::AND, "and", OperatorPrecedence::LogicalAnd,
                     OperatorAssociativity::Left, OperatorFixity::Infix, false};
         case CoreOperator::LogicalOr:
-            return {id, corePatternId(id), TokenType::Or, "or", OperatorPrecedence::LogicalOr,
+            return {id, corePatternId(id), TokenId::OR, "or", OperatorPrecedence::LogicalOr,
                     OperatorAssociativity::Left, OperatorFixity::Infix, false};
         case CoreOperator::LogicalNot:
-            return {id, corePatternId(id), TokenType::Not, "not", OperatorPrecedence::Prefix,
+            return {id, corePatternId(id), TokenId::NOT, "not", OperatorPrecedence::Prefix,
                     OperatorAssociativity::Right, OperatorFixity::Prefix, false};
         case CoreOperator::Unknown:
             break;

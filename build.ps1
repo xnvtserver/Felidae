@@ -8,170 +8,36 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-New-Item -ItemType Directory -Force -Path "build" | Out-Null
+# CMake is the only supported native build graph.  It owns SentencePiece and
+# the generated TokenId vocabulary, avoiding a stale direct compiler list.
+if ($Target -ne "native") {
+    throw "Unsupported target '$Target': provide a CMake toolchain/preset for SentencePiece cross-compilation."
+}
 
-$commonSources = @(
-    "src/FelidaeRuntime.cpp",
-    "src/BuiltinRegistry.cpp",
-    "src/Lexer.cpp",
-    "src/Parser.cpp",
-    "src/Interpreter.cpp",
-    "src/ReasoningRuntime.cpp",
-    "src/Env.cpp",
-    "src/Memory.cpp",
-    "src/NativeRuntime.cpp"
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$buildDir = if ($env:FELIDAE_BUILD_DIR) { $env:FELIDAE_BUILD_DIR } else { Join-Path $root "build" }
+$buildType = if ($Configuration -eq "debug" -or $Configuration -eq "sanitize") { "Debug" } else { "Release" }
+$configureArgs = @(
+    "-S", $root,
+    "-B", $buildDir,
+    "-DCMAKE_BUILD_TYPE=$buildType"
 )
-
-$celidaeSources = @(
-    "src/celidae/main.cpp",
-    "src/celidae/Visualization.cpp",
-    "src/celidae/Analytics.cpp",
-    "src/celidae/Reasoning.cpp",
-    "src/tooling/SourceParser.cpp",
-    "src/BuiltinRegistry.cpp",
-    "src/Lexer.cpp",
-    "src/Parser.cpp"
-)
-
-$debugSources = @(
-    "src/debugger/main.cpp",
-    "src/debugger/AstAnalyzer.cpp",
-    "src/tooling/SourceParser.cpp",
-    "src/BuiltinRegistry.cpp",
-    "src/Lexer.cpp",
-    "src/Parser.cpp"
-)
-
-$extraLibs = @()
-if ($env:FELIDAE_DLOPEN_LIBS) {
-    $extraLibs = $env:FELIDAE_DLOPEN_LIBS -split "\s+"
+if ($Configuration -eq "sanitize") {
+    $configureArgs += "-DFELIDAE_ENABLE_SANITIZERS=ON"
 }
 
-$warningFlags = @("-Wall", "-Wextra", "-Wpedantic", "-Wshadow", "-Wnon-virtual-dtor", "-Wold-style-cast", "-Woverloaded-virtual")
-if ($WarningsAsErrors) {
-    $warningFlags += "-Werror"
+$localAbseil = Join-Path $root "build-sentencepiece/_deps/abseil-cpp-src"
+$localProtobuf = Join-Path $root "build-sentencepiece/_deps/protobuf-src"
+if (Test-Path $localAbseil) {
+    $configureArgs += "-DFETCHCONTENT_SOURCE_DIR_ABSEIL-CPP=$localAbseil"
+}
+if (Test-Path $localProtobuf) {
+    $configureArgs += "-DFETCHCONTENT_SOURCE_DIR_PROTOBUF=$localProtobuf"
 }
 
-$configFlags = switch ($Configuration) {
-    "debug" { @("-O0", "-g") }
-    "release" { @("-O2", "-DNDEBUG") }
-    "production" { @("-O3", "-DNDEBUG", "-flto", "-fuse-ld=lld") }
-    "sanitize" { @("-O1", "-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer") }
-}
+& cmake @configureArgs
+if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
 
-$targetFlags = @()
-if ($Target -eq "windows-x64") {
-    $targetFlags = @("--target=x86_64-pc-windows-msvc")
-} elseif ($Target -eq "windows-arm64") {
-    $targetFlags = @("--target=arm64-pc-windows-msvc")
-}
-
-function Assert-Command {
-    param(
-        [string] $Name,
-        [string] $InstallMessage
-    )
-
-    if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
-        [Console]::Error.WriteLine($InstallMessage)
-        exit 1
-    }
-}
-
-function Invoke-FelidaeBuild {
-    param(
-        [string] $Output,
-        [string[]] $Sources
-    )
-
-    Write-Host "Building $Output"
-    & clang++ -std=c++17 @warningFlags @configFlags @targetFlags -Isrc -isystem third_party @Sources -o $Output @extraLibs
-    if ($LASTEXITCODE -ne 0) {
-        throw "clang++ failed while building $Output"
-    }
-}
-
-if ($Target -eq "wasm") {
-    Assert-Command -Name "em++" -InstallMessage "WASM build requires Emscripten. Install and activate emsdk so em++ is on PATH, then run .\build.cmd wasm."
-    New-Item -ItemType Directory -Force -Path "docs/wasm" | Out-Null
-    Write-Host "Building docs/wasm/felidae_wasm.js"
-    & em++ -std=c++17 -O2 -fexceptions -Isrc -Ithird_party `
-        src/felidae_wasm.cpp @commonSources `
-        --bind `
-        -s MODULARIZE=1 `
-        -s "EXPORT_NAME='FelidaeWasm'" `
-        -s ENVIRONMENT=web `
-        -s ALLOW_MEMORY_GROWTH=1 `
-        -s DISABLE_EXCEPTION_CATCHING=0 `
-        -s ASSERTIONS=1 `
-        --preload-file core@/core `
-        -o docs/wasm/felidae_wasm.js
-    if ($LASTEXITCODE -ne 0) {
-        throw "em++ failed while building docs/wasm/felidae_wasm.js"
-    }
-    Write-Host "Built docs/wasm/felidae_wasm.js, docs/wasm/felidae_wasm.wasm, and docs/wasm/felidae_wasm.data"
-    exit 0
-}
-
-Assert-Command -Name "clang++" -InstallMessage "Native build requires clang++. Install LLVM/Clang and make sure clang++ is on PATH."
-$suffix = ""
-if ($Target -eq "windows-x64") { $suffix = "-windows-x64" }
-if ($Target -eq "windows-arm64") { $suffix = "-windows-arm64" }
-
-Invoke-FelidaeBuild -Output "build/felidae$suffix.exe" -Sources (@("src/main.cpp") + $commonSources)
-Invoke-FelidaeBuild -Output "build/celidae$suffix.exe" -Sources $celidaeSources
-Invoke-FelidaeBuild -Output "build/felidae_debug$suffix.exe" -Sources $debugSources
-
-foreach ($module in @("csv", "db", "http", "process", "set", "group")) {
-    $className = (Get-Culture).TextInfo.ToTitleCase($module)
-    $moduleOutput = "native_modules/$module/$module.dll"
-    Write-Host "Building $moduleOutput"
-    & clang++ -std=c++17 @warningFlags @configFlags @targetFlags "native_modules/$module/Native$className.cpp" -shared -o $moduleOutput
-    if ($LASTEXITCODE -ne 0) {
-        throw "clang++ failed while building $moduleOutput"
-    }
-}
-
-New-Item -ItemType Directory -Force -Path "native_modules/wordnet" | Out-Null
-Write-Host "Building native_modules/wordnet/wordnet.dll"
-& clang++ -std=c++17 @warningFlags @configFlags @targetFlags -Inative_modules/wordnet native_modules/wordnet/NativeWordNet.cpp -shared -o native_modules/wordnet/wordnet.dll
-if ($LASTEXITCODE -ne 0) {
-    throw "clang++ failed while building native_modules/wordnet/wordnet.dll"
-}
-
-New-Item -ItemType Directory -Force -Path "native_modules/fact" | Out-Null
-Write-Host "Building native_modules/fact/fact.dll"
-& clang++ -std=c++17 @warningFlags @configFlags @targetFlags -Inative_modules/fact native_modules/fact/NativeFact.cpp -shared -o native_modules/fact/fact.dll
-if ($LASTEXITCODE -ne 0) {
-    throw "clang++ failed while building native_modules/fact/fact.dll"
-}
-
-New-Item -ItemType Directory -Force -Path "native_modules/fact_analysis" | Out-Null
-Write-Host "Building native_modules/fact_analysis/fact_analysis.dll"
-& clang++ -std=c++17 @warningFlags @configFlags @targetFlags -Inative_modules/fact native_modules/fact/NativeFact.cpp -shared -o native_modules/fact_analysis/fact_analysis.dll
-if ($LASTEXITCODE -ne 0) {
-    throw "clang++ failed while building native_modules/fact_analysis/fact_analysis.dll"
-}
-
-New-Item -ItemType Directory -Force -Path "native_modules/plot" | Out-Null
-Write-Host "Building native_modules/plot/plot.dll"
-& clang++ -std=c++17 @warningFlags @configFlags @targetFlags -DFELIDAE_PLOT_BUILD -Inative_modules/plot native_modules/plot/NativePlot.cpp -shared -o native_modules/plot/plot.dll
-if ($LASTEXITCODE -ne 0) {
-    throw "clang++ failed while building native_modules/plot/plot.dll"
-}
-
-New-Item -ItemType Directory -Force -Path "native_modules/gtk" | Out-Null
-Write-Host "Building native_modules/gtk/gtk.dll"
-& clang++ -std=c++17 @warningFlags @configFlags @targetFlags -DFELIDAE_GRAPHICS_BUILD -Inative_modules/graphics native_modules/gtk/NativeGtk.cpp -shared -o native_modules/gtk/gtk.dll
-if ($LASTEXITCODE -ne 0) {
-    throw "clang++ failed while building native_modules/gtk/gtk.dll"
-}
-
-New-Item -ItemType Directory -Force -Path "native_modules/qt" | Out-Null
-Write-Host "Building native_modules/qt/qt.dll"
-& clang++ -std=c++17 @warningFlags @configFlags @targetFlags -DFELIDAE_GRAPHICS_BUILD -Inative_modules/graphics native_modules/qt/NativeQt.cpp -shared -o native_modules/qt/qt.dll
-if ($LASTEXITCODE -ne 0) {
-    throw "clang++ failed while building native_modules/qt/qt.dll"
-}
-
-Write-Host "Built build/felidae$suffix.exe, build/celidae$suffix.exe, build/felidae_debug$suffix.exe, and independent native package libraries"
+$jobs = if ($env:FELIDAE_JOBS) { $env:FELIDAE_JOBS } else { "1" }
+& cmake --build $buildDir --parallel $jobs
+if ($LASTEXITCODE -ne 0) { throw "CMake build failed" }

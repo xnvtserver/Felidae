@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Operator.h"
-#include "Token.h"
+#include "FelidaeGrammar.h"
 #include <cstdint>
 #include <iomanip>
 #include <memory>
@@ -75,8 +75,8 @@ public:
     virtual std::string debug() const = 0;
 
     // The parser assigns compact positional metadata as soon as a node is
-    // completed. Source text remains owned by the lexer/editor, so retaining
-    // an AST node never pins a complete input buffer.
+    // completed. Source text remains owned by the input/runtime layer, so
+    // retaining an AST node never pins a complete input buffer.
     SourceSpan sourceSpan;
     std::uint64_t nodeId = 0;
 };
@@ -141,14 +141,22 @@ public:
 class VarExpr final : public Expr {
 public:
     explicit VarExpr(std::string name, LanguageTypeId languageTypeId = LanguageTypeId::Unknown)
-        : name(std::move(name)), nameId(languageTypeId == LanguageTypeId::Unknown ? symbolIdForName(this->name) : 0),
+        : name(std::move(name)), nameId(symbolIdForName(this->name)),
           languageTypeId(languageTypeId) {}
+    VarExpr(std::string displayName, SymbolId directId,
+            LanguageTypeId languageTypeId = LanguageTypeId::Unknown,
+            bool capitalized = false)
+        : name(std::move(displayName)), nameId(directId), languageTypeId(languageTypeId),
+          isCapitalized(capitalized) {}
     std::string name;
     SymbolId nameId = 0;
     LanguageTypeId languageTypeId = LanguageTypeId::Unknown;
+    bool isCapitalized = false;
 
     ExprKind kind() const override { return ExprKind::Var; }
-    std::shared_ptr<Expr> clone() const override { return std::make_shared<VarExpr>(name, languageTypeId); }
+    std::shared_ptr<Expr> clone() const override {
+        return std::make_shared<VarExpr>(name, nameId, languageTypeId, isCapitalized);
+    }
     std::string debug() const override { return name; }
 };
 
@@ -183,6 +191,8 @@ struct MapEntry {
     MapEntry() = default;
     MapEntry(std::string key, std::shared_ptr<Expr> value)
         : key(std::move(key)), keyId(symbolIdForName(this->key)), value(std::move(value)) {}
+    MapEntry(std::string displayKey, SymbolId directId, std::shared_ptr<Expr> value)
+        : key(std::move(displayKey)), keyId(directId), value(std::move(value)) {}
 
     std::string key;
     SymbolId keyId = 0;
@@ -268,7 +278,7 @@ public:
 struct FactSelectionFilter {
     std::string field;
     SymbolId fieldId = 0;
-    TokenType op = TokenType::EqEq;
+    TokenId::Id op = TokenId::EQUAL;
     std::shared_ptr<Expr> value;
 };
 
@@ -466,6 +476,8 @@ struct Arg {
     Arg(std::string name, std::shared_ptr<Expr> value)
         : name(std::move(name)), nameId(this->name.empty() ? 0 : symbolIdForName(this->name)),
           value(std::move(value)) {}
+    Arg(std::string displayName, SymbolId directId, std::shared_ptr<Expr> value)
+        : name(std::move(displayName)), nameId(directId), value(std::move(value)) {}
 
     std::string name; // empty means positional argument
     SymbolId nameId = 0;
@@ -479,21 +491,27 @@ struct Arg {
 
 class TermExpr final : public Expr {
 public:
-    TermExpr(std::string name, std::vector<Arg> args, BuiltinId builtinId = BuiltinId::Unknown)
-        : name(std::move(name)), nameId(builtinId == BuiltinId::Unknown ? symbolIdForName(this->name) : 0),
-          builtinId(builtinId), args(std::move(args)) {}
+    TermExpr(std::string name, std::vector<Arg> args, BuiltinId builtinId = BuiltinId::Unknown,
+             bool capitalized = false)
+        : name(std::move(name)), nameId(symbolIdForName(this->name)),
+          builtinId(builtinId), args(std::move(args)), isCapitalized(capitalized) {}
+    TermExpr(std::string displayName, SymbolId directId, std::vector<Arg> args,
+             BuiltinId builtinId = BuiltinId::Unknown, bool capitalized = false)
+        : name(std::move(displayName)), nameId(directId), builtinId(builtinId), args(std::move(args)),
+          isCapitalized(capitalized) {}
 
     std::string name;
     SymbolId nameId = 0;
     BuiltinId builtinId = BuiltinId::Unknown;
     std::vector<Arg> args;
+    bool isCapitalized = false;
 
     ExprKind kind() const override { return ExprKind::Term; }
     std::shared_ptr<Expr> clone() const override {
         std::vector<Arg> copied;
         copied.reserve(args.size());
-        for (const auto& arg : args) copied.push_back(Arg{arg.name, arg.value->clone()});
-        return std::make_shared<TermExpr>(name, std::move(copied), builtinId);
+        for (const auto& arg : args) copied.emplace_back(arg.name, arg.nameId, arg.value->clone());
+        return std::make_shared<TermExpr>(name, nameId, std::move(copied), builtinId, isCapitalized);
     }
 
     std::string debug() const override {
@@ -513,27 +531,39 @@ public:
     LambdaExpr(std::shared_ptr<Expr> source,
                std::string variable,
                std::shared_ptr<Expr> body,
-               TokenType op = TokenType::End,
+               TokenId::Id op = TokenId::UNKNOWN,
                std::shared_ptr<Expr> right = {})
         : source(std::move(source)), variable(std::move(variable)),
-          body(std::move(body)), op(std::move(op)), right(std::move(right)) {}
+          variableId(symbolIdForName(this->variable)), body(std::move(body)),
+          op(std::move(op)), right(std::move(right)) {}
+    LambdaExpr(std::shared_ptr<Expr> source,
+               std::string displayVariable,
+               SymbolId directVariableId,
+               std::shared_ptr<Expr> body,
+               TokenId::Id op = TokenId::UNKNOWN,
+               std::shared_ptr<Expr> right = {})
+        : source(std::move(source)), variable(std::move(displayVariable)),
+          variableId(directVariableId), body(std::move(body)), op(std::move(op)),
+          right(std::move(right)) {}
 
     std::shared_ptr<Expr> source;
     std::string variable;
+    SymbolId variableId = 0;
     std::shared_ptr<Expr> body;
-    TokenType op;
+    TokenId::Id op;
     std::shared_ptr<Expr> right;
 
     ExprKind kind() const override { return ExprKind::Lambda; }
     std::shared_ptr<Expr> clone() const override {
         return std::make_shared<LambdaExpr>(
-            source->clone(), variable, body->clone(), op, right ? right->clone() : nullptr);
+            source->clone(), variable, variableId, body->clone(), op,
+            right ? right->clone() : nullptr);
     }
 
     std::string debug() const override {
         std::ostringstream oss;
         oss << "lambda(" << source->debug() << ", " << variable << " => " << body->debug();
-        if (op != TokenType::End) oss << " " << tokenTypeName(op) << " " << right->debug();
+        if (op != TokenId::UNKNOWN) oss << " " << builtinTokenSpelling(op) << " " << right->debug();
         oss << ")";
         return oss.str();
     }
@@ -552,8 +582,11 @@ public:
 
     Call() = default;
     Call(std::string name, std::vector<Arg> args, BuiltinId builtinId = BuiltinId::Unknown)
-        : name(std::move(name)), nameId(builtinId == BuiltinId::Unknown ? symbolIdForName(this->name) : 0),
+        : name(std::move(name)), nameId(symbolIdForName(this->name)),
           builtinId(builtinId), args(std::move(args)) {}
+    Call(std::string displayName, SymbolId directId, std::vector<Arg> args,
+         BuiltinId builtinId = BuiltinId::Unknown)
+        : name(std::move(displayName)), nameId(directId), builtinId(builtinId), args(std::move(args)) {}
 
     std::string debug() const override {
         std::ostringstream oss;
@@ -594,7 +627,7 @@ public:
         copy.designations = call.designations;
         copy.designationIds = call.designationIds;
         for (const auto& a : call.args) {
-            copy.args.push_back(Arg{a.name, a.value->clone()});
+            copy.args.emplace_back(a.name, a.nameId, a.value->clone());
         }
         return std::make_shared<CallGoal>(std::move(copy));
     }
@@ -604,11 +637,11 @@ public:
 
 class BinaryGoal final : public Goal {
 public:
-    BinaryGoal(std::shared_ptr<Expr> left, TokenType op, std::shared_ptr<Expr> right)
+    BinaryGoal(std::shared_ptr<Expr> left, TokenId::Id op, std::shared_ptr<Expr> right)
         : left(std::move(left)), op(std::move(op)), right(std::move(right)) {}
 
     std::shared_ptr<Expr> left;
-    TokenType op;
+    TokenId::Id op;
     std::shared_ptr<Expr> right;
 
     GoalKind kind() const override { return GoalKind::Binary; }
@@ -617,7 +650,7 @@ public:
     }
 
     std::string debug() const override {
-        return left->debug() + " " + tokenTypeName(op) + " " + right->debug();
+        return left->debug() + " " + std::string(builtinTokenSpelling(op)) + " " + right->debug();
     }
 };
 
@@ -636,7 +669,7 @@ public:
         copy.name = call.name;
         copy.nameId = call.nameId;
         copy.builtinId = call.builtinId;
-        for (const auto& arg : call.args) copy.args.push_back(Arg{arg.name, arg.value->clone()});
+        for (const auto& arg : call.args) copy.args.emplace_back(arg.name, arg.nameId, arg.value->clone());
         return std::make_shared<NotGoal>(std::move(copy));
     }
     std::string debug() const override { return "not " + call.debug(); }
@@ -645,15 +678,18 @@ public:
 class AssignGoal final : public Goal {
 public:
     AssignGoal(std::string name, std::shared_ptr<Expr> expr)
-        : name(std::move(name)), expr(std::move(expr)) {}
+        : name(std::move(name)), nameId(symbolIdForName(this->name)), expr(std::move(expr)) {}
+    AssignGoal(std::string displayName, SymbolId directId, std::shared_ptr<Expr> expr)
+        : name(std::move(displayName)), nameId(directId), expr(std::move(expr)) {}
 
     std::string name;
+    SymbolId nameId = 0;
     std::shared_ptr<Expr> expr;
 
     GoalKind kind() const override { return GoalKind::Assign; }
     std::shared_ptr<Goal> clone() const override {
-        if (!expr) return std::make_shared<AssignGoal>(name, std::shared_ptr<Expr>{});
-        return std::make_shared<AssignGoal>(name, expr->clone());
+        if (!expr) return std::make_shared<AssignGoal>(name, nameId, std::shared_ptr<Expr>{});
+        return std::make_shared<AssignGoal>(name, nameId, expr->clone());
     }
 
     std::string debug() const override {
@@ -663,7 +699,13 @@ public:
 
 struct AssignmentTarget {
     std::string name;
+    SymbolId nameId = 0;
     std::string type;
+
+    AssignmentTarget(std::string name, std::string type = {})
+        : name(std::move(name)), nameId(symbolIdForName(this->name)), type(std::move(type)) {}
+    AssignmentTarget(std::string displayName, SymbolId directId, std::string type = {})
+        : name(std::move(displayName)), nameId(directId), type(std::move(type)) {}
 
     std::string debug() const {
         return type.empty() ? name : name + ": " + type;
@@ -758,7 +800,7 @@ public:
     std::shared_ptr<Goal> clone() const override {
         std::vector<Arg> copied;
         copied.reserve(fields.size());
-        for (const auto& field : fields) copied.push_back(Arg{field.name, field.value->clone()});
+        for (const auto& field : fields) copied.emplace_back(field.name, field.nameId, field.value->clone());
         return std::make_shared<ReturnGoal>(std::move(copied));
     }
 

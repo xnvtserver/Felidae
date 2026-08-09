@@ -1,7 +1,7 @@
 #include "tooling/SourceParser.h"
 
-#include "Lexer.h"
-#include "Parser.h"
+#include "IntegerParser.h"
+#include "SentencePieceModel.h"
 
 #include <algorithm>
 #include <fstream>
@@ -38,6 +38,17 @@ void addFxFiles(const fs::path& directory, std::vector<fs::path>& files) {
             files.push_back(fs::absolute(it->path()).lexically_normal());
         }
     }
+}
+
+std::string readText(const fs::path& file) {
+    std::ifstream input(file, std::ios::binary);
+    if (!input) throw std::runtime_error("Cannot open file: " + file.string());
+    return std::string(std::istreambuf_iterator<char>(input), {});
+}
+
+Program parseDirect(std::string text) {
+    IntegerTokenList input(felidaeSentencePieceModel(), std::move(text));
+    return IntegerParser(input).parseProgram();
 }
 
 std::vector<fs::path> resolveImport(const fs::path& baseDir,
@@ -92,22 +103,10 @@ std::vector<fs::path> resolveImport(const fs::path& baseDir,
 }
 
 std::vector<std::string> scanImports(const fs::path& file) {
-    std::ifstream input(file, std::ios::binary);
-    if (!input) throw std::runtime_error("Cannot open file: " + file.string());
-    Lexer lexer(input);
-    const auto tokens = lexer.tokenize();
     std::vector<std::string> imports;
-    for (std::size_t i = 0; i < tokens.size(); ++i) {
-        if (tokens[i].type != TokenType::Import) continue;
-        ++i;
-        if (i < tokens.size() && tokens[i].type == TokenType::String) {
-            imports.push_back(tokens[i].text);
-            continue;
-        }
-        if (i >= tokens.size() || tokens[i].type != TokenType::LParen) continue;
-        for (++i; i < tokens.size() && tokens[i].type != TokenType::RParen; ++i) {
-            if (tokens[i].type == TokenType::String) imports.push_back(tokens[i].text);
-        }
+    const Program program = parseDirect(readText(file));
+    for (const auto& statement : program.imports) {
+        imports.insert(imports.end(), statement->paths.begin(), statement->paths.end());
     }
     return imports;
 }
@@ -149,36 +148,19 @@ SourceGraph collectSourceGraph(const fs::path& entry,
     return graph;
 }
 
-void bootstrapFile(const fs::path& file,
-                   const std::shared_ptr<OperatorRegistry>& operators) {
-    std::ifstream input(file, std::ios::binary);
-    if (!input) throw std::runtime_error("Cannot open file: " + file.string());
-    Lexer lexer(input);
-    Parser parser(lexer, operators, file.string());
-    parser.bootstrapOperatorPatterns();
-}
-
 void parseFileWithRegistry(
     const fs::path& file,
     const std::shared_ptr<OperatorRegistry>& operators,
     const std::function<void(std::shared_ptr<Statement>)>& consume) {
-    std::ifstream input(file, std::ios::binary);
-    if (!input) throw std::runtime_error("Cannot open file: " + file.string());
-    Lexer lexer(input);
-    Parser parser(lexer, operators, file.string());
-    parser.parseProgram(consume);
+    (void)operators;
+    Program program = parseDirect(readText(file));
+    for (auto& statement : program.statements) consume(std::move(statement));
 }
 
 } // namespace
 
 Program parseText(std::string text) {
-    auto operators = std::make_shared<OperatorRegistry>();
-    Lexer bootstrapLexer(text);
-    Parser bootstrapParser(bootstrapLexer, operators);
-    bootstrapParser.bootstrapOperatorPatterns();
-    Lexer lexer(std::move(text));
-    Parser parser(lexer, std::move(operators));
-    return parser.parseProgram();
+    return parseDirect(std::move(text));
 }
 
 Program parseFile(const fs::path& path) {
@@ -193,18 +175,8 @@ void parseFileStatements(
     const fs::path& path,
     const std::function<void(std::shared_ptr<Statement>)>& consume) {
     const fs::path entry = resolveEntryPath(path);
-    auto operators = std::make_shared<OperatorRegistry>();
-    std::ifstream bootstrapInput(entry, std::ios::binary);
-    if (!bootstrapInput) throw std::runtime_error("Cannot open file: " + entry.string());
-    Lexer bootstrapLexer(bootstrapInput);
-    Parser bootstrapParser(bootstrapLexer, operators, entry.string());
-    bootstrapParser.bootstrapOperatorPatterns();
-
-    std::ifstream input(entry, std::ios::binary);
-    if (!input) throw std::runtime_error("Cannot open file: " + entry.string());
-    Lexer lexer(input);
-    Parser parser(lexer, std::move(operators), entry.string());
-    parser.parseProgram(consume);
+    Program program = parseDirect(readText(entry));
+    for (auto& statement : program.statements) consume(std::move(statement));
 }
 
 fs::path resolveEntryPath(const fs::path& path) {
@@ -232,7 +204,6 @@ LoadedProgram loadProgram(const fs::path& entryFile, bool loadImports) {
     loaded.files = graph.dependencyOrder;
     loaded.unresolvedImports = std::move(graph.unresolvedImports);
     loaded.operators = std::make_shared<OperatorRegistry>();
-    for (const auto& file : graph.dependencyOrder) bootstrapFile(file, loaded.operators);
     for (const auto& file : graph.dependencyOrder) {
         parseFileWithRegistry(file, loaded.operators, [&](std::shared_ptr<Statement> statement) {
             loaded.program.addStatement(std::move(statement));
@@ -252,7 +223,6 @@ LoadedSources loadProgramStatements(
     loaded.files = graph.dependencyOrder;
     loaded.unresolvedImports = std::move(graph.unresolvedImports);
     loaded.operators = std::make_shared<OperatorRegistry>();
-    for (const auto& file : graph.dependencyOrder) bootstrapFile(file, loaded.operators);
     for (const auto& file : graph.dependencyOrder) {
         parseFileWithRegistry(file, loaded.operators, consume);
     }

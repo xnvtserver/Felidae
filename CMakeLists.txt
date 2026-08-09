@@ -7,8 +7,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(FELIDAE_ENABLE_SANITIZERS
     "Build interpreter and tooling with address/undefined-behavior sanitizers" OFF)
-option(FELIDAE_BUILD_DEPRECATED_CELIDAE "Build deprecated Celidae tooling" OFF)
 option(FELIDAE_BUILD_TESTS "Build Felidae regression tests" ON)
+option(FELIDAE_ENABLE_STRICT_WARNINGS
+    "Enable strict warnings for Felidae-owned targets only" OFF)
 
 # Keep the lexical model native and reproducible: SentencePiece is pinned as a
 # git submodule instead of being found from an arbitrary system installation.
@@ -21,6 +22,8 @@ find_package(OpenMP)
 add_executable(felidae_sentencepiece_model_generator
     tools/GenerateSentencePieceModel.cpp)
 target_include_directories(felidae_sentencepiece_model_generator PRIVATE src)
+target_compile_definitions(felidae_sentencepiece_model_generator PRIVATE
+    FELIDAE_GENERATING_MODEL=1)
 target_include_directories(felidae_sentencepiece_model_generator BEFORE PRIVATE
     third_party/sentencepiece
     third_party/sentencepiece/src
@@ -29,6 +32,22 @@ target_link_libraries(felidae_sentencepiece_model_generator PRIVATE sentencepiec
 if(TARGET OpenMP::OpenMP_CXX)
     target_link_libraries(felidae_sentencepiece_model_generator PRIVATE OpenMP::OpenMP_CXX)
 endif()
+
+# Explicit opt-in only: it never runs during normal builds or tests.
+add_executable(felidae_integer_parser_benchmark EXCLUDE_FROM_ALL
+    tools/IntegerParserBenchmark.cpp
+    src/SentencePieceModel.cpp
+    src/IntegerTokenList.cpp
+    src/IntegerParser.cpp
+    src/BuiltinRegistry.cpp)
+target_include_directories(felidae_integer_parser_benchmark PRIVATE src)
+target_include_directories(felidae_integer_parser_benchmark BEFORE PRIVATE
+    third_party/sentencepiece
+    third_party/sentencepiece/src
+    ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
+target_compile_definitions(felidae_integer_parser_benchmark PRIVATE
+    FELIDAE_SENTENCEPIECE_MODEL_PATH="${CMAKE_SOURCE_DIR}/felidae.model")
+target_link_libraries(felidae_integer_parser_benchmark PRIVATE sentencepiece)
 
 function(felidae_enable_sanitizers target)
     if(NOT FELIDAE_ENABLE_SANITIZERS)
@@ -48,6 +67,21 @@ function(felidae_enable_sanitizers target)
     endif()
 endfunction()
 
+function(felidae_enable_quality_warnings target)
+    if(NOT FELIDAE_ENABLE_STRICT_WARNINGS OR
+       NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        return()
+    endif()
+    target_compile_options(${target} PRIVATE
+        -Wconversion -Wsign-conversion -Wformat=2 -Wformat-overflow=2
+        -Wformat-truncation=2 -Wstringop-overflow=4 -Wstringop-truncation
+        -Warray-bounds=2 -Walloc-zero -Walloca -Wcast-align -Wcast-qual
+        -Wdouble-promotion -Wduplicated-cond -Wduplicated-branches -Wlogical-op
+        -Wnull-dereference -Wpointer-arith -Wredundant-decls -Wswitch-enum
+        -Wundef -Wuninitialized -Wmaybe-uninitialized -Wuse-after-free=3 -Wvla
+        -Wunused -Wunused-function -Wunused-variable -Wunused-parameter)
+endfunction()
+
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 8)
     message(FATAL_ERROR "Felidae requires GCC 8 or newer for std::filesystem. Use GCC 8+, Clang 7+, AppleClang 10+, or MSVC 2019+.")
 endif()
@@ -55,9 +89,10 @@ endif()
 add_executable(felidae
     src/main.cpp
     src/FelidaeRuntime.cpp
+    src/SentencePieceModel.cpp
+    src/IntegerTokenList.cpp
+    src/IntegerParser.cpp
     src/BuiltinRegistry.cpp
-    src/Lexer.cpp
-    src/Parser.cpp
     src/Interpreter.cpp
     src/ReasoningRuntime.cpp
     src/Env.cpp
@@ -78,7 +113,7 @@ if(TARGET OpenMP::OpenMP_CXX)
     target_link_libraries(felidae PRIVATE OpenMP::OpenMP_CXX)
 endif()
 target_compile_options(felidae PRIVATE
-    $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
+    $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
 if(UNIX AND NOT APPLE)
@@ -86,44 +121,14 @@ if(UNIX AND NOT APPLE)
 endif()
 felidae_enable_sanitizers(felidae)
 
-if(FELIDAE_BUILD_DEPRECATED_CELIDAE)
-set(CELIDAE_SOURCES
-    src/celidae/main.cpp
-    src/celidae/Visualization.cpp
-    src/celidae/Analytics.cpp
-    src/celidae/Reasoning.cpp
-    src/tooling/SourceParser.cpp
-    src/BuiltinRegistry.cpp
-    src/Lexer.cpp
-    src/Parser.cpp
-)
-
-add_executable(celidae ${CELIDAE_SOURCES})
-target_include_directories(celidae PRIVATE src)
-target_include_directories(celidae BEFORE PRIVATE
-    third_party/sentencepiece
-    third_party/sentencepiece/src
-    ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
-target_include_directories(celidae SYSTEM PRIVATE third_party)
-target_compile_definitions(celidae PRIVATE
-    FELIDAE_SENTENCEPIECE_MODEL_PATH="${CMAKE_SOURCE_DIR}/felidae.model")
-target_link_libraries(celidae PRIVATE sentencepiece)
-if(TARGET OpenMP::OpenMP_CXX)
-    target_link_libraries(celidae PRIVATE OpenMP::OpenMP_CXX)
-endif()
-target_compile_options(celidae PRIVATE
-    $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
-    $<$<CXX_COMPILER_ID:MSVC>:/W4>
-)
-felidae_enable_sanitizers(celidae)
-endif()
 set(FELIDAE_DEBUG_SOURCES
     src/debugger/main.cpp
     src/debugger/AstAnalyzer.cpp
     src/tooling/SourceParser.cpp
+    src/SentencePieceModel.cpp
+    src/IntegerTokenList.cpp
+    src/IntegerParser.cpp
     src/BuiltinRegistry.cpp
-    src/Lexer.cpp
-    src/Parser.cpp
 )
 
 add_executable(felidae_debug ${FELIDAE_DEBUG_SOURCES})
@@ -149,8 +154,9 @@ if(FELIDAE_BUILD_TESTS)
     enable_testing()
     add_executable(felidae_sentencepiece_model_test
         tests/SentencePieceModelTest.cpp
-        src/Lexer.cpp
-        src/Parser.cpp
+        src/SentencePieceModel.cpp
+        src/IntegerTokenList.cpp
+        src/IntegerParser.cpp
         src/BuiltinRegistry.cpp)
     target_include_directories(felidae_sentencepiece_model_test PRIVATE src)
     target_include_directories(felidae_sentencepiece_model_test BEFORE PRIVATE
@@ -160,6 +166,10 @@ if(FELIDAE_BUILD_TESTS)
     target_include_directories(felidae_sentencepiece_model_test SYSTEM PRIVATE third_party)
     target_compile_definitions(felidae_sentencepiece_model_test PRIVATE
         FELIDAE_SENTENCEPIECE_MODEL_PATH="${CMAKE_SOURCE_DIR}/felidae.model")
+    # The regression executable intentionally uses assertions.  Keep them
+    # active even when the rest of Felidae is built in Release mode.
+    target_compile_options(felidae_sentencepiece_model_test PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>)
     target_link_libraries(felidae_sentencepiece_model_test PRIVATE sentencepiece)
     if(TARGET OpenMP::OpenMP_CXX)
         target_link_libraries(felidae_sentencepiece_model_test PRIVATE OpenMP::OpenMP_CXX)
@@ -286,3 +296,13 @@ if(Eigen3_FOUND)
     target_compile_definitions(felidae PRIVATE FELIDAE_HAS_EIGEN=1)
     target_link_libraries(felidae PRIVATE Eigen3::Eigen)
 endif()
+
+foreach(felidae_quality_target IN ITEMS
+        felidae_sentencepiece_model_generator felidae_integer_parser_benchmark
+        felidae felidae_debug felidae_sentencepiece_model_test
+        felidae_smoke csv db_native http process set_native group_native wordnet
+        fact fact_analysis plot gtk qt)
+    if(TARGET ${felidae_quality_target})
+        felidae_enable_quality_warnings(${felidae_quality_target})
+    endif()
+endforeach()

@@ -55,13 +55,19 @@ size_t GlobalEnv::count(const std::string& name) const {
     return values_.count(name);
 }
 
+size_t GlobalEnv::count(SymbolId id) const { return values_.find(id) != values_.end(); }
+
 GlobalEnv::iterator GlobalEnv::find(const std::string& name) {
     return values_.find(name);
 }
 
+GlobalEnv::iterator GlobalEnv::find(SymbolId id) { return values_.find(id); }
+
 GlobalEnv::const_iterator GlobalEnv::find(const std::string& name) const {
     return values_.find(name);
 }
+
+GlobalEnv::const_iterator GlobalEnv::find(SymbolId id) const { return values_.find(id); }
 
 GlobalEnv::iterator GlobalEnv::end() {
     return values_.end();
@@ -82,6 +88,8 @@ GlobalEnv::const_iterator GlobalEnv::begin() const {
 std::shared_ptr<Expr>& GlobalEnv::operator[](const std::string& name) {
     return values_[name];
 }
+
+std::shared_ptr<Expr>& GlobalEnv::operator[](SymbolId id) { return values_[id]; }
 
 void GlobalEnv::bind(const std::string& name,
                      const std::shared_ptr<Expr>& value,
