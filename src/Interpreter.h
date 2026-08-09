@@ -4,6 +4,7 @@
 #include "Env.h"
 #include "Memory.h"
 #include "NativeRuntime.h"
+#include "Parser.h"
 #include <filesystem>
 #include <list>
 #include <memory>
@@ -58,6 +59,7 @@ public:
     std::string valueToString(const std::shared_ptr<Expr>& value) const;
     std::string runtimeMetricsJson() const;
     void recordStreamedModuleMicros(std::size_t micros);
+    void recordParserMetrics(const ParserMetrics& metrics);
     std::size_t syncFactSource(const std::filesystem::path& file);
     std::shared_ptr<OperatorRegistry> operatorRegistry() const { return operators_; }
 
@@ -207,10 +209,14 @@ private:
     std::size_t solveCacheBytes_ = 0;
     mutable std::unordered_map<const ClauseStmt*, MethodRuntimeInfo> methodRuntimeCache_;
     mutable std::unordered_map<std::string, ClauseList*> clauseLookupCache_;
-    mutable std::unordered_map<std::string, std::vector<std::string>> typeAncestryCache_;
-    mutable std::unordered_map<std::string,
+    mutable std::unordered_map<SymbolId, std::vector<std::string>> typeAncestryCache_;
+    mutable std::unordered_map<SymbolId,
         std::unordered_map<std::string, std::size_t>> typeAncestorDistanceCache_;
-    mutable std::unordered_map<std::string, double> typeHierarchyDepthCache_;
+    mutable std::unordered_map<SymbolId, double> typeHierarchyDepthCache_;
+    // These closures are valid only for one immutable hierarchy generation.
+    // Fact mutations retain query indexes, but hierarchy changes must never
+    // let a previous ancestry answer leak into a later analysis.
+    mutable std::uint64_t ancestryCacheGeneration_ = 0;
     std::unordered_map<ComparisonDispatchKey,
                        ComparisonDispatchPlan,
                        ComparisonDispatchKeyHash> comparisonDispatchCache_;
@@ -249,6 +255,8 @@ private:
     std::size_t clauseAttempts_ = 0;
     std::size_t unificationAttempts_ = 0;
     std::size_t factCandidates_ = 0;
+    std::size_t relationshipCandidates_ = 0;
+    std::size_t relationshipCandidatesPruned_ = 0;
     std::size_t solutionMaterializations_ = 0;
     std::size_t environmentCopies_ = 0;
     std::size_t standardizedClauses_ = 0;
@@ -260,6 +268,7 @@ private:
     std::size_t nativeFactProjectionBytes_ = 0;
     std::size_t nativeSerializationMicros_ = 0;
     std::size_t streamedModuleMicros_ = 0;
+    ParserMetrics parserMetrics_;
     std::size_t factRegistrationMicros_ = 0;
     mutable std::size_t dispatchCacheHits_ = 0;
     mutable std::size_t dispatchCacheMisses_ = 0;
@@ -298,6 +307,8 @@ private:
     bool solveBuiltin(const Call& call, Env& env);
     bool solveNativeCall(const Call& call, Env& env);
     bool evalBuiltinTerm(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
+    bool evalAncestorAnalysis(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
+    bool evalFactPropagation(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
     bool evalRelationCompare(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
     bool evalRelationFind(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
     bool evalDependencySatisfied(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
@@ -429,6 +440,7 @@ private:
     };
     FactMaterialization factToMap(const ClauseStmt& clause);
     std::shared_ptr<ArrayExpr> materializeFactSelection(const std::shared_ptr<Expr>& selection);
+    void refreshAncestryCaches() const;
     const std::vector<std::string>& typeAncestry(const std::string& type) const;
     const std::unordered_map<std::string, std::size_t>& typeAncestorDistances(
         const std::string& type) const;

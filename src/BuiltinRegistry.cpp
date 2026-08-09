@@ -73,6 +73,11 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         // private canonical result, so it must never be query-cached.
         {BuiltinId::FactReferences, "Fact:references", BuiltinEffect::WritesExternalState},
         {BuiltinId::DbSync, "db:sync", BuiltinEffect::WritesExternalState},
+        {BuiltinId::CommonAncestors, "commonAncestors", BuiltinEffect::Pure},
+        {BuiltinId::LowestCommonAncestor, "lowestCommonAncestor", BuiltinEffect::Pure},
+        {BuiltinId::HighestCommonAncestor, "highestCommonAncestor", BuiltinEffect::Pure},
+        {BuiltinId::AncestorAnalysis, "ancestorAnalysis", BuiltinEffect::Pure},
+        {BuiltinId::PropagateFact, "propagateFact", BuiltinEffect::Pure},
         {BuiltinId::RelationCompare, "Relation:compare", BuiltinEffect::Pure},
         {BuiltinId::RelationFind, "Relation:find", BuiltinEffect::Pure},
         {BuiltinId::DependencySatisfied, "Dependency:satisfied", BuiltinEffect::Pure},

@@ -174,6 +174,9 @@ static std::shared_ptr<Expr> findMapValue(const std::shared_ptr<Expr>& expr,
             return std::make_shared<StringExpr>(selection->field);
         }
         if (key == "equals") return selection->equals;
+        if (key == "designation" && selection->designations.size() == 1) {
+            return std::make_shared<StringExpr>(selection->designations.front());
+        }
         return {};
     }
     const SymbolId keyId = symbolIdForName(key);
@@ -662,6 +665,14 @@ static std::string exprToJson(const std::shared_ptr<Expr>& expr) {
             if (selection->equals) {
                 out << ",\"equals\":" << exprToJson(selection->equals);
             }
+        }
+        if (!selection->designations.empty()) {
+            out << ",\"designations\":[";
+            for (size_t i = 0; i < selection->designations.size(); ++i) {
+                if (i) out << ",";
+                out << "\"" << jsonEscape(selection->designations[i]) << "\"";
+            }
+            out << "]";
         }
         out << "}";
         return out.str();
@@ -1480,7 +1491,7 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
         auto materialized = factToMap(*clause);
         memory_.addFact(clause->head.name, clause->parentName, materialized.value,
                         currentLoadingFile_, std::nullopt, 1,
-                        std::move(materialized.parentFactIds));
+                        std::move(materialized.parentFactIds), clause->designationIds);
         const auto& declaredParents = clause->parentNames.empty()
             ? std::vector<std::string>{clause->parentName}
             : clause->parentNames;
@@ -1819,7 +1830,15 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
         std::vector<WorkFrame> continuations;
         const bool preferLocalClause = clauses && !nativeDeclarationFor(callGoal->call.name);
         if (!preferLocalClause) {
-            Env builtinEnv = copyExecutionEnvironment(frame.env);
+            // A tokenized builtin with no user clauses has exactly one possible
+            // continuation. Move the current environment into that path rather
+            // than cloning it; fact and user-method calls retain their normal
+            // backtracking isolation below.
+            const bool deterministicBuiltin =
+                callGoal->call.builtinId != BuiltinId::Unknown && !clauses;
+            Env builtinEnv = deterministicBuiltin
+                ? std::move(frame.env)
+                : copyExecutionEnvironment(frame.env);
             if (solveBuiltin(callGoal->call, builtinEnv)) {
                 continuations.push_back(WorkFrame{frame.goals, nextGoalIndex,
                                                   std::move(builtinEnv), frame.depth + 1});
@@ -1851,18 +1870,58 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
         // scans and inheritance, but allocating it first makes a cold exact
         // lookup pay O(relation size) work even when its index has one row.
         const std::vector<size_t>* factCandidates = nullptr;
+        std::vector<const std::vector<size_t>*> indexedCandidates;
+        std::vector<size_t> designationCandidates;
+        if (!callGoal->call.designationIds.empty()) {
+            designationCandidates = memory_.designationIndexes(callGoal->call.designationIds);
+        }
         for (const auto& arg : callGoal->call.args) {
             if (arg.name.empty()) continue;
             std::shared_ptr<Expr> resolved;
             if (!evalExprValue(arg.value, frame.env, resolved) || !isGroundLiteral(resolved)) continue;
             const auto& indexed = memory_.propertyFactIndexes(callGoal->call.name, callGoal->call.nameId,
                                                                 arg.name, arg.nameId, resolved);
+            indexedCandidates.push_back(&indexed);
             if (!factCandidates || indexed.size() < factCandidates->size()) factCandidates = &indexed;
+        }
+        // A grounded multi-property fact call is a conjunction.  Selecting
+        // only the smallest index still leaves candidates that another known
+        // property already disproves.  Intersect the index plans before
+        // unification so those branches never enter the recursive solver.
+        std::vector<size_t> intersectedCandidates;
+        if (factCandidates && indexedCandidates.size() > 1) {
+            intersectedCandidates = *factCandidates;
+            for (const auto* indexed : indexedCandidates) {
+                if (indexed == factCandidates) continue;
+                std::unordered_set<size_t> allowed(indexed->begin(), indexed->end());
+                intersectedCandidates.erase(
+                    std::remove_if(intersectedCandidates.begin(), intersectedCandidates.end(),
+                        [&](size_t factIndex) { return !allowed.count(factIndex); }),
+                    intersectedCandidates.end());
+                if (intersectedCandidates.empty()) break;
+            }
+            factCandidates = &intersectedCandidates;
+        }
+        if (!callGoal->call.designationIds.empty()) {
+            if (!factCandidates) {
+                factCandidates = &designationCandidates;
+            } else {
+                std::unordered_set<size_t> allowed(
+                    designationCandidates.begin(), designationCandidates.end());
+                intersectedCandidates.assign(factCandidates->begin(), factCandidates->end());
+                intersectedCandidates.erase(
+                    std::remove_if(intersectedCandidates.begin(), intersectedCandidates.end(),
+                        [&](size_t factIndex) { return !allowed.count(factIndex); }),
+                    intersectedCandidates.end());
+                factCandidates = &intersectedCandidates;
+            }
         }
         if (!factCandidates) {
             factCandidates = &memory_.compatibleFactIndexes(callGoal->call.name, callGoal->call.nameId);
         }
         for (size_t factIndex : *factCandidates) {
+            const auto& fact = memory_.fact(factIndex);
+            if (!fact.active || !memory_.isCompatibleType(fact.type, callGoal->call.name)) continue;
             ++factCandidates_;
             Call factHead(callGoal->call.name, {});
             factHead.args = memory_.factArguments(factIndex);
@@ -2415,8 +2474,19 @@ bool Interpreter::solveMethodCall(const Call& call,
     return true;
 }
 
+void Interpreter::refreshAncestryCaches() const {
+    const std::uint64_t generation = memory_.hierarchyGeneration();
+    if (ancestryCacheGeneration_ == generation) return;
+    typeAncestryCache_.clear();
+    typeAncestorDistanceCache_.clear();
+    typeHierarchyDepthCache_.clear();
+    ancestryCacheGeneration_ = generation;
+}
+
 const std::vector<std::string>& Interpreter::typeAncestry(const std::string& type) const {
-    const auto cached = typeAncestryCache_.find(type);
+    refreshAncestryCaches();
+    const SymbolId typeId = symbolIdForName(type);
+    const auto cached = typeAncestryCache_.find(typeId);
     if (cached != typeAncestryCache_.end()) return cached->second;
     std::vector<std::string> result;
     std::set<std::string> seen;
@@ -2431,12 +2501,14 @@ const std::vector<std::string>& Interpreter::typeAncestry(const std::string& typ
     // but it is deliberately excluded from target comparison dispatch so a
     // generic fallback cannot create a second interpretation path.
     if (type != "Fact") result.push_back("Fact");
-    return typeAncestryCache_.emplace(type, std::move(result)).first->second;
+    return typeAncestryCache_.emplace(typeId, std::move(result)).first->second;
 }
 
 const std::unordered_map<std::string, std::size_t>&
 Interpreter::typeAncestorDistances(const std::string& type) const {
-    const auto cached = typeAncestorDistanceCache_.find(type);
+    refreshAncestryCaches();
+    const SymbolId typeId = symbolIdForName(type);
+    const auto cached = typeAncestorDistanceCache_.find(typeId);
     if (cached != typeAncestorDistanceCache_.end()) return cached->second;
     std::unordered_map<std::string, std::size_t> distances;
     std::deque<std::pair<std::string, std::size_t>> pending;
@@ -2456,16 +2528,18 @@ Interpreter::typeAncestorDistances(const std::string& type) const {
             }
         }
     }
-    return typeAncestorDistanceCache_.emplace(type, std::move(distances))
+    return typeAncestorDistanceCache_.emplace(typeId, std::move(distances))
         .first->second;
 }
 
 double Interpreter::typeHierarchyDepth(const std::string& type) const {
+    refreshAncestryCaches();
     std::unordered_set<std::string> visiting;
     std::function<double(const std::string&)> resolve =
         [&](const std::string& current) -> double {
             if (current == "Fact") return 0.0;
-            const auto cached = typeHierarchyDepthCache_.find(current);
+            const SymbolId currentId = symbolIdForName(current);
+            const auto cached = typeHierarchyDepthCache_.find(currentId);
             if (cached != typeHierarchyDepthCache_.end()) return cached->second;
             if (!visiting.insert(current).second) {
                 throw InterpreterError(
@@ -2477,7 +2551,7 @@ double Interpreter::typeHierarchyDepth(const std::string& type) const {
             }
             visiting.erase(current);
             const double depth = parentDepth + 1.0;
-            typeHierarchyDepthCache_.emplace(current, depth);
+            typeHierarchyDepthCache_.emplace(currentId, depth);
             return depth;
         };
     return resolve(type);
@@ -2493,6 +2567,228 @@ bool Interpreter::invokeComparisonMethod(const std::shared_ptr<ClauseStmt>& clau
     const auto returned = solutions.front().env.find(internalSymbolString(InternalSymbolKind::Return));
     if (returned == solutions.front().env.end()) return false;
     out = resolveExpr(returned->second, solutions.front().env)->clone();
+    return true;
+}
+
+bool Interpreter::evalAncestorAnalysis(const Call& call,
+                                        const Env& env,
+                                        std::shared_ptr<Expr>& out) {
+    auto argument = [&](std::initializer_list<const char*> names,
+                        size_t positional) -> std::shared_ptr<Expr> {
+        for (const char* name : names) {
+            for (const auto& arg : call.args) {
+                if (arg.name != name) continue;
+                std::shared_ptr<Expr> value;
+                if (evalExprValue(arg.value, env, value)) return value;
+                return {};
+            }
+        }
+        if (positional < call.args.size() && call.args[positional].name.empty()) {
+            std::shared_ptr<Expr> value;
+            if (evalExprValue(call.args[positional].value, env, value)) return value;
+        }
+        return {};
+    };
+    const auto left = argument({"left", "fact1", "source"}, 0);
+    const auto right = argument({"right", "fact2", "target"}, 1);
+    const auto factType = [&](const std::shared_ptr<Expr>& value,
+                              const char* label) -> std::string {
+        const auto map = std::dynamic_pointer_cast<MapExpr>(value);
+        const auto type = std::dynamic_pointer_cast<StringExpr>(
+            findMapValue(value, internalSymbolString(InternalSymbolKind::Type)));
+        if (!map || !type || type->value.empty()) {
+            throw InterpreterError(std::string(builtinName(call.builtinId)) +
+                                   " requires typed fact values for '" + label + "'");
+        }
+        return type->value;
+    };
+    const std::string leftType = factType(left, "left");
+    const std::string rightType = factType(right, "right");
+    const auto& leftDistances = typeAncestorDistances(leftType);
+    const auto& rightDistances = typeAncestorDistances(rightType);
+
+    struct Candidate {
+        std::string type;
+        std::size_t leftDistance = 0;
+        std::size_t rightDistance = 0;
+        double depth = 0.0;
+    };
+    std::vector<Candidate> candidates;
+    for (const auto& [type, leftDistance] : leftDistances) {
+        if (type == "Fact") continue;
+        const auto rightDistance = rightDistances.find(type);
+        if (rightDistance == rightDistances.end()) continue;
+        candidates.push_back(Candidate{
+            type, leftDistance, rightDistance->second, typeHierarchyDepth(type)});
+    }
+    std::sort(candidates.begin(), candidates.end(),
+        [](const Candidate& first, const Candidate& second) {
+            if (first.depth != second.depth) return first.depth > second.depth;
+            const auto firstDistance = first.leftDistance + first.rightDistance;
+            const auto secondDistance = second.leftDistance + second.rightDistance;
+            if (firstDistance != secondDistance) return firstDistance < secondDistance;
+            return first.type < second.type;
+        });
+
+    // In a multiple-inheritance DAG an LCA can be a set.  "lowest" means no
+    // other common candidate is a descendant of it; "highest" is the dual.
+    // This keeps tied, incomparable ancestors visible to Felidae code.
+    std::vector<const Candidate*> lowest;
+    std::vector<const Candidate*> highest;
+    for (const auto& candidate : candidates) {
+        bool hasMoreSpecific = false;
+        bool hasMoreGeneral = false;
+        for (const auto& other : candidates) {
+            if (candidate.type == other.type) continue;
+            hasMoreSpecific = hasMoreSpecific ||
+                memory_.isCompatibleType(other.type, candidate.type);
+            hasMoreGeneral = hasMoreGeneral ||
+                memory_.isCompatibleType(candidate.type, other.type);
+        }
+        if (!hasMoreSpecific) lowest.push_back(&candidate);
+        if (!hasMoreGeneral) highest.push_back(&candidate);
+    }
+    auto evidenceFor = [](const Candidate& candidate) {
+        auto evidence = std::make_shared<MapExpr>(std::vector<MapEntry>{
+            {internalSymbolString(InternalSymbolKind::Type),
+                std::make_shared<StringExpr>("AncestorEvidence")},
+            {"ancestor", std::make_shared<StringExpr>(candidate.type)},
+            {"left_distance", std::make_shared<NumberExpr>(
+                static_cast<double>(candidate.leftDistance))},
+            {"right_distance", std::make_shared<NumberExpr>(
+                static_cast<double>(candidate.rightDistance))},
+            {"depth", std::make_shared<NumberExpr>(candidate.depth)}});
+        evidence->factType = "AncestorEvidence";
+        return evidence;
+    };
+    auto evidenceArray = [&](const std::vector<const Candidate*>& selected) {
+        std::vector<std::shared_ptr<Expr>> values;
+        values.reserve(selected.size());
+        for (const auto* candidate : selected) values.push_back(evidenceFor(*candidate));
+        return std::make_shared<ArrayExpr>(std::move(values));
+    };
+    std::vector<const Candidate*> all;
+    all.reserve(candidates.size());
+    for (const auto& candidate : candidates) all.push_back(&candidate);
+
+    const std::vector<const Candidate*>* requested = &all;
+    std::string operation = "common";
+    if (call.builtinId == BuiltinId::LowestCommonAncestor) {
+        operation = "lowest";
+        requested = &lowest;
+    } else if (call.builtinId == BuiltinId::HighestCommonAncestor) {
+        operation = "highest";
+        requested = &highest;
+    }
+    std::shared_ptr<Expr> selected = std::make_shared<NilExpr>();
+    if (requested->size() == 1) {
+        selected = std::make_shared<StringExpr>(requested->front()->type);
+    }
+    std::string status = requested->empty() ? "none" :
+        (requested->size() == 1 ? "unique" : "ambiguous");
+    auto result = std::make_shared<MapExpr>(std::vector<MapEntry>{
+        {internalSymbolString(InternalSymbolKind::Type),
+            std::make_shared<StringExpr>("AncestorAnalysis")},
+        {"operation", std::make_shared<StringExpr>(operation)},
+        {"left", left->clone()},
+        {"right", right->clone()},
+        {"common", evidenceArray(all)},
+        {"lowest", evidenceArray(lowest)},
+        {"highest", evidenceArray(highest)},
+        {"ancestors", evidenceArray(*requested)},
+        {"selected", selected},
+        {"status", std::make_shared<StringExpr>(status)},
+        {"hierarchy_generation", std::make_shared<NumberExpr>(
+            static_cast<double>(memory_.hierarchyGeneration()))}});
+    result->factType = "AncestorAnalysis";
+    out = std::move(result);
+    return true;
+}
+
+bool Interpreter::evalFactPropagation(const Call& call,
+                                      const Env& env,
+                                      std::shared_ptr<Expr>& out) {
+    auto argument = [&](std::initializer_list<const char*> names,
+                        size_t positional) -> std::shared_ptr<Expr> {
+        for (const char* name : names) {
+            for (const auto& arg : call.args) {
+                if (arg.name != name) continue;
+                std::shared_ptr<Expr> value;
+                if (evalExprValue(arg.value, env, value)) return value;
+                return {};
+            }
+        }
+        if (positional < call.args.size() && call.args[positional].name.empty()) {
+            std::shared_ptr<Expr> value;
+            if (evalExprValue(call.args[positional].value, env, value)) return value;
+        }
+        return {};
+    };
+    const auto parent = argument({"parent", "source"}, 0);
+    const auto child = argument({"child", "target"}, 1);
+    const auto changes = argument({"changes", "patch"}, 2);
+    const auto parentMap = std::dynamic_pointer_cast<MapExpr>(parent);
+    const auto childMap = std::dynamic_pointer_cast<MapExpr>(child);
+    const auto changesMap = std::dynamic_pointer_cast<MapExpr>(changes);
+    const auto parentType = std::dynamic_pointer_cast<StringExpr>(
+        findMapValue(parent, internalSymbolString(InternalSymbolKind::Type)));
+    const auto childType = std::dynamic_pointer_cast<StringExpr>(
+        findMapValue(child, internalSymbolString(InternalSymbolKind::Type)));
+    if (!parentMap || !childMap || !changesMap || !parentType || !childType) {
+        throw InterpreterError(
+            "propagateFact requires typed 'parent' and 'child' facts plus a changes map");
+    }
+    if (!memory_.isCompatibleType(childType->value, parentType->value)) {
+        throw InterpreterError("propagateFact parent must be an ancestor of the child fact type");
+    }
+
+    std::vector<MapEntry> derivedEntries = cloneEntries(childMap->entries);
+    std::vector<std::shared_ptr<Expr>> propagated;
+    std::vector<std::shared_ptr<Expr>> overridden;
+    for (const auto& change : changesMap->entries) {
+        if (change.keyId == InternalSymbol::TypeId ||
+            change.keyId == InternalSymbol::ParentId) {
+            throw InterpreterError("propagateFact cannot change internal fact identity fields");
+        }
+        const auto parentValue = findMapValue(parent, change.key);
+        if (!parentValue) {
+            throw InterpreterError("propagateFact changes must target a property supplied by the parent fact: '" +
+                                   change.key + "'");
+        }
+        const auto childValue = findMapValue(child, change.key);
+        const bool inherited = childValue && exprEqualsLiteral(childValue, parentValue);
+        auto evidence = std::make_shared<MapExpr>(std::vector<MapEntry>{
+            {internalSymbolString(InternalSymbolKind::Type),
+                std::make_shared<StringExpr>("PropagationEvidence")},
+            {"property", std::make_shared<StringExpr>(change.key)},
+            {"parent_value", parentValue->clone()},
+            {"child_value", cloneExprOrNil(childValue)},
+            {"change", change.value->clone()},
+            {"status", std::make_shared<StringExpr>(
+                inherited ? "propagated" : "overridden")}});
+        evidence->factType = "PropagationEvidence";
+        if (inherited) {
+            upsertEntry(derivedEntries, change.key, change.value->clone());
+            propagated.push_back(std::move(evidence));
+        } else {
+            overridden.push_back(std::move(evidence));
+        }
+    }
+    auto derived = std::make_shared<MapExpr>(std::move(derivedEntries));
+    derived->factType = childMap->factType.empty() ? childType->value : childMap->factType;
+    const bool complete = overridden.empty();
+    auto result = std::make_shared<MapExpr>(std::vector<MapEntry>{
+        {internalSymbolString(InternalSymbolKind::Type),
+            std::make_shared<StringExpr>("FactPropagation")},
+        {"state", std::make_shared<StringExpr>(
+            complete ? "propagated" : "partially_overridden")},
+        {"parent", parent->clone()},
+        {"child", child->clone()},
+        {"derived", derived},
+        {"propagated", std::make_shared<ArrayExpr>(std::move(propagated))},
+        {"overridden", std::make_shared<ArrayExpr>(std::move(overridden))}});
+    result->factType = "FactPropagation";
+    out = std::move(result);
     return true;
 }
 
@@ -2936,6 +3232,24 @@ bool Interpreter::evalRelationCompare(const Call& call,
     };
     auto source = argument("left", 0);
     auto target = argument("right", 1);
+    std::shared_ptr<MapExpr> relationshipSelector;
+    if (const auto selector = argument("relationship", 5)) {
+        relationshipSelector = std::dynamic_pointer_cast<MapExpr>(selector);
+        const auto selectorType = std::dynamic_pointer_cast<StringExpr>(
+            findMapValue(selector, internalSymbolString(InternalSymbolKind::Type)));
+        if (!relationshipSelector || !selectorType || selectorType->value != "Relationship") {
+            throw InterpreterError(
+                "Relation.compare relationship must be a Relationship(...) fact pattern");
+        }
+    }
+    std::string comparisonMode = "directed";
+    if (const auto modeValue = argument("mode", 3)) {
+        const auto mode = std::dynamic_pointer_cast<StringExpr>(modeValue);
+        if (!mode || (mode->value != "directed" && mode->value != "symmetric")) {
+            throw InterpreterError("Relation.compare mode must be 'directed' or 'symmetric'");
+        }
+        comparisonMode = mode->value;
+    }
     std::size_t maxRelationshipDepth = 4;
     if (const auto depthValue = argument("max_depth", 2)) {
         const auto number = std::dynamic_pointer_cast<NumberExpr>(depthValue);
@@ -2945,6 +3259,15 @@ bool Interpreter::evalRelationCompare(const Call& call,
         }
         maxRelationshipDepth = static_cast<std::size_t>(number->value);
     }
+    std::size_t maxAncestorDepth = 64;
+    if (const auto depthValue = argument("max_ancestor_depth", 4)) {
+        const auto number = std::dynamic_pointer_cast<NumberExpr>(depthValue);
+        if (!number || number->value < 0.0 || number->value > 64.0 ||
+            std::floor(number->value) != number->value) {
+            throw InterpreterError("Relation.compare max_ancestor_depth must be an integer from 0 to 64");
+        }
+        maxAncestorDepth = static_cast<std::size_t>(number->value);
+    }
     auto sourceMap = std::dynamic_pointer_cast<MapExpr>(source);
     auto targetMap = std::dynamic_pointer_cast<MapExpr>(target);
     auto sourceTypeValue = findMapValue(source, internalSymbolString(InternalSymbolKind::Type));
@@ -2953,6 +3276,61 @@ bool Interpreter::evalRelationCompare(const Call& call,
     auto targetType = std::dynamic_pointer_cast<StringExpr>(targetTypeValue);
     if (!sourceMap || !targetMap || !sourceType || !targetType) {
         throw InterpreterError("Relation.compare requires typed fact-compatible 'left' and 'right' values");
+    }
+
+    if (comparisonMode == "symmetric") {
+        // Membership and target interpretation are deliberately directional.
+        // A symmetric request must therefore retain both proofs rather than
+        // pretend one direction is canonical or discard a disagreement.
+        auto direct = [&](const std::shared_ptr<Expr>& first,
+                          const std::shared_ptr<Expr>& second,
+                          std::shared_ptr<Expr>& result) {
+            Call directional("Relation:compare", {}, BuiltinId::RelationCompare);
+            directional.args.push_back(Arg{"left", first->clone()});
+            directional.args.push_back(Arg{"right", second->clone()});
+            directional.args.push_back(Arg{"max_depth",
+                std::make_shared<NumberExpr>(static_cast<double>(maxRelationshipDepth))});
+            directional.args.push_back(Arg{"max_ancestor_depth",
+                std::make_shared<NumberExpr>(static_cast<double>(maxAncestorDepth))});
+            if (relationshipSelector) {
+                directional.args.push_back(Arg{"relationship", relationshipSelector->clone()});
+            }
+            return evalRelationCompare(directional, env, result);
+        };
+        std::shared_ptr<Expr> forward;
+        std::shared_ptr<Expr> reverse;
+        if (!direct(source, target, forward) || !direct(target, source, reverse)) return false;
+        const auto forwardState = std::dynamic_pointer_cast<StringExpr>(findMapValue(forward, "state"));
+        const auto reverseState = std::dynamic_pointer_cast<StringExpr>(findMapValue(reverse, "state"));
+        const auto forwardEvidence = findMapValue(forward, "evidence");
+        const auto reverseEvidence = findMapValue(reverse, "evidence");
+        const auto forwardSimilarity = std::dynamic_pointer_cast<NumberExpr>(
+            findMapValue(forwardEvidence, "similarity"));
+        const auto reverseSimilarity = std::dynamic_pointer_cast<NumberExpr>(
+            findMapValue(reverseEvidence, "similarity"));
+        const bool sameState = forwardState && reverseState &&
+            forwardState->value == reverseState->value;
+        const bool sameSimilarity = forwardSimilarity && reverseSimilarity &&
+            std::abs(forwardSimilarity->value - reverseSimilarity->value) <= 1e-12;
+        const bool agrees = sameState && sameSimilarity;
+        const double similarity = forwardSimilarity && reverseSimilarity
+            ? (forwardSimilarity->value + reverseSimilarity->value) / 2.0
+            : 0.0;
+        auto result = std::make_shared<MapExpr>(std::vector<MapEntry>{
+            {internalSymbolString(InternalSymbolKind::Type),
+                std::make_shared<StringExpr>("SymmetricComparison")},
+            {"mode", std::make_shared<StringExpr>("symmetric")},
+            {"state", std::make_shared<StringExpr>(
+                agrees ? "agreed" : "directional_difference")},
+            {"agrees", std::make_shared<BoolExpr>(agrees)},
+            {"similarity", std::make_shared<NumberExpr>(similarity)},
+            {"forward_similarity", cloneExprOrNil(forwardSimilarity)},
+            {"reverse_similarity", cloneExprOrNil(reverseSimilarity)},
+            {"forward", forward->clone()},
+            {"reverse", reverse->clone()}});
+        result->factType = "SymmetricComparison";
+        out = std::move(result);
+        return true;
     }
 
     const auto sourceId = memory_.logicalFactId(source);
@@ -3223,6 +3601,8 @@ bool Interpreter::evalRelationCompare(const Call& call,
         if (ancestor == "Fact") continue;
         const auto targetDistance = targetDistances.find(ancestor);
         if (targetDistance == targetDistances.end()) continue;
+        if (sourceDistance > maxAncestorDepth ||
+            targetDistance->second > maxAncestorDepth) continue;
         const double commonDepth = typeHierarchyDepth(ancestor);
         ancestorCandidates.push_back(AncestorCandidate{
             ancestor,
@@ -3278,6 +3658,19 @@ bool Interpreter::evalRelationCompare(const Call& call,
         std::uint64_t terminal = 0;
         double confidence = 1.0;
     };
+    const auto relationshipMatches = [&](const FactRelationship& relation) {
+        if (!relationshipSelector) return true;
+        if (!relation.relationship) return false;
+        for (const auto& field : relationshipSelector->entries) {
+            if (field.keyId == InternalSymbol::TypeId ||
+                field.keyId == InternalSymbol::ParentId) {
+                continue;
+            }
+            const auto actual = findMapValue(relation.relationship, field.key);
+            if (!actual || !exprEqualsLiteral(actual, field.value)) return false;
+        }
+        return true;
+    };
     auto relationshipNeighborhood = [&](const std::optional<std::uint64_t>& root) {
         std::unordered_map<std::string, RelationPath> paths;
         if (!root) return paths;
@@ -3303,6 +3696,11 @@ bool Interpreter::evalRelationCompare(const Call& call,
             if (depth >= maxRelationshipDepth) continue;
             const auto visitRelationships = [&](const auto& relationships) {
               for (const auto& relation : relationships) {
+                ++relationshipCandidates_;
+                if (!relationshipMatches(relation)) {
+                    ++relationshipCandidatesPruned_;
+                    continue;
+                }
                 const std::uint64_t next = relation.sourceId == current
                     ? relation.targetId : relation.sourceId;
                 if (next == 0 || next == current) continue;
@@ -3525,6 +3923,11 @@ bool Interpreter::evalRelationCompare(const Call& call,
         {"relationalConfidence", std::make_shared<NumberExpr>(relationalConfidence)},
         {"relationshipMaxDepth", std::make_shared<NumberExpr>(
             static_cast<double>(maxRelationshipDepth))},
+        {"relationshipSelector", relationshipSelector
+            ? std::static_pointer_cast<Expr>(relationshipSelector->clone())
+            : std::shared_ptr<Expr>(std::make_shared<NilExpr>())},
+        {"ancestorMaxDepth", std::make_shared<NumberExpr>(
+            static_cast<double>(maxAncestorDepth))},
         {"sharedRelationshipCount", std::make_shared<NumberExpr>(
             static_cast<double>(sharedRelationships))},
         {"similarity", std::make_shared<NumberExpr>(similarity)},
@@ -3618,6 +4021,23 @@ bool Interpreter::evalRelationCompare(const Call& call,
 }
 
 bool Interpreter::solveBuiltin(const Call& call, Env& env) {
+    if (call.builtinId == BuiltinId::CommonAncestors ||
+        call.builtinId == BuiltinId::LowestCommonAncestor ||
+        call.builtinId == BuiltinId::HighestCommonAncestor ||
+        call.builtinId == BuiltinId::AncestorAnalysis ||
+        call.builtinId == BuiltinId::PropagateFact) {
+        std::shared_ptr<Expr> result;
+        const bool evaluated = call.builtinId == BuiltinId::PropagateFact
+            ? evalFactPropagation(call, env, result)
+            : evalAncestorAnalysis(call, env, result);
+        if (!evaluated) return false;
+        env[InternalSymbol::ReturnId] = result;
+        for (const auto& argument : call.args) {
+            if ((argument.name == "result" || argument.name == "out") &&
+                !unifyExpr(argument.value, result, env)) return false;
+        }
+        return true;
+    }
     if (call.builtinId == BuiltinId::ReasoningContrary ||
         call.builtinId == BuiltinId::ReasoningProve ||
         call.builtinId == BuiltinId::ReasoningGrade ||
@@ -4570,6 +4990,17 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
 }
 
 bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out) {
+    if (term.builtinId == BuiltinId::CommonAncestors ||
+        term.builtinId == BuiltinId::LowestCommonAncestor ||
+        term.builtinId == BuiltinId::HighestCommonAncestor ||
+        term.builtinId == BuiltinId::AncestorAnalysis ||
+        term.builtinId == BuiltinId::PropagateFact) {
+        Call call(term.name, {}, term.builtinId);
+        for (const auto& arg : term.args) call.args.push_back(Arg{arg.name, arg.value->clone()});
+        return term.builtinId == BuiltinId::PropagateFact
+            ? evalFactPropagation(call, env, out)
+            : evalAncestorAnalysis(call, env, out);
+    }
     if (term.builtinId == BuiltinId::ReasoningContrary ||
         term.builtinId == BuiltinId::ReasoningProve ||
         term.builtinId == BuiltinId::ReasoningGrade ||
@@ -4606,6 +5037,37 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         try {
             Lexer lexer(source->value);
             Parser parser(lexer, operators_, currentLoadingFile_.string());
+            const auto first = std::find_if_not(source->value.begin(), source->value.end(), [](unsigned char c) {
+                return std::isspace(c) != 0;
+            });
+            if (first != source->value.end() && *first == '?') {
+                const auto solutions = solve(parser.parseQuery());
+                std::vector<std::shared_ptr<Expr>> resultItems;
+                resultItems.reserve(solutions.size());
+                for (const auto& solution : solutions) {
+                    std::vector<MapEntry> bindings;
+                    for (const auto& binding : solution.env) {
+                        if (binding.first <= InternalSymbol::SystemResultId) continue;
+                        const std::string name = symbolNameForId(binding.first);
+                        if (name.empty() || isInternalGeneratedSymbolName(name)) continue;
+                        const auto value = resolveExpr(binding.second, solution.env);
+                        if (value) bindings.emplace_back(name, value->clone());
+                    }
+                    std::sort(bindings.begin(), bindings.end(), [](const MapEntry& left, const MapEntry& right) {
+                        return left.key < right.key;
+                    });
+                    auto solutionValue = std::make_shared<MapExpr>(std::move(bindings));
+                    solutionValue->factType = "QuerySolution";
+                    resultItems.push_back(std::move(solutionValue));
+                }
+                auto result = std::make_shared<MapExpr>(std::vector<MapEntry>{
+                    {"solutions", std::make_shared<ArrayExpr>(std::move(resultItems))},
+                    {"count", std::make_shared<NumberExpr>(static_cast<double>(solutions.size()))}
+                });
+                result->factType = "QueryResult";
+                out = std::move(result);
+                return true;
+            }
             return evalExprValue(parser.parseExpressionText(), env, out);
         } catch (const ParserError& error) {
             throw InterpreterError(std::string("system.run parse error: ") + error.what());
@@ -4734,6 +5196,17 @@ bool Interpreter::evalCallAsValueOnce(
     const Env& env,
     std::shared_ptr<Expr>& out) {
     const BuiltinId builtin = term.builtinId;
+    if (builtin == BuiltinId::CommonAncestors ||
+        builtin == BuiltinId::LowestCommonAncestor ||
+        builtin == BuiltinId::HighestCommonAncestor ||
+        builtin == BuiltinId::AncestorAnalysis ||
+        builtin == BuiltinId::PropagateFact) {
+        Call call(term.name, {}, builtin);
+        for (const auto& arg : term.args) call.args.push_back(Arg{arg.name, arg.value->clone()});
+        return builtin == BuiltinId::PropagateFact
+            ? evalFactPropagation(call, env, out)
+            : evalAncestorAnalysis(call, env, out);
+    }
     if (builtin == BuiltinId::RelationCompare) {
         Call call(term.name, {}, builtin);
         for (const auto& arg : term.args) call.args.push_back(Arg{arg.name, arg.value->clone()});
@@ -5987,6 +6460,16 @@ bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& en
     auto resolved = resolveExpr(expr, env);
     if (auto lambda = std::dynamic_pointer_cast<LambdaExpr>(resolved)) {
         auto sourceValues = valuesForLambdaSource(lambda->source, env);
+        // A type selector is a fact query.  Its documented predicate form
+        // filters facts, including compound predicates that are represented
+        // as a normal boolean expression rather than LambdaExpr::op/right.
+        // Array sources retain their mapping behaviour for compatibility.
+        const auto sourceVariable = std::dynamic_pointer_cast<VarExpr>(lambda->source);
+        const bool sourceIsFactType =
+            std::dynamic_pointer_cast<StringExpr>(lambda->source) != nullptr ||
+            (sourceVariable && !sourceVariable->name.empty() &&
+             std::isupper(static_cast<unsigned char>(sourceVariable->name.front())) &&
+             globals_.find(sourceVariable->name) == globals_.end());
         std::vector<std::shared_ptr<Expr>> results;
         for (const auto& item : sourceValues) {
             Env lambdaEnv = env;
@@ -6007,7 +6490,15 @@ bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& en
             }
             std::shared_ptr<Expr> mapped;
             if (evalExprValue(lambda->body, lambdaEnv, mapped) && !isMethodTruthTupleWithFalse(mapped)) {
-                results.push_back(mapped);
+                if (sourceIsFactType) {
+                    if (const auto predicate = std::dynamic_pointer_cast<BoolExpr>(mapped)) {
+                        if (predicate->value) results.push_back(item->clone());
+                    } else {
+                        results.push_back(mapped);
+                    }
+                } else {
+                    results.push_back(mapped);
+                }
             }
         }
         out = std::make_shared<ArrayExpr>(std::move(results));
@@ -6053,8 +6544,16 @@ bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& en
     }
     if (auto var = std::dynamic_pointer_cast<VarExpr>(resolved)) {
         auto globalIt = globals_.find(var->name);
-        if (globalIt == globals_.end()) return false;
-        return evalExprValue(globalIt->second, env, out);
+        if (globalIt != globals_.end()) return evalExprValue(globalIt->second, env, out);
+        const SymbolId designationId = symbolIdForName(var->name);
+        if (memory_.hasDesignation(designationId)) {
+            out = std::make_shared<FactSelectionExpr>(
+                "", memory_.captureSnapshot(), "", nullptr,
+                std::vector<SymbolId>{designationId},
+                std::vector<std::string>{var->name});
+            return true;
+        }
+        return false;
     }
     out = resolved->clone();
     return true;
@@ -6071,6 +6570,47 @@ bool Interpreter::evalOperatorExpr(const OperatorExpression& expression,
     }
     if (expression.coreOperator == CoreOperator::Unknown) {
         return evalCustomOperatorExpr(expression, env, out);
+    }
+    const auto selectionFieldFilter = [&](const std::shared_ptr<Expr>& candidate,
+                                          const std::shared_ptr<Expr>& expected,
+                                          TokenType op,
+                                          std::shared_ptr<FactSelectionExpr>& selectionOut) {
+        const auto access = std::dynamic_pointer_cast<AccessExpr>(candidate);
+        if (!access) return false;
+        std::shared_ptr<Expr> source;
+        if (!evalExprValue(access->target, env, source)) return false;
+        const auto selection = std::dynamic_pointer_cast<FactSelectionExpr>(source);
+        if (!selection) return false;
+        std::shared_ptr<Expr> value;
+        if (!evalExprValue(expected, env, value)) return false;
+        auto filtered = std::static_pointer_cast<FactSelectionExpr>(selection->clone());
+        filtered->filters.push_back(FactSelectionFilter{
+            access->key, access->keyId, op, std::move(value)});
+        selectionOut = std::move(filtered);
+        return true;
+    };
+    const auto comparisonToken = [&](CoreOperator op) {
+        switch (op) {
+            case CoreOperator::StrictEqual: return TokenType::EqEq;
+            case CoreOperator::StrictNotEqual: return TokenType::NotEq;
+            case CoreOperator::Less:
+            case CoreOperator::LessEqual:
+            case CoreOperator::Greater:
+            case CoreOperator::GreaterEqual:
+                return coreOperatorDefinition(op).token;
+            default:
+                return TokenType::End;
+        }
+    };
+    if (expression.captureCount() == 2) {
+        const TokenType filterOp = comparisonToken(expression.coreOperator);
+        if (filterOp != TokenType::End) {
+            std::shared_ptr<FactSelectionExpr> filtered;
+            if (selectionFieldFilter(expression.capture(0), expression.capture(1), filterOp, filtered)) {
+                out = std::move(filtered);
+                return true;
+            }
+        }
     }
     const auto booleanValue = [](const std::shared_ptr<Expr>& value,
                                  const char* operatorName) {
@@ -6124,6 +6664,23 @@ bool Interpreter::evalOperatorExpr(const OperatorExpression& expression,
             if (expression.captureCount() != 2) throw InterpreterError("Invalid logical operator shape");
             std::shared_ptr<Expr> left;
             if (!evalExprValue(expression.capture(0), env, left)) return false;
+            if (expression.coreOperator == CoreOperator::LogicalAnd) {
+                if (const auto selection = std::dynamic_pointer_cast<FactSelectionExpr>(left)) {
+                    const auto right = std::dynamic_pointer_cast<OperatorExpression>(expression.capture(1));
+                    const TokenType filterOp = right ? comparisonToken(right->coreOperator) : TokenType::End;
+                    const auto field = right && right->captureCount() == 2
+                        ? std::dynamic_pointer_cast<VarExpr>(right->capture(0)) : nullptr;
+                    if (filterOp != TokenType::End && field) {
+                        std::shared_ptr<Expr> value;
+                        if (!evalExprValue(right->capture(1), env, value)) return false;
+                        auto filtered = std::static_pointer_cast<FactSelectionExpr>(selection->clone());
+                        filtered->filters.push_back(FactSelectionFilter{
+                            field->name, field->nameId, filterOp, std::move(value)});
+                        out = std::move(filtered);
+                        return true;
+                    }
+                }
+            }
             const bool leftTruth = booleanValue(
                 left, expression.coreOperator == CoreOperator::LogicalAnd ? "and" : "or");
             if ((expression.coreOperator == CoreOperator::LogicalAnd && !leftTruth) ||
@@ -6218,7 +6775,7 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
     if (matched) *matched = false;
     const auto clauses = operatorClauses_.find(expression.patternId);
     if (clauses == operatorClauses_.end()) {
-        if (matched) return false;
+        if (matched != nullptr) return false;
         throw InterpreterError("No overload implementation is registered for operator pattern " +
                                std::to_string(expression.patternId));
     }
@@ -6705,7 +7262,7 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
         }
     }
     if (candidates.empty()) {
-        if (matched) return false;
+        if (matched != nullptr) return false;
         throw InterpreterError("No typed overload matches the operator captures");
     }
     std::sort(candidates.begin(), candidates.end(), [](const Candidate& left, const Candidate& right) {
@@ -7680,6 +8237,14 @@ std::vector<std::shared_ptr<Expr>> Interpreter::valuesForLambdaSource(const std:
             if (auto array = std::dynamic_pointer_cast<ArrayExpr>(value)) return array->items;
             return {value};
         }
+        const SymbolId designationId = symbolIdForName(var->name);
+        if (memory_.hasDesignation(designationId)) {
+            std::vector<std::shared_ptr<Expr>> values;
+            for (const size_t factIndex : memory_.designationIndexes({designationId})) {
+                if (const auto value = memory_.factValue(factIndex)) values.push_back(value);
+            }
+            return values;
+        }
     }
     if (var && !var->name.empty() && std::isupper(static_cast<unsigned char>(var->name.front()))) {
         ensurePredicateLoaded(var->name);
@@ -7693,6 +8258,9 @@ std::vector<std::shared_ptr<Expr>> Interpreter::valuesForLambdaSource(const std:
     std::shared_ptr<Expr> value;
     if (!evalExprValue(source, env, value)) return {};
     if (auto array = std::dynamic_pointer_cast<ArrayExpr>(value)) return array->items;
+    if (std::dynamic_pointer_cast<FactSelectionExpr>(value)) {
+        return materializeFactSelection(value)->items;
+    }
     return {value};
 }
 
@@ -7869,6 +8437,7 @@ void Interpreter::clearCachesNow() {
     typeAncestryCache_.clear();
     typeAncestorDistanceCache_.clear();
     typeHierarchyDepthCache_.clear();
+    ancestryCacheGeneration_ = 0;
     comparisonDispatchCache_.clear();
     tableCache_.clear();
 }
@@ -7928,18 +8497,46 @@ std::shared_ptr<ArrayExpr> Interpreter::materializeFactSelection(
     const std::shared_ptr<Expr>& selection) {
     if (const auto lazy =
             std::dynamic_pointer_cast<FactSelectionExpr>(selection)) {
-        const auto indexes = memory_.selectionIndexes(
-            lazy->factType,
-            lazy->field,
-            lazy->equals && isGroundLiteral(lazy->equals)
-                ? lazy->equals : nullptr,
-            lazy->snapshotGeneration);
+        const auto indexes = lazy->designationIds.empty()
+            ? memory_.selectionIndexes(
+                lazy->factType,
+                lazy->field,
+                lazy->equals && isGroundLiteral(lazy->equals)
+                    ? lazy->equals : nullptr,
+                lazy->snapshotGeneration)
+            : memory_.designationIndexes(lazy->designationIds, lazy->snapshotGeneration);
         std::vector<std::shared_ptr<Expr>> rows;
         rows.reserve(indexes.size());
         for (const auto index : indexes) {
+            const auto& record = memory_.snapshotFact(lazy->snapshotGeneration, index);
+            if (!record.active || (!lazy->factType.empty() &&
+                !memory_.isCompatibleType(record.type, lazy->factType))) {
+                continue;
+            }
             const auto fact =
                 memory_.factValue(index, lazy->snapshotGeneration);
             if (!fact) continue;
+            if (!lazy->field.empty()) {
+                const auto actual = findMapValue(fact, lazy->field);
+                if (!actual || !lazy->equals || !exprContainsLiteral(actual, lazy->equals)) continue;
+            }
+            bool matches = true;
+            for (const auto& filter : lazy->filters) {
+                const auto actual = findMapValue(fact, filter.field);
+                if (!actual || !filter.value) {
+                    matches = false;
+                    break;
+                }
+                if (filter.op == TokenType::EqEq) {
+                    matches = exprContainsLiteral(actual, filter.value);
+                } else if (filter.op == TokenType::NotEq) {
+                    matches = !exprContainsLiteral(actual, filter.value);
+                } else {
+                    matches = compareResolved(actual, filter.op, filter.value);
+                }
+                if (!matches) break;
+            }
+            if (!matches) continue;
             ++factCandidates_;
             rows.push_back(fact);
         }
@@ -7999,6 +8596,7 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
         std::string parentType;
         std::shared_ptr<MapExpr> value;
         std::vector<std::uint64_t> parentFactIds;
+        std::vector<SymbolId> designationIds;
     };
     std::vector<StagedFact> staged;
     parseProgramFileChunks(normalized, [&](Program&& program) {
@@ -8013,7 +8611,8 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
                 clause->head.name,
                 clause->parentName,
                 std::move(materialized.value),
-                std::move(materialized.parentFactIds)});
+                std::move(materialized.parentFactIds),
+                clause->designationIds});
         }
     });
 
@@ -8069,7 +8668,8 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
                 normalized,
                 existing ? std::optional<std::uint64_t>(existing->id) : std::nullopt,
                 existing ? existing->rowVersion + 1 : 1,
-                std::move(row.parentFactIds));
+                std::move(row.parentFactIds),
+                std::move(row.designationIds));
             if (!row.parentType.empty()) {
                 memory_.setParent(row.type, row.parentType, normalized);
             }
@@ -8091,6 +8691,8 @@ std::string Interpreter::runtimeMetricsJson() const {
         << "\"clauseAttempts\":" << clauseAttempts_ << ","
         << "\"unificationAttempts\":" << unificationAttempts_ << ","
         << "\"factCandidates\":" << factCandidates_ << ","
+        << "\"relationshipCandidates\":" << relationshipCandidates_ << ","
+        << "\"relationshipCandidatesPruned\":" << relationshipCandidatesPruned_ << ","
         << "\"solutionMaterializations\":" << solutionMaterializations_ << ","
         << "\"environmentFramesCreated\":" << envFramePool_.created() << ","
         << "\"environmentCopies\":" << environmentCopies_ << ","
@@ -8103,6 +8705,12 @@ std::string Interpreter::runtimeMetricsJson() const {
         << "\"nativeFactProjectionBytes\":" << nativeFactProjectionBytes_ << ","
         << "\"nativeSerializationMicros\":" << nativeSerializationMicros_ << ","
         << "\"streamedModuleMicros\":" << streamedModuleMicros_ << ","
+        << "\"parserTokensLexed\":" << parserMetrics_.tokensLexed << ","
+        << "\"parserVirtualTokenSynchronizations\":" << parserMetrics_.virtualTokenSynchronizations << ","
+        << "\"parserVirtualTokensRegistered\":" << parserMetrics_.virtualTokensRegistered << ","
+        << "\"parserVirtualTokensRetagged\":" << parserMetrics_.virtualTokensRetagged << ","
+        << "\"parserOperatorCandidateLookups\":" << parserMetrics_.operatorCandidateLookups << ","
+        << "\"parserOperatorCandidatesScored\":" << parserMetrics_.operatorCandidatesScored << ","
         << "\"factRegistrationMicros\":" << factRegistrationMicros_ << ","
         << "\"dispatchCacheHits\":" << dispatchCacheHits_ << ","
         << "\"dispatchCacheMisses\":" << dispatchCacheMisses_ << ","
@@ -8128,6 +8736,10 @@ std::string Interpreter::runtimeMetricsJson() const {
 
 void Interpreter::recordStreamedModuleMicros(std::size_t micros) {
     streamedModuleMicros_ += micros;
+}
+
+void Interpreter::recordParserMetrics(const ParserMetrics& metrics) {
+    parserMetrics_ += metrics;
 }
 
 std::vector<std::filesystem::path> Interpreter::expandImportPattern(const std::filesystem::path& baseDir,

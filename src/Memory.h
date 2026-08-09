@@ -14,6 +14,32 @@
 
 namespace Felidae {
 
+enum class TemporalState : std::uint8_t {
+    Past,
+    Current,
+    Future
+};
+
+enum class TemporalOrigin : std::uint8_t {
+    Observed,
+    Scheduled,
+    Derived,
+    Predicted,
+    Required
+};
+
+struct FactTemporalMetadata {
+    // Effective time is Unix seconds when explicitly supplied by a recognized
+    // field, otherwise registration time. Sequence makes same-second writes
+    // deterministic without altering the user-visible fact schema.
+    std::int64_t effectiveTime = 0;
+    std::int64_t registrationTime = 0;
+    std::uint64_t registrationSequence = 0;
+    bool hasExplicitEffectiveTime = false;
+    TemporalOrigin origin = TemporalOrigin::Observed;
+    std::string lineageKey;
+};
+
 struct FactRecord {
     // Fact ids are append-only and never reused.  Vector positions are an
     // implementation detail; retaining this id makes source reloads,
@@ -24,12 +50,14 @@ struct FactRecord {
     std::string parentType;
     SymbolId parentTypeId = 0;
     std::vector<std::uint64_t> parentFactIds;
+    std::vector<SymbolId> designations;
     std::filesystem::path origin;
     std::size_t stableHash = 0;
     // Logical identity and physical row version are intentionally separate.
     // Updating a fact retains id and publishes a later immutable row version.
     std::uint64_t rowVersion = 1;
     std::uint64_t visibleGeneration = 0;
+    FactTemporalMetadata temporal;
     // Stable position inside the immutable relation root. This is distinct
     // from the global row index and lets column access remain contiguous.
     std::size_t relationOrdinal = 0;
@@ -47,6 +75,9 @@ struct FactMemoryStats {
     std::size_t adaptiveEqualityIndexes = 0;
     std::size_t adaptiveIndexBuildMicros = 0;
     std::size_t rowVersions = 0;
+    std::size_t temporalLineages = 0;
+    std::size_t temporalPastFacts = 0;
+    std::size_t temporalFutureFacts = 0;
     std::uint64_t generation = 0;
 };
 
@@ -115,13 +146,27 @@ public:
                    std::filesystem::path origin = {},
                    std::optional<std::uint64_t> logicalId = std::nullopt,
                    std::uint64_t rowVersion = 1,
-                   std::vector<std::uint64_t> parentFactIds = {});
+                   std::vector<std::uint64_t> parentFactIds = {},
+                   std::vector<SymbolId> designations = {});
+    std::vector<size_t> designationIndexes(const std::vector<SymbolId>& designations,
+                                           std::uint64_t snapshotGeneration = 0) const;
+    bool hasDesignation(SymbolId designation,
+                        std::uint64_t snapshotGeneration = 0) const;
+    TemporalState temporalState(size_t index,
+                                std::int64_t reasoningTime = 0,
+                                std::uint64_t snapshotGeneration = 0) const;
+    std::vector<size_t> currentFactIndexes(const std::vector<size_t>& candidates,
+                                            std::uint64_t snapshotGeneration = 0) const;
+    std::vector<size_t> relevantPastFactIndexes(const std::string& type,
+                                                SymbolId typeId = 0,
+                                                std::uint64_t snapshotGeneration = 0) const;
     void setParent(const std::string& child, const std::string& parent);
     void setParent(const std::string& child,
                    const std::string& parent,
                    std::filesystem::path origin);
     const std::unordered_map<std::string, std::string>& parents() const;
     std::vector<std::string> parentsOf(const std::string& child) const;
+    const std::vector<SymbolId>& parentsOf(SymbolId childId) const;
     std::vector<std::pair<std::string, std::string>> hierarchyEdges() const;
     const std::unordered_map<std::string, std::filesystem::path>& parentOrigins() const;
     std::vector<size_t> factIndexesFromOrigin(const std::filesystem::path& origin) const;
@@ -285,6 +330,7 @@ private:
 
         FactRows facts;
         std::uint64_t nextFactId = 1;
+        std::uint64_t nextTemporalSequence = 1;
         std::uint64_t generation = 1;
         std::uint64_t hierarchyGeneration = 1;
         FactIdDirectory factIndexById;
@@ -294,7 +340,10 @@ private:
         std::unordered_map<std::string, std::vector<std::string>> additionalParentsOf;
         std::unordered_map<std::string, std::filesystem::path> additionalParentOrigins;
         std::unordered_map<SymbolId, std::vector<SymbolId>> childrenByParent;
+        std::unordered_map<SymbolId, std::vector<SymbolId>> parentsByChild;
         std::unordered_map<SymbolId, std::vector<std::string>> typeNamesById;
+        std::unordered_map<SymbolId, std::shared_ptr<std::vector<size_t>>> designationIndexes;
+        std::unordered_map<std::string, std::shared_ptr<std::vector<size_t>>> temporalLineageIndexes;
         // Relation roots are independently copy-on-write.  Publishing a
         // change to one fact type keeps every other relation's columns and
         // indexes shared with existing snapshots.
@@ -316,6 +365,16 @@ private:
     static bool structurallyEqual(const std::shared_ptr<Expr>& left,
                                   const std::shared_ptr<Expr>& right);
     static bool factSatisfiesPattern(const MapExpr& fact, const MapExpr& pattern);
+    static FactTemporalMetadata temporalMetadataFor(const std::string& type,
+                                                     std::uint64_t logicalId,
+                                                     const std::shared_ptr<MapExpr>& value,
+                                                     std::int64_t registrationTime,
+                                                     std::uint64_t registrationSequence);
+    static bool parseTemporalValue(const std::shared_ptr<Expr>& value, std::int64_t& out);
+    static TemporalOrigin temporalOriginFor(const std::shared_ptr<MapExpr>& value);
+    TemporalState temporalStateInData(const Data& store,
+                                      size_t index,
+                                      std::int64_t reasoningTime) const;
     static bool isCompatibleTypeInData(const Data& data,
                                        const std::string& actual,
                                        const std::string& expected);

@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cmath>
 #include <sstream>
+#include <unordered_set>
 
 namespace Felidae {
 
@@ -124,6 +125,7 @@ void Parser::ensureToken(size_t index) const {
     while (tokens_.size() <= index && lexer_) {
         syncLexerVirtualAnchors();
         Token token = lexer_->nextToken();
+        ++metrics_.tokensLexed;
         const bool end = token.type == TokenType::End;
         rejectUnsupportedToken(token);
         tokens_.push_back(std::move(token));
@@ -135,7 +137,10 @@ void Parser::syncLexerVirtualAnchors() const {
     if (!lexer_) return;
     const std::size_t available = operators_->virtualAnchorCount();
     if (available <= virtualAnchorCount_) return;
-    lexer_->registerVirtualTokens(operators_->virtualTokensSince(virtualAnchorCount_));
+    const auto additions = operators_->virtualTokensSince(virtualAnchorCount_);
+    lexer_->registerVirtualTokens(additions);
+    ++metrics_.virtualTokenSynchronizations;
+    metrics_.virtualTokensRegistered += additions.size();
     virtualAnchorCount_ = available;
 }
 
@@ -161,6 +166,12 @@ const Token& Parser::advance() {
 
 bool Parser::match(TokenType type) {
     if (!check(type)) return false;
+    advance();
+    return true;
+}
+
+bool Parser::matchDesignationKeyword() {
+    if (!check(TokenType::Ident) || peek().text != "as") return false;
     advance();
     return true;
 }
@@ -314,6 +325,7 @@ const OperatorPatternDefinition& Parser::registerOperatorPattern(OperatorPattern
                 if (lexeme.tokenType == TokenType::Ident) {
                     lexer_->registerVirtualToken({
                         lexeme.symbolId, operators_->virtualTokenId(lexeme.symbolId)});
+                    ++metrics_.virtualTokensRegistered;
                 }
             }
         }
@@ -324,9 +336,12 @@ const OperatorPatternDefinition& Parser::registerOperatorPattern(OperatorPattern
 }
 
 void Parser::markVirtualAnchorsInBufferedTokens() {
-    for (auto& token : tokens_) {
+    // Consumed tokens are immutable history. Only unread lookahead may need a new anchor id.
+    for (size_t index = pos_; index < tokens_.size(); ++index) {
+        auto& token = tokens_[index];
         if (token.type == TokenType::Ident) {
             token.virtualTokenId = operators_->virtualTokenId(token.symbolId);
+            ++metrics_.virtualTokensRetagged;
         }
     }
 }
@@ -436,6 +451,18 @@ std::shared_ptr<ClauseStmt> Parser::parseClause(std::vector<Call> annotations) {
         }
     }
     Call head = parseCallFromName(std::move(name), false);
+    std::vector<std::string> designations;
+    if (matchDesignationKeyword()) {
+        std::unordered_set<SymbolId> seen;
+        do {
+            const auto designation = consume(TokenType::Ident,
+                "Expected semantic designation after 'as'");
+            if (!seen.insert(symbolIdForName(designation.text)).second) {
+                throw ParserError("Duplicate semantic designation '" + designation.text + "'");
+            }
+            designations.push_back(designation.text);
+        } while (match(TokenType::Comma));
+    }
     knownTypes_.insert(head.name);
     auto& knownFields = predicateFields_[head.name];
     for (const auto& arg : head.args) {
@@ -494,6 +521,15 @@ std::shared_ptr<ClauseStmt> Parser::parseClause(std::vector<Call> annotations) {
         throw ParserError("Annotations can only be applied to complete method declarations");
     }
     clause->annotations = std::move(annotations);
+    if (!designations.empty() && !clause->isFact()) {
+        throw ParserError("Semantic designations using 'as' are only valid on fact declarations");
+    }
+    clause->designations = std::move(designations);
+    clause->designationIds.reserve(clause->designations.size());
+    for (const auto& designation : clause->designations) {
+        clause->designationIds.push_back(symbolIdForName(designation));
+        knownDesignations_.insert(designation);
+    }
     clause->module = module_;
     annotationBindings_.clear();
     return clause;
@@ -871,7 +907,43 @@ std::shared_ptr<Goal> Parser::parseGoal() {
         }
         auto term = std::dynamic_pointer_cast<TermExpr>(expr);
         if (!term) throw ParserError("Expected predicate call or comparison in goal");
-        return finish(std::make_shared<CallGoal>(Call{term->name, term->args, term->builtinId}));
+        Call call{term->name, term->args, term->builtinId};
+        if (matchDesignationKeyword()) {
+            std::unordered_set<SymbolId> seen;
+            do {
+                const auto designation = consume(TokenType::Ident,
+                    "Expected semantic designation after 'as'");
+                const SymbolId designationId = symbolIdForName(designation.text);
+                if (!seen.insert(designationId).second) {
+                    throw ParserError("Duplicate semantic designation '" + designation.text + "'");
+                }
+                call.designations.push_back(designation.text);
+                call.designationIds.push_back(designationId);
+            } while (match(TokenType::Comma));
+        }
+        return finish(std::make_shared<CallGoal>(std::move(call)));
+    }
+
+    // A bare type name followed by `as` is a designation-only fact matcher.
+    if (hasToken(lookahead) && tokenAt(lookahead).type == TokenType::Ident &&
+        tokenAt(lookahead).text == "as") {
+        const std::string type = parseQualifiedName();
+        Call call{type, {}, builtinIdForName(type)};
+        if (!matchDesignationKeyword()) {
+            throw ParserError("Expected 'as' after fact type");
+        }
+        std::unordered_set<SymbolId> seen;
+        do {
+            const auto designation = consume(TokenType::Ident,
+                "Expected semantic designation after 'as'");
+            const SymbolId designationId = symbolIdForName(designation.text);
+            if (!seen.insert(designationId).second) {
+                throw ParserError("Duplicate semantic designation '" + designation.text + "'");
+            }
+            call.designations.push_back(designation.text);
+            call.designationIds.push_back(designationId);
+        } while (match(TokenType::Comma));
+        return finish(std::make_shared<CallGoal>(std::move(call)));
     }
 
     return finish(comparisonGoal(parseExpr(), "Expected comparison operator in goal"));
@@ -1028,8 +1100,10 @@ std::shared_ptr<Expr> Parser::parseExpr() {
 bool Parser::patternLexemeMatches(size_t position, const PatternLexeme& lexeme) const {
     if (!hasToken(position)) return false;
     const Token& token = tokenAt(position);
-    return token.type == lexeme.tokenType &&
-           (lexeme.tokenType != TokenType::Ident || token.symbolId == lexeme.symbolId);
+    if (token.type != lexeme.tokenType) return false;
+    if (lexeme.tokenType != TokenType::Ident) return true;
+    const VirtualTokenId expected = operators_->virtualTokenId(lexeme.symbolId);
+    return expected != 0 && token.virtualTokenId == expected;
 }
 
 namespace {
@@ -1056,32 +1130,10 @@ bool patternTypeCanStart(TokenType tokenType, std::string_view typeName) {
 const OperatorPatternDefinition* Parser::selectScoredPattern(
     const std::vector<const OperatorPatternDefinition*>& candidates,
     size_t start) const {
+    ++metrics_.operatorCandidateLookups;
+    metrics_.operatorCandidatesScored += candidates.size();
     if (candidates.empty()) return nullptr;
     if (candidates.size() == 1) return candidates.front();
-
-    // The first capture is a cheap, deterministic discriminator for the
-    // common case of same-anchor patterns (for example string vs number).
-    // Resolve it before scanning later anchors so the parser does not need to
-    // speculate across unrelated expressions.
-    std::vector<const OperatorPatternDefinition*> typeMatches;
-    for (const auto* candidate : candidates) {
-        if (!candidate || candidate->startsWithCapture || candidate->anchorLexemes.empty() ||
-            candidate->captureTypeNames.empty()) continue;
-        size_t cursor = start;
-        bool anchorMatches = true;
-        for (const auto& lexeme : candidate->anchorLexemes.front()) {
-            if (!patternLexemeMatches(cursor, lexeme)) {
-                anchorMatches = false;
-                break;
-            }
-            ++cursor;
-        }
-        if (anchorMatches && hasToken(cursor) &&
-            patternTypeCanStart(tokenAt(cursor).type, candidate->captureTypeNames.front())) {
-            typeMatches.push_back(candidate);
-        }
-    }
-    if (typeMatches.size() == 1) return typeMatches.front();
 
     const OperatorPatternDefinition* best = nullptr;
     int bestScore = -1;
@@ -1217,12 +1269,20 @@ std::shared_ptr<Expr> Parser::tryParseDeferredTrailingCapturePattern(
     }
     pos_ = start;
     if (parsed.empty()) return {};
-    if (parsed.size() > 1) {
-        throw ParserError("Ambiguous operator syntax at '" + peek().text +
-                          "'; add a distinguishing anchor or capture type");
+    std::vector<const OperatorPatternDefinition*> parsedPatterns;
+    parsedPatterns.reserve(parsed.size());
+    for (const auto& candidate : parsed) parsedPatterns.push_back(candidate.pattern);
+    const auto* selected = selectScoredPattern(parsedPatterns, start);
+    if (!selected) {
+        throw ParserError("Unable to resolve deferred operator syntax at '" + peek().text + "'");
     }
-    pos_ = parsed.front().end;
-    return std::move(parsed.front().expression);
+    const auto selectedIt = std::find_if(parsed.begin(), parsed.end(),
+        [&](const ParsedCandidate& candidate) { return candidate.pattern == selected; });
+    if (selectedIt == parsed.end()) {
+        throw ParserError("Deferred operator resolver selected an unavailable pattern");
+    }
+    pos_ = selectedIt->end;
+    return std::move(selectedIt->expression);
 }
 
 std::shared_ptr<Expr> Parser::parseOperatorExpr(int minimumPrecedence,
@@ -1242,7 +1302,7 @@ std::shared_ptr<Expr> Parser::parseOperatorExpr(int minimumPrecedence,
         const auto customPatterns = definition || parsingOperatorAnnotation_ ||
             !isOperatorAnchorToken(peek())
             ? std::vector<const OperatorPatternDefinition*>{}
-            : operators_->trailingPatternsForAnchor(peek().type, peek().symbolId, module_);
+            : operators_->trailingPatternsForAnchor(peek(), module_);
         const auto* selectedPattern = selectScoredPattern(customPatterns, pos_);
         if (definition && stopAtThen && definition->id == CoreOperator::Then) {
             pos_ = beforeSeparator;
@@ -1351,14 +1411,7 @@ std::shared_ptr<Expr> Parser::parseUnaryExpr() {
     auto leadingPatterns = parsingOperatorAnnotation_ ||
         !isOperatorAnchorToken(peek())
         ? std::vector<const OperatorPatternDefinition*>{}
-        : operators_->leadingPatternsForAnchor(peek().type, peek().symbolId, module_);
-    if (!leadingPatterns.empty() && !leadingPatterns.front()->captureNames.empty()) {
-        const auto& anchor = leadingPatterns.front()->anchorLexemes.front();
-        const size_t operandStart = pos_ + anchor.size();
-        if (!hasToken(operandStart) || !isExpressionStartToken(tokenAt(operandStart).type)) {
-            leadingPatterns.clear();
-        }
-    }
+        : operators_->leadingPatternsForAnchor(peek(), module_);
     const auto* selectedPattern = selectScoredPattern(leadingPatterns, pos_);
     if (selectedPattern != nullptr && !selectedPattern->captureNames.empty()) {
         const std::size_t operandStart = pos_ + selectedPattern->anchorLexemes.front().size();
@@ -1709,6 +1762,30 @@ void Parser::collectExprVars(const std::shared_ptr<Expr>& expr, std::set<std::st
         return;
     }
     if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
+        // `designation.field > value and otherField == value` keeps the
+        // right-hand bare identifier as a field of the same lazy selection,
+        // not a local variable. Restrict this to a known designation-led
+        // comparison so ordinary undeclared variables still fail validation.
+        const auto designationFieldComparison = [&](const std::shared_ptr<Expr>& candidate) {
+            const auto comparison = std::dynamic_pointer_cast<OperatorExpression>(candidate);
+            if (!comparison || comparison->captureCount() != 2 ||
+                !isComparisonOperator(comparison->coreOperator)) return false;
+            const auto access = std::dynamic_pointer_cast<AccessExpr>(comparison->capture(0));
+            const auto source = access
+                ? std::dynamic_pointer_cast<VarExpr>(access->target) : nullptr;
+            return source && knownDesignations_.count(source->name) > 0;
+        };
+        if (op->coreOperator == CoreOperator::LogicalAnd && op->captureCount() == 2 &&
+            designationFieldComparison(op->capture(0))) {
+            collectExprVars(op->capture(0), vars);
+            const auto comparison = std::dynamic_pointer_cast<OperatorExpression>(op->capture(1));
+            if (comparison && comparison->captureCount() == 2 &&
+                isComparisonOperator(comparison->coreOperator) &&
+                std::dynamic_pointer_cast<VarExpr>(comparison->capture(0))) {
+                collectExprVars(comparison->capture(1), vars);
+                return;
+            }
+        }
         for (size_t i = 0; i < op->captureCount(); ++i) {
             if (!operatorCaptureAcceptsExpressionData(*op, i)) {
                 collectExprVars(op->capture(i), vars);
@@ -1858,7 +1935,8 @@ void Parser::validateGoalVars(const std::shared_ptr<Goal>& goal, std::set<std::s
 }
 
 bool Parser::isDeclaredName(const std::string& name, const std::set<std::string>& declared) const {
-    return declared.count(name) > 0 || globals_.count(name) > 0 || annotationBindings_.count(name) > 0;
+    return declared.count(name) > 0 || globals_.count(name) > 0 ||
+        annotationBindings_.count(name) > 0 || knownDesignations_.count(name) > 0;
 }
 
 void Parser::validateRuleVars(const Call& head,

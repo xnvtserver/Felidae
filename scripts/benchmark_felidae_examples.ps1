@@ -20,16 +20,17 @@ if (-not (Test-Path -LiteralPath $exe)) {
 }
 
 $cases = @(
-    @{ Name = "direct main"; Args = @("examples\direct_main.fx", "one", "two") },
-    @{ Name = "recursive backtracking"; Args = @("examples\recursive_ancestor.fx", "? AncestorOf(descendant: descendant, ancestor: ancestor)", "--benchmark-repeat", "100") },
-    @{ Name = "indexed fact property"; Args = @("examples\data\converted_csv_country.fx", '? Country(name: "India", alpha_2: alpha2)', "--benchmark-repeat", "100") },
-    @{ Name = "full fact scan"; Args = @("examples\data\converted_csv_country.fx", "? Country(name: name)", "--benchmark-repeat", "20") },
-    @{ Name = "thread snapshot"; Args = @("examples\thread_snapshot_test.fx") },
-    @{ Name = "stdlib utilities"; Args = @("examples\stdlib_utilities.fx") },
-    @{ Name = "fact reasoning workload"; Args = @("examples\advanced_mortality_fact_reasoning.fx") },
+    @{ Name = "direct main"; Args = @("examples\direct_main.fx", "one", "two"); Expect = @('count: 3', 'args: ["one", "two"]') },
+    @{ Name = "recursive system.run"; Args = @("v2_examples\benchmark_recursive_system_run.fx", "--benchmark-repeat", "100"); Expect = @('QueryResult(', 'Ancestor: "organism"', 'count: 3') },
+    @{ Name = "indexed system.run"; Args = @("v2_examples\selective_fact_query.fx", "--benchmark-repeat", "100"); Expect = @('QuerySolution(', 'Id: "c01"', 'count: 1') },
+    # External query mode remains a compatibility benchmark; system.run fixtures are primary.
+    @{ Name = "external query compatibility"; Args = @("examples\data\converted_csv_country.fx", '? Country(name: "India", alpha_2: alpha2)', "--benchmark-repeat", "100"); Expect = @('alpha2 = "IN"') },
+    @{ Name = "thread snapshot"; Args = @("examples\thread_snapshot_test.fx"); Expect = @('started: "started"', 'status: "finished"') },
+    @{ Name = "stdlib utilities"; Args = @("examples\stdlib_utilities.fx"); Expect = @('has_engineer: true', 'write_status: "ok"', 'line_count: 3') },
+    @{ Name = "fact reasoning workload"; Args = @("examples\advanced_mortality_fact_reasoning.fx"); Expect = @('Mortal') },
     # Search microbenchmarks use enough in-process repetitions to dominate process-launch jitter.
-    @{ Name = "linear search"; Args = @("v2_examples\standard_search_algorithms.fx", "? LinearSearchLast() == 63", "--benchmark-repeat", "10000") },
-    @{ Name = "binary search"; Args = @("v2_examples\standard_search_algorithms.fx", "? BinarySearchLast() == 63", "--benchmark-repeat", "10000") }
+    @{ Name = "linear search"; Args = @("v2_examples\standard_search_algorithms.fx", "? LinearSearchLast() == 63", "--benchmark-repeat", "10000"); Expect = @('true') },
+    @{ Name = "binary search"; Args = @("v2_examples\standard_search_algorithms.fx", "? BinarySearchLast() == 63", "--benchmark-repeat", "10000"); Expect = @('true') }
 )
 
 function Invoke-FelidaeProcess {
@@ -84,6 +85,7 @@ function Invoke-FelidaeProcess {
     [pscustomobject]@{
         TotalMs = $timer.Elapsed.TotalMilliseconds
         PeakMb = $peakWorkingSet / 1MB
+        Output = $stdout
         Metrics = $metricMatch.Groups[1].Value | ConvertFrom-Json
     }
 }
@@ -94,7 +96,12 @@ function Invoke-BenchmarkCase {
     Write-Host ("Benchmarking {0} (warm-up + {1} run(s))..." -f $Case.Name, $Runs)
 
     # Validate and warm filesystem/runtime dependencies before measured runs.
-    [void] (Invoke-FelidaeProcess -Arguments $Case.Args)
+    $warmup = Invoke-FelidaeProcess -Arguments $Case.Args
+    foreach ($expected in @($Case.Expect)) {
+        if (-not $warmup.Output.Contains($expected)) {
+            throw "Benchmark fixture '$($Case.Name)' did not produce expected output '$expected'. Actual output: $($warmup.Output)"
+        }
+    }
 
     $samples = for ($i = 0; $i -lt $Runs; $i++) {
         Write-Progress `
@@ -128,8 +135,11 @@ function Invoke-BenchmarkCase {
         ExecuteMs = Get-Median @($samples.Metrics.executionMs)
         PeakMb = ($samples.PeakMb | Measure-Object -Maximum).Maximum
         EnvCopies = ($samples.Metrics.runtime.environmentCopies | Measure-Object -Average).Average
+        ClauseAttempts = ($samples.Metrics.runtime.clauseAttempts | Measure-Object -Average).Average
         Unifications = ($samples.Metrics.runtime.unificationAttempts | Measure-Object -Average).Average
         FactCandidates = ($samples.Metrics.runtime.factCandidates | Measure-Object -Average).Average
+        RelationshipCandidates = ($samples.Metrics.runtime.relationshipCandidates | Measure-Object -Average).Average
+        RelationshipPruned = ($samples.Metrics.runtime.relationshipCandidatesPruned | Measure-Object -Average).Average
         EnvFrames = ($samples.Metrics.runtime.environmentFramesCreated | Measure-Object -Average).Average
         StandardizedClauses = ($samples.Metrics.runtime.standardizedClauses | Measure-Object -Average).Average
         FirstQueryMs = Get-Median @($samples.Metrics.firstQueryMs)
@@ -141,10 +151,10 @@ $results = foreach ($case in $cases) {
     Invoke-BenchmarkCase -Case $case
 }
 
-"| Case | Total median | Total CV | Load median | Execute median | First query | Repeated query | Peak RAM | Env frames | Env copies | Standardized clauses | Unifications | Fact candidates |"
-"|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+"| Case | Total median | Total CV | Load median | Execute median | First query | Repeated query | Peak RAM | Env frames | Env copies | Clause attempts | Standardized clauses | Unifications | Fact candidates | Relationship candidates | Relationship pruned |"
+"|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
 foreach ($result in $results) {
-    "| {0} | `{1:N2} ms` | `{2:N1}%` | `{3:N2} ms` | `{4:N2} ms` | `{5:N3} ms` | `{6:N3} ms` | `{7:N2} MB` | `{8:N0}` | `{9:N0}` | `{10:N0}` | `{11:N0}` | `{12:N0}` |" -f `
+"| {0} | `{1:N2} ms` | `{2:N1}%` | `{3:N2} ms` | `{4:N2} ms` | `{5:N3} ms` | `{6:N3} ms` | `{7:N2} MB` | `{8:N0}` | `{9:N0}` | `{10:N0}` | `{11:N0}` | `{12:N0}` | `{13:N0}` | `{14:N0}` | `{15:N0}` |" -f `
         $result.Case,
         $result.MedianMs,
         $result.TotalCv,
@@ -155,7 +165,10 @@ foreach ($result in $results) {
         $result.PeakMb,
         $result.EnvFrames,
         $result.EnvCopies,
+        $result.ClauseAttempts,
         $result.StandardizedClauses,
         $result.Unifications,
-        $result.FactCandidates
+        $result.FactCandidates,
+        $result.RelationshipCandidates,
+        $result.RelationshipPruned
 }

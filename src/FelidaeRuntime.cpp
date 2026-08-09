@@ -184,7 +184,8 @@ Program parseProgramText(std::string text) {
 void parseProgramFileStatements(
     const fs::path& path,
     const std::function<void(std::shared_ptr<Statement>)>& consume,
-    std::shared_ptr<OperatorRegistry> operators) {
+    std::shared_ptr<OperatorRegistry> operators,
+    ParserMetrics* metrics) {
     const fs::path normalized = resolveProgramEntryPath(path);
     auto registry = operators ? std::move(operators) : std::make_shared<OperatorRegistry>();
     std::ifstream bootstrapInput(normalized, std::ios::binary);
@@ -192,12 +193,14 @@ void parseProgramFileStatements(
     Lexer bootstrapLexer(bootstrapInput);
     Parser bootstrapParser(bootstrapLexer, registry, normalized.string());
     bootstrapParser.bootstrapOperatorPatterns();
+    if (metrics) *metrics += bootstrapParser.metrics();
 
     std::ifstream input(normalized, std::ios::binary);
     if (!input) throw std::runtime_error("Cannot open file: " + normalized.string());
     Lexer lexer(input);
     Parser parser(lexer, std::move(registry), normalized.string());
     parser.parseProgram(consume);
+    if (metrics) *metrics += parser.metrics();
 }
 
 void parseProgramFileChunks(const fs::path& path,
@@ -225,6 +228,7 @@ void loadProgramRoot(const fs::path& file,
     fs::path normalized = resolveProgramEntryPath(file);
     fs::path baseDir = normalized.parent_path();
     const auto streamStarted = std::chrono::steady_clock::now();
+    ParserMetrics parserMetrics;
     interpreter.beginModuleTransaction();
     try {
         if (afterChunk) {
@@ -243,12 +247,13 @@ void loadProgramRoot(const fs::path& file,
                     return;
                 }
                 interpreter.addStreamedStatement(std::move(statement));
-            }, interpreter.operatorRegistry());
+            }, interpreter.operatorRegistry(), &parserMetrics);
         }
         interpreter.commitModuleTransaction();
         interpreter.recordStreamedModuleMicros(static_cast<std::size_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - streamStarted).count()));
+        interpreter.recordParserMetrics(parserMetrics);
     } catch (...) {
         interpreter.rollbackModuleTransaction();
         throw;

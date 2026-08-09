@@ -190,19 +190,22 @@ public:
         registerOrigin(index, patterns_.back().module, patterns_.back().visibility);
         const auto& stored = patterns_.back();
         if (!stored.anchorLexemes.empty() && !stored.anchorLexemes.front().empty()) {
-            const auto& first = stored.anchorLexemes.front().front();
-            patternsByFirstAnchor_[OperatorAnchorKey{first.tokenType, first.symbolId}].push_back(index);
             for (const auto& anchor : stored.anchorLexemes) {
                 for (const auto& lexeme : anchor) {
-                    if (lexeme.tokenType == TokenType::Ident) {
-                        if (virtualAnchorTokens_.find(lexeme.symbolId) == virtualAnchorTokens_.end()) {
-                            const VirtualTokenId tokenId = static_cast<VirtualTokenId>(
-                                virtualAnchorOrder_.size() + 1);
-                            virtualAnchorTokens_.emplace(lexeme.symbolId, tokenId);
-                            virtualAnchorOrder_.push_back({lexeme.symbolId, tokenId});
-                        }
+                    if (lexeme.tokenType != TokenType::Ident) continue;
+                    if (virtualAnchorTokens_.find(lexeme.symbolId) == virtualAnchorTokens_.end()) {
+                        const VirtualTokenId tokenId = static_cast<VirtualTokenId>(
+                            virtualAnchorOrder_.size() + 1);
+                        virtualAnchorTokens_.emplace(lexeme.symbolId, tokenId);
+                        virtualAnchorOrder_.push_back({lexeme.symbolId, tokenId});
                     }
                 }
+            }
+            const auto& first = stored.anchorLexemes.front().front();
+            if (first.tokenType == TokenType::Ident) {
+                patternsByVirtualFirstAnchor_[virtualTokenId(first.symbolId)].push_back(index);
+            } else {
+                patternsByFirstAnchor_[OperatorAnchorKey{first.tokenType, first.symbolId}].push_back(index);
             }
         }
         return stored;
@@ -268,6 +271,50 @@ public:
             // ambiguity diagnostic without allowing import order to pick one.
             for (std::size_t i = 0; i < publicCount; ++i) matches.push_back(&pattern);
         }
+        return matches;
+    }
+
+    std::vector<const OperatorPatternDefinition*> patternsForAnchor(
+        const Token& token, std::string_view module = {}) const {
+        if (token.virtualTokenId == 0) {
+            return patternsForAnchor(token.type, token.symbolId, module);
+        }
+        std::vector<const OperatorPatternDefinition*> matches;
+        const auto found = patternsByVirtualFirstAnchor_.find(token.virtualTokenId);
+        if (found == patternsByVirtualFirstAnchor_.end()) return matches;
+        matches.reserve(found->second.size());
+        for (const auto index : found->second) {
+            const auto& pattern = patterns_[index];
+            const auto origins = patternOrigins_.find(index);
+            if (origins == patternOrigins_.end()) continue;
+            const bool local = std::any_of(origins->second.begin(), origins->second.end(),
+                [&](const auto& origin) { return origin.module == module; });
+            if (local) {
+                matches.push_back(&pattern);
+                continue;
+            }
+            for (const auto& origin : origins->second) {
+                if (origin.visibility == OperatorVisibility::Public) matches.push_back(&pattern);
+            }
+        }
+        return matches;
+    }
+
+    std::vector<const OperatorPatternDefinition*> leadingPatternsForAnchor(
+        const Token& token, std::string_view module = {}) const {
+        auto matches = patternsForAnchor(token, module);
+        matches.erase(std::remove_if(matches.begin(), matches.end(), [](const auto* pattern) {
+            return pattern->startsWithCapture;
+        }), matches.end());
+        return matches;
+    }
+
+    std::vector<const OperatorPatternDefinition*> trailingPatternsForAnchor(
+        const Token& token, std::string_view module = {}) const {
+        auto matches = patternsForAnchor(token, module);
+        matches.erase(std::remove_if(matches.begin(), matches.end(), [](const auto* pattern) {
+            return pattern->fixity == OperatorFixity::Prefix;
+        }), matches.end());
         return matches;
     }
 
@@ -645,6 +692,7 @@ private:
     std::unordered_map<PatternId, std::size_t> patternById_;
     std::unordered_map<OperatorAnchorKey, std::vector<std::size_t>, OperatorAnchorKeyHash>
         patternsByFirstAnchor_;
+    std::unordered_map<VirtualTokenId, std::vector<std::size_t>> patternsByVirtualFirstAnchor_;
     std::unordered_map<SymbolId, VirtualTokenId> virtualAnchorTokens_;
     std::vector<VirtualTokenDefinition> virtualAnchorOrder_;
     std::unordered_map<PatternId, std::vector<std::size_t>> overloadsByPattern_;

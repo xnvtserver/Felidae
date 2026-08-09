@@ -108,6 +108,14 @@ enum class BuiltinId {
     FactReferences,
     DbSync,
 
+    // Fact reasoning is language-native.  These operate directly on typed
+    // fact values; FactMemory remains an implementation detail.
+    CommonAncestors,
+    LowestCommonAncestor,
+    HighestCommonAncestor,
+    AncestorAnalysis,
+    PropagateFact,
+
     RelationCompare,
     RelationFind,
     DependencySatisfied,
