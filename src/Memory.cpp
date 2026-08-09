@@ -774,12 +774,51 @@ size_t FactMemory::addFact(std::string type,
                            std::filesystem::path origin,
                            std::optional<std::uint64_t> logicalId,
                            std::uint64_t rowVersion,
-                           std::vector<std::uint64_t> parentFactIds) {
+                           std::vector<std::uint64_t> parentFactIds,
+                           std::vector<SymbolId> designations) {
     if (!value) throw std::invalid_argument("Fact value cannot be null");
     const SymbolId typeId = symbolIdForName(type);
     const SymbolId parentTypeId = parentType.empty() ? 0 : symbolIdForName(parentType);
     const std::size_t structuralHash = stableExprHash(value);
     ensureUnique();
+    // Designations are semantic metadata, not fact identity.  Repeating an
+    // otherwise identical declaration enriches one canonical fact row rather
+    // than creating a second database fact solely for another designation.
+    if (!logicalId && !designations.empty()) {
+        const auto relation = data_->relations.find(typeId);
+        if (relation != data_->relations.end() && relation->second) {
+            for (const size_t candidateIndex : relation->second->rows) {
+                auto& candidate = data_->facts.mutableAt(candidateIndex);
+                if (!candidate.active || candidate.stableHash != structuralHash ||
+                    candidate.parentTypeId != parentTypeId ||
+                    candidate.parentFactIds != parentFactIds ||
+                    !structurallyEqual(materializeFact(*data_, candidateIndex), value)) {
+                    continue;
+                }
+                bool changed = false;
+                for (const SymbolId designation : designations) {
+                    if (designation == 0 || std::find(
+                            candidate.designations.begin(), candidate.designations.end(), designation) !=
+                            candidate.designations.end()) {
+                        continue;
+                    }
+                    candidate.designations.push_back(designation);
+                    auto& rows = data_->designationIndexes[designation];
+                    if (!rows) rows = std::make_shared<std::vector<size_t>>();
+                    else if (rows.use_count() != 1) {
+                        rows = std::make_shared<std::vector<size_t>>(*rows);
+                    }
+                    rows->push_back(candidateIndex);
+                    changed = true;
+                }
+                if (changed) {
+                    ++data_->generation;
+                    invalidateCachesForFact(candidate, value);
+                }
+                return candidateIndex;
+            }
+        }
+    }
     const std::uint64_t factId = logicalId ? *logicalId : data_->nextFactId++;
     if (logicalId && *logicalId >= data_->nextFactId) data_->nextFactId = *logicalId + 1;
     auto& record = data_->facts.append(FactRecord{
@@ -789,6 +828,7 @@ size_t FactMemory::addFact(std::string type,
         std::move(parentType),
         parentTypeId,
         std::move(parentFactIds),
+        std::move(designations),
         std::move(origin),
         structuralHash,
         rowVersion,
@@ -801,6 +841,51 @@ size_t FactMemory::addFact(std::string type,
     ++data_->generation;
     invalidateCachesForFact(record, value);
     return index;
+}
+
+std::vector<size_t> FactMemory::designationIndexes(
+    const std::vector<SymbolId>& designations,
+    std::uint64_t snapshotGeneration) const {
+    if (designations.empty()) return {};
+    const Data& store = dataForSnapshot(snapshotGeneration);
+    const std::vector<size_t>* smallest = nullptr;
+    for (const SymbolId designation : designations) {
+        if (designation == 0) return {};
+        const auto found = store.designationIndexes.find(designation);
+        if (found == store.designationIndexes.end() || !found->second) return {};
+        const auto& rows = *found->second;
+        if (!smallest || rows.size() < smallest->size()) smallest = &rows;
+    }
+    if (!smallest) return {};
+
+    std::vector<size_t> selected;
+    selected.reserve(smallest->size());
+    for (const size_t index : *smallest) {
+        if (index >= store.facts.size()) continue;
+        const auto& fact = store.facts.at(index);
+        if (!fact.active) continue;
+        bool matches = true;
+        for (const SymbolId designation : designations) {
+            if (std::find(fact.designations.begin(), fact.designations.end(), designation) ==
+                fact.designations.end()) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) selected.push_back(index);
+    }
+    return selected;
+}
+
+bool FactMemory::hasDesignation(SymbolId designation,
+                                std::uint64_t snapshotGeneration) const {
+    if (designation == 0) return false;
+    const Data& store = dataForSnapshot(snapshotGeneration);
+    const auto found = store.designationIndexes.find(designation);
+    if (found == store.designationIndexes.end() || !found->second) return false;
+    return std::any_of(found->second->begin(), found->second->end(), [&](size_t index) {
+        return index < store.facts.size() && store.facts.at(index).active;
+    });
 }
 
 void FactMemory::setParent(const std::string& child, const std::string& parent) {
@@ -820,6 +905,10 @@ void FactMemory::setParent(const std::string& child, const std::string& parent) 
     auto& children = data_->childrenByParent[parentId];
     if (std::find(children.begin(), children.end(), childId) == children.end()) {
         children.push_back(childId);
+    }
+    auto& parents = data_->parentsByChild[childId];
+    if (std::find(parents.begin(), parents.end(), parentId) == parents.end()) {
+        parents.push_back(parentId);
     }
     ++data_->hierarchyGeneration;
     ++data_->generation;
@@ -851,6 +940,12 @@ std::vector<std::string> FactMemory::parentsOf(const std::string& child) const {
         result.insert(result.end(), additional->second.begin(), additional->second.end());
     }
     return result;
+}
+
+const std::vector<SymbolId>& FactMemory::parentsOf(SymbolId childId) const {
+    static const std::vector<SymbolId> empty;
+    const auto found = data_->parentsByChild.find(childId);
+    return found == data_->parentsByChild.end() ? empty : found->second;
 }
 
 std::vector<std::pair<std::string, std::string>> FactMemory::hierarchyEdges() const {
@@ -929,10 +1024,12 @@ void FactMemory::removeOrigin(const std::filesystem::path& origin) {
         }
     }
     data_->childrenByParent.clear();
+    data_->parentsByChild.clear();
     for (const auto& entry : data_->parentOf) {
         const SymbolId childId = symbolIdForName(entry.first);
         const SymbolId parentId = symbolIdForName(entry.second);
         data_->childrenByParent[parentId].push_back(childId);
+        data_->parentsByChild[childId].push_back(parentId);
     }
     for (const auto& entry : data_->additionalParentsOf) {
         const SymbolId childId = symbolIdForName(entry.first);
@@ -1048,6 +1145,7 @@ void FactMemory::rebuildIndexes(
     const std::vector<std::shared_ptr<MapExpr>>& values) {
     data_->factIndexById.clear();
     data_->factsByOrigin.clear();
+    data_->designationIndexes.clear();
     data_->typeNamesById.clear();
     data_->relations.clear();
     for (size_t index = 0; index < data_->facts.size(); ++index) {
@@ -1069,6 +1167,7 @@ void FactMemory::rebuildIndexes(
             const SymbolId parentId = symbolIdForName(parent);
             rememberTypeName(parentId, parent);
             data_->childrenByParent[parentId].push_back(childId);
+            data_->parentsByChild[childId].push_back(parentId);
         }
     }
     invalidateCaches();
@@ -1213,6 +1312,13 @@ void FactMemory::indexFact(
     }
     rememberTypeName(fact.typeId, fact.type);
     data_->factIndexById.assign(fact.id, index);
+    for (const SymbolId designation : fact.designations) {
+        if (designation == 0) continue;
+        auto& rows = data_->designationIndexes[designation];
+        if (!rows) rows = std::make_shared<std::vector<size_t>>();
+        else if (rows.use_count() != 1) rows = std::make_shared<std::vector<size_t>>(*rows);
+        rows->push_back(index);
+    }
     if (!fact.origin.empty()) {
         auto& rows = data_->factsByOrigin[fact.origin];
         if (!rows) rows = std::make_shared<std::vector<size_t>>();

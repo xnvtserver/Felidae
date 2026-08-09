@@ -13,6 +13,25 @@
 
 namespace Felidae {
 
+struct ParserMetrics {
+    std::size_t tokensLexed = 0;
+    std::size_t virtualTokenSynchronizations = 0;
+    std::size_t virtualTokensRegistered = 0;
+    std::size_t virtualTokensRetagged = 0;
+    std::size_t operatorCandidateLookups = 0;
+    std::size_t operatorCandidatesScored = 0;
+
+    ParserMetrics& operator+=(const ParserMetrics& other) {
+        tokensLexed += other.tokensLexed;
+        virtualTokenSynchronizations += other.virtualTokenSynchronizations;
+        virtualTokensRegistered += other.virtualTokensRegistered;
+        virtualTokensRetagged += other.virtualTokensRetagged;
+        operatorCandidateLookups += other.operatorCandidateLookups;
+        operatorCandidatesScored += other.operatorCandidatesScored;
+        return *this;
+    }
+};
+
 class ParserError : public std::runtime_error {
 public:
     explicit ParserError(const std::string& msg) : std::runtime_error(msg) {}
@@ -40,6 +59,7 @@ public:
     void bootstrapOperatorPatterns();
     std::vector<std::shared_ptr<Goal>> parseQuery();
     std::shared_ptr<Expr> parseExpressionText();
+    const ParserMetrics& metrics() const { return metrics_; }
 
 private:
     mutable std::vector<Token> tokens_;
@@ -47,6 +67,7 @@ private:
     std::set<std::string> globals_;
     std::map<std::string, std::set<std::string>> predicateFields_;
     std::set<std::string> knownTypes_;
+    std::set<std::string> knownDesignations_;
     std::set<std::string> methodPredicates_;
     std::set<std::string> annotationBindings_;
     std::shared_ptr<OperatorRegistry> operators_;
@@ -56,6 +77,7 @@ private:
     bool parsingOperatorAnnotation_ = false;
     std::uint64_t nodeCounter_ = 0;
     mutable std::size_t virtualAnchorCount_ = 0;
+    mutable ParserMetrics metrics_;
 
     void ensureToken(size_t index) const;
     void syncLexerVirtualAnchors() const;
@@ -67,6 +89,7 @@ private:
     bool isAtEnd() const;
     const Token& advance();
     bool match(TokenType type);
+    bool matchDesignationKeyword();
     const Token& consume(TokenType type, const std::string& message);
     void consumeLogicalNewline();
     bool matchGoalSeparator();

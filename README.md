@@ -244,6 +244,29 @@ when installed, CodeChecker when installed, Valgrind on Linux when installed,
 and Felidae `.fx` smoke or regression programs. Reports are written to
 `build/quality/report.md`.
 
+### SonarQube
+
+Run a local SonarQube server and C++ analysis entirely through Docker:
+
+```powershell
+.\scripts\run_sonar_scan.ps1 -StartOnly -Token placeholder
+```
+
+Open `http://localhost:9000`, complete the first-run setup, create a project
+token, then run:
+
+```powershell
+.\scripts\run_sonar_scan.ps1 -Token "your-project-token"
+```
+
+The scanner creates a Linux CMake compilation database before analysis, so
+SonarQube can inspect the interpreter and native modules rather than treating
+the C++ sources as plain text. Stop the local service with:
+
+```powershell
+docker compose -f .\docker-compose.sonar.yml down
+```
+
 ## Native Modules
 
 Native modules are declared in `core/*.fx` and implemented in C++ modules under

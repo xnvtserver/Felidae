@@ -265,6 +265,13 @@ public:
     }
 };
 
+struct FactSelectionFilter {
+    std::string field;
+    SymbolId fieldId = 0;
+    TokenType op = TokenType::EqEq;
+    std::shared_ptr<Expr> value;
+};
+
 // Runtime-only lazy fact query. It deliberately is not a MapExpr: user map
 // operations cannot mutate or counterfeit its snapshot/cursor metadata.
 class FactSelectionExpr final : public Expr {
@@ -272,13 +279,19 @@ public:
     FactSelectionExpr(std::string factType,
                       std::uint64_t snapshotGeneration,
                       std::string field = {},
-                      std::shared_ptr<Expr> equals = nullptr)
+                      std::shared_ptr<Expr> equals = nullptr,
+                      std::vector<SymbolId> designationIds = {},
+                      std::vector<std::string> designations = {},
+                      std::vector<FactSelectionFilter> filters = {})
         : factType(std::move(factType)),
-          factTypeId(symbolIdForName(this->factType)),
+          factTypeId(this->factType.empty() ? 0 : symbolIdForName(this->factType)),
           snapshotGeneration(snapshotGeneration),
           field(std::move(field)),
           fieldId(this->field.empty() ? 0 : symbolIdForName(this->field)),
-          equals(std::move(equals)) {}
+          equals(std::move(equals)),
+          designationIds(std::move(designationIds)),
+          designations(std::move(designations)),
+          filters(std::move(filters)) {}
 
     std::string factType;
     SymbolId factTypeId = 0;
@@ -286,24 +299,48 @@ public:
     std::string field;
     SymbolId fieldId = 0;
     std::shared_ptr<Expr> equals;
+    std::vector<SymbolId> designationIds;
+    std::vector<std::string> designations;
+    std::vector<FactSelectionFilter> filters;
 
     ExprKind kind() const override { return ExprKind::FactSelection; }
     std::shared_ptr<Expr> clone() const override {
+        std::vector<FactSelectionFilter> copiedFilters;
+        copiedFilters.reserve(filters.size());
+        for (const auto& filter : filters) {
+            copiedFilters.push_back(FactSelectionFilter{
+                filter.field,
+                filter.fieldId,
+                filter.op,
+                filter.value ? filter.value->clone() : nullptr});
+        }
         return std::make_shared<FactSelectionExpr>(
             factType,
             snapshotGeneration,
             field,
-            equals ? equals->clone() : nullptr);
+            equals ? equals->clone() : nullptr,
+            designationIds,
+            designations,
+            std::move(copiedFilters));
     }
     std::string debug() const override {
         std::ostringstream out;
         out << "{__type: \"FactSelection\", fact_type: \""
             << factType << "\", source: \"memory\", snapshot_generation: "
             << snapshotGeneration;
+        if (!designations.empty()) {
+            out << ", designations: [";
+            for (size_t i = 0; i < designations.size(); ++i) {
+                if (i) out << ", ";
+                out << "\"" << designations[i] << "\"";
+            }
+            out << "]";
+        }
         if (!field.empty()) {
             out << ", field: \"" << field << "\"";
-            if (equals) out << ", equals: " << equals->debug();
+                if (equals) out << ", equals: " << equals->debug();
         }
+        if (!filters.empty()) out << ", filters: " << filters.size();
         out << "}";
         return out.str();
     }
@@ -508,6 +545,10 @@ public:
     SymbolId nameId = 0;
     BuiltinId builtinId = BuiltinId::Unknown;
     std::vector<Arg> args;
+    // Query-only semantic designations select existing fact rows. They never
+    // become serialized fields, types, or inheritance relationships.
+    std::vector<std::string> designations;
+    std::vector<SymbolId> designationIds;
 
     Call() = default;
     Call(std::string name, std::vector<Arg> args, BuiltinId builtinId = BuiltinId::Unknown)
@@ -522,6 +563,13 @@ public:
             oss << args[i].debug();
         }
         oss << ")";
+        if (!designations.empty()) {
+            oss << " as ";
+            for (size_t i = 0; i < designations.size(); ++i) {
+                if (i) oss << ", ";
+                oss << designations[i];
+            }
+        }
         return oss.str();
     }
 };
@@ -543,6 +591,8 @@ public:
         copy.name = call.name;
         copy.nameId = call.nameId;
         copy.builtinId = call.builtinId;
+        copy.designations = call.designations;
+        copy.designationIds = call.designationIds;
         for (const auto& a : call.args) {
             copy.args.push_back(Arg{a.name, a.value->clone()});
         }
@@ -854,6 +904,10 @@ public:
     // direct parent in source order.
     std::string parentName;
     std::vector<std::string> parentNames;
+    // Semantic designations are fact-instance metadata. They are neither
+    // schema fields nor inheritance edges.
+    std::vector<std::string> designations;
+    std::vector<SymbolId> designationIds;
     std::vector<std::shared_ptr<Goal>> body; // empty body without => () means fact
     std::vector<std::vector<std::shared_ptr<Goal>>> fallbackBranches;
     bool emptyDeclaration = false;
@@ -885,6 +939,13 @@ public:
             oss << head.args[i].debug();
         }
         oss << ")";
+        if (!designations.empty()) {
+            oss << " as ";
+            for (size_t i = 0; i < designations.size(); ++i) {
+                if (i) oss << ", ";
+                oss << designations[i];
+            }
+        }
         if (emptyDeclaration) {
             oss << " => ()";
         } else if (!body.empty()) {

@@ -117,6 +117,7 @@ static void printHelp() {
               << "  felidae program.fx --repl\n"
               << "  felidae program.fx --debug\n"
               << "  felidae program.fx --metrics-json\n"
+              << "  felidae program.fx --benchmark-repeat 100 --metrics-json\n"
               << "  felidae program.fx '? Query(key: x)' --benchmark-repeat 100 --metrics-json\n"
               << "  felidae --help\n"
               << "  felidae --version\n\n"
@@ -127,7 +128,7 @@ static void printHelp() {
               << "  program.fx --repl                   Start interactive REPL\n"
               << "  program.fx --debug                  Run with debug adapter diagnostics enabled\n"
               << "  --metrics-json                      Emit load and runtime performance counters to stderr\n"
-              << "  --benchmark-repeat N                Repeat an external query in one runtime for benchmarking\n"
+              << "  --benchmark-repeat N                Repeat the entry method or external query in one runtime\n"
               << "  --help                              Show this help screen\n"
               << "  --version                           Show version information\n\n"
               << "Total commands supported: " << TOTAL_COMMANDS_SUPPORTED << "\n\n"
@@ -273,11 +274,28 @@ int main(int argc, char** argv) {
             return 0;
         }
 
-        if (interpreter.hasMethod("main")) {
-            auto result = interpreter.callMain(makeSystemInput(options.remainingArgs));
-            std::cout << interpreter.valueToString(result) << "\n";
-        } else if (interpreter.hasAutoEntryCall()) {
-            auto result = interpreter.callAutoEntry();
+        if (interpreter.hasMethod("main") || interpreter.hasAutoEntryCall()) {
+            std::shared_ptr<Expr> result;
+            double repeatedEntryTotalMs = 0.0;
+            for (size_t run = 0; run < options.benchmarkRepeat; ++run) {
+                const auto entryStarted = Clock::now();
+                result = interpreter.hasMethod("main")
+                    ? interpreter.callMain(makeSystemInput(options.remainingArgs))
+                    : interpreter.callAutoEntry();
+                const double entryMs = static_cast<double>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        Clock::now() - entryStarted).count()) / 1000000.0;
+                if (run == 0) {
+                    firstQueryMs = entryMs;
+                } else {
+                    repeatedEntryTotalMs += entryMs;
+                }
+            }
+            measuredQueryRuns = options.benchmarkRepeat;
+            if (options.benchmarkRepeat > 1) {
+                repeatedQueryAverageMs =
+                    repeatedEntryTotalMs / static_cast<double>(options.benchmarkRepeat - 1);
+            }
             std::cout << interpreter.valueToString(result) << "\n";
         } else {
             std::cout << "Program loaded successfully. No main() method found.\n"
