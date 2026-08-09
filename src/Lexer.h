@@ -20,7 +20,7 @@ public:
 class Lexer {
 public:
     explicit Lexer(std::string source);
-    explicit Lexer(std::istream& input) : input_(&input) {}
+    explicit Lexer(std::istream& input);
 
     Token nextToken();
     std::vector<Token> tokenize();
