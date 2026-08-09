@@ -1,8 +1,9 @@
 #pragma once
 
 #include "AST.h"
-#include "Lexer.h"
+#include "Lexer.h" // Transitional include until the integer parser replaces the legacy entry path.
 #include "Token.h"
+#include <sentencepiece_processor.h>
 #include <functional>
 #include <map>
 #include <memory>
@@ -15,17 +16,11 @@ namespace Felidae {
 
 struct ParserMetrics {
     std::size_t tokensLexed = 0;
-    std::size_t virtualTokenSynchronizations = 0;
-    std::size_t virtualTokensRegistered = 0;
-    std::size_t virtualTokensRetagged = 0;
     std::size_t operatorCandidateLookups = 0;
     std::size_t operatorCandidatesScored = 0;
 
     ParserMetrics& operator+=(const ParserMetrics& other) {
         tokensLexed += other.tokensLexed;
-        virtualTokenSynchronizations += other.virtualTokenSynchronizations;
-        virtualTokensRegistered += other.virtualTokensRegistered;
-        virtualTokensRetagged += other.virtualTokensRetagged;
         operatorCandidateLookups += other.operatorCandidateLookups;
         operatorCandidatesScored += other.operatorCandidatesScored;
         return *this;
@@ -43,17 +38,14 @@ public:
                     std::shared_ptr<OperatorRegistry> operators = std::make_shared<OperatorRegistry>(),
                     std::string module = {})
         : tokens_(std::move(tokens)), operators_(std::move(operators)), module_(std::move(module)) {
-        virtualAnchorCount_ = operators_->virtualAnchorCount();
-        markVirtualAnchorsInBufferedTokens();
+        initializeSentencePiece();
     }
     explicit Parser(Lexer& lexer,
                     std::shared_ptr<OperatorRegistry> operators = std::make_shared<OperatorRegistry>(),
                     std::string module = {})
         : lexer_(&lexer), operators_(std::move(operators)), module_(std::move(module)) {
-        lexer_->registerVirtualTokens(operators_->virtualTokens());
-        virtualAnchorCount_ = operators_->virtualAnchorCount();
+        initializeSentencePiece();
     }
-
     Program parseProgram();
     void parseProgram(const std::function<void(std::shared_ptr<Statement>)>& consume);
     void bootstrapOperatorPatterns();
@@ -76,19 +68,23 @@ private:
     size_t anonymousCounter_ = 0;
     bool parsingOperatorAnnotation_ = false;
     std::uint64_t nodeCounter_ = 0;
-    mutable std::size_t virtualAnchorCount_ = 0;
     mutable ParserMetrics metrics_;
+    std::unique_ptr<sentencepiece::SentencePieceProcessor> sentencePiece_;
 
+    void initializeSentencePiece();
+    std::vector<int> encodePieceIds(std::string_view text) const;
+    void compilePatternPieceIds(OperatorPatternDefinition& pattern) const;
     void ensureToken(size_t index) const;
-    void syncLexerVirtualAnchors() const;
     const Token& tokenAt(size_t index) const;
     bool hasToken(size_t index) const;
     const Token& peek() const;
     const Token& previous() const;
     bool check(TokenType type) const;
+    bool checkPieceId(TokenId::Id id) const;
     bool isAtEnd() const;
     const Token& advance();
     bool match(TokenType type);
+    bool matchPieceId(TokenId::Id id);
     bool matchDesignationKeyword();
     const Token& consume(TokenType type, const std::string& message);
     void consumeLogicalNewline();
@@ -146,7 +142,6 @@ private:
     void consumePatternAnchor(const std::vector<PatternLexeme>& lexemes,
                               size_t offset = 0);
     const OperatorPatternDefinition& registerOperatorPattern(OperatorPatternDefinition pattern);
-    void markVirtualAnchorsInBufferedTokens();
     std::shared_ptr<Expr> parseAccessExpr();
     std::shared_ptr<Expr> parseUnaryExpr();
     std::shared_ptr<Expr> parsePrimaryExpr();

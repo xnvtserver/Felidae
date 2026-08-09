@@ -14,7 +14,7 @@ namespace Felidae {
 
 class LexerError : public std::runtime_error {
 public:
-    explicit LexerError(const std::string& msg) : std::runtime_error(msg) {}
+    explicit LexerError(const std::string& msg) : std::runtime_error(msg) {}```````````````````````````````````````````````````````````````````````````````
 };
 
 class Lexer {
@@ -24,8 +24,6 @@ public:
 
     Token nextToken();
     std::vector<Token> tokenize();
-    void registerVirtualToken(VirtualTokenDefinition token);
-    void registerVirtualTokens(const std::vector<VirtualTokenDefinition>& tokens);
 
 private:
     std::unique_ptr<std::istringstream> ownedInput_;
@@ -36,7 +34,6 @@ private:
     bool endEmitted_ = false;
     int nestingDepth_ = 0;
     bool emittedLogicalNewline_ = false;
-    std::unordered_map<SymbolId, VirtualTokenId> virtualTokens_;
     int line_ = 1;
     int col_ = 1;
 
@@ -52,6 +49,7 @@ private:
     Token readIdentifier();
     Token readNumber();
     Token readString();
+    void attachPieceIds(Token& token, std::string_view source) const;
 };
 
 } // namespace Felidae

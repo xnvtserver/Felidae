@@ -1,5 +1,6 @@
 # Build outputs
 build/
+build-sentencepiece/
 build-clang/
 *.exe
 *.obj
