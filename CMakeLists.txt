@@ -7,6 +7,28 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(FELIDAE_ENABLE_SANITIZERS
     "Build interpreter and tooling with address/undefined-behavior sanitizers" OFF)
+option(FELIDAE_BUILD_DEPRECATED_CELIDAE "Build deprecated Celidae tooling" OFF)
+option(FELIDAE_BUILD_TESTS "Build Felidae regression tests" ON)
+
+# Keep the lexical model native and reproducible: SentencePiece is pinned as a
+# git submodule instead of being found from an arbitrary system installation.
+set(SPM_BUILD_TEST OFF CACHE BOOL "" FORCE)
+set(SPM_ENABLE_SHARED OFF CACHE BOOL "" FORCE)
+set(SPM_ENABLE_TCMALLOC OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/sentencepiece EXCLUDE_FROM_ALL)
+find_package(OpenMP)
+
+add_executable(felidae_sentencepiece_model_generator
+    tools/GenerateSentencePieceModel.cpp)
+target_include_directories(felidae_sentencepiece_model_generator PRIVATE src)
+target_include_directories(felidae_sentencepiece_model_generator BEFORE PRIVATE
+    third_party/sentencepiece
+    third_party/sentencepiece/src
+    ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
+target_link_libraries(felidae_sentencepiece_model_generator PRIVATE sentencepiece_train)
+if(TARGET OpenMP::OpenMP_CXX)
+    target_link_libraries(felidae_sentencepiece_model_generator PRIVATE OpenMP::OpenMP_CXX)
+endif()
 
 function(felidae_enable_sanitizers target)
     if(NOT FELIDAE_ENABLE_SANITIZERS)
@@ -44,7 +66,17 @@ add_executable(felidae
 )
 
 target_include_directories(felidae PRIVATE src)
+target_include_directories(felidae BEFORE PRIVATE
+    third_party/sentencepiece
+    third_party/sentencepiece/src
+    ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
 target_include_directories(felidae SYSTEM PRIVATE third_party)
+target_compile_definitions(felidae PRIVATE
+    FELIDAE_SENTENCEPIECE_MODEL_PATH="${CMAKE_SOURCE_DIR}/felidae.model")
+target_link_libraries(felidae PRIVATE sentencepiece)
+if(TARGET OpenMP::OpenMP_CXX)
+    target_link_libraries(felidae PRIVATE OpenMP::OpenMP_CXX)
+endif()
 target_compile_options(felidae PRIVATE
     $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
@@ -54,6 +86,7 @@ if(UNIX AND NOT APPLE)
 endif()
 felidae_enable_sanitizers(felidae)
 
+if(FELIDAE_BUILD_DEPRECATED_CELIDAE)
 set(CELIDAE_SOURCES
     src/celidae/main.cpp
     src/celidae/Visualization.cpp
@@ -67,12 +100,23 @@ set(CELIDAE_SOURCES
 
 add_executable(celidae ${CELIDAE_SOURCES})
 target_include_directories(celidae PRIVATE src)
+target_include_directories(celidae BEFORE PRIVATE
+    third_party/sentencepiece
+    third_party/sentencepiece/src
+    ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
 target_include_directories(celidae SYSTEM PRIVATE third_party)
+target_compile_definitions(celidae PRIVATE
+    FELIDAE_SENTENCEPIECE_MODEL_PATH="${CMAKE_SOURCE_DIR}/felidae.model")
+target_link_libraries(celidae PRIVATE sentencepiece)
+if(TARGET OpenMP::OpenMP_CXX)
+    target_link_libraries(celidae PRIVATE OpenMP::OpenMP_CXX)
+endif()
 target_compile_options(celidae PRIVATE
     $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
 felidae_enable_sanitizers(celidae)
+endif()
 set(FELIDAE_DEBUG_SOURCES
     src/debugger/main.cpp
     src/debugger/AstAnalyzer.cpp
@@ -84,12 +128,44 @@ set(FELIDAE_DEBUG_SOURCES
 
 add_executable(felidae_debug ${FELIDAE_DEBUG_SOURCES})
 target_include_directories(felidae_debug PRIVATE src)
+target_include_directories(felidae_debug BEFORE PRIVATE
+    third_party/sentencepiece
+    third_party/sentencepiece/src
+    ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
 target_include_directories(felidae_debug SYSTEM PRIVATE third_party)
+target_compile_definitions(felidae_debug PRIVATE
+    FELIDAE_SENTENCEPIECE_MODEL_PATH="${CMAKE_SOURCE_DIR}/felidae.model")
+target_link_libraries(felidae_debug PRIVATE sentencepiece)
+if(TARGET OpenMP::OpenMP_CXX)
+    target_link_libraries(felidae_debug PRIVATE OpenMP::OpenMP_CXX)
+endif()
 target_compile_options(felidae_debug PRIVATE
     $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
 felidae_enable_sanitizers(felidae_debug)
+
+if(FELIDAE_BUILD_TESTS)
+    enable_testing()
+    add_executable(felidae_sentencepiece_model_test
+        tests/SentencePieceModelTest.cpp
+        src/Lexer.cpp
+        src/Parser.cpp
+        src/BuiltinRegistry.cpp)
+    target_include_directories(felidae_sentencepiece_model_test PRIVATE src)
+    target_include_directories(felidae_sentencepiece_model_test BEFORE PRIVATE
+        third_party/sentencepiece
+        third_party/sentencepiece/src
+        ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
+    target_include_directories(felidae_sentencepiece_model_test SYSTEM PRIVATE third_party)
+    target_compile_definitions(felidae_sentencepiece_model_test PRIVATE
+        FELIDAE_SENTENCEPIECE_MODEL_PATH="${CMAKE_SOURCE_DIR}/felidae.model")
+    target_link_libraries(felidae_sentencepiece_model_test PRIVATE sentencepiece)
+    if(TARGET OpenMP::OpenMP_CXX)
+        target_link_libraries(felidae_sentencepiece_model_test PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    add_test(NAME felidae_sentencepiece_model COMMAND felidae_sentencepiece_model_test)
+endif()
 add_library(felidae_smoke SHARED native_modules/smoke/NativeSmoke.cpp)
 set_target_properties(felidae_smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/smoke"

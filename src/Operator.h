@@ -64,31 +64,21 @@ struct OperatorTypeBinding {
     LanguageTypeId languageTypeId = LanguageTypeId::Unknown;
 };
 
-// Pattern anchors are compiled once when an annotation is registered.  They
-// act as parser-local virtual tokens: the source lexer remains generic, while
-// mixfix parsing can compare token kinds and symbol IDs without repeatedly
-// splitting anchor strings.
+// Pattern anchors are compiled once when an annotation is registered. They are
+// model-local integer sequences, never a second token category.
 struct PatternLexeme {
     std::string spelling;
     SymbolId symbolId = 0;
-    TokenType tokenType = TokenType::Ident;
+    std::vector<int> pieceIds;
 };
 
-struct OperatorAnchorKey {
-    TokenType tokenType = TokenType::End;
-    SymbolId symbolId = 0;
-
-    bool operator==(const OperatorAnchorKey& other) const {
-        return tokenType == other.tokenType && symbolId == other.symbolId;
-    }
-};
-
-struct OperatorAnchorKeyHash {
-    std::size_t operator()(const OperatorAnchorKey& key) const {
-        const std::size_t typeHash = std::hash<unsigned int>{}(
-            static_cast<unsigned int>(key.tokenType));
-        const std::size_t symbolHash = std::hash<SymbolId>{}(key.symbolId);
-        return typeHash ^ (symbolHash + 0x9e3779b9U + (typeHash << 6U) + (typeHash >> 2U));
+struct PieceSequenceHash {
+    std::size_t operator()(const std::vector<int>& sequence) const noexcept {
+        std::size_t hash = sequence.size();
+        for (const int id : sequence) {
+            hash ^= static_cast<std::size_t>(id) + 0x9e3779b9U + (hash << 6U) + (hash >> 2U);
+        }
+        return hash;
     }
 };
 
@@ -158,7 +148,9 @@ struct OperatorMatcherDefinition {
 class OperatorRegistry {
 public:
     const OperatorPatternDefinition& registerPattern(OperatorPatternDefinition pattern) {
-        compilePattern(pattern);
+        if (pattern.anchorLexemes.empty() && !pattern.pattern.empty()) {
+            compilePattern(pattern);
+        }
         const CoreOperator core = coreOperatorForPattern(pattern.pattern);
         if (core != CoreOperator::Unknown) {
             const auto protectedSpelling = protectedCoreSpelling(core);
@@ -190,23 +182,8 @@ public:
         registerOrigin(index, patterns_.back().module, patterns_.back().visibility);
         const auto& stored = patterns_.back();
         if (!stored.anchorLexemes.empty() && !stored.anchorLexemes.front().empty()) {
-            for (const auto& anchor : stored.anchorLexemes) {
-                for (const auto& lexeme : anchor) {
-                    if (lexeme.tokenType != TokenType::Ident) continue;
-                    if (virtualAnchorTokens_.find(lexeme.symbolId) == virtualAnchorTokens_.end()) {
-                        const VirtualTokenId tokenId = static_cast<VirtualTokenId>(
-                            virtualAnchorOrder_.size() + 1);
-                        virtualAnchorTokens_.emplace(lexeme.symbolId, tokenId);
-                        virtualAnchorOrder_.push_back({lexeme.symbolId, tokenId});
-                    }
-                }
-            }
             const auto& first = stored.anchorLexemes.front().front();
-            if (first.tokenType == TokenType::Ident) {
-                patternsByVirtualFirstAnchor_[virtualTokenId(first.symbolId)].push_back(index);
-            } else {
-                patternsByFirstAnchor_[OperatorAnchorKey{first.tokenType, first.symbolId}].push_back(index);
-            }
+            patternsByFirstPieceSequence_[first.pieceIds].push_back(index);
         }
         return stored;
     }
@@ -244,12 +221,11 @@ public:
         matchers_.push_back(std::move(matcher));
     }
 
-    std::vector<const OperatorPatternDefinition*> patternsForAnchor(TokenType tokenType,
-                                                                    SymbolId symbolId,
+    std::vector<const OperatorPatternDefinition*> patternsForAnchor(const std::vector<int>& pieceIds,
                                                                     std::string_view module = {}) const {
         std::vector<const OperatorPatternDefinition*> matches;
-        auto found = patternsByFirstAnchor_.find(OperatorAnchorKey{tokenType, symbolId});
-        if (found == patternsByFirstAnchor_.end()) return matches;
+        auto found = patternsByFirstPieceSequence_.find(pieceIds);
+        if (found == patternsByFirstPieceSequence_.end()) return matches;
         matches.reserve(found->second.size());
         for (const auto index : found->second) {
             const auto& pattern = patterns_[index];
@@ -276,28 +252,7 @@ public:
 
     std::vector<const OperatorPatternDefinition*> patternsForAnchor(
         const Token& token, std::string_view module = {}) const {
-        if (token.virtualTokenId == 0) {
-            return patternsForAnchor(token.type, token.symbolId, module);
-        }
-        std::vector<const OperatorPatternDefinition*> matches;
-        const auto found = patternsByVirtualFirstAnchor_.find(token.virtualTokenId);
-        if (found == patternsByVirtualFirstAnchor_.end()) return matches;
-        matches.reserve(found->second.size());
-        for (const auto index : found->second) {
-            const auto& pattern = patterns_[index];
-            const auto origins = patternOrigins_.find(index);
-            if (origins == patternOrigins_.end()) continue;
-            const bool local = std::any_of(origins->second.begin(), origins->second.end(),
-                [&](const auto& origin) { return origin.module == module; });
-            if (local) {
-                matches.push_back(&pattern);
-                continue;
-            }
-            for (const auto& origin : origins->second) {
-                if (origin.visibility == OperatorVisibility::Public) matches.push_back(&pattern);
-            }
-        }
-        return matches;
+        return patternsForAnchor(token.pieceIds, module);
     }
 
     std::vector<const OperatorPatternDefinition*> leadingPatternsForAnchor(
@@ -312,39 +267,6 @@ public:
     std::vector<const OperatorPatternDefinition*> trailingPatternsForAnchor(
         const Token& token, std::string_view module = {}) const {
         auto matches = patternsForAnchor(token, module);
-        matches.erase(std::remove_if(matches.begin(), matches.end(), [](const auto* pattern) {
-            return pattern->fixity == OperatorFixity::Prefix;
-        }), matches.end());
-        return matches;
-    }
-
-    std::vector<const OperatorPatternDefinition*> prefixPatternsForAnchor(
-        TokenType tokenType,
-        SymbolId symbolId,
-        std::string_view module = {}) const {
-        auto matches = patternsForAnchor(tokenType, symbolId, module);
-        matches.erase(std::remove_if(matches.begin(), matches.end(), [](const auto* pattern) {
-            return pattern->fixity != OperatorFixity::Prefix;
-        }), matches.end());
-        return matches;
-    }
-
-    std::vector<const OperatorPatternDefinition*> leadingPatternsForAnchor(
-        TokenType tokenType,
-        SymbolId symbolId,
-        std::string_view module = {}) const {
-        auto matches = patternsForAnchor(tokenType, symbolId, module);
-        matches.erase(std::remove_if(matches.begin(), matches.end(), [](const auto* pattern) {
-            return pattern->startsWithCapture;
-        }), matches.end());
-        return matches;
-    }
-
-    std::vector<const OperatorPatternDefinition*> trailingPatternsForAnchor(
-        TokenType tokenType,
-        SymbolId symbolId,
-        std::string_view module = {}) const {
-        auto matches = patternsForAnchor(tokenType, symbolId, module);
         matches.erase(std::remove_if(matches.begin(), matches.end(), [](const auto* pattern) {
             return pattern->fixity == OperatorFixity::Prefix;
         }), matches.end());
@@ -384,19 +306,6 @@ public:
     }
 
     const std::vector<OperatorPatternDefinition>& patterns() const { return patterns_; }
-    VirtualTokenId virtualTokenId(SymbolId symbolId) const {
-        const auto found = virtualAnchorTokens_.find(symbolId);
-        return found == virtualAnchorTokens_.end() ? 0 : found->second;
-    }
-    std::vector<VirtualTokenDefinition> virtualTokens() const {
-        return virtualAnchorOrder_;
-    }
-    std::size_t virtualAnchorCount() const { return virtualAnchorOrder_.size(); }
-    std::vector<VirtualTokenDefinition> virtualTokensSince(std::size_t offset) const {
-        if (offset >= virtualAnchorOrder_.size()) return {};
-        return {virtualAnchorOrder_.begin() + static_cast<std::ptrdiff_t>(offset),
-                virtualAnchorOrder_.end()};
-    }
     const std::vector<OperatorOverloadDefinition>& overloads() const { return overloads_; }
     const std::vector<OperatorMatcherDefinition>& matchers() const { return matchers_; }
     std::vector<const OperatorOverloadDefinition*> overloadsForPattern(PatternId patternId) const {
@@ -473,7 +382,9 @@ public:
         return OperatorVisibility::Private;
     }
 
-private:
+public:
+    // Structural compilation is intentionally lexical-model agnostic. Parser
+    // attaches its native SentencePiece IDs exactly once before registration.
     static CoreOperator coreOperatorForPattern(std::string_view pattern) {
         if (pattern == "{left} + {right}") return CoreOperator::Add;
         if (pattern == "{left} - {right}") return CoreOperator::Subtract;
@@ -576,44 +487,7 @@ private:
                 const std::string word = anchor.substr(
                     wordStart,
                     wordEnd == std::string::npos ? std::string::npos : wordEnd - wordStart);
-                TokenType tokenType = TokenType::Ident;
-                if (word == "not") tokenType = TokenType::Not;
-                else if (word == "and") tokenType = TokenType::And;
-                else if (word == "or") tokenType = TokenType::Or;
-                else if (word == "then") tokenType = TokenType::Then;
-                else if (word == "if") tokenType = TokenType::If;
-                else if (word == "else") tokenType = TokenType::Else;
-                else if (word == "return") tokenType = TokenType::Return;
-                else if (word == "where") tokenType = TokenType::Where;
-                else if (word == "extend") tokenType = TokenType::Extend;
-                else if (word == "lambda") tokenType = TokenType::Lambda;
-                else if (word == "true") tokenType = TokenType::True;
-                else if (word == "false") tokenType = TokenType::False;
-                else if (word == "nil") tokenType = TokenType::Nil;
-                else if (word == "(") tokenType = TokenType::LParen;
-                else if (word == ")") tokenType = TokenType::RParen;
-                else if (word == "[") tokenType = TokenType::LBracket;
-                else if (word == "]") tokenType = TokenType::RBracket;
-                else if (word == "{") tokenType = TokenType::LBrace;
-                else if (word == "}") tokenType = TokenType::RBrace;
-                else if (word == ",") tokenType = TokenType::Comma;
-                else if (word == ":") tokenType = TokenType::Colon;
-                else if (word == ".") tokenType = TokenType::Dot;
-                else if (word == "|") tokenType = TokenType::Pipe;
-                else if (word == "?") tokenType = TokenType::Question;
-                else if (word == "+") tokenType = TokenType::Plus;
-                else if (word == "-") tokenType = TokenType::Minus;
-                else if (word == "*") tokenType = TokenType::Star;
-                else if (word == "/") tokenType = TokenType::Slash;
-                else if (word == "%") tokenType = TokenType::Percent;
-                else if (word == "==") tokenType = TokenType::EqEq;
-                else if (word == "!=") tokenType = TokenType::NotEq;
-                else if (word == "<") tokenType = TokenType::LT;
-                else if (word == "<=") tokenType = TokenType::LTE;
-                else if (word == ">") tokenType = TokenType::GT;
-                else if (word == ">=") tokenType = TokenType::GTE;
-                else if (isCustomOperatorSpelling(word)) tokenType = TokenType::CustomOperator;
-                lexemes.push_back(PatternLexeme{word, symbolIdForName(word), tokenType});
+                lexemes.push_back(PatternLexeme{word, symbolIdForName(word), {}});
                 wordStart = wordEnd == std::string::npos ? anchor.size() : wordEnd + 1;
             }
             pattern.anchorLexemes.push_back(std::move(lexemes));
@@ -690,11 +564,8 @@ private:
     std::vector<OperatorMatcherDefinition> matchers_;
     std::unordered_map<std::string, std::size_t> patternByContract_;
     std::unordered_map<PatternId, std::size_t> patternById_;
-    std::unordered_map<OperatorAnchorKey, std::vector<std::size_t>, OperatorAnchorKeyHash>
-        patternsByFirstAnchor_;
-    std::unordered_map<VirtualTokenId, std::vector<std::size_t>> patternsByVirtualFirstAnchor_;
-    std::unordered_map<SymbolId, VirtualTokenId> virtualAnchorTokens_;
-    std::vector<VirtualTokenDefinition> virtualAnchorOrder_;
+    std::unordered_map<std::vector<int>, std::vector<std::size_t>, PieceSequenceHash>
+        patternsByFirstPieceSequence_;
     std::unordered_map<PatternId, std::vector<std::size_t>> overloadsByPattern_;
     std::unordered_map<PatternId,
         std::unordered_map<std::size_t, std::vector<std::size_t>>>
@@ -780,22 +651,22 @@ inline constexpr CoreOperatorDefinition coreOperatorDefinition(CoreOperator id) 
     return {};
 }
 
-inline constexpr std::optional<CoreOperatorDefinition> infixOperatorForToken(TokenType token) {
-    switch (token) {
-        case TokenType::Plus: return coreOperatorDefinition(CoreOperator::Add);
-        case TokenType::Minus: return coreOperatorDefinition(CoreOperator::Subtract);
-        case TokenType::Star: return coreOperatorDefinition(CoreOperator::Multiply);
-        case TokenType::Slash: return coreOperatorDefinition(CoreOperator::Divide);
-        case TokenType::Percent: return coreOperatorDefinition(CoreOperator::Modulo);
-        case TokenType::LT: return coreOperatorDefinition(CoreOperator::Less);
-        case TokenType::LTE: return coreOperatorDefinition(CoreOperator::LessEqual);
-        case TokenType::GT: return coreOperatorDefinition(CoreOperator::Greater);
-        case TokenType::GTE: return coreOperatorDefinition(CoreOperator::GreaterEqual);
-        case TokenType::EqEq: return coreOperatorDefinition(CoreOperator::StrictEqual);
-        case TokenType::NotEq: return coreOperatorDefinition(CoreOperator::StrictNotEqual);
-        case TokenType::And: return coreOperatorDefinition(CoreOperator::LogicalAnd);
-        case TokenType::Or: return coreOperatorDefinition(CoreOperator::LogicalOr);
-        case TokenType::Then: return coreOperatorDefinition(CoreOperator::Then);
+inline constexpr std::optional<CoreOperatorDefinition> infixOperatorForId(TokenId::Id id) {
+    switch (id) {
+        case TokenId::PLUS: return coreOperatorDefinition(CoreOperator::Add);
+        case TokenId::MINUS: return coreOperatorDefinition(CoreOperator::Subtract);
+        case TokenId::STAR: return coreOperatorDefinition(CoreOperator::Multiply);
+        case TokenId::SLASH: return coreOperatorDefinition(CoreOperator::Divide);
+        case TokenId::PERCENT: return coreOperatorDefinition(CoreOperator::Modulo);
+        case TokenId::LESS: return coreOperatorDefinition(CoreOperator::Less);
+        case TokenId::LESS_EQUAL: return coreOperatorDefinition(CoreOperator::LessEqual);
+        case TokenId::GREATER: return coreOperatorDefinition(CoreOperator::Greater);
+        case TokenId::GREATER_EQUAL: return coreOperatorDefinition(CoreOperator::GreaterEqual);
+        case TokenId::EQUAL: return coreOperatorDefinition(CoreOperator::StrictEqual);
+        case TokenId::NOT_EQUAL: return coreOperatorDefinition(CoreOperator::StrictNotEqual);
+        case TokenId::AND: return coreOperatorDefinition(CoreOperator::LogicalAnd);
+        case TokenId::OR: return coreOperatorDefinition(CoreOperator::LogicalOr);
+        case TokenId::THEN: return coreOperatorDefinition(CoreOperator::Then);
         default: return std::nullopt;
     }
 }

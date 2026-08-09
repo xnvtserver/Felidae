@@ -9,6 +9,15 @@ Lexer::Lexer(std::string source)
     : ownedInput_(std::make_unique<std::istringstream>(std::move(source))),
       input_(ownedInput_.get()) {}
 
+Lexer::Lexer(std::istream& input) : input_(&input) {}
+
+void Lexer::attachPieceIds(Token& token, std::string_view source) const {
+    // Compatibility scanner only. Native SentencePiece input belongs to the
+    // parser and must not be classified or cached here.
+    (void)token;
+    (void)source;
+}
+
 bool Lexer::ensureChar(size_t offset) {
     while (chars_.size() <= offset && !inputEnded_) {
         input_->read(readBuffer_.data(), static_cast<std::streamsize>(readBuffer_.size()));
@@ -92,41 +101,17 @@ Token Lexer::readIdentifier() {
     }
     const BuiltinId simpleBuiltinId = builtinIdForName(text);
     if (simpleBuiltinId != BuiltinId::Unknown) {
-        return Token{TokenType::BuiltinFunction, text, startLine, startCol, simpleBuiltinId};
+        Token token{TokenType::BuiltinFunction, text, startLine, startCol, simpleBuiltinId};
+        attachPieceIds(token, text);
+        return token;
     }
-    // Fixed language words are entirely represented by TokenType.  Retaining
-    // their spelling in every token adds allocations/copies without helping
-    // parsing or runtime dispatch; only user identifiers and literals keep
-    // source text.
-    if (text == "import") return Token{TokenType::Import, {}, startLine, startCol};
-    if (text == "not") return Token{TokenType::Not, {}, startLine, startCol};
-    if (text == "and") return Token{TokenType::And, {}, startLine, startCol};
-    if (text == "or") return Token{TokenType::Or, {}, startLine, startCol};
-    if (text == "then") return Token{TokenType::Then, {}, startLine, startCol};
-    if (text == "if") return Token{TokenType::If, {}, startLine, startCol};
-    if (text == "else") return Token{TokenType::Else, {}, startLine, startCol};
-    if (text == "return") return Token{TokenType::Return, {}, startLine, startCol};
-    if (text == "where") return Token{TokenType::Where, {}, startLine, startCol};
-    if (text == "extend") return Token{TokenType::Extend, {}, startLine, startCol};
-    if (text == "lambda") return Token{TokenType::Lambda, {}, startLine, startCol};
-    if (text == "true") return Token{TokenType::True, {}, startLine, startCol};
-    if (text == "false") return Token{TokenType::False, {}, startLine, startCol};
-    if (text == "nil") return Token{TokenType::Nil, {}, startLine, startCol};
+    if (const auto* builtin = builtinTokenForSpelling(text)) {
+        Token token{builtin->type, {}, startLine, startCol};
+        return token;
+    }
     Token token{TokenType::Ident, text, startLine, startCol,
                 BuiltinId::Unknown, languageTypeIdForName(text)};
-    const auto virtualToken = virtualTokens_.find(token.symbolId);
-    if (virtualToken != virtualTokens_.end()) token.virtualTokenId = virtualToken->second;
     return token;
-}
-
-void Lexer::registerVirtualToken(VirtualTokenDefinition token) {
-    if (token.symbolId != 0 && token.tokenId != 0) {
-        virtualTokens_.emplace(token.symbolId, token.tokenId);
-    }
-}
-
-void Lexer::registerVirtualTokens(const std::vector<VirtualTokenDefinition>& tokens) {
-    for (const auto& token : tokens) registerVirtualToken(token);
 }
 
 Token Lexer::readNumber() {
@@ -142,7 +127,9 @@ Token Lexer::readNumber() {
             text.push_back(advance());
         }
     }
-    return Token{TokenType::Number, text, startLine, startCol};
+    Token token{TokenType::Number, text, startLine, startCol};
+    attachPieceIds(token, text);
+    return token;
 }
 
 Token Lexer::readString() {
@@ -179,7 +166,9 @@ Token Lexer::readString() {
         throw LexerError(oss.str());
     }
     advance(); // closing quote
-    return Token{TokenType::String, text, startLine, startCol};
+    Token token{TokenType::String, text, startLine, startCol};
+    attachPieceIds(token, text);
+    return token;
 }
 
 Token Lexer::nextToken() {
@@ -294,7 +283,10 @@ Token Lexer::nextToken() {
             }
         }
         emittedLogicalNewline_ = false;
-        return Token{type, std::move(text), startLine, startCol};
+        const std::string spelling = text.empty() ? std::string(tokenTypeName(type)) : text;
+        Token token{type, std::move(text), startLine, startCol};
+        attachPieceIds(token, spelling);
+        return token;
     }
     endEmitted_ = true;
     return Token{TokenType::End, "", line_, col_};

@@ -1,19 +1,16 @@
 #pragma once
 
 #include "Symbol.h"
+#include "FelidaeSentencePieceIds.h"
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace Felidae {
-
-using VirtualTokenId = std::uint32_t;
-
-struct VirtualTokenDefinition {
-    SymbolId symbolId = 0;
-    VirtualTokenId tokenId = 0;
-};
 
 inline constexpr bool isCustomOperatorCharacter(char value) {
     switch (value) {
@@ -328,6 +325,42 @@ enum class TokenType {
     GTE         // >=
 };
 
+// This is the single, authoritative spelling table for fixed Felidae syntax.
+// SentencePiece registration, validation, the lexer and mixfix compilation
+// deliberately all consume this table rather than maintaining local switches.
+struct BuiltinTokenDefinition {
+    std::string_view spelling;
+    std::string_view idName;
+    TokenType type;
+};
+
+inline constexpr BuiltinTokenDefinition kBuiltinTokens[] = {
+    {"import", "IMPORT", TokenType::Import}, {"not", "NOT", TokenType::Not}, {"and", "AND", TokenType::And},
+    {"or", "OR", TokenType::Or}, {"then", "THEN", TokenType::Then}, {"if", "IF", TokenType::If},
+    {"else", "ELSE", TokenType::Else}, {"return", "RETURN", TokenType::Return}, {"where", "WHERE", TokenType::Where},
+    {"extend", "EXTEND", TokenType::Extend}, {"lambda", "LAMBDA", TokenType::Lambda}, {"true", "TRUE", TokenType::True},
+    {"false", "FALSE", TokenType::False}, {"nil", "NIL", TokenType::Nil},
+    {"(", "LPAREN", TokenType::LParen}, {")", "RPAREN", TokenType::RParen}, {"{", "LBRACE", TokenType::LBrace},
+    {"}", "RBRACE", TokenType::RBrace}, {"[", "LBRACKET", TokenType::LBracket}, {"]", "RBRACKET", TokenType::RBracket},
+    {",", "COMMA", TokenType::Comma}, {":", "COLON", TokenType::Colon}, {".", "DOT", TokenType::Dot},
+    {"|", "PIPE", TokenType::Pipe}, {"?", "QUESTION", TokenType::Question}, {"@", "AT", TokenType::At},
+    {":=", "ASSIGN", TokenType::Bind}, {"::", "DOUBLE_COLON", TokenType::DoubleColon}, {"=>", "ARROW", TokenType::Arrow},
+    {"+", "PLUS", TokenType::Plus}, {"-", "MINUS", TokenType::Minus}, {"*", "STAR", TokenType::Star},
+    {"/", "SLASH", TokenType::Slash}, {"%", "PERCENT", TokenType::Percent}, {"==", "EQUAL", TokenType::EqEq},
+    {"!=", "NOT_EQUAL", TokenType::NotEq}, {"<", "LESS", TokenType::LT}, {"<=", "LESS_EQUAL", TokenType::LTE},
+    {">", "GREATER", TokenType::GT}, {">=", "GREATER_EQUAL", TokenType::GTE},
+};
+
+static_assert(std::size(kBuiltinTokens) == std::size(kFelidaeBuiltinSentencePieceIds),
+              "Regenerate FelidaeSentencePieceIds.h after changing built-in syntax");
+
+inline constexpr const BuiltinTokenDefinition* builtinTokenForSpelling(std::string_view spelling) {
+    for (const auto& token : kBuiltinTokens) {
+        if (token.spelling == spelling) return &token;
+    }
+    return nullptr;
+}
+
 struct Token {
     Token() = default;
     Token(TokenType type,
@@ -358,7 +391,9 @@ struct Token {
     LanguageTypeId languageTypeId = LanguageTypeId::Unknown;
     // A non-zero value identifies an annotation-defined anchor. The token
     // remains an identifier so declarations and field access stay unchanged.
-    VirtualTokenId virtualTokenId = 0;
+    // Ephemeral lexical evidence. These IDs are model-specific and are never
+    // used by the runtime; identifiers still receive SymbolIds above.
+    std::vector<int> pieceIds;
     int line = 1;
     int column = 1;
 };

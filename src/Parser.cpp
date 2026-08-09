@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <sentencepiece_processor.h>
+#include <sentencepiece.pb.h>
 #include <sstream>
 #include <unordered_set>
 
@@ -59,8 +61,9 @@ bool isNameStartToken(TokenType type) {
 }
 
 bool isOperatorAnchorToken(const Token& token) {
-    return token.type == TokenType::CustomOperator ||
-           (token.type == TokenType::Ident && token.virtualTokenId != 0);
+    // Pattern lookup is keyed exclusively by immutable SentencePiece ID
+    // sequences. A miss is cheap and means this source range is not an anchor.
+    return !token.pieceIds.empty();
 }
 
 bool isExpressionStartToken(TokenType type) {
@@ -121,27 +124,63 @@ bool containsValueReturnGoal(const std::shared_ptr<Goal>& goal) {
 }
 }
 
+void Parser::initializeSentencePiece() {
+    sentencePiece_ = std::make_unique<sentencepiece::SentencePieceProcessor>();
+    const auto status = sentencePiece_->Load(FELIDAE_SENTENCEPIECE_MODEL_PATH);
+    if (!status.ok()) {
+        throw ParserError("Unable to load Felidae SentencePiece model: " + status.ToString());
+    }
+
+    for (std::size_t index = 0; index < std::size(kBuiltinTokens); ++index) {
+        const auto& builtin = kBuiltinTokens[index];
+        const int expected = kFelidaeBuiltinSentencePieceIds[index];
+        const int actual = sentencePiece_->PieceToId(std::string(builtin.spelling));
+        if (actual != expected || sentencePiece_->IdToPiece(actual) != builtin.spelling) {
+            throw ParserError("felidae.model incorrectly maps built-in '" +
+                              std::string(builtin.spelling) + "'");
+        }
+        sentencepiece::SentencePieceText encoded;
+        const auto encodedStatus = sentencePiece_->Encode(std::string(builtin.spelling), &encoded);
+        if (!encodedStatus.ok() || encoded.pieces_size() != 1 ||
+            encoded.pieces(0).id() != actual || encoded.pieces(0).begin() != 0 ||
+            encoded.pieces(0).end() != static_cast<int>(builtin.spelling.size())) {
+            throw ParserError("felidae.model splits built-in '" + std::string(builtin.spelling) + "'");
+        }
+    }
+}
+
+std::vector<int> Parser::encodePieceIds(std::string_view text) const {
+    sentencepiece::SentencePieceText encoded;
+    const auto status = sentencePiece_->Encode(std::string(text), &encoded);
+    if (!status.ok()) throw ParserError("SentencePiece encoding failed: " + status.ToString());
+    std::vector<int> ids;
+    ids.reserve(encoded.pieces_size());
+    for (const auto& piece : encoded.pieces()) ids.push_back(piece.id());
+    return ids;
+}
+
+void Parser::compilePatternPieceIds(OperatorPatternDefinition& pattern) const {
+    // Structure remains compiled by OperatorRegistry.  The parser supplies the
+    // only lexical representation: immutable SentencePiece IDs for anchors.
+    OperatorRegistry::compilePattern(pattern);
+    for (auto& anchor : pattern.anchorLexemes) {
+        for (auto& lexeme : anchor) lexeme.pieceIds = encodePieceIds(lexeme.spelling);
+    }
+}
+
 void Parser::ensureToken(size_t index) const {
     while (tokens_.size() <= index && lexer_) {
-        syncLexerVirtualAnchors();
         Token token = lexer_->nextToken();
+        if (token.type != TokenType::End && token.type != TokenType::Newline) {
+            token.pieceIds = encodePieceIds(token.text.empty()
+                ? std::string(tokenTypeName(token.type)) : token.text);
+        }
         ++metrics_.tokensLexed;
         const bool end = token.type == TokenType::End;
         rejectUnsupportedToken(token);
         tokens_.push_back(std::move(token));
         if (end) break;
     }
-}
-
-void Parser::syncLexerVirtualAnchors() const {
-    if (!lexer_) return;
-    const std::size_t available = operators_->virtualAnchorCount();
-    if (available <= virtualAnchorCount_) return;
-    const auto additions = operators_->virtualTokensSince(virtualAnchorCount_);
-    lexer_->registerVirtualTokens(additions);
-    ++metrics_.virtualTokenSynchronizations;
-    metrics_.virtualTokensRegistered += additions.size();
-    virtualAnchorCount_ = available;
 }
 
 const Token& Parser::tokenAt(size_t index) const {
@@ -157,6 +196,10 @@ bool Parser::hasToken(size_t index) const {
 const Token& Parser::peek() const { return tokenAt(pos_); }
 const Token& Parser::previous() const { return tokens_[pos_ - 1]; }
 bool Parser::check(TokenType type) const { return peek().type == type; }
+bool Parser::checkPieceId(TokenId::Id id) const {
+    const auto& ids = peek().pieceIds;
+    return ids.size() == 1 && ids.front() == id;
+}
 bool Parser::isAtEnd() const { return peek().type == TokenType::End; }
 
 const Token& Parser::advance() {
@@ -166,6 +209,12 @@ const Token& Parser::advance() {
 
 bool Parser::match(TokenType type) {
     if (!check(type)) return false;
+    advance();
+    return true;
+}
+
+bool Parser::matchPieceId(TokenId::Id id) {
+    if (!checkPieceId(id)) return false;
     advance();
     return true;
 }
@@ -318,32 +367,9 @@ void Parser::bootstrapOperatorPatterns() {
 }
 
 const OperatorPatternDefinition& Parser::registerOperatorPattern(OperatorPatternDefinition pattern) {
+    compilePatternPieceIds(pattern);
     const auto& registered = operators_->registerPattern(std::move(pattern));
-    if (lexer_) {
-        for (const auto& anchor : registered.anchorLexemes) {
-            for (const auto& lexeme : anchor) {
-                if (lexeme.tokenType == TokenType::Ident) {
-                    lexer_->registerVirtualToken({
-                        lexeme.symbolId, operators_->virtualTokenId(lexeme.symbolId)});
-                    ++metrics_.virtualTokensRegistered;
-                }
-            }
-        }
-    }
-    virtualAnchorCount_ = operators_->virtualAnchorCount();
-    markVirtualAnchorsInBufferedTokens();
     return registered;
-}
-
-void Parser::markVirtualAnchorsInBufferedTokens() {
-    // Consumed tokens are immutable history. Only unread lookahead may need a new anchor id.
-    for (size_t index = pos_; index < tokens_.size(); ++index) {
-        auto& token = tokens_[index];
-        if (token.type == TokenType::Ident) {
-            token.virtualTokenId = operators_->virtualTokenId(token.symbolId);
-            ++metrics_.virtualTokensRetagged;
-        }
-    }
 }
 
 std::shared_ptr<Statement> Parser::parseStatement() {
@@ -868,7 +894,7 @@ std::shared_ptr<Goal> Parser::parseGoal() {
     if (check(TokenType::If)) {
         return finish(parseIfGoal());
     }
-    if (match(TokenType::Not)) {
+    if (matchPieceId(TokenId::NOT)) {
         size_t lookahead = pos_;
         if (hasToken(lookahead) && isNameStartToken(tokenAt(lookahead).type)) {
             lookahead = parseTokenChain(tokens_, lookahead).end;
@@ -1124,10 +1150,7 @@ std::shared_ptr<Expr> Parser::parseExpr() {
 bool Parser::patternLexemeMatches(size_t position, const PatternLexeme& lexeme) const {
     if (!hasToken(position)) return false;
     const Token& token = tokenAt(position);
-    if (token.type != lexeme.tokenType) return false;
-    if (lexeme.tokenType != TokenType::Ident) return true;
-    const VirtualTokenId expected = operators_->virtualTokenId(lexeme.symbolId);
-    return expected != 0 && token.virtualTokenId == expected;
+    return !lexeme.pieceIds.empty() && token.pieceIds == lexeme.pieceIds;
 }
 
 namespace {
@@ -1322,7 +1345,10 @@ std::shared_ptr<Expr> Parser::parseOperatorExpr(int minimumPrecedence,
             pos_ = beforeSeparator;
             break;
         }
-        auto definition = infixOperatorForToken(peek().type);
+        const auto& operatorPieces = peek().pieceIds;
+        const auto definition = operatorPieces.size() == 1
+            ? infixOperatorForId(operatorPieces.front())
+            : std::optional<CoreOperatorDefinition>{};
         const auto customPatterns = definition || parsingOperatorAnnotation_ ||
             !isOperatorAnchorToken(peek())
             ? std::vector<const OperatorPatternDefinition*>{}
@@ -1480,7 +1506,7 @@ std::shared_ptr<Expr> Parser::parseUnaryExpr() {
         logical->module = module_;
         return logical;
     }
-    if (match(TokenType::Minus)) {
+    if (matchPieceId(TokenId::MINUS)) {
         auto operand = parseUnaryExpr();
         if (auto number = std::dynamic_pointer_cast<NumberExpr>(operand)) {
             return std::make_shared<NumberExpr>(-number->value);
@@ -1489,7 +1515,7 @@ std::shared_ptr<Expr> Parser::parseUnaryExpr() {
         unary->module = module_;
         return unary;
     }
-    if (match(TokenType::Plus)) {
+    if (matchPieceId(TokenId::PLUS)) {
         return parseUnaryExpr();
     }
     return parseAccessExpr();
