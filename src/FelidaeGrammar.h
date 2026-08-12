@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Symbol.h"
-#include "FelidaeSentencePieceIds.h"
+#include <FelidaeSentencePieceIds.h>
 #include <algorithm>
 #include <cctype>
 #include <cstdint>

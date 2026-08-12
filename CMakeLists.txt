@@ -16,6 +16,10 @@ option(FELIDAE_ENABLE_STRICT_WARNINGS
 set(SPM_BUILD_TEST OFF CACHE BOOL "" FORCE)
 set(SPM_ENABLE_SHARED OFF CACHE BOOL "" FORCE)
 set(SPM_ENABLE_TCMALLOC OFF CACHE BOOL "" FORCE)
+# Felidae consumes SentencePiece's already-generated protobuf sources; it does
+# not need to build protoc/libprotoc just to train the fixed lexical model.
+set(protobuf_BUILD_PROTOC_BINARIES OFF CACHE BOOL "" FORCE)
+set(protobuf_BUILD_LIBPROTOC OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/sentencepiece EXCLUDE_FROM_ALL)
 find_package(OpenMP)
 
@@ -33,6 +37,32 @@ if(TARGET OpenMP::OpenMP_CXX)
     target_link_libraries(felidae_sentencepiece_model_generator PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
+# The language model and its grammar-ID header are build artifacts, not checked-in
+# inputs.  This keeps every consumer on exactly the model that produced its IDs.
+set(FELIDAE_SENTENCEPIECE_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(FELIDAE_SENTENCEPIECE_MODEL_PATH "${FELIDAE_SENTENCEPIECE_GENERATED_DIR}/felidae.model")
+set(FELIDAE_SENTENCEPIECE_IDS_HEADER
+    "${FELIDAE_SENTENCEPIECE_GENERATED_DIR}/FelidaeSentencePieceIds.h")
+add_custom_command(
+    OUTPUT "${FELIDAE_SENTENCEPIECE_MODEL_PATH}" "${FELIDAE_SENTENCEPIECE_IDS_HEADER}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${FELIDAE_SENTENCEPIECE_GENERATED_DIR}"
+    COMMAND $<TARGET_FILE:felidae_sentencepiece_model_generator>
+            "${FELIDAE_SENTENCEPIECE_MODEL_PATH}" "${FELIDAE_SENTENCEPIECE_IDS_HEADER}"
+    DEPENDS felidae_sentencepiece_model_generator
+            tools/GenerateSentencePieceModel.cpp src/FelidaeGrammar.h
+    COMMENT "Generating the fixed Felidae SentencePiece model and token IDs"
+    VERBATIM)
+add_custom_target(felidae_sentencepiece_model
+    DEPENDS "${FELIDAE_SENTENCEPIECE_MODEL_PATH}" "${FELIDAE_SENTENCEPIECE_IDS_HEADER}")
+
+function(felidae_use_sentencepiece_model target)
+    add_dependencies(${target} felidae_sentencepiece_model)
+    target_include_directories(${target} BEFORE PRIVATE
+        "${FELIDAE_SENTENCEPIECE_GENERATED_DIR}")
+    target_compile_definitions(${target} PRIVATE
+        FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
+endfunction()
+
 # Explicit opt-in only: it never runs during normal builds or tests.
 add_executable(felidae_integer_parser_benchmark EXCLUDE_FROM_ALL
     tools/IntegerParserBenchmark.cpp
@@ -46,8 +76,9 @@ target_include_directories(felidae_integer_parser_benchmark BEFORE PRIVATE
     third_party/sentencepiece/src
     ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
 target_compile_definitions(felidae_integer_parser_benchmark PRIVATE
-    FELIDAE_SENTENCEPIECE_MODEL_PATH="${CMAKE_SOURCE_DIR}/felidae.model")
+    FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
 target_link_libraries(felidae_integer_parser_benchmark PRIVATE sentencepiece)
+felidae_use_sentencepiece_model(felidae_integer_parser_benchmark)
 
 function(felidae_enable_sanitizers target)
     if(NOT FELIDAE_ENABLE_SANITIZERS)
@@ -107,8 +138,9 @@ target_include_directories(felidae BEFORE PRIVATE
     ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
 target_include_directories(felidae SYSTEM PRIVATE third_party)
 target_compile_definitions(felidae PRIVATE
-    FELIDAE_SENTENCEPIECE_MODEL_PATH="${CMAKE_SOURCE_DIR}/felidae.model")
+    FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
 target_link_libraries(felidae PRIVATE sentencepiece)
+felidae_use_sentencepiece_model(felidae)
 if(TARGET OpenMP::OpenMP_CXX)
     target_link_libraries(felidae PRIVATE OpenMP::OpenMP_CXX)
 endif()
@@ -139,8 +171,9 @@ target_include_directories(felidae_debug BEFORE PRIVATE
     ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
 target_include_directories(felidae_debug SYSTEM PRIVATE third_party)
 target_compile_definitions(felidae_debug PRIVATE
-    FELIDAE_SENTENCEPIECE_MODEL_PATH="${CMAKE_SOURCE_DIR}/felidae.model")
+    FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
 target_link_libraries(felidae_debug PRIVATE sentencepiece)
+felidae_use_sentencepiece_model(felidae_debug)
 if(TARGET OpenMP::OpenMP_CXX)
     target_link_libraries(felidae_debug PRIVATE OpenMP::OpenMP_CXX)
 endif()
@@ -165,16 +198,49 @@ if(FELIDAE_BUILD_TESTS)
         ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
     target_include_directories(felidae_sentencepiece_model_test SYSTEM PRIVATE third_party)
     target_compile_definitions(felidae_sentencepiece_model_test PRIVATE
-        FELIDAE_SENTENCEPIECE_MODEL_PATH="${CMAKE_SOURCE_DIR}/felidae.model")
+        FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
     # The regression executable intentionally uses assertions.  Keep them
     # active even when the rest of Felidae is built in Release mode.
     target_compile_options(felidae_sentencepiece_model_test PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>)
     target_link_libraries(felidae_sentencepiece_model_test PRIVATE sentencepiece)
+    felidae_use_sentencepiece_model(felidae_sentencepiece_model_test)
     if(TARGET OpenMP::OpenMP_CXX)
         target_link_libraries(felidae_sentencepiece_model_test PRIVATE OpenMP::OpenMP_CXX)
     endif()
     add_test(NAME felidae_sentencepiece_model COMMAND felidae_sentencepiece_model_test)
+
+    add_executable(felidae_sentencepiece_pipeline_test
+        tests/SentencePiecePipelineTest.cpp
+        src/FelidaeRuntime.cpp
+        src/SentencePieceModel.cpp
+        src/IntegerTokenList.cpp
+        src/IntegerParser.cpp
+        src/BuiltinRegistry.cpp
+        src/Interpreter.cpp
+        src/ReasoningRuntime.cpp
+        src/Env.cpp
+        src/Memory.cpp
+        src/NativeRuntime.cpp)
+    target_include_directories(felidae_sentencepiece_pipeline_test PRIVATE src)
+    target_include_directories(felidae_sentencepiece_pipeline_test BEFORE PRIVATE
+        third_party/sentencepiece
+        third_party/sentencepiece/src
+        ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
+    target_include_directories(felidae_sentencepiece_pipeline_test SYSTEM PRIVATE third_party)
+    target_compile_definitions(felidae_sentencepiece_pipeline_test PRIVATE
+        FELIDAE_PIPELINE_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/tests/data/sentencepiece_pipeline.fx")
+    target_compile_options(felidae_sentencepiece_pipeline_test PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>)
+    target_link_libraries(felidae_sentencepiece_pipeline_test PRIVATE sentencepiece)
+    felidae_use_sentencepiece_model(felidae_sentencepiece_pipeline_test)
+    if(TARGET OpenMP::OpenMP_CXX)
+        target_link_libraries(felidae_sentencepiece_pipeline_test PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(felidae_sentencepiece_pipeline_test PRIVATE dl)
+    endif()
+    add_test(NAME felidae_sentencepiece_pipeline COMMAND felidae_sentencepiece_pipeline_test)
 endif()
 add_library(felidae_smoke SHARED native_modules/smoke/NativeSmoke.cpp)
 set_target_properties(felidae_smoke PROPERTIES
@@ -299,7 +365,7 @@ endif()
 
 foreach(felidae_quality_target IN ITEMS
         felidae_sentencepiece_model_generator felidae_integer_parser_benchmark
-        felidae felidae_debug felidae_sentencepiece_model_test
+        felidae felidae_debug felidae_sentencepiece_model_test felidae_sentencepiece_pipeline_test
         felidae_smoke csv db_native http process set_native group_native wordnet
         fact fact_analysis plot gtk qt)
     if(TARGET ${felidae_quality_target})
