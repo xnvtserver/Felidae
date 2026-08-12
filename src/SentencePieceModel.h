@@ -1,6 +1,6 @@
 #pragma once
 
-#include "FelidaeSentencePieceIds.h"
+#include <FelidaeSentencePieceIds.h>
 
 namespace sentencepiece {
 class SentencePieceProcessor;
