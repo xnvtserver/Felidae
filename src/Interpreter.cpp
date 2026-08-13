@@ -1678,6 +1678,14 @@ std::shared_ptr<Expr> Interpreter::callAutoEntry() {
     return autoEntryResults_.front()->clone();
 }
 
+std::shared_ptr<Expr> Interpreter::callValue(const TermExpr& term) {
+    std::shared_ptr<Expr> out;
+    if (!evalCallAsValue(term, Env{}, out)) {
+        throw InterpreterError("Call did not produce a value: " + term.name);
+    }
+    return out;
+}
+
 std::shared_ptr<Expr> Interpreter::executeEntryCall(const Call& entryCall) {
     auto clauses = findClauses(entryCall.name, entryCall.nameId);
     if (!clauses) throw InterpreterError("Auto entry method '" + entryCall.name + "' not found");

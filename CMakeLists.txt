@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(felidae_interpreter LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -10,6 +10,10 @@ option(FELIDAE_ENABLE_SANITIZERS
 option(FELIDAE_BUILD_TESTS "Build Felidae regression tests" ON)
 option(FELIDAE_ENABLE_STRICT_WARNINGS
     "Enable strict warnings for Felidae-owned targets only" OFF)
+option(FELIDAE_ENABLE_LIBTORCH "Enable the C++ LibTorch neural mixfix backend" OFF)
+if(FELIDAE_ENABLE_LIBTORCH)
+    find_package(Torch REQUIRED)
+endif()
 
 # Keep the lexical model native and reproducible: SentencePiece is pinned as a
 # git submodule instead of being found from an arbitrary system installation.
@@ -66,6 +70,7 @@ endfunction()
 # Explicit opt-in only: it never runs during normal builds or tests.
 add_executable(felidae_integer_parser_benchmark EXCLUDE_FROM_ALL
     tools/IntegerParserBenchmark.cpp
+    src/FelidaeIr.cpp
     src/SentencePieceModel.cpp
     src/IntegerTokenList.cpp
     src/IntegerParser.cpp
@@ -120,6 +125,9 @@ endif()
 add_executable(felidae
     src/main.cpp
     src/FelidaeRuntime.cpp
+    src/FelidaeIr.cpp
+    src/LegacyIrAdapter.cpp
+    src/MixfixStateModel.cpp
     src/SentencePieceModel.cpp
     src/IntegerTokenList.cpp
     src/IntegerParser.cpp
@@ -130,6 +138,16 @@ add_executable(felidae
     src/Memory.cpp
     src/NativeRuntime.cpp
 )
+# The command-line entry point has a stable location on every generator.
+# In particular, Visual Studio's multi-config generator otherwise places it
+# below build\\Debug or build\\Release, which makes build.cmd/build.ps1
+# unexpectedly fail to leave build\\felidae.exe behind.
+set_target_properties(felidae PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}")
 
 target_include_directories(felidae PRIVATE src)
 target_include_directories(felidae BEFORE PRIVATE
@@ -140,6 +158,20 @@ target_include_directories(felidae SYSTEM PRIVATE third_party)
 target_compile_definitions(felidae PRIVATE
     FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
 target_link_libraries(felidae PRIVATE sentencepiece)
+if(FELIDAE_ENABLE_LIBTORCH)
+    target_compile_definitions(felidae PRIVATE FELIDAE_HAS_TORCH=1)
+    target_link_libraries(felidae PRIVATE ${TORCH_LIBRARIES})
+
+    # Explicit only: C++ LibTorch training is never a normal build step.
+    add_executable(felidae_train_mixfix_gru EXCLUDE_FROM_ALL
+        tools/TrainMixfixGru.cpp
+        src/MixfixStateModel.cpp
+        src/FelidaeIr.cpp)
+    target_include_directories(felidae_train_mixfix_gru PRIVATE src)
+    target_compile_definitions(felidae_train_mixfix_gru PRIVATE FELIDAE_HAS_TORCH=1)
+    target_link_libraries(felidae_train_mixfix_gru PRIVATE ${TORCH_LIBRARIES})
+    felidae_use_sentencepiece_model(felidae_train_mixfix_gru)
+endif()
 felidae_use_sentencepiece_model(felidae)
 if(TARGET OpenMP::OpenMP_CXX)
     target_link_libraries(felidae PRIVATE OpenMP::OpenMP_CXX)
@@ -157,6 +189,8 @@ set(FELIDAE_DEBUG_SOURCES
     src/debugger/main.cpp
     src/debugger/AstAnalyzer.cpp
     src/tooling/SourceParser.cpp
+    src/FelidaeIr.cpp
+    src/LegacyIrAdapter.cpp
     src/SentencePieceModel.cpp
     src/IntegerTokenList.cpp
     src/IntegerParser.cpp
@@ -213,6 +247,8 @@ if(FELIDAE_BUILD_TESTS)
     add_executable(felidae_sentencepiece_pipeline_test
         tests/SentencePiecePipelineTest.cpp
         src/FelidaeRuntime.cpp
+        src/FelidaeIr.cpp
+        src/LegacyIrAdapter.cpp
         src/SentencePieceModel.cpp
         src/IntegerTokenList.cpp
         src/IntegerParser.cpp
@@ -241,6 +277,18 @@ if(FELIDAE_BUILD_TESTS)
         target_link_libraries(felidae_sentencepiece_pipeline_test PRIVATE dl)
     endif()
     add_test(NAME felidae_sentencepiece_pipeline COMMAND felidae_sentencepiece_pipeline_test)
+    # Avoid stale Windows handle contention from an interrupted prior test run.
+    set_target_properties(felidae_sentencepiece_pipeline_test PROPERTIES
+        OUTPUT_NAME felidae_sentencepiece_pipeline_ir_test)
+
+    add_executable(felidae_mixfix_state_model_test
+        tests/MixfixStateModelTest.cpp
+        src/MixfixStateModel.cpp
+        src/FelidaeIr.cpp)
+    target_include_directories(felidae_mixfix_state_model_test PRIVATE src)
+    target_compile_options(felidae_mixfix_state_model_test PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>)
+    add_test(NAME felidae_mixfix_state_model COMMAND felidae_mixfix_state_model_test)
 endif()
 add_library(felidae_smoke SHARED native_modules/smoke/NativeSmoke.cpp)
 set_target_properties(felidae_smoke PROPERTIES

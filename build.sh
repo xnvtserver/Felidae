@@ -49,18 +49,9 @@ if [[ "$TARGET" != "native" ]]; then
     exit 2
 fi
 
-LOCAL_ABSEIL="${ROOT_DIR}/build-sentencepiece/_deps/abseil-cpp-src"
-LOCAL_PROTOBUF="${ROOT_DIR}/build-sentencepiece/_deps/protobuf-src"
 CMAKE_ARGS=(-S "$ROOT_DIR" -B "$BUILD_DIR" "-DCMAKE_BUILD_TYPE=${CONFIGURATION}")
 if [[ "$SANITIZE" -eq 1 ]]; then
     CMAKE_ARGS+=("-DFELIDAE_ENABLE_SANITIZERS=ON")
 fi
-if [[ -d "$LOCAL_ABSEIL" ]]; then
-    CMAKE_ARGS+=("-DFETCHCONTENT_SOURCE_DIR_ABSEIL-CPP=${LOCAL_ABSEIL}")
-fi
-if [[ -d "$LOCAL_PROTOBUF" ]]; then
-    CMAKE_ARGS+=("-DFETCHCONTENT_SOURCE_DIR_PROTOBUF=${LOCAL_PROTOBUF}")
-fi
-
 nice -n 19 cmake "${CMAKE_ARGS[@]}"
-nice -n 19 cmake --build "$BUILD_DIR" --parallel "${FELIDAE_JOBS:-1}"
+nice -n 19 cmake --build "$BUILD_DIR" --config "$CONFIGURATION" --target felidae --parallel "${FELIDAE_JOBS:-1}"

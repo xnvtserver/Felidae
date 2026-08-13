@@ -1,5 +1,6 @@
 #include "FelidaeRuntime.h"
 #include "Interpreter.h"
+#include "LegacyIrAdapter.h"
 
 #include <emscripten/bind.h>
 
@@ -12,6 +13,18 @@ namespace {
 
 std::string runProgram(const std::string& source, const std::string& query) {
     try {
+        if (Felidae::trim(query).empty()) {
+            auto module = Felidae::compileProgramTextToIr(source);
+            Felidae::IrVerifier::verify(module.ir);
+            Felidae::LegacyVmRuntime runtime(module);
+            Felidae::RegisterVm vm;
+            const auto result = vm.execute(module.ir, runtime,
+                                           Felidae::legacyVmValue(Felidae::makeSystemInput({})));
+            if (!runtime.executedEntry()) {
+                return "Program loaded successfully. Add main() or pass a query to execute it.";
+            }
+            return runtime.services().valueToString(Felidae::legacyExprFromVmValue(result));
+        }
         Felidae::Interpreter interpreter;
         Felidae::Program program = Felidae::parseProgramText(source);
         Felidae::loadProgramRoot(std::filesystem::path("/playground.fx"), program, interpreter);

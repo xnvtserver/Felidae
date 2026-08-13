@@ -1,0 +1,285 @@
+#include "MixfixStateModel.h"
+
+#include <cassert>
+#include <limits>
+#include <vector>
+
+int main() {
+    using namespace Felidae;
+
+    class FixedModel final : public MixfixStateModel {
+    public:
+        std::vector<IrWord> transform(std::span<const SentencePieceId>,
+                                      const MixfixContext&) override {
+            return {static_cast<IrWord>(IrOpcode::ExecuteProgram), 0,
+                    static_cast<IrWord>(IrOpcode::End)};
+        }
+    };
+    class InvalidModel final : public MixfixStateModel {
+    public:
+        std::vector<IrWord> transform(std::span<const SentencePieceId>,
+                                      const MixfixContext&) override {
+            return {static_cast<IrWord>(IrOpcode::LoadConst), 0,
+                    static_cast<IrWord>(IrOpcode::End)};
+        }
+    };
+    class OversizedModel final : public MixfixStateModel {
+    public:
+        std::vector<IrWord> transform(std::span<const SentencePieceId>,
+                                      const MixfixContext&) override {
+            return {static_cast<IrWord>(IrOpcode::End), static_cast<IrWord>(IrOpcode::End)};
+        }
+    };
+
+    MixfixContext context;
+    context.programReferences = {0};
+    const std::vector<MixfixIrToken> valid = {
+        {MixfixIrTokenKind::Opcode, static_cast<IrWord>(IrOpcode::ExecuteProgram)},
+        {MixfixIrTokenKind::ProgramReference, 0},
+        {MixfixIrTokenKind::End, 0},
+    };
+    const auto words = resolveMixfixIrTokens(valid, context);
+    assert((words == std::vector<IrWord>{static_cast<IrWord>(IrOpcode::ExecuteProgram), 0,
+                                         static_cast<IrWord>(IrOpcode::End)}));
+
+    FelidaeIr ir;
+    ir.words = words;
+    ir.programs = {0};
+    IrVerifier::verify(ir);
+
+    FixedModel model;
+    const std::vector<SentencePieceId> input = {1};
+    const auto verified = compileVerifiedMixfixIr(model, input, context, ir);
+    assert(verified.words == words);
+
+    InvalidModel invalidModel;
+    bool verifierRejected = false;
+    try {
+        (void)compileVerifiedMixfixIr(invalidModel, input, context, ir);
+    } catch (const IrError&) {
+        verifierRejected = true;
+    }
+    assert(verifierRejected);
+
+    MixfixContext tightContext = context;
+    tightContext.maximumOutputWords = 1;
+    OversizedModel oversizedModel;
+    bool oversizedRejected = false;
+    try {
+        (void)compileVerifiedMixfixIr(oversizedModel, input, tightContext, ir);
+    } catch (const IrError&) {
+        oversizedRejected = true;
+    }
+    assert(oversizedRejected);
+
+    FelidaeIr arithmetic;
+    arithmetic.registerCount = 3;
+    arithmetic.constants = {encodeIrNumber(6.0), encodeIrNumber(7.0)};
+    arithmetic.words = {
+        static_cast<IrWord>(IrOpcode::LoadConst), 0, 0,
+        static_cast<IrWord>(IrOpcode::LoadConst), 1, 1,
+        static_cast<IrWord>(IrOpcode::Mul), 2, 0, 1,
+        static_cast<IrWord>(IrOpcode::Return), 2, 0,
+        static_cast<IrWord>(IrOpcode::End),
+    };
+    class NoRuntime final : public VmRuntime {
+    public:
+        VmValue executeProgram(IrWord, const VmValue&) override { throw IrError("unexpected runtime call"); }
+        VmValue callNativeSymbol(IrSymbolRef symbol) override { return static_cast<double>(symbol); }
+    } noRuntime;
+    RegisterVm nativeVm;
+    const auto arithmeticResult = nativeVm.execute(arithmetic, noRuntime, VmNil{});
+    assert(std::get<double>(arithmeticResult) == 42.0);
+    assert(!noRuntime.shouldBranchFalse(0.0));
+
+    FelidaeIr factProgram;
+    factProgram.registerCount = 2;
+    factProgram.symbols = {50, 51, 12};
+    factProgram.constants = {encodeIrNumber(12.0)};
+    factProgram.words = {
+        static_cast<IrWord>(IrOpcode::MakeFact), 0, 0,
+        static_cast<IrWord>(IrOpcode::LoadConst), 1, 0,
+        static_cast<IrWord>(IrOpcode::SetField), 0, 1, 1,
+        static_cast<IrWord>(IrOpcode::Return), 0, 0,
+        static_cast<IrWord>(IrOpcode::End),
+    };
+    const auto factValue = nativeVm.execute(factProgram, noRuntime, VmNil{});
+    const auto fact = std::get<VmFactPtr>(factValue);
+    assert(fact->type == 50 && fact->fields.size() == 1);
+    assert(fact->fields.front().first == 51);
+    assert(std::get<double>(fact->fields.front().second) == 12.0);
+
+    FelidaeIr nativeCall;
+    nativeCall.registerCount = 1;
+    nativeCall.symbols = {12};
+    nativeCall.words = {
+        static_cast<IrWord>(IrOpcode::CallNative), 0, 0,
+        static_cast<IrWord>(IrOpcode::Return), 0, 0,
+        static_cast<IrWord>(IrOpcode::End),
+    };
+    assert(std::get<double>(nativeVm.execute(nativeCall, noRuntime, VmNil{})) == 12.0);
+
+    class StatefulSemanticModel final : public RuntimeStateModel {
+    public:
+        VmValue evaluate(const RuntimeOperation& operation, std::span<const VmValue> inputs,
+                         RuntimeContext& context) override {
+            assert(operation.symbol == 99 && inputs.size() == 1);
+            auto state = std::static_pointer_cast<std::size_t>(context.executionState);
+            if (!state) {
+                state = std::make_shared<std::size_t>(0);
+                context.executionState = state;
+            }
+            ++*state;
+            return std::get<double>(inputs.front()) + static_cast<double>(*state);
+        }
+    } semanticModel;
+    class SemanticRuntime final : public VmRuntime {
+    public:
+        explicit SemanticRuntime(RuntimeStateModel& model) : model_(model) {}
+        VmValue executeProgram(IrWord, const VmValue&) override { throw IrError("unexpected runtime call"); }
+        RuntimeStateModel* runtimeStateModel() override { return &model_; }
+        RuntimeContext makeRuntimeContext(const FelidaeIr&, const VmValue&) const override {
+            RuntimeContext context;
+            context.maximumSemanticSteps = 2;
+            return context;
+        }
+    private:
+        RuntimeStateModel& model_;
+    } semanticRuntime(semanticModel);
+    FelidaeIr semanticProgram;
+    semanticProgram.registerCount = 2;
+    semanticProgram.symbols = {99};
+    semanticProgram.constants = {encodeIrNumber(4.0)};
+    semanticProgram.words = {
+        static_cast<IrWord>(IrOpcode::LoadConst), 0, 0,
+        static_cast<IrWord>(IrOpcode::SemanticEval), 1, 0, 1, 0,
+        static_cast<IrWord>(IrOpcode::Return), 1, 0,
+        static_cast<IrWord>(IrOpcode::End),
+    };
+    assert(std::get<double>(nativeVm.execute(semanticProgram, semanticRuntime, VmNil{})) == 5.0);
+    // A new VM execution owns a new RuntimeContext; recurrent state cannot
+    // leak across requests even when the backend instance is reused.
+    assert(std::get<double>(nativeVm.execute(semanticProgram, semanticRuntime, VmNil{})) == 5.0);
+    FelidaeIr overLimitSemanticProgram;
+    overLimitSemanticProgram.registerCount = 4;
+    overLimitSemanticProgram.symbols = {99};
+    overLimitSemanticProgram.constants = {encodeIrNumber(1.0)};
+    overLimitSemanticProgram.words = {
+        static_cast<IrWord>(IrOpcode::LoadConst), 0, 0,
+        static_cast<IrWord>(IrOpcode::SemanticEval), 1, 0, 1, 0,
+        static_cast<IrWord>(IrOpcode::SemanticEval), 2, 0, 1, 1,
+        static_cast<IrWord>(IrOpcode::SemanticEval), 3, 0, 1, 2,
+        static_cast<IrWord>(IrOpcode::Return), 3, 0,
+        static_cast<IrWord>(IrOpcode::End),
+    };
+    bool semanticLimitRejected = false;
+    try {
+        (void)nativeVm.execute(overLimitSemanticProgram, semanticRuntime, VmNil{});
+    } catch (const IrError&) {
+        semanticLimitRejected = true;
+    }
+    assert(semanticLimitRejected);
+    bool unavailableSemanticRejected = false;
+    try {
+        (void)nativeVm.execute(semanticProgram, noRuntime, VmNil{});
+    } catch (const IrError&) {
+        unavailableSemanticRejected = true;
+    }
+    assert(unavailableSemanticRejected);
+    class InvalidSemanticModel final : public RuntimeStateModel {
+    public:
+        VmValue evaluate(const RuntimeOperation&, std::span<const VmValue>, RuntimeContext&) override {
+            return VmMapPtr{};
+        }
+    } invalidSemanticModel;
+    SemanticRuntime invalidSemanticRuntime(invalidSemanticModel);
+    bool invalidSemanticRejected = false;
+    try {
+        (void)nativeVm.execute(semanticProgram, invalidSemanticRuntime, VmNil{});
+    } catch (const IrError&) {
+        invalidSemanticRejected = true;
+    }
+    assert(invalidSemanticRejected);
+
+    FelidaeIr branchSkipsInitialization;
+    branchSkipsInitialization.registerCount = 2;
+    branchSkipsInitialization.constants = {1};
+    branchSkipsInitialization.constantKinds = {IrConstantKind::Boolean};
+    branchSkipsInitialization.words = {
+        static_cast<IrWord>(IrOpcode::LoadConst), 0, 0,
+        static_cast<IrWord>(IrOpcode::JumpIfFalse), 0, 9,
+        static_cast<IrWord>(IrOpcode::LoadConst), 1, 0,
+        static_cast<IrWord>(IrOpcode::Return), 1, 0,
+        static_cast<IrWord>(IrOpcode::End),
+    };
+    bool flowRejected = false;
+    try {
+        IrVerifier::verify(branchSkipsInitialization);
+    } catch (const IrError&) {
+        flowRejected = true;
+    }
+    assert(flowRejected);
+
+    FelidaeIr overflowingCall;
+    overflowingCall.registerCount = 1;
+    overflowingCall.symbols = {0};
+    overflowingCall.words = {static_cast<IrWord>(IrOpcode::Call), 0, 0,
+                             std::numeric_limits<IrWord>::max()};
+    bool overflowRejected = false;
+    try {
+        IrVerifier::verify(overflowingCall);
+    } catch (const IrError&) {
+        overflowRejected = true;
+    }
+    assert(overflowRejected);
+
+    FelidaeIr invalidSemanticOperation;
+    invalidSemanticOperation.registerCount = 1;
+    invalidSemanticOperation.words = {
+        static_cast<IrWord>(IrOpcode::SemanticEval), 0, 0, 0,
+        static_cast<IrWord>(IrOpcode::Return), 0, 0,
+        static_cast<IrWord>(IrOpcode::End),
+    };
+    bool invalidSemanticOperationRejected = false;
+    try {
+        IrVerifier::verify(invalidSemanticOperation);
+    } catch (const IrError&) {
+        invalidSemanticOperationRejected = true;
+    }
+    assert(invalidSemanticOperationRejected);
+
+    FelidaeIr overflowingSemanticOperation;
+    overflowingSemanticOperation.registerCount = 1;
+    overflowingSemanticOperation.symbols = {1};
+    overflowingSemanticOperation.words = {
+        static_cast<IrWord>(IrOpcode::SemanticEval), 0, 0,
+        std::numeric_limits<IrWord>::max(),
+    };
+    bool overflowingSemanticRejected = false;
+    try {
+        IrVerifier::verify(overflowingSemanticOperation);
+    } catch (const IrError&) {
+        overflowingSemanticRejected = true;
+    }
+    assert(overflowingSemanticRejected);
+
+    FelidaeIr badSourceMap = arithmetic;
+    badSourceMap.sourceMap = {IrSourceMapEntry{1, {1, 1, 1, 2}}};
+    bool sourceMapRejected = false;
+    try {
+        IrVerifier::verify(badSourceMap);
+    } catch (const IrError&) {
+        sourceMapRejected = true;
+    }
+    assert(sourceMapRejected);
+
+    bool rejected = false;
+    try {
+        const std::vector<MixfixIrToken> noEnd = {
+            {MixfixIrTokenKind::Opcode, static_cast<IrWord>(IrOpcode::ExecuteProgram)}};
+        (void)resolveMixfixIrTokens(noEnd, context);
+    } catch (const IrError&) {
+        rejected = true;
+    }
+    assert(rejected);
+}

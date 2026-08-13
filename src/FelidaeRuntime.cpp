@@ -86,6 +86,25 @@ Program parseProgramText(std::string text) {
     return IntegerParser(input).parseProgram();
 }
 
+LegacyIrModule compileProgramTextToIr(std::string text) {
+    return LegacyAstIrAdapter{}.compile(parseProgramText(std::move(text)));
+}
+
+LegacyIrModule compileProgramFileToIr(const fs::path& path) {
+    const auto entry = resolveProgramEntryPath(path);
+    return LegacyAstIrAdapter{}.compile(parseProgramText(readSourceFile(entry)),
+                                        entry.parent_path());
+}
+
+std::optional<FelidaeIr> tryCompileExpressionTextToIr(const std::string& text) {
+    try {
+        IntegerTokenList input(felidaeSentencePieceModel(), text);
+        return IntegerParser(input).compileExpressionIr();
+    } catch (const IntegerParserError&) {
+        return std::nullopt;
+    }
+}
+
 void parseProgramFileStatements(
     const fs::path& path,
     const std::function<void(std::shared_ptr<Statement>)>& consume,

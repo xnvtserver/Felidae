@@ -3,6 +3,7 @@
 #include "AST.h"
 #include "Interpreter.h"
 #include "ParserMetrics.h"
+#include "LegacyIrAdapter.h"
 
 #include <filesystem>
 #include <memory>
@@ -10,11 +11,18 @@
 #include <ostream>
 #include <string>
 #include <vector>
+#include <optional>
 
 namespace Felidae {
 
 Program parseProgramFile(const std::filesystem::path& path);
 Program parseProgramText(std::string text);
+LegacyIrModule compileProgramTextToIr(std::string text);
+LegacyIrModule compileProgramFileToIr(const std::filesystem::path& path);
+// Returns empty for syntax that has not reached native direct lowering yet.
+// This gives REPL/tooling a safe migration path without altering normal
+// language semantics for methods, facts, mixfix, or native calls.
+std::optional<FelidaeIr> tryCompileExpressionTextToIr(const std::string& text);
 void parseProgramFileChunks(
     const std::filesystem::path& path,
     const std::function<void(Program&&)>& consume,

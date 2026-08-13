@@ -1,4 +1,6 @@
 #include "Interpreter.h"
+#include "LegacyIrAdapter.h"
+#include "Symbol.h"
 #include "FelidaeRuntime.h"
 #include "Version.h"
 
@@ -180,6 +182,70 @@ static void runRepl(Interpreter& interpreter) {
                 std::cout << interpreter.valueToDisplayString(interpreter.evaluateGlobal(line)) << "\n";
                 continue;
             }
+            if (const auto directIr = tryCompileExpressionTextToIr(line)) {
+                class ReplNativeRuntime final : public VmRuntime {
+                public:
+                    explicit ReplNativeRuntime(Interpreter& services) : services_(services) {}
+                    VmValue executeProgram(IrWord, const VmValue&) override {
+                        throw IrError("direct REPL expression unexpectedly requested a runtime call");
+                    }
+                    VmValue loadSymbol(IrSymbolRef symbol) override {
+                        const auto name = symbolNameForId(static_cast<SymbolId>(symbol));
+                        if (!services_.hasGlobal(name)) throw IrError("IR references an undefined symbol: " + name);
+                        const auto value = services_.evaluateGlobal(name);
+                        if (const auto number = std::dynamic_pointer_cast<NumberExpr>(value)) return number->value;
+                        if (const auto boolean = std::dynamic_pointer_cast<BoolExpr>(value)) return boolean->value;
+                        if (std::dynamic_pointer_cast<NilExpr>(value)) return VmNil{};
+                        if (const auto text = std::dynamic_pointer_cast<StringExpr>(value)) return VmText{{}, text->value};
+                        return legacyVmValue(value);
+                    }
+                    VmValue callSymbol(IrSymbolRef symbol, std::span<const VmValue> arguments) override {
+                        const auto name = symbolNameForId(static_cast<SymbolId>(symbol));
+                        std::vector<Arg> values;
+                        values.reserve(arguments.size());
+                        for (const auto& argument : arguments) {
+                            values.emplace_back("", legacyExprFromVmValue(argument));
+                        }
+                        return legacyVmValue(services_.callValue(TermExpr(
+                            name, static_cast<SymbolId>(symbol), std::move(values))));
+                    }
+                    VmValue callSymbolNamed(IrSymbolRef symbol,
+                                            std::span<const VmCallArgument> arguments) override {
+                        const auto name = symbolNameForId(static_cast<SymbolId>(symbol));
+                        std::vector<Arg> values;
+                        values.reserve(arguments.size());
+                        for (const auto& argument : arguments) {
+                            const auto argumentName = argument.name
+                                ? symbolNameForId(static_cast<SymbolId>(*argument.name)) : std::string{};
+                            values.emplace_back(argumentName,
+                                argument.name ? static_cast<SymbolId>(*argument.name) : 0,
+                                legacyExprFromVmValue(argument.value));
+                        }
+                        return legacyVmValue(services_.callValue(TermExpr(
+                            name, static_cast<SymbolId>(symbol), std::move(values))));
+                    }
+                private:
+                    Interpreter& services_;
+                } nativeRuntime(interpreter);
+                RegisterVm vm;
+                const auto value = vm.execute(*directIr, nativeRuntime, VmNil{});
+                if (const auto* number = std::get_if<double>(&value)) {
+                    std::cout << *number << "\n";
+                    continue;
+                }
+                if (const auto* boolean = std::get_if<bool>(&value)) {
+                    std::cout << (*boolean ? "true" : "false") << "\n";
+                    continue;
+                }
+                if (const auto* text = std::get_if<VmText>(&value)) {
+                    std::cout << text->utf8 << "\n";
+                    continue;
+                }
+                if (const auto* opaque = std::get_if<VmOpaqueValue>(&value)) {
+                    std::cout << interpreter.valueToDisplayString(legacyExprFromVmValue(*opaque)) << "\n";
+                    continue;
+                }
+            }
             auto value = interpreter.evaluateExpressionText(line);
             std::cout << interpreter.valueToDisplayString(value) << "\n";
         } catch (const std::exception& e) {
@@ -210,6 +276,58 @@ int main(int argc, char** argv) {
         fs::path entryFile = resolveProgramEntryPath(*options.programFile);
         if (entryFile.extension() != FILE_EXTENSION) {
             throw std::runtime_error("Felidae source files must use .fx extension");
+        }
+        // File execution goes through canonical IR and the register VM.  The
+        // temporary runtime adapter owns legacy semantics while the direct IR
+        // compiler is being migrated; neither the CLI nor model output can
+        // bypass verification.
+        if (!options.repl && !options.query) {
+            auto module = compileProgramFileToIr(entryFile);
+            IrVerifier::verify(module.ir);
+            LegacyVmRuntime runtime(module);
+            RegisterVm vm;
+            const auto executionStarted = Clock::now();
+            VmValue result = VmNil{};
+            double firstEntryMs = 0.0;
+            double repeatedEntryTotalMs = 0.0;
+            for (size_t run = 0; run < options.benchmarkRepeat; ++run) {
+                const auto entryStarted = Clock::now();
+                result = vm.execute(module.ir, runtime,
+                                    legacyVmValue(makeSystemInput(options.remainingArgs)));
+                const double entryMs = static_cast<double>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        Clock::now() - entryStarted).count()) / 1000000.0;
+                if (run == 0) firstEntryMs = entryMs;
+                else repeatedEntryTotalMs += entryMs;
+            }
+            if (options.debug) {
+                std::cerr << "Felidae debug mode enabled for " << entryFile.string() << "\n";
+            }
+            if (runtime.executedEntry()) {
+                std::cout << runtime.services().valueToDisplayString(
+                    legacyExprFromVmValue(result)) << "\n";
+            } else {
+                std::cout << "Program loaded successfully. No main() method found.\n"
+                          << "Use a query argument, add a zero-argument entry call, or run with --repl.\n";
+            }
+            if (options.metricsJson) {
+                const auto finished = Clock::now();
+                const auto loadMicros = std::chrono::duration_cast<std::chrono::microseconds>(
+                    executionStarted - loadStarted).count();
+                const auto executionMicros = std::chrono::duration_cast<std::chrono::microseconds>(
+                    finished - executionStarted).count();
+                const double repeatedAverage = options.benchmarkRepeat > 1
+                    ? repeatedEntryTotalMs / static_cast<double>(options.benchmarkRepeat - 1) : 0.0;
+                std::cerr << "FELIDAE_METRICS {"
+                          << "\"loadMs\":" << (static_cast<double>(loadMicros) / 1000.0) << ","
+                          << "\"executionMs\":" << (static_cast<double>(executionMicros) / 1000.0) << ","
+                          << "\"queryRuns\":" << options.benchmarkRepeat << ","
+                          << "\"firstQueryMs\":" << firstEntryMs << ","
+                          << "\"repeatedQueryAverageMs\":" << repeatedAverage << ","
+                          << "\"runtime\":" << runtime.services().runtimeMetricsJson()
+                          << "}\n";
+            }
+            return 0;
         }
         // A source file becomes executable only after its imports and every
         // declaration have registered successfully. Running main while the
