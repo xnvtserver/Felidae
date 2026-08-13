@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AST.h"
+#include "FelidaeIr.h"
 #include "IntegerTokenList.h"
 
 #include <cstddef>
@@ -35,6 +36,10 @@ public:
     Program parseProgram();
     std::vector<std::shared_ptr<Goal>> parseQuery();
     std::shared_ptr<Expr> parseExpressionText();
+    // Transitional direct lowering for the primitive expression subset.  It
+    // consumes the existing SentencePiece stream once and returns executable
+    // canonical IR without an interpreter invocation.
+    FelidaeIr compileExpressionIr();
     bool startsQuery();
     const IntegerParserMetrics& metrics() const noexcept { return metrics_; }
 
@@ -51,6 +56,9 @@ private:
     std::size_t byte_ = 0;
     std::size_t recursionDepth_ = 0;
     IntegerParserMetrics metrics_;
+    // Position before each SentencePiece entry. Built once from the original
+    // encode offsets so source-map stamping never rescans the full stream.
+    std::vector<SourceSpan> pieceStarts_;
 
     static constexpr std::size_t kMaximumRecursionDepth = 512;
     static constexpr std::size_t kMaximumIterations = 1'000'000;

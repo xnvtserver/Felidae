@@ -8,6 +8,23 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$cmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue
+$cmakePath = if ($cmakeCommand) { $cmakeCommand.Source } else { $null }
+if (-not $cmakePath -and $env:VSINSTALLDIR) {
+    $candidate = Join-Path $env:VSINSTALLDIR "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+    if (Test-Path $candidate) { $cmakePath = $candidate }
+}
+if (-not $cmakePath) {
+    foreach ($version in "18", "17") {
+        foreach ($edition in "Community", "Professional", "Enterprise", "BuildTools") {
+            $candidate = Join-Path ${env:ProgramFiles} "Microsoft Visual Studio\$version\$edition\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+            if (Test-Path $candidate) { $cmakePath = $candidate; break }
+        }
+        if ($cmakePath) { break }
+    }
+}
+if (-not $cmakePath) { throw "CMake was not found. Install Visual Studio C++ CMake tools or add cmake to PATH." }
+
 # CMake is the only supported native build graph.  It owns SentencePiece and
 # the generated TokenId vocabulary, avoiding a stale direct compiler list.
 if ($Target -ne "native") {
@@ -26,18 +43,14 @@ if ($Configuration -eq "sanitize") {
     $configureArgs += "-DFELIDAE_ENABLE_SANITIZERS=ON"
 }
 
-$localAbseil = Join-Path $root "build-sentencepiece/_deps/abseil-cpp-src"
-$localProtobuf = Join-Path $root "build-sentencepiece/_deps/protobuf-src"
-if (Test-Path $localAbseil) {
-    $configureArgs += "-DFETCHCONTENT_SOURCE_DIR_ABSEIL-CPP=$localAbseil"
-}
-if (Test-Path $localProtobuf) {
-    $configureArgs += "-DFETCHCONTENT_SOURCE_DIR_PROTOBUF=$localProtobuf"
-}
-
-& cmake @configureArgs
+& $cmakePath @configureArgs
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
 
 $jobs = if ($env:FELIDAE_JOBS) { $env:FELIDAE_JOBS } else { "1" }
-& cmake --build $buildDir --parallel $jobs
+& $cmakePath --build $buildDir --config $buildType --target felidae --parallel $jobs
 if ($LASTEXITCODE -ne 0) { throw "CMake build failed" }
+
+$executable = Join-Path $buildDir "felidae.exe"
+if ($IsWindows -and -not (Test-Path $executable)) {
+    throw "Build completed but expected executable was not created: $executable"
+}

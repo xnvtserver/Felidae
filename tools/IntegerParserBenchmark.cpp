@@ -1,4 +1,6 @@
 #include "IntegerParser.h"
+#include "FelidaeIr.h"
+#include "IntegerTokenList.h"
 #include "Operator.h"
 #include "SentencePieceModel.h"
 
@@ -10,10 +12,46 @@
 #include <string_view>
 
 int main(int argc, char** argv) {
+    const bool nativeExpression = argc == 3 && std::string_view(argv[1]) == "--native-expression";
     const bool dumpIds = argc == 3 && std::string_view(argv[1]) == "--dump-ids";
+    if (nativeExpression) {
+        const std::string source = argv[2];
+        const auto started = std::chrono::steady_clock::now();
+        const auto& model = Felidae::felidaeSentencePieceModel();
+        const auto modelReady = std::chrono::steady_clock::now();
+        Felidae::IntegerTokenList tokens(model, source);
+        const auto encoded = std::chrono::steady_clock::now();
+        Felidae::IntegerParser parser(tokens);
+        const auto ir = parser.compileExpressionIr();
+        const auto compiled = std::chrono::steady_clock::now();
+        Felidae::IrVerifier::verify(ir);
+        const auto verified = std::chrono::steady_clock::now();
+        class NoRuntime final : public Felidae::VmRuntime {
+        public:
+            Felidae::VmValue executeProgram(Felidae::IrWord, const Felidae::VmValue&) override {
+                throw Felidae::IrError("benchmark expression requested a runtime program");
+            }
+        } runtime;
+        Felidae::RegisterVm vm;
+        (void)vm.execute(ir, runtime, Felidae::VmNil{});
+        const auto executed = std::chrono::steady_clock::now();
+        const auto micros = [](auto begin, auto end) {
+            return std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();
+        };
+        std::cout << "{\"mode\":\"native-expression\""
+                  << ",\"tokenCount\":" << tokens.entries().size()
+                  << ",\"modelInitMicros\":" << micros(started, modelReady)
+                  << ",\"sourceEncodeMicros\":" << micros(modelReady, encoded)
+                  << ",\"irCompileMicros\":" << micros(encoded, compiled)
+                  << ",\"verifyMicros\":" << micros(compiled, verified)
+                  << ",\"vmMicros\":" << micros(verified, executed)
+                  << ",\"totalMicros\":" << micros(started, executed) << "}\n";
+        return 0;
+    }
     const int sourceArgument = dumpIds ? 2 : 1;
     if (argc != 2 && !dumpIds) {
-        std::cerr << "usage: felidae_integer_parser_benchmark [--dump-ids] <source.fx>\n";
+        std::cerr << "usage: felidae_integer_parser_benchmark [--dump-ids] <source.fx>\n"
+                  << "       felidae_integer_parser_benchmark --native-expression <expression>\n";
         return 2;
     }
     std::ifstream input(argv[sourceArgument], std::ios::binary);

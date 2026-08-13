@@ -8,6 +8,8 @@
 #include <sentencepiece.pb.h>
 #include <sentencepiece_processor.h>
 
+#include <algorithm>
+
 namespace Felidae {
 
 namespace {
@@ -41,6 +43,22 @@ IntegerParser::IntegerParser(const IntegerTokenList& input,
     : input_(input), operators_(std::move(operators)) {
     metrics_.sourceEncodeCount = input.encodeCount();
     metrics_.tokenCount = input.entries().size();
+    const auto advance = [](SourceSpan& target, const IntegerTokenList::Entry& entry,
+                            std::size_t count) {
+        if (entry.id == TokenId::NEWLINE || entry.id == TokenId::CARRIAGE_RETURN) {
+            ++target.endLine;
+            target.endColumn = 1;
+        } else {
+            target.endColumn += static_cast<int>(count);
+        }
+    };
+    pieceStarts_.reserve(input.entries().size() + 1);
+    SourceSpan cursor;
+    for (const auto& entry : input.entries()) {
+        pieceStarts_.push_back(cursor);
+        advance(cursor, entry, entry.end - entry.begin);
+    }
+    pieceStarts_.push_back(cursor);
 }
 
 IntegerParser::RecursionScope::RecursionScope(IntegerParser& parser) : parser_(parser) {
@@ -1169,8 +1187,200 @@ std::shared_ptr<Expr> IntegerParser::parseExpressionText() {
     return result;
 }
 
+FelidaeIr IntegerParser::compileExpressionIr() {
+    const auto expression = parseExpressionText();
+    FelidaeIr ir;
+    const auto addNumber = [&](double number) {
+        ir.constants.push_back(encodeIrNumber(number));
+        ir.constantKinds.push_back(IrConstantKind::Number);
+        return static_cast<IrWord>(ir.constants.size() - 1);
+    };
+    const auto addBoolean = [&](bool boolean) {
+        ir.constants.push_back(boolean ? 1 : 0);
+        ir.constantKinds.push_back(IrConstantKind::Boolean);
+        return static_cast<IrWord>(ir.constants.size() - 1);
+    };
+    const auto addText = [&](const std::string& text) {
+        ir.texts.push_back(text);
+        ir.constants.push_back(static_cast<IrWord>(ir.texts.size() - 1));
+        ir.constantKinds.push_back(IrConstantKind::Text);
+        return static_cast<IrWord>(ir.constants.size() - 1);
+    };
+    const auto addNil = [&]() {
+        ir.constants.push_back(0);
+        ir.constantKinds.push_back(IrConstantKind::Nil);
+        return static_cast<IrWord>(ir.constants.size() - 1);
+    };
+    auto lower = [&](auto&& self, const std::shared_ptr<Expr>& value) -> RegisterId {
+        const auto emittedAt = ir.words.size();
+        const auto result = static_cast<RegisterId>(ir.registerCount++);
+        if (const auto number = std::dynamic_pointer_cast<NumberExpr>(value)) {
+            ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst), result,
+                                             addNumber(number->value)});
+        } else if (const auto boolean = std::dynamic_pointer_cast<BoolExpr>(value)) {
+            ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst), result,
+                                             addBoolean(boolean->value)});
+        } else if (const auto text = std::dynamic_pointer_cast<StringExpr>(value)) {
+            ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst), result,
+                                             addText(text->value)});
+        } else if (std::dynamic_pointer_cast<NilExpr>(value)) {
+            ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst), result,
+                                             addNil()});
+        } else if (const auto variable = std::dynamic_pointer_cast<VarExpr>(value)) {
+            ir.symbols.push_back(variable->nameId);
+            ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadSymbol), result,
+                                             static_cast<IrWord>(ir.symbols.size() - 1)});
+        } else if (const auto term = std::dynamic_pointer_cast<TermExpr>(value)) {
+            std::vector<RegisterId> arguments;
+            arguments.reserve(term->args.size());
+            const bool hasNamedArguments = std::any_of(term->args.begin(), term->args.end(),
+                [](const Arg& argument) { return !argument.name.empty(); });
+            std::vector<IrWord> names;
+            names.reserve(term->args.size());
+            for (const auto& argument : term->args) {
+                arguments.push_back(self(self, argument.value));
+                if (hasNamedArguments && argument.name.empty()) {
+                    names.push_back(0);
+                } else if (hasNamedArguments) {
+                    ir.symbols.push_back(argument.nameId);
+                    names.push_back(static_cast<IrWord>(ir.symbols.size()));
+                }
+            }
+            ir.symbols.push_back(term->nameId);
+            if (!hasNamedArguments) {
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::Call), result,
+                                                 static_cast<IrWord>(ir.symbols.size() - 1),
+                                                 static_cast<IrWord>(arguments.size())});
+                ir.words.insert(ir.words.end(), arguments.begin(), arguments.end());
+            } else {
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::CallNamed), result,
+                                                 static_cast<IrWord>(ir.symbols.size() - 1),
+                                                 static_cast<IrWord>(arguments.size())});
+                for (std::size_t index = 0; index < arguments.size(); ++index) {
+                    ir.words.push_back(names[index]);
+                    ir.words.push_back(arguments[index]);
+                }
+            }
+        } else if (const auto array = std::dynamic_pointer_cast<ArrayExpr>(value)) {
+            std::vector<RegisterId> items;
+            items.reserve(array->items.size());
+            for (const auto& item : array->items) items.push_back(self(self, item));
+            ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::MakeArray), result, 0,
+                                             static_cast<IrWord>(items.size())});
+            ir.words.insert(ir.words.end(), items.begin(), items.end());
+        } else if (const auto map = std::dynamic_pointer_cast<MapExpr>(value)) {
+            std::vector<std::pair<IrSymbolRef, RegisterId>> entries;
+            entries.reserve(map->entries.size());
+            for (const auto& entry : map->entries) {
+                const auto item = self(self, entry.value);
+                ir.symbols.push_back(entry.keyId);
+                entries.emplace_back(static_cast<IrSymbolRef>(ir.symbols.size() - 1), item);
+            }
+            ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::MakeMap), result, 0,
+                                             static_cast<IrWord>(entries.size())});
+            for (const auto& [field, item] : entries) {
+                ir.words.push_back(field);
+                ir.words.push_back(item);
+            }
+        } else if (const auto access = std::dynamic_pointer_cast<AccessExpr>(value)) {
+            const auto target = self(self, access->target);
+            ir.symbols.push_back(access->keyId);
+            ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::GetField), result, target,
+                                             static_cast<IrWord>(ir.symbols.size() - 1)});
+        } else if (const auto operation = std::dynamic_pointer_cast<OperatorExpression>(value)) {
+            const auto core = operation->coreOperator;
+            if (core == CoreOperator::UnaryPlus) {
+                return self(self, operation->capture(0));
+            }
+            if (core == CoreOperator::UnaryMinus) {
+                const auto source = self(self, operation->capture(0));
+                const auto zero = static_cast<RegisterId>(ir.registerCount++);
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst), zero,
+                                                 addNumber(0.0),
+                                                 static_cast<IrWord>(IrOpcode::Sub), result, zero, source});
+            } else if (core == CoreOperator::LogicalNot) {
+                const auto source = self(self, operation->capture(0));
+                const auto trueConstant = addBoolean(true);
+                const auto falseConstant = addBoolean(false);
+                const auto branch = ir.words.size();
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::JumpIfFalse), source, 0,
+                                                 static_cast<IrWord>(IrOpcode::LoadConst), result, falseConstant,
+                                                 static_cast<IrWord>(IrOpcode::Jump), 0});
+                const auto falseTarget = ir.words.size();
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst), result, trueConstant});
+                const auto endTarget = ir.words.size();
+                ir.words[branch + 2] = falseTarget;
+                ir.words[branch + 7] = endTarget;
+            } else if (core == CoreOperator::LogicalAnd || core == CoreOperator::LogicalOr) {
+                const auto left = self(self, operation->capture(0));
+                const auto right = self(self, operation->capture(1));
+                const auto trueConstant = addBoolean(true);
+                const auto falseConstant = addBoolean(false);
+                if (core == CoreOperator::LogicalAnd) {
+                    const auto leftBranch = ir.words.size();
+                    ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::JumpIfFalse), left, 0,
+                                                     static_cast<IrWord>(IrOpcode::JumpIfFalse), right, 0,
+                                                     static_cast<IrWord>(IrOpcode::LoadConst), result, trueConstant,
+                                                     static_cast<IrWord>(IrOpcode::Jump), 0});
+                    const auto falseTarget = ir.words.size();
+                    ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst), result, falseConstant});
+                    const auto endTarget = ir.words.size();
+                    ir.words[leftBranch + 2] = falseTarget;
+                    ir.words[leftBranch + 5] = falseTarget;
+                    ir.words[leftBranch + 10] = endTarget;
+                } else {
+                    const auto leftBranch = ir.words.size();
+                    ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::JumpIfFalse), left, 0,
+                                                     static_cast<IrWord>(IrOpcode::LoadConst), result, trueConstant,
+                                                     static_cast<IrWord>(IrOpcode::Jump), 0});
+                    const auto rightBranch = ir.words.size();
+                    ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::JumpIfFalse), right, 0,
+                                                     static_cast<IrWord>(IrOpcode::Jump), leftBranch + 3});
+                    const auto falseTarget = ir.words.size();
+                    ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst), result, falseConstant});
+                    const auto endTarget = ir.words.size();
+                    ir.words[leftBranch + 2] = rightBranch;
+                    ir.words[leftBranch + 7] = endTarget;
+                    ir.words[rightBranch + 2] = falseTarget;
+                }
+            } else {
+                const auto left = self(self, operation->capture(0));
+                const auto right = self(self, operation->capture(1));
+                IrOpcode opcode;
+                IrComparison comparison = IrComparison::Equal;
+                switch (core) {
+                case CoreOperator::Add: opcode = IrOpcode::Add; break;
+                case CoreOperator::Subtract: opcode = IrOpcode::Sub; break;
+                case CoreOperator::Multiply: opcode = IrOpcode::Mul; break;
+                case CoreOperator::Divide: opcode = IrOpcode::Div; break;
+                case CoreOperator::Modulo: opcode = IrOpcode::Mod; break;
+                case CoreOperator::StrictEqual: opcode = IrOpcode::Compare; break;
+                case CoreOperator::StrictNotEqual: opcode = IrOpcode::Compare; comparison = IrComparison::NotEqual; break;
+                case CoreOperator::Less: opcode = IrOpcode::Compare; comparison = IrComparison::Less; break;
+                case CoreOperator::LessEqual: opcode = IrOpcode::Compare; comparison = IrComparison::LessEqual; break;
+                case CoreOperator::Greater: opcode = IrOpcode::Compare; comparison = IrComparison::Greater; break;
+                case CoreOperator::GreaterEqual: opcode = IrOpcode::Compare; comparison = IrComparison::GreaterEqual; break;
+                default: throw IntegerParserError("expression has no direct IR lowering yet");
+                }
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(opcode), result, left, right});
+                if (opcode == IrOpcode::Compare) ir.words.push_back(static_cast<IrWord>(comparison));
+            }
+        } else {
+            throw IntegerParserError("expression has no direct IR lowering yet");
+        }
+        const auto& span = value->sourceSpan;
+        ir.sourceMap.push_back(IrSourceMapEntry{emittedAt,
+            {span.startLine, span.startColumn, span.endLine, span.endColumn}});
+        return result;
+    };
+    const auto result = lower(lower, expression);
+    ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::Return), result, 0,
+                                     static_cast<IrWord>(IrOpcode::End)});
+    IrVerifier::verify(ir);
+    return ir;
+}
+
 SourceSpan IntegerParser::span(std::size_t begin, std::size_t end) const {
-    SourceSpan result;
     const auto advance = [](SourceSpan& target, const IntegerTokenList::Entry& entry,
                             std::size_t count) {
         if (entry.id == TokenId::NEWLINE || entry.id == TokenId::CARRIAGE_RETURN) {
@@ -1180,22 +1390,26 @@ SourceSpan IntegerParser::span(std::size_t begin, std::size_t end) const {
             target.endColumn += static_cast<int>(count);
         }
     };
-    SourceSpan cursor;
-    for (const auto& entry : input_.entries()) {
-        if (entry.begin >= begin) break;
-        const auto count = std::min(entry.end, begin) - entry.begin;
-        advance(cursor, entry, count);
+    const auto& entries = input_.entries();
+    const auto first = std::lower_bound(entries.begin(), entries.end(), begin,
+        [](const IntegerTokenList::Entry& entry, std::size_t offset) {
+            return entry.end <= offset;
+        });
+    const auto firstIndex = static_cast<std::size_t>(first - entries.begin());
+    SourceSpan cursor = pieceStarts_.at(firstIndex);
+    if (first != entries.end() && first->begin < begin) {
+        advance(cursor, *first, begin - first->begin);
     }
+    SourceSpan result;
     result.startLine = cursor.endLine;
     result.startColumn = cursor.endColumn;
     result.endLine = result.startLine;
     result.endColumn = result.startColumn;
-    for (const auto& entry : input_.entries()) {
-        if (entry.end <= begin) continue;
-        if (entry.begin >= end) break;
-        const auto overlapBegin = std::max(entry.begin, begin);
-        const auto overlapEnd = std::min(entry.end, end);
-        advance(result, entry, overlapEnd - overlapBegin);
+    for (auto entry = first; entry != entries.end(); ++entry) {
+        if (entry->begin >= end) break;
+        const auto overlapBegin = std::max(entry->begin, begin);
+        const auto overlapEnd = std::min(entry->end, end);
+        advance(result, *entry, overlapEnd - overlapBegin);
     }
     return result;
 }

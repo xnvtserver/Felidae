@@ -56,6 +56,9 @@ public:
     std::shared_ptr<Expr> evaluateExpressionText(const std::string& text);
     std::shared_ptr<Expr> callMain(const std::shared_ptr<Expr>& systemInput);
     std::shared_ptr<Expr> callAutoEntry();
+    // Narrow runtime-service boundary for canonical IR Call.  It preserves
+    // existing method/native dispatch while the VM becomes the caller.
+    std::shared_ptr<Expr> callValue(const TermExpr& term);
     std::string valueToString(const std::shared_ptr<Expr>& value) const;
     std::string valueToDisplayString(const std::shared_ptr<Expr>& value) const;
     std::string runtimeMetricsJson() const;
