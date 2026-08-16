@@ -40,6 +40,10 @@ enum class IrOpcode : IrWord {
     CallNamed,
     CallNative,
     SemanticEval,
+    // destination, model-operation symbol, input count, input registers.
+    // This explicit recurrent/SSM operation keeps the binary operand schema
+    // stable while using the typed RuntimeStateModel boundary.
+    SsmProcess,
     MakeFact,
     MakeArray,
     MakeMap,

@@ -285,6 +285,10 @@ int main() {
         static_cast<IrWord>(IrOpcode::End),
     };
     assert(std::get<double>(nativeVm.execute(semanticProgram, semanticRuntime, VmNil{})) == 5.0);
+    FelidaeIr ssmProgram = semanticProgram;
+    ssmProgram.words[3] = static_cast<IrWord>(IrOpcode::SsmProcess);
+    IrVerifier::verify(ssmProgram);
+    assert(std::get<double>(nativeVm.execute(ssmProgram, semanticRuntime, VmNil{})) == 5.0);
     // A new VM execution owns a new RuntimeContext; recurrent state cannot
     // leak across requests even when the backend instance is reused.
     assert(std::get<double>(nativeVm.execute(semanticProgram, semanticRuntime, VmNil{})) == 5.0);

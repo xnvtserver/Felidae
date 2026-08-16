@@ -228,7 +228,7 @@ void appendFragment(FelidaeIr& target, FelidaeIr fragment, bool dropTerminalRetu
             reg(fragment.words[pc + 1]); reg(fragment.words[pc + 2]); symbol(fragment.words[pc + 3]); width = 4; break;
         case IrOpcode::SetField:
             reg(fragment.words[pc + 1]); symbol(fragment.words[pc + 2]); reg(fragment.words[pc + 3]); width = 4; break;
-        case IrOpcode::Call: case IrOpcode::SemanticEval: case IrOpcode::MakeArray: {
+        case IrOpcode::Call: case IrOpcode::SemanticEval: case IrOpcode::SsmProcess: case IrOpcode::MakeArray: {
             reg(fragment.words[pc + 1]);
             if (opcode != IrOpcode::MakeArray) symbol(fragment.words[pc + 2]);
             const auto count = fragment.words[pc + 3];
