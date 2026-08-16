@@ -52,7 +52,7 @@ Compile a program, then execute its binary artifact:
 
 ```powershell
 build\felidae_compiler.exe examples\main.fx
-build\felidae_vm.exe examples\main.fir
+build\felidae_vm.exe build\main.fir
 ```
 
 Check a file with structured diagnostics:

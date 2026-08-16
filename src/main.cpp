@@ -20,7 +20,7 @@ std::optional<fs::path> parseInput(int argc, char** argv) {
 void printHelp() {
     std::cout << LANGUAGE_NAME << " compiler v" << LANGUAGE_VERSION << "\n\n"
               << "Usage: felidae_compiler program.fx\n"
-              << "Writes verified binary IR to program.fir.\n";
+              << "Writes verified binary IR to the compiler build directory.\n";
 }
 } // namespace
 
@@ -38,7 +38,11 @@ int main(int argc, char** argv) {
         }
         const auto module = compileProgramFileToIr(source);
         verifyIrModule(module);
-        auto output = source;
+        // Build artifacts never modify example/source directories.  The
+        // compiler executable is placed in build/, so its parent is the
+        // canonical output directory on every supported CMake generator.
+        const auto executable = fs::absolute(argv[0]).lexically_normal();
+        auto output = executable.parent_path() / source.filename();
         output.replace_extension(kBinaryIrExtension);
         writeBinaryIr(output, module);
         std::cout << output.string() << "\n";
