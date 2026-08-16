@@ -27,10 +27,6 @@ int main(int argc, char** argv) {
         Felidae::IrVerifier::verify(ir);
         const auto verified = std::chrono::steady_clock::now();
         class NoRuntime final : public Felidae::VmRuntime {
-        public:
-            Felidae::VmValue executeProgram(Felidae::IrWord, const Felidae::VmValue&) override {
-                throw Felidae::IrError("benchmark expression requested a runtime program");
-            }
         } runtime;
         Felidae::RegisterVm vm;
         (void)vm.execute(ir, runtime, Felidae::VmNil{});

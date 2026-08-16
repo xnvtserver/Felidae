@@ -1,5 +1,7 @@
 # Build outputs
 build/
+models/*.model
+models/FelidaeSentencePieceIds.h
 build-sentencepiece/
 build-clang/
 *.exe

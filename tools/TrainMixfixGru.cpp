@@ -103,7 +103,7 @@ int main(int argc, char** argv) {
                  << "sentencepiece_model_hash=fnv1a64:" << std::hex
                  << fnv1a(FELIDAE_SENTENCEPIECE_MODEL_PATH) << "\n"
                  << std::dec
-                 << "ir_vocabulary_version=felidae-ir-v7\n"
+                 << "ir_vocabulary_version=felidae-ir-v8\n"
                  << "input_vocabulary=" << config.inputVocabularySize << "\n"
                  << "output_vocabulary=" << config.outputVocabularySize << "\n"
                  << "begin_token=" << config.beginToken << "\n"

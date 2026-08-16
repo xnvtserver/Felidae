@@ -1,9 +1,12 @@
-#include "FelidaeIr.h"
+#include "RegisterVm.h"
+
+#include "Symbol.h"
 
 #include <algorithm>
 #include <cmath>
 #include <deque>
 #include <optional>
+#include <sstream>
 #include <limits>
 #include <unordered_set>
 
@@ -50,7 +53,7 @@ std::size_t widthFor(IrOpcode op) {
     case IrOpcode::End: return 1;
     case IrOpcode::Jump: return 2;
     case IrOpcode::ExecuteProgram: return 2;
-    case IrOpcode::LoadSymbol: case IrOpcode::LoadConst: case IrOpcode::Move:
+    case IrOpcode::LoadSymbol: case IrOpcode::StoreSymbol: case IrOpcode::LoadConst: case IrOpcode::Move:
     case IrOpcode::JumpIfFalse: case IrOpcode::CallNative:
     case IrOpcode::MakeFact: case IrOpcode::Return: return 3;
     case IrOpcode::Call: case IrOpcode::CallNamed: case IrOpcode::SemanticEval:
@@ -105,8 +108,7 @@ bool vmValuesEqual(const VmValue& left, const VmValue& right) {
         }
         return true;
     }
-    const auto& leftOpaque = std::get<VmOpaqueValue>(left);
-    return leftOpaque == std::get<VmOpaqueValue>(right);
+    throw IrError("VM equality received an unsupported value variant");
 }
 
 bool validVmValue(const VmValue& value, std::size_t depth = 0) {
@@ -127,7 +129,6 @@ bool validVmValue(const VmValue& value, std::size_t depth = 0) {
         return std::all_of((*fact)->fields.begin(), (*fact)->fields.end(),
             [&](const auto& entry) { return validVmValue(entry.second, depth + 1); });
     }
-    if (const auto* opaque = std::get_if<VmOpaqueValue>(&value)) return static_cast<bool>(opaque->object);
     return true;
 }
 
@@ -169,6 +170,7 @@ void verifyControlFlowInitialization(const FelidaeIr& ir,
         auto write = [&](IrWord target) { state[target] = true; };
         switch (op) {
         case IrOpcode::LoadConst: case IrOpcode::LoadSymbol: write(ir.words[pc + 1]); break;
+        case IrOpcode::StoreSymbol: requireFlowRead(state, ir.words[pc + 2]); break;
         case IrOpcode::Move: requireFlowRead(state, ir.words[pc + 2]); write(ir.words[pc + 1]); break;
         case IrOpcode::Add: case IrOpcode::Sub: case IrOpcode::Mul: case IrOpcode::Div: case IrOpcode::Mod:
         case IrOpcode::Compare:
@@ -208,6 +210,167 @@ void verifyControlFlowInitialization(const FelidaeIr& ir,
 }
 
 } // namespace
+
+std::string vmValueToDisplayString(const VmValue& value) {
+    const auto render = [](const auto& self, const VmValue& item) -> std::string {
+        if (std::holds_alternative<VmNil>(item)) return "nil";
+        if (const auto boolean = std::get_if<bool>(&item)) return *boolean ? "true" : "false";
+        if (const auto number = std::get_if<double>(&item)) {
+            std::ostringstream out;
+            out.precision(15);
+            out << *number;
+            return out.str();
+        }
+        if (const auto text = std::get_if<VmText>(&item)) return text->utf8;
+        if (const auto array = std::get_if<VmArrayPtr>(&item)) {
+            if (!*array) throw IrError("VM display received an invalid array value");
+            std::ostringstream out;
+            out << "[";
+            for (std::size_t index = 0; index < (*array)->values.size(); ++index) {
+                if (index) out << ", ";
+                out << self(self, (*array)->values[index]);
+            }
+            return out << "]", out.str();
+        }
+        const auto renderFields = [&](const auto& fields) {
+            std::ostringstream out;
+            out << "{";
+            for (std::size_t index = 0; index < fields.size(); ++index) {
+                if (index) out << ", ";
+                out << symbolNameForId(static_cast<SymbolId>(fields[index].first)) << ": "
+                    << self(self, fields[index].second);
+            }
+            return out << "}", out.str();
+        };
+        if (const auto map = std::get_if<VmMapPtr>(&item)) {
+            if (!*map) throw IrError("VM display received an invalid map value");
+            return renderFields((*map)->entries);
+        }
+        if (const auto fact = std::get_if<VmFactPtr>(&item)) {
+            if (!*fact) throw IrError("VM display received an invalid fact value");
+            return renderFields((*fact)->fields);
+        }
+        throw IrError("Direct VM result cannot display an opaque runtime value");
+    };
+    return render(render, value);
+}
+
+DirectVmRuntime::DirectVmRuntime(std::unordered_map<IrSymbolRef, IrProcedure> procedures,
+                                 RuntimeStateModel* semanticModel,
+                                 std::size_t maximumSemanticSteps,
+                                 std::size_t maximumCallDepth)
+    : procedures_(std::move(procedures)), semanticModel_(semanticModel),
+      maximumSemanticSteps_(maximumSemanticSteps), maximumCallDepth_(maximumCallDepth) {
+    if (maximumSemanticSteps_ == 0) throw IrError("direct VM semantic step limit must be positive");
+    if (maximumCallDepth_ == 0) throw IrError("direct VM call depth limit must be positive");
+    for (const auto& [_, procedure] : procedures_) IrVerifier::verify(procedure.ir);
+}
+
+VmValue DirectVmRuntime::loadSymbol(IrSymbolRef symbol) {
+    // Procedures are lexically isolated: a callee may read its own parameters
+    // and locals or module globals, never caller-local bindings.
+    if (!callFrames_.empty()) {
+        const auto local = callFrames_.back().locals.find(symbol);
+        if (local != callFrames_.back().locals.end()) return local->second;
+    }
+    const auto global = globals_.find(symbol);
+    if (global == globals_.end()) throw IrError("direct VM runtime reads an undefined symbol");
+    return global->second;
+}
+
+void DirectVmRuntime::storeSymbol(IrSymbolRef symbol, const VmValue& value) {
+    if (callFrames_.empty()) {
+        globals_[symbol] = value;
+        return;
+    }
+    auto& locals = callFrames_.back().locals;
+    if (locals.contains(symbol)) {
+        throw IrError("direct VM runtime cannot rebind an immutable local");
+    }
+    locals.emplace(symbol, value);
+}
+
+RuntimeStateModel* DirectVmRuntime::runtimeStateModel() { return semanticModel_; }
+
+void DirectVmRuntime::beginExecution() {
+    if (executionDepth_++ == 0) {
+        executionState_ = semanticModel_ ? semanticModel_->createExecutionState() : nullptr;
+        sharedSemanticSteps_ = std::make_shared<std::size_t>(0);
+    }
+}
+
+void DirectVmRuntime::endExecution() noexcept {
+    if (executionDepth_ == 0) return;
+    if (--executionDepth_ == 0) {
+        executionState_.reset();
+        sharedSemanticSteps_.reset();
+    }
+}
+
+RuntimeContext DirectVmRuntime::makeRuntimeContext(const FelidaeIr&, const VmValue&) const {
+    RuntimeContext context;
+    context.maximumSemanticSteps = maximumSemanticSteps_;
+    context.executionState = executionState_;
+    context.sharedSemanticSteps = sharedSemanticSteps_;
+    return context;
+}
+
+VmValue DirectVmRuntime::callSymbol(IrSymbolRef symbol, std::span<const VmValue> arguments) {
+    const auto procedure = procedures_.find(symbol);
+    if (procedure == procedures_.end()) throw IrError("direct VM runtime calls an unregistered procedure");
+    if (arguments.size() != procedure->second.positionalParameters.size()) {
+        throw IrError("direct VM procedure received the wrong number of arguments");
+    }
+    if (procedureDepth_ >= maximumCallDepth_) throw IrError("direct VM procedure call depth exceeds its limit");
+    ++procedureDepth_;
+    VmCallFrame frame;
+    frame.procedure = symbol;
+    for (std::size_t index = 0; index < arguments.size(); ++index) {
+        frame.locals.emplace(procedure->second.positionalParameters[index], arguments[index]);
+    }
+    callFrames_.push_back(std::move(frame));
+    try {
+        RegisterVm nestedVm;
+        auto result = nestedVm.execute(procedure->second.ir, *this, VmNil{});
+        callFrames_.pop_back();
+        --procedureDepth_;
+        return result;
+    } catch (...) {
+        callFrames_.pop_back();
+        --procedureDepth_;
+        throw;
+    }
+}
+
+VmValue DirectVmRuntime::callSymbolNamed(IrSymbolRef symbol,
+                                         std::span<const VmCallArgument> arguments) {
+    const auto procedure = procedures_.find(symbol);
+    if (procedure == procedures_.end()) throw IrError("direct VM runtime calls an unregistered procedure");
+    const auto& parameters = procedure->second.positionalParameters;
+    std::vector<std::optional<VmValue>> mapped(parameters.size());
+    std::size_t nextPositional = 0;
+    for (const auto& argument : arguments) {
+        std::size_t index = 0;
+        if (argument.name) {
+            const auto found = std::find(parameters.begin(), parameters.end(), *argument.name);
+            if (found == parameters.end()) throw IrError("direct VM call has an unknown named argument");
+            index = static_cast<std::size_t>(found - parameters.begin());
+        } else {
+            while (nextPositional < mapped.size() && mapped[nextPositional]) ++nextPositional;
+            if (nextPositional >= mapped.size()) throw IrError("direct VM call has too many positional arguments");
+            index = nextPositional++;
+        }
+        if (mapped[index]) throw IrError("direct VM call assigns a parameter more than once");
+        mapped[index] = argument.value;
+    }
+    std::vector<VmValue> ordered;
+    ordered.reserve(mapped.size());
+    for (const auto& value : mapped) {
+        if (!value) throw IrError("direct VM call is missing a required parameter");
+        ordered.push_back(*value);
+    }
+    return callSymbol(symbol, ordered);
+}
 
 void IrVerifier::verify(const FelidaeIr& ir) {
     if (ir.words.empty()) throw IrError("IR is empty");
@@ -284,6 +447,13 @@ void IrVerifier::verify(const FelidaeIr& ir) {
                 requireRegister(ir, ir.words[pc + 1]);
                 if (ir.words[pc + 2] >= ir.symbols.size()) throw IrError("IR references an invalid symbol");
                 initialized[ir.words[pc + 1]] = true;
+                pc += 3;
+                break;
+            case IrOpcode::StoreSymbol:
+                requireWords(ir, pc, 3);
+                if (ir.words[pc + 1] >= ir.symbols.size()) throw IrError("IR stores an invalid symbol");
+                requireRegister(ir, ir.words[pc + 2]);
+                requireInitialized(initialized, ir.words[pc + 2]);
                 pc += 3;
                 break;
             case IrOpcode::Move:
@@ -464,6 +634,10 @@ VmValue VmRuntime::loadSymbol(IrSymbolRef) {
     throw IrError("IR symbol loading is unavailable in this runtime");
 }
 
+void VmRuntime::storeSymbol(IrSymbolRef, const VmValue&) {
+    throw IrError("IR symbol storage is unavailable in this runtime");
+}
+
 VmValue VmRuntime::callSymbol(IrSymbolRef, std::span<const VmValue>) {
     throw IrError("IR calls are unavailable in this runtime");
 }
@@ -478,6 +652,10 @@ VmValue VmRuntime::callNativeSymbol(IrSymbolRef symbol) {
 
 RuntimeStateModel* VmRuntime::runtimeStateModel() { return nullptr; }
 
+void VmRuntime::beginExecution() {}
+
+void VmRuntime::endExecution() noexcept {}
+
 RuntimeContext VmRuntime::makeRuntimeContext(const FelidaeIr&, const VmValue&) const {
     return {};
 }
@@ -488,6 +666,11 @@ bool VmRuntime::validateSemanticResult(const VmValue& value, const RuntimeContex
 
 VmValue RegisterVm::execute(const FelidaeIr& ir, VmRuntime& runtime, VmValue systemInput) {
     IrVerifier::verify(ir);
+    runtime.beginExecution();
+    struct ExecutionScope {
+        VmRuntime& runtime;
+        ~ExecutionScope() { runtime.endExecution(); }
+    } executionScope{runtime};
     registers_.assign(ir.registerCount, VmNil{});
     auto semanticContext = runtime.makeRuntimeContext(ir, systemInput);
     for (std::size_t pc = 0; pc < ir.words.size();) {
@@ -495,9 +678,8 @@ VmValue RegisterVm::execute(const FelidaeIr& ir, VmRuntime& runtime, VmValue sys
         switch (op) {
             case IrOpcode::End:
                 throw IrError("IR program completed without a result");
-            case IrOpcode::ExecuteProgram: {
-                return runtime.executeProgram(ir.words.at(pc + 1), systemInput);
-            }
+            case IrOpcode::ExecuteProgram:
+                throw IrError("legacy ExecuteProgram reached the VM");
             case IrOpcode::LoadConst:
                 {
                     const auto constant = ir.words.at(pc + 2);
@@ -523,6 +705,11 @@ VmValue RegisterVm::execute(const FelidaeIr& ir, VmRuntime& runtime, VmValue sys
                     ir.symbols.at(ir.words.at(pc + 2)));
                 pc += 3;
                 break;
+            case IrOpcode::StoreSymbol:
+                runtime.storeSymbol(ir.symbols.at(ir.words.at(pc + 1)),
+                                    registers_.at(ir.words.at(pc + 2)));
+                pc += 3;
+                break;
             case IrOpcode::CallNative:
                 registers_.at(ir.words.at(pc + 1)) = runtime.callNativeSymbol(
                     ir.symbols.at(ir.words.at(pc + 2)));
@@ -542,7 +729,9 @@ VmValue RegisterVm::execute(const FelidaeIr& ir, VmRuntime& runtime, VmValue sys
                 break;
             }
             case IrOpcode::SemanticEval: {
-                if (semanticContext.semanticSteps >= semanticContext.maximumSemanticSteps) {
+                const auto semanticSteps = semanticContext.sharedSemanticSteps
+                    ? *semanticContext.sharedSemanticSteps : semanticContext.semanticSteps;
+                if (semanticSteps >= semanticContext.maximumSemanticSteps) {
                     throw IrError("IR semantic operation exceeds execution state limit");
                 }
                 auto* model = runtime.runtimeStateModel();
@@ -555,7 +744,11 @@ VmValue RegisterVm::execute(const FelidaeIr& ir, VmRuntime& runtime, VmValue sys
                 for (std::size_t index = 0; index < count; ++index) {
                     inputs.push_back(registers_.at(ir.words.at(pc + 4 + index)));
                 }
-                ++semanticContext.semanticSteps;
+                if (semanticContext.sharedSemanticSteps) {
+                    semanticContext.semanticSteps = ++*semanticContext.sharedSemanticSteps;
+                } else {
+                    ++semanticContext.semanticSteps;
+                }
                 auto result = model->evaluate(RuntimeOperation{symbol}, inputs, semanticContext);
                 if (!runtime.validateSemanticResult(result, semanticContext)) {
                     throw IrError("RuntimeStateModel returned an invalid runtime value");

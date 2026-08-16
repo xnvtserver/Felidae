@@ -7,8 +7,10 @@ source.fx
   -> SentencePiece Encode (IDs and UTF-8 byte offsets, once)
   -> IntegerTokenList
   -> IntegerParser
-  -> AST / SymbolId interning
-  -> Interpreter
+  -> AST compiler / SymbolId interning
+  -> verified integer IR
+  -> .fir binary artifact
+  -> Form RegisterVm
 ```
 
 `felidae.model` is the lexical model. `src/FelidaeSentencePieceIds.h` is the

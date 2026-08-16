@@ -2,20 +2,17 @@
 
 Felidae is a functional logic language for `.fx` files where code and data share
 the same shape. Facts act as a lightweight database, methods transform and query
-those facts explicitly, and native modules keep heavy work outside the core
-interpreter.
+those facts explicitly, and native services stay outside the compiler and Form VM.
 
-The repository contains three isolated C++ products:
+The repository contains two isolated C++ products:
 
-- `felidae.exe`: `Lexer -> Parser -> Interpreter`, for programs and queries.
-- `celidae.exe`: `Lexer -> Parser -> Visualization`, for non-programmatic fact,
-  property, inheritance, and rule-relationship graphs.
-- `felidae_debug.exe`: `Lexer -> Parser -> AST Analyzer`, for diagnostics, AST
+- `felidae_compiler.exe`: `SentencePiece -> IntegerParser -> AST compiler -> verified .fir`.
+- `felidae_vm.exe`: `.fir -> verifier -> Form register VM`.
+- `felidae_debug.exe`: `SentencePiece -> IntegerParser -> AST Analyzer`, for diagnostics, AST
   checks, and editor LSP integration.
 
-Celidae does not execute `main`, methods, queries, builtins, or native libraries.
-The debugger does not execute or visualize programs. These are separate build
-targets and source folders rather than modes of one runtime.
+The compiler does not execute source directly, and the Form VM does not depend
+on parser, AST, or source syntax. The debugger is a separate diagnostic target.
 
 ## Language Shape
 
@@ -51,16 +48,11 @@ about.
 
 ## Runtime And Analysis
 
-Run a program:
+Compile a program, then execute its binary artifact:
 
 ```powershell
-build\felidae.exe examples\main.fx
-```
-
-Run a query:
-
-```powershell
-build\felidae.exe examples\main.fx "? Employee(name: name)"
+build\felidae_compiler.exe examples\main.fx
+build\felidae_vm.exe examples\main.fir
 ```
 
 Check a file with structured diagnostics:

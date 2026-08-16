@@ -54,4 +54,4 @@ if [[ "$SANITIZE" -eq 1 ]]; then
     CMAKE_ARGS+=("-DFELIDAE_ENABLE_SANITIZERS=ON")
 fi
 nice -n 19 cmake "${CMAKE_ARGS[@]}"
-nice -n 19 cmake --build "$BUILD_DIR" --config "$CONFIGURATION" --target felidae --parallel "${FELIDAE_JOBS:-1}"
+nice -n 19 cmake --build "$BUILD_DIR" --config "$CONFIGURATION" --target felidae_compiler felidae_vm --parallel "${FELIDAE_JOBS:-1}"

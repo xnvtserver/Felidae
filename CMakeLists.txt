@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(felidae_interpreter LANGUAGES CXX)
+project(felidae LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,10 +10,9 @@ option(FELIDAE_ENABLE_SANITIZERS
 option(FELIDAE_BUILD_TESTS "Build Felidae regression tests" ON)
 option(FELIDAE_ENABLE_STRICT_WARNINGS
     "Enable strict warnings for Felidae-owned targets only" OFF)
+option(FELIDAE_ENABLE_MSVC_STATIC_ANALYSIS
+    "Enable MSVC /analyze on compiler and Form VM targets" OFF)
 option(FELIDAE_ENABLE_LIBTORCH "Enable the C++ LibTorch neural mixfix backend" OFF)
-if(FELIDAE_ENABLE_LIBTORCH)
-    find_package(Torch REQUIRED)
-endif()
 
 # Keep the lexical model native and reproducible: SentencePiece is pinned as a
 # git submodule instead of being found from an arbitrary system installation.
@@ -26,6 +25,22 @@ set(protobuf_BUILD_PROTOC_BINARIES OFF CACHE BOOL "" FORCE)
 set(protobuf_BUILD_LIBPROTOC OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/sentencepiece EXCLUDE_FROM_ALL)
 find_package(OpenMP)
+
+# SentencePiece owns the pinned Protobuf target used by the project. Find
+# LibTorch afterwards so its bundled dependency discovery cannot create a
+# second protobuf::libprotobuf target on Windows.
+if(FELIDAE_ENABLE_LIBTORCH)
+    find_package(Torch REQUIRED)
+    # The prebuilt Windows LibTorch distribution is Release-only.  Linking it
+    # into a Debug MSVC binary corrupts STL-owned module registration state at
+    # runtime (typically an access violation in std::vector).  Fail during
+    # configuration with the corrective command instead of emitting a binary
+    # that can crash while constructing a GRU.
+    if(MSVC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+        message(FATAL_ERROR
+            "FELIDAE_ENABLE_LIBTORCH requires a Release CMAKE_BUILD_TYPE with the installed LibTorch package. Reconfigure the existing build directory with -DCMAKE_BUILD_TYPE=Release.")
+    endif()
+endif()
 
 add_executable(felidae_sentencepiece_model_generator
     tools/GenerateSentencePieceModel.cpp)
@@ -41,9 +56,10 @@ if(TARGET OpenMP::OpenMP_CXX)
     target_link_libraries(felidae_sentencepiece_model_generator PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
-# The language model and its grammar-ID header are build artifacts, not checked-in
-# inputs.  This keeps every consumer on exactly the model that produced its IDs.
-set(FELIDAE_SENTENCEPIECE_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+# Keep generated SentencePiece artifacts out of build/: build/ contains only
+# CMake state and executable/binary build products, while models/ owns the
+# reproducible lexical model and its generated vocabulary header.
+set(FELIDAE_SENTENCEPIECE_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/models")
 set(FELIDAE_SENTENCEPIECE_MODEL_PATH "${FELIDAE_SENTENCEPIECE_GENERATED_DIR}/felidae.model")
 set(FELIDAE_SENTENCEPIECE_IDS_HEADER
     "${FELIDAE_SENTENCEPIECE_GENERATED_DIR}/FelidaeSentencePieceIds.h")
@@ -70,7 +86,8 @@ endfunction()
 # Explicit opt-in only: it never runs during normal builds or tests.
 add_executable(felidae_integer_parser_benchmark EXCLUDE_FROM_ALL
     tools/IntegerParserBenchmark.cpp
-    src/FelidaeIr.cpp
+    src/form/RegisterVm.cpp
+    src/MixfixStateModel.cpp
     src/SentencePieceModel.cpp
     src/IntegerTokenList.cpp
     src/IntegerParser.cpp
@@ -118,79 +135,100 @@ function(felidae_enable_quality_warnings target)
         -Wunused -Wunused-function -Wunused-variable -Wunused-parameter)
 endfunction()
 
+function(felidae_enable_static_analysis target)
+    if(MSVC AND FELIDAE_ENABLE_MSVC_STATIC_ANALYSIS)
+        target_compile_options(${target} PRIVATE /analyze /analyze:external-)
+    endif()
+endfunction()
+
+# Form is the AST/parser-free binary IR and register-VM boundary.  Keeping it
+# as one library prevents the compiler and standalone VM from compiling two
+# subtly different copies of the runtime.
+add_library(felidae_form STATIC
+    src/form/RegisterVm.cpp
+    src/form/BinaryIr.cpp)
+target_include_directories(felidae_form PUBLIC src)
+
+add_executable(felidae_vm src/form/main.cpp)
+target_link_libraries(felidae_vm PRIVATE felidae_form)
+set_target_properties(felidae_vm PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}")
+felidae_enable_static_analysis(felidae_vm)
+
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 8)
     message(FATAL_ERROR "Felidae requires GCC 8 or newer for std::filesystem. Use GCC 8+, Clang 7+, AppleClang 10+, or MSVC 2019+.")
 endif()
 
-add_executable(felidae
+add_executable(felidae_compiler
     src/main.cpp
-    src/FelidaeRuntime.cpp
-    src/FelidaeIr.cpp
-    src/LegacyIrAdapter.cpp
+    src/CompilerFrontend.cpp
+    src/IrCodeGenerator.cpp
     src/MixfixStateModel.cpp
     src/SentencePieceModel.cpp
     src/IntegerTokenList.cpp
     src/IntegerParser.cpp
     src/BuiltinRegistry.cpp
-    src/Interpreter.cpp
-    src/ReasoningRuntime.cpp
-    src/Env.cpp
-    src/Memory.cpp
-    src/NativeRuntime.cpp
 )
 # The command-line entry point has a stable location on every generator.
 # In particular, Visual Studio's multi-config generator otherwise places it
 # below build\\Debug or build\\Release, which makes build.cmd/build.ps1
-# unexpectedly fail to leave build\\felidae.exe behind.
-set_target_properties(felidae PROPERTIES
+# unexpectedly fail to leave build\\felidae_compiler.exe behind.
+set_target_properties(felidae_compiler PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}")
 
-target_include_directories(felidae PRIVATE src)
-target_include_directories(felidae BEFORE PRIVATE
+target_include_directories(felidae_compiler PRIVATE src)
+target_include_directories(felidae_compiler BEFORE PRIVATE
     third_party/sentencepiece
     third_party/sentencepiece/src
     ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
-target_include_directories(felidae SYSTEM PRIVATE third_party)
-target_compile_definitions(felidae PRIVATE
+target_include_directories(felidae_compiler SYSTEM PRIVATE third_party)
+target_compile_definitions(felidae_compiler PRIVATE
     FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
-target_link_libraries(felidae PRIVATE sentencepiece)
+target_link_libraries(felidae_compiler PRIVATE felidae_form sentencepiece)
 if(FELIDAE_ENABLE_LIBTORCH)
-    target_compile_definitions(felidae PRIVATE FELIDAE_HAS_TORCH=1)
-    target_link_libraries(felidae PRIVATE ${TORCH_LIBRARIES})
+    target_compile_definitions(felidae_compiler PRIVATE FELIDAE_HAS_TORCH=1)
+    target_link_libraries(felidae_compiler PRIVATE ${TORCH_LIBRARIES})
 
     # Explicit only: C++ LibTorch training is never a normal build step.
     add_executable(felidae_train_mixfix_gru EXCLUDE_FROM_ALL
         tools/TrainMixfixGru.cpp
         src/MixfixStateModel.cpp
-        src/FelidaeIr.cpp)
+        src/form/RegisterVm.cpp)
     target_include_directories(felidae_train_mixfix_gru PRIVATE src)
     target_compile_definitions(felidae_train_mixfix_gru PRIVATE FELIDAE_HAS_TORCH=1)
     target_link_libraries(felidae_train_mixfix_gru PRIVATE ${TORCH_LIBRARIES})
     felidae_use_sentencepiece_model(felidae_train_mixfix_gru)
 endif()
-felidae_use_sentencepiece_model(felidae)
+felidae_use_sentencepiece_model(felidae_compiler)
 if(TARGET OpenMP::OpenMP_CXX)
-    target_link_libraries(felidae PRIVATE OpenMP::OpenMP_CXX)
+    target_link_libraries(felidae_compiler PRIVATE OpenMP::OpenMP_CXX)
 endif()
-target_compile_options(felidae PRIVATE
+target_compile_options(felidae_compiler PRIVATE
     $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
 if(UNIX AND NOT APPLE)
-    target_link_libraries(felidae PRIVATE dl)
+    target_link_libraries(felidae_compiler PRIVATE dl)
 endif()
-felidae_enable_sanitizers(felidae)
+felidae_enable_sanitizers(felidae_compiler)
+felidae_enable_static_analysis(felidae_compiler)
 
 set(FELIDAE_DEBUG_SOURCES
     src/debugger/main.cpp
     src/debugger/AstAnalyzer.cpp
     src/tooling/SourceParser.cpp
-    src/FelidaeIr.cpp
-    src/LegacyIrAdapter.cpp
+    src/form/RegisterVm.cpp
+    src/form/BinaryIr.cpp
+    src/IrCodeGenerator.cpp
+    src/MixfixStateModel.cpp
     src/SentencePieceModel.cpp
     src/IntegerTokenList.cpp
     src/IntegerParser.cpp
@@ -221,6 +259,8 @@ if(FELIDAE_BUILD_TESTS)
     enable_testing()
     add_executable(felidae_sentencepiece_model_test
         tests/SentencePieceModelTest.cpp
+        src/form/RegisterVm.cpp
+        src/MixfixStateModel.cpp
         src/SentencePieceModel.cpp
         src/IntegerTokenList.cpp
         src/IntegerParser.cpp
@@ -236,7 +276,8 @@ if(FELIDAE_BUILD_TESTS)
     # The regression executable intentionally uses assertions.  Keep them
     # active even when the rest of Felidae is built in Release mode.
     target_compile_options(felidae_sentencepiece_model_test PRIVATE
-        $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>)
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
     target_link_libraries(felidae_sentencepiece_model_test PRIVATE sentencepiece)
     felidae_use_sentencepiece_model(felidae_sentencepiece_model_test)
     if(TARGET OpenMP::OpenMP_CXX)
@@ -246,18 +287,15 @@ if(FELIDAE_BUILD_TESTS)
 
     add_executable(felidae_sentencepiece_pipeline_test
         tests/SentencePiecePipelineTest.cpp
-        src/FelidaeRuntime.cpp
-        src/FelidaeIr.cpp
-        src/LegacyIrAdapter.cpp
+        src/CompilerFrontend.cpp
+        src/form/RegisterVm.cpp
+        src/form/BinaryIr.cpp
+        src/MixfixStateModel.cpp
+        src/IrCodeGenerator.cpp
         src/SentencePieceModel.cpp
         src/IntegerTokenList.cpp
         src/IntegerParser.cpp
-        src/BuiltinRegistry.cpp
-        src/Interpreter.cpp
-        src/ReasoningRuntime.cpp
-        src/Env.cpp
-        src/Memory.cpp
-        src/NativeRuntime.cpp)
+        src/BuiltinRegistry.cpp)
     target_include_directories(felidae_sentencepiece_pipeline_test PRIVATE src)
     target_include_directories(felidae_sentencepiece_pipeline_test BEFORE PRIVATE
         third_party/sentencepiece
@@ -267,7 +305,8 @@ if(FELIDAE_BUILD_TESTS)
     target_compile_definitions(felidae_sentencepiece_pipeline_test PRIVATE
         FELIDAE_PIPELINE_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/tests/data/sentencepiece_pipeline.fx")
     target_compile_options(felidae_sentencepiece_pipeline_test PRIVATE
-        $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>)
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
     target_link_libraries(felidae_sentencepiece_pipeline_test PRIVATE sentencepiece)
     felidae_use_sentencepiece_model(felidae_sentencepiece_pipeline_test)
     if(TARGET OpenMP::OpenMP_CXX)
@@ -277,6 +316,7 @@ if(FELIDAE_BUILD_TESTS)
         target_link_libraries(felidae_sentencepiece_pipeline_test PRIVATE dl)
     endif()
     add_test(NAME felidae_sentencepiece_pipeline COMMAND felidae_sentencepiece_pipeline_test)
+    set_tests_properties(felidae_sentencepiece_pipeline PROPERTIES TIMEOUT 30)
     # Avoid stale Windows handle contention from an interrupted prior test run.
     set_target_properties(felidae_sentencepiece_pipeline_test PROPERTIES
         OUTPUT_NAME felidae_sentencepiece_pipeline_ir_test)
@@ -284,11 +324,38 @@ if(FELIDAE_BUILD_TESTS)
     add_executable(felidae_mixfix_state_model_test
         tests/MixfixStateModelTest.cpp
         src/MixfixStateModel.cpp
-        src/FelidaeIr.cpp)
+        src/form/RegisterVm.cpp)
     target_include_directories(felidae_mixfix_state_model_test PRIVATE src)
     target_compile_options(felidae_mixfix_state_model_test PRIVATE
-        $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>)
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
+    if(FELIDAE_ENABLE_LIBTORCH)
+        target_compile_definitions(felidae_mixfix_state_model_test PRIVATE FELIDAE_HAS_TORCH=1)
+        target_link_libraries(felidae_mixfix_state_model_test PRIVATE ${TORCH_LIBRARIES})
+        add_executable(felidae_libtorch_smoke_test tests/LibTorchSmoke.cpp)
+        target_link_libraries(felidae_libtorch_smoke_test PRIVATE ${TORCH_LIBRARIES})
+        add_test(NAME felidae_libtorch_smoke COMMAND felidae_libtorch_smoke_test)
+        set_tests_properties(felidae_libtorch_smoke PROPERTIES
+            TIMEOUT 30
+            ENVIRONMENT "PATH=${TORCH_INSTALL_PREFIX}/lib;$ENV{PATH}")
+    endif()
     add_test(NAME felidae_mixfix_state_model COMMAND felidae_mixfix_state_model_test)
+    if(FELIDAE_ENABLE_LIBTORCH)
+        set_tests_properties(felidae_mixfix_state_model PROPERTIES
+            TIMEOUT 30
+            ENVIRONMENT "PATH=${TORCH_INSTALL_PREFIX}/lib;$ENV{PATH}")
+    else()
+        set_tests_properties(felidae_mixfix_state_model PROPERTIES TIMEOUT 30)
+    endif()
+endif()
+
+if(FELIDAE_BUILD_TESTS)
+    # This executable intentionally links only the form boundary. It proves a
+    # generated .fir can be loaded and run without AST/parser/Interpreter.
+    add_executable(felidae_form_binary_test tests/FormBinaryIrTest.cpp)
+    target_link_libraries(felidae_form_binary_test PRIVATE felidae_form)
+    add_test(NAME felidae_form_binary COMMAND felidae_form_binary_test)
+    set_tests_properties(felidae_form_binary PROPERTIES TIMEOUT 30)
 endif()
 add_library(felidae_smoke SHARED native_modules/smoke/NativeSmoke.cpp)
 set_target_properties(felidae_smoke PROPERTIES
@@ -407,13 +474,13 @@ felidae_native_manifest(qt qt QT)
 
 find_package(Eigen3 QUIET)
 if(Eigen3_FOUND)
-    target_compile_definitions(felidae PRIVATE FELIDAE_HAS_EIGEN=1)
-    target_link_libraries(felidae PRIVATE Eigen3::Eigen)
+    target_compile_definitions(felidae_compiler PRIVATE FELIDAE_HAS_EIGEN=1)
+    target_link_libraries(felidae_compiler PRIVATE Eigen3::Eigen)
 endif()
 
 foreach(felidae_quality_target IN ITEMS
         felidae_sentencepiece_model_generator felidae_integer_parser_benchmark
-        felidae felidae_debug felidae_sentencepiece_model_test felidae_sentencepiece_pipeline_test
+        felidae_compiler felidae_vm felidae_debug felidae_sentencepiece_model_test felidae_sentencepiece_pipeline_test
         felidae_smoke csv db_native http process set_native group_native wordnet
         fact fact_analysis plot gtk qt)
     if(TARGET ${felidae_quality_target})

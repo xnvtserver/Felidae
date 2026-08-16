@@ -13,6 +13,10 @@
 
 namespace Felidae {
 
+// The only value emitted by a neural decoder. It is an index into the
+// parser-owned finite output vocabulary, never an IR word or table index.
+using MixfixVocabularyId = std::uint32_t;
+
 // A decoder token never carries an unrestricted machine word.  References are
 // indices into the parser-owned tables below and are resolved only after the
 // finite-vocabulary decoder has stopped.
@@ -47,7 +51,7 @@ class MixfixStateModel {
 public:
     virtual ~MixfixStateModel() = default;
 
-    virtual std::vector<IrWord> transform(
+    virtual std::vector<MixfixVocabularyId> transform(
         std::span<const SentencePieceId> input,
         const MixfixContext& context) = 0;
 };
@@ -82,15 +86,15 @@ public:
     GruMixfixStateModel(const GruMixfixStateModel&) = delete;
     GruMixfixStateModel& operator=(const GruMixfixStateModel&) = delete;
 
-    std::vector<IrWord> transform(std::span<const SentencePieceId> input,
-                                  const MixfixContext& context) override;
+    std::vector<MixfixVocabularyId> transform(std::span<const SentencePieceId> input,
+                                              const MixfixContext& context) override;
 
     // Validates the C++-generated manifest and artifact hash before loading.
     // expectedSentencePieceHash is supplied by the parser/model owner.
     static GruMixfixStateModel loadVersioned(
         Configuration configuration, const std::filesystem::path& artifactDirectory,
         std::string_view expectedSentencePieceHash,
-        std::string_view expectedIrVocabularyVersion = "felidae-ir-v7");
+        std::string_view expectedIrVocabularyVersion = "felidae-ir-v8");
 
     // One C++ LibTorch teacher-forcing optimization step. targetTokenIds must
     // contain the terminating IR_END vocabulary token.  This intentionally is
@@ -107,10 +111,63 @@ private:
     std::unique_ptr<Implementation> implementation_;
 };
 
+// A separate recurrent backend for SemanticEval in the register VM.  It does
+// not share a decoder or vocabulary with the compiler model: compiler output
+// is structural IR, whereas this model selects from a finite set of typed
+// runtime-result actions.  Input references preserve arbitrary VM values
+// (facts, text, arrays, maps, and numeric values) without serializing them or
+// coercing them to booleans.
+enum class RuntimeOutputTokenKind : std::uint8_t {
+    InputReference,
+    Nil,
+    Boolean,
+};
+
+struct RuntimeOutputToken {
+    RuntimeOutputTokenKind kind = RuntimeOutputTokenKind::Nil;
+    std::size_t value = 0; // input index or boolean value (0/1)
+};
+
+class GruRuntimeStateModel final : public RuntimeStateModel {
+public:
+    struct Configuration {
+        std::int64_t inputVocabularySize = 0;
+        std::int64_t outputVocabularySize = 0;
+        std::int64_t embeddingSize = 64;
+        std::int64_t hiddenSize = 128;
+        std::int64_t layerCount = 1;
+        // Used only by explicit tests/training tools. Production inference
+        // requires a saved C++ LibTorch artifact.
+        bool allowRandomInitialization = false;
+    };
+
+    GruRuntimeStateModel(Configuration configuration,
+                         std::vector<RuntimeOutputToken> outputVocabulary,
+                         const std::filesystem::path& artifactPath = {});
+    ~GruRuntimeStateModel() override;
+    GruRuntimeStateModel(GruRuntimeStateModel&&) noexcept;
+    GruRuntimeStateModel& operator=(GruRuntimeStateModel&&) noexcept;
+    GruRuntimeStateModel(const GruRuntimeStateModel&) = delete;
+    GruRuntimeStateModel& operator=(const GruRuntimeStateModel&) = delete;
+
+    std::shared_ptr<void> createExecutionState() override;
+    Value evaluate(const RuntimeOperation& operation, std::span<const Value> inputs,
+                   RuntimeContext& context) override;
+    void saveArtifact(const std::filesystem::path& artifactPath) const;
+
+private:
+    class Implementation;
+    Configuration configuration_;
+    std::vector<RuntimeOutputToken> outputVocabulary_;
+    std::unique_ptr<Implementation> implementation_;
+};
+
 // Shared by every backend: converts a finite decoder token stream to legal IR
 // words and refuses unbounded output or missing IR_END.
 std::vector<IrWord> resolveMixfixIrTokens(
     std::span<const MixfixIrToken> tokens, const MixfixContext& context);
+std::vector<IrWord> resolveMixfixVocabularyIds(
+    std::span<const MixfixVocabularyId> ids, const MixfixContext& context);
 
 // The sole model-to-runtime boundary.  Callers supply the parser-built IR
 // tables and source map; this function installs model words then verifies the
