@@ -73,12 +73,14 @@ if (-not $SkipBuild) {
 }
 
 $tidyFiles = @(
-    "src\Interpreter.cpp",
-    "src\Env.cpp",
-    "src\Memory.cpp",
-    "src\NativeRuntime.cpp",
+    "src\CompilerFrontend.cpp",
+    "src\form\RegisterVm.cpp",
+    "src\form\BinaryIr.cpp",
+    "src\IrCodeGenerator.cpp",
+    "src\IntegerParser.cpp",
+    "src\MixfixStateModel.cpp",
     "src\BuiltinRegistry.cpp",
-    "src\FelidaeRuntime.cpp"
+    "src\SentencePieceModel.cpp"
 )
 
 if (Test-Command "clang-tidy") {

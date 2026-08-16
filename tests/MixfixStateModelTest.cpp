@@ -1,7 +1,9 @@
 #include "MixfixStateModel.h"
 
 #include <cassert>
+#include <iostream>
 #include <limits>
+#include <unordered_map>
 #include <vector>
 
 int main() {
@@ -9,30 +11,42 @@ int main() {
 
     class FixedModel final : public MixfixStateModel {
     public:
-        std::vector<IrWord> transform(std::span<const SentencePieceId>,
-                                      const MixfixContext&) override {
-            return {static_cast<IrWord>(IrOpcode::ExecuteProgram), 0,
-                    static_cast<IrWord>(IrOpcode::End)};
+        std::vector<MixfixVocabularyId> transform(std::span<const SentencePieceId>,
+                                                  const MixfixContext&) override {
+            return {0, 1, 2};
         }
     };
     class InvalidModel final : public MixfixStateModel {
     public:
-        std::vector<IrWord> transform(std::span<const SentencePieceId>,
-                                      const MixfixContext&) override {
-            return {static_cast<IrWord>(IrOpcode::LoadConst), 0,
-                    static_cast<IrWord>(IrOpcode::End)};
+        std::vector<MixfixVocabularyId> transform(std::span<const SentencePieceId>,
+                                                  const MixfixContext&) override {
+            return {3, 4, 2};
         }
     };
     class OversizedModel final : public MixfixStateModel {
     public:
-        std::vector<IrWord> transform(std::span<const SentencePieceId>,
-                                      const MixfixContext&) override {
-            return {static_cast<IrWord>(IrOpcode::End), static_cast<IrWord>(IrOpcode::End)};
+        std::vector<MixfixVocabularyId> transform(std::span<const SentencePieceId>,
+                                                  const MixfixContext&) override {
+            return {0, 2};
+        }
+    };
+    class UnknownVocabularyModel final : public MixfixStateModel {
+    public:
+        std::vector<MixfixVocabularyId> transform(std::span<const SentencePieceId>,
+                                                  const MixfixContext&) override {
+            return {999};
         }
     };
 
     MixfixContext context;
     context.programReferences = {0};
+    context.outputVocabulary = {
+        {MixfixIrTokenKind::Opcode, static_cast<IrWord>(IrOpcode::ExecuteProgram)},
+        {MixfixIrTokenKind::ProgramReference, 0},
+        {MixfixIrTokenKind::End, 0},
+        {MixfixIrTokenKind::Opcode, static_cast<IrWord>(IrOpcode::LoadConst)},
+        {MixfixIrTokenKind::Register, 0},
+    };
     const std::vector<MixfixIrToken> valid = {
         {MixfixIrTokenKind::Opcode, static_cast<IrWord>(IrOpcode::ExecuteProgram)},
         {MixfixIrTokenKind::ProgramReference, 0},
@@ -71,6 +85,59 @@ int main() {
         oversizedRejected = true;
     }
     assert(oversizedRejected);
+    UnknownVocabularyModel unknownVocabularyModel;
+    bool vocabularyRejected = false;
+    try {
+        (void)compileVerifiedMixfixIr(unknownVocabularyModel, input, context, ir);
+    } catch (const IrError&) {
+        vocabularyRejected = true;
+    }
+    assert(vocabularyRejected);
+
+#ifdef FELIDAE_HAS_TORCH
+    // A one-entry finite vocabulary makes autoregressive GRU decoding
+    // deterministic while still exercising the actual LibTorch encoder,
+    // recurrent state transfer, decoder, and projection path.
+    GruMixfixStateModel::Configuration gruConfiguration;
+    gruConfiguration.inputVocabularySize = 8;
+    gruConfiguration.outputVocabularySize = 1;
+    gruConfiguration.embeddingSize = 4;
+    gruConfiguration.hiddenSize = 4;
+    gruConfiguration.layerCount = 1;
+    gruConfiguration.beginToken = 0;
+    gruConfiguration.maximumDecodeSteps = 2;
+    gruConfiguration.allowRandomInitialization = true;
+    GruMixfixStateModel gruModel(gruConfiguration, {});
+    MixfixContext gruContext;
+    gruContext.maximumOutputWords = 2;
+    gruContext.outputVocabulary = {{MixfixIrTokenKind::End, 0}};
+    const auto gruTokens = gruModel.transform(input, gruContext);
+    assert((gruTokens == std::vector<MixfixVocabularyId>{0}));
+
+    // The VM recurrent backend has its own finite output vocabulary.  A
+    // reference token returns the original typed Value, so state-model use
+    // never invents boolean truthiness or loses fact/text/container payloads.
+    GruRuntimeStateModel::Configuration runtimeGruConfiguration;
+    runtimeGruConfiguration.inputVocabularySize = 16;
+    runtimeGruConfiguration.outputVocabularySize = 1;
+    runtimeGruConfiguration.embeddingSize = 4;
+    runtimeGruConfiguration.hiddenSize = 4;
+    runtimeGruConfiguration.layerCount = 1;
+    runtimeGruConfiguration.allowRandomInitialization = true;
+    GruRuntimeStateModel runtimeGru(runtimeGruConfiguration,
+                                    {{RuntimeOutputTokenKind::InputReference, 0}});
+    RuntimeContext runtimeGruContext;
+    runtimeGruContext.executionState = runtimeGru.createExecutionState();
+    const VmValue runtimeText = VmText{{}, "state survives typed input"};
+    assert(std::get<VmText>(runtimeGru.evaluate(RuntimeOperation{1}, {&runtimeText, 1},
+                                                runtimeGruContext)).utf8 ==
+           "state survives typed input");
+    auto runtimeFact = std::make_shared<VmFact>();
+    runtimeFact->type = 42;
+    const VmValue runtimeFactValue = runtimeFact;
+    assert(std::get<VmFactPtr>(runtimeGru.evaluate(RuntimeOperation{2}, {&runtimeFactValue, 1},
+                                                    runtimeGruContext))->type == 42);
+#endif
 
     FelidaeIr arithmetic;
     arithmetic.registerCount = 3;
@@ -84,7 +151,6 @@ int main() {
     };
     class NoRuntime final : public VmRuntime {
     public:
-        VmValue executeProgram(IrWord, const VmValue&) override { throw IrError("unexpected runtime call"); }
         VmValue callNativeSymbol(IrSymbolRef symbol) override { return static_cast<double>(symbol); }
     } noRuntime;
     RegisterVm nativeVm;
@@ -119,12 +185,75 @@ int main() {
     };
     assert(std::get<double>(nativeVm.execute(nativeCall, noRuntime, VmNil{})) == 12.0);
 
+    class SymbolRuntime final : public VmRuntime {
+    public:
+        VmValue loadSymbol(IrSymbolRef symbol) override { return values.at(symbol); }
+        void storeSymbol(IrSymbolRef symbol, const VmValue& value) override { values[symbol] = value; }
+        std::unordered_map<IrSymbolRef, VmValue> values;
+    } symbolRuntime;
+    FelidaeIr symbolStore;
+    symbolStore.registerCount = 1;
+    symbolStore.symbols = {7};
+    symbolStore.constants = {encodeIrNumber(9.0)};
+    symbolStore.words = {
+        static_cast<IrWord>(IrOpcode::LoadConst), 0, 0,
+        static_cast<IrWord>(IrOpcode::StoreSymbol), 0, 0,
+        static_cast<IrWord>(IrOpcode::LoadSymbol), 0, 0,
+        static_cast<IrWord>(IrOpcode::Return), 0, 0,
+        static_cast<IrWord>(IrOpcode::End),
+    };
+    assert(std::get<double>(nativeVm.execute(symbolStore, symbolRuntime, VmNil{})) == 9.0);
+
+    FelidaeIr directProcedure;
+    directProcedure.registerCount = 1;
+    directProcedure.constants = {encodeIrNumber(7.0)};
+    directProcedure.words = {
+        static_cast<IrWord>(IrOpcode::LoadConst), 0, 0,
+        static_cast<IrWord>(IrOpcode::Return), 0, 0,
+        static_cast<IrWord>(IrOpcode::End),
+    };
+    FelidaeIr directCaller;
+    directCaller.registerCount = 1;
+    directCaller.symbols = {99};
+    directCaller.words = {
+        static_cast<IrWord>(IrOpcode::Call), 0, 0, 0,
+        static_cast<IrWord>(IrOpcode::Return), 0, 0,
+        static_cast<IrWord>(IrOpcode::End),
+    };
+    DirectVmRuntime procedureRuntime({{99, IrProcedure{directProcedure, {}, {}, {}}}});
+    assert(std::get<double>(nativeVm.execute(directCaller, procedureRuntime, VmNil{})) == 7.0);
+    FelidaeIr recursiveProcedure;
+    recursiveProcedure.registerCount = 1;
+    recursiveProcedure.symbols = {77};
+    recursiveProcedure.words = {
+        static_cast<IrWord>(IrOpcode::Call), 0, 0, 0,
+        static_cast<IrWord>(IrOpcode::Return), 0, 0,
+        static_cast<IrWord>(IrOpcode::End),
+    };
+    FelidaeIr recursiveCaller = directCaller;
+    recursiveCaller.symbols = {77};
+    DirectVmRuntime boundedRecursionRuntime({{77, IrProcedure{recursiveProcedure, {}, {}, {}}}},
+                                             nullptr, 1024, 2);
+    bool recursionRejected = false;
+    try {
+        (void)nativeVm.execute(recursiveCaller, boundedRecursionRuntime, VmNil{});
+    } catch (const IrError&) {
+        recursionRejected = true;
+    }
+    assert(recursionRejected);
+
     class StatefulSemanticModel final : public RuntimeStateModel {
     public:
+        std::shared_ptr<void> createExecutionState() override {
+            return std::make_shared<std::size_t>(0);
+        }
         VmValue evaluate(const RuntimeOperation& operation, std::span<const VmValue> inputs,
                          RuntimeContext& context) override {
             assert(operation.symbol == 99 && inputs.size() == 1);
             auto state = std::static_pointer_cast<std::size_t>(context.executionState);
+            // Generic test runtimes may not opt into the production lifecycle;
+            // they still receive an execution-local context and never persist
+            // this fallback state beyond this RegisterVm invocation.
             if (!state) {
                 state = std::make_shared<std::size_t>(0);
                 context.executionState = state;
@@ -136,7 +265,6 @@ int main() {
     class SemanticRuntime final : public VmRuntime {
     public:
         explicit SemanticRuntime(RuntimeStateModel& model) : model_(model) {}
-        VmValue executeProgram(IrWord, const VmValue&) override { throw IrError("unexpected runtime call"); }
         RuntimeStateModel* runtimeStateModel() override { return &model_; }
         RuntimeContext makeRuntimeContext(const FelidaeIr&, const VmValue&) const override {
             RuntimeContext context;
@@ -160,6 +288,22 @@ int main() {
     // A new VM execution owns a new RuntimeContext; recurrent state cannot
     // leak across requests even when the backend instance is reused.
     assert(std::get<double>(nativeVm.execute(semanticProgram, semanticRuntime, VmNil{})) == 5.0);
+    DirectVmRuntime directSemanticRuntime({}, &semanticModel);
+    assert(std::get<double>(nativeVm.execute(semanticProgram, directSemanticRuntime, VmNil{})) == 5.0);
+    // Nested calls are part of one top-level execution: the SSM state and
+    // semantic budget are shared across their fresh register frames.
+    FelidaeIr semanticCaller;
+    semanticCaller.registerCount = 2;
+    semanticCaller.symbols = {99};
+    semanticCaller.words = {
+        static_cast<IrWord>(IrOpcode::Call), 0, 0, 0,
+        static_cast<IrWord>(IrOpcode::Call), 1, 0, 0,
+        static_cast<IrWord>(IrOpcode::Return), 1, 0,
+        static_cast<IrWord>(IrOpcode::End),
+    };
+    DirectVmRuntime nestedSemanticRuntime({{99, IrProcedure{semanticProgram, {}, {}, {}}}},
+                                          &semanticModel, 2);
+    assert(std::get<double>(nativeVm.execute(semanticCaller, nestedSemanticRuntime, VmNil{})) == 6.0);
     FelidaeIr overLimitSemanticProgram;
     overLimitSemanticProgram.registerCount = 4;
     overLimitSemanticProgram.symbols = {99};
@@ -179,6 +323,14 @@ int main() {
         semanticLimitRejected = true;
     }
     assert(semanticLimitRejected);
+    DirectVmRuntime oneStepSemanticRuntime({}, &semanticModel, 1);
+    bool directSemanticLimitRejected = false;
+    try {
+        (void)nativeVm.execute(overLimitSemanticProgram, oneStepSemanticRuntime, VmNil{});
+    } catch (const IrError&) {
+        directSemanticLimitRejected = true;
+    }
+    assert(directSemanticLimitRejected);
     bool unavailableSemanticRejected = false;
     try {
         (void)nativeVm.execute(semanticProgram, noRuntime, VmNil{});

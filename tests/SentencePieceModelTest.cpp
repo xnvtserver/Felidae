@@ -1,6 +1,7 @@
 #include "IntegerTokenList.h"
 #include "IntegerParser.h"
 #include "FelidaeGrammar.h"
+#include "MixfixStateModel.h"
 
 #include <sentencepiece_processor.h>
 #include <sentencepiece.pb.h>
@@ -9,6 +10,15 @@
 #include <iostream>
 #include <memory>
 #include <string>
+
+#undef assert
+#define assert(expression) \
+    do { \
+        if (!(expression)) { \
+            std::cerr << "assertion failed at line " << __LINE__ << ": " #expression << '\\n'; \
+            std::abort(); \
+        } \
+    } while (false)
 
 namespace {
 template <typename Fn>
@@ -21,11 +31,16 @@ void assertIntegerParseFails(Fn&& fn) {
 }
 
 int main() {
+    std::cerr << "SentencePiece model test entered\n";
     sentencepiece::SentencePieceProcessor model;
+    std::cerr << "SentencePiece processor constructed\n";
     const auto loaded = model.Load(FELIDAE_SENTENCEPIECE_MODEL_PATH);
+    std::cerr << "SentencePiece model loaded\n";
     assert(loaded.ok());
+    std::cerr << "SentencePiece model status verified\n";
 
     for (std::size_t index = 0; index < std::size(Felidae::kBuiltinTokens); ++index) {
+        std::cerr << "builtin " << index << '\n';
         const auto spelling = Felidae::kBuiltinTokens[index].spelling;
         const int id = model.PieceToId(std::string(spelling));
         assert(id == Felidae::kFelidaeBuiltinSentencePieceIds[index]);
@@ -40,12 +55,15 @@ int main() {
         assert(encoded.pieces(0).end() == static_cast<int>(spelling.size()));
     }
 
+    std::cerr << "builtin validation complete\n";
+
     // Arbitrary source spelling must remain distinguishable as integer
     // sequences. Byte fallback prevents a pair of user anchors from both
     // degenerating to SentencePiece's unknown ID.
     std::vector<int> wraps;
     std::vector<int> accepts;
     std::vector<int> unicode;
+    std::cerr << "anchor validation entered\n";
     for (const std::string& spelling : {std::string("wraps"), std::string("accepts"), std::string("naïve")}) {
         sentencepiece::SentencePieceText encoded;
         assert(model.Encode(spelling, &encoded).ok());
@@ -58,8 +76,10 @@ int main() {
         else if (spelling == "accepts") accepts = std::move(ids);
         else unicode = std::move(ids);
     }
+    std::cerr << "anchor validation complete\n";
     assert(!wraps.empty() && !accepts.empty() && !unicode.empty());
     assert(wraps != accepts);
+    std::cerr << "anchor results verified\n";
 
     const std::string completeSource =
         "# comment\\n"
@@ -71,6 +91,7 @@ int main() {
         assert(entry.begin <= entry.end);
         assert(entry.end <= completeSource.size());
     }
+    std::cerr << "full source offsets verified\n";
 
     const Felidae::IntegerTokenList expressionTokens(
         model, "# ignored\n[\"value\", café, (true)]");
@@ -81,6 +102,7 @@ int main() {
     assert(integerParser.metrics().tokenCount == expressionTokens.entries().size());
     assert(integerParser.metrics().iterations > 0);
     assert(integerParser.metrics().peakRecursionDepth > 0);
+    std::cerr << "expression parser verified\n";
 
     const Felidae::IntegerTokenList structuredTokens(
         model, "# direct integer grammar\nworker(task: {name: \"café\"}).result + 2 * 3");
@@ -88,6 +110,7 @@ int main() {
     const auto structured = structuredParser.parseExpressionText();
     assert(structured->debug() == "worker(task: {name: \"café\"}):result + 2 * 3");
     assert(structuredParser.metrics().sourceEncodeCount == 1);
+    std::cerr << "structured parser verified\n";
 
     const Felidae::IntegerTokenList programTokens(
         model, "import \"core.fx\".\nthreshold := 2 + 3.\nPerson(name: \"Ada\", age: threshold).");
@@ -97,6 +120,7 @@ int main() {
     assert(program.globals.size() == 1);
     assert(program.clauses.size() == 1);
     assert(program.clauses.front()->head.name == "Person");
+    std::cerr << "program parser verified\n";
 
     // Qualified declaration heads are assembled from a single ID stream.  In
     // particular, native declarations such as `math.sin` must not leave the
@@ -119,12 +143,14 @@ int main() {
         qualifiedCallParser.parseExpressionText());
     assert(qualifiedCall && qualifiedCall->builtinId == Felidae::BuiltinId::MathSin);
     assert(qualifiedCall->nameId != 0);
+    std::cerr << "qualified parsing verified\n";
 
     const Felidae::IntegerTokenList repeatedTokens(
         model, "Record(index: 0).\nRecord(index: 1).\n");
     Felidae::IntegerParser repeatedParser(repeatedTokens);
     const auto repeatedProgram = repeatedParser.parseProgram();
     assert(repeatedProgram.clauses.size() == 2);
+    std::cerr << "repeated statements verified\n";
 
     // `as` is an atomic grammar ID, but may also appear as an integer piece
     // inside a longer identifier.  Context and offsets must keep all three
@@ -144,6 +170,7 @@ int main() {
     const auto designationGoal = std::dynamic_pointer_cast<Felidae::CallGoal>(
         designationGoals.front());
     assert(designationGoal && designationGoal->call.designationIds.size() == 1);
+    std::cerr << "designation parsing verified\n";
 
     const Felidae::IntegerTokenList dottedLabelTokens(
         model, "Event(fx.effective_at: \"2025-01-01\")\n");
@@ -151,6 +178,7 @@ int main() {
     const auto dottedLabelProgram = dottedLabelParser.parseProgram();
     assert(dottedLabelProgram.clauses.size() == 1);
     assert(dottedLabelProgram.clauses.front()->head.args.front().name == "fx.effective_at");
+    std::cerr << "dotted labels verified\n";
 
     // Moderate-size program regression: a full source is encoded exactly once
     // and repeated SentencePiece word fragments never merge statements.
@@ -166,6 +194,7 @@ int main() {
     assert(largeParser.metrics().sourceEncodeCount == 1);
     assert(largeParser.metrics().statementCount == 512);
     assert(largeParser.metrics().iterations < 100'000);
+    std::cerr << "large program verified\n";
 
     const Felidae::IntegerTokenList methodTokens(
         model, "main() =>\n    value := 1\n    return (answer: value)\n");
@@ -173,18 +202,21 @@ int main() {
     const auto methodProgram = methodParser.parseProgram();
     assert(methodProgram.clauses.size() == 1);
     assert(methodProgram.clauses.front()->clauseKind == Felidae::ClauseKind::Method);
+    std::cerr << "method parsing verified\n";
 
     const Felidae::IntegerTokenList bareReturnBoundaryTokens(
         model, "first() =>\n    return\nsecond() => return (value: 1)\n");
     Felidae::IntegerParser bareReturnBoundaryParser(bareReturnBoundaryTokens);
     const auto bareReturnBoundaryProgram = bareReturnBoundaryParser.parseProgram();
     assert(bareReturnBoundaryProgram.clauses.size() == 2);
+    std::cerr << "return boundary verified\n";
 
     const Felidae::IntegerTokenList queryTokens(
         model, "? AncestorOf(descendant: \"kitten\", ancestor: Ancestor)");
     Felidae::IntegerParser queryParser(queryTokens);
     const auto queryGoals = queryParser.parseQuery();
     assert(queryGoals.size() == 1);
+    std::cerr << "query parsing verified\n";
 
     const std::string queryText = "? AncestorOf(descendant: \"kitten\", ancestor: Ancestor)";
     const Felidae::IntegerTokenList decodedQueryTokens(
@@ -193,6 +225,7 @@ int main() {
     const auto decodedQuery = std::dynamic_pointer_cast<Felidae::StringExpr>(
         decodedQueryParser.parseExpressionText());
     assert(decodedQuery && decodedQuery->value == queryText);
+    std::cerr << "decoded query verified\n";
 
     const Felidae::IntegerTokenList conditionalTokens(
         model, "choose(value: number) =>\n    if value > 0 then\n        return (result: true)\n    else\n        return (result: false)\n");
@@ -200,6 +233,7 @@ int main() {
     const auto conditionalProgram = conditionalParser.parseProgram();
     assert(conditionalProgram.clauses.size() == 1);
     assert(!conditionalProgram.clauses.front()->body.empty());
+    std::cerr << "condition parsing verified\n";
 
     const Felidae::IntegerTokenList fallbackTokens(
         model, "choose() =>\n    return (result: true)\nelse\n    return (result: false)\n");
@@ -207,6 +241,7 @@ int main() {
     const auto fallbackProgram = fallbackParser.parseProgram();
     assert(fallbackProgram.clauses.size() == 1);
     assert(fallbackProgram.clauses.front()->fallbackBranches.size() == 1);
+    std::cerr << "fallback parsing verified\n";
 
     // Annotation syntax is assembled from the same integer stream.  Literal
     // mixfix anchors are encoded once at declaration time and stored as ID
@@ -228,6 +263,8 @@ int main() {
     assert(mixfixUse);
     assert(mixfixUse->patternId == operators->patterns().front().patternId);
     assert(mixfixUse->captureCount() == 1);
+    std::cerr << "simple mixfix verified\n";
+
 
     const Felidae::IntegerTokenList nestedMixfixDeclarationTokens(model,
         "@mixfix(pattern: \"wrap {value: expr} end\")\n"
@@ -241,6 +278,7 @@ int main() {
     assert(nestedMixfixUse);
     assert(nestedMixfixUse->captureCount() == 1);
     assert(std::dynamic_pointer_cast<Felidae::OperatorExpression>(nestedMixfixUse->capture(0)));
+    std::cerr << "nested mixfix verified\n";
 
     const Felidae::IntegerTokenList trailingMixfixDeclarationTokens(model,
         "@mixfix(pattern: \"{left: expr} combines {right: expr}\")\n"
@@ -253,21 +291,27 @@ int main() {
         trailingMixfixUseParser.parseExpressionText());
     assert(trailingMixfixUse);
     assert(trailingMixfixUse->captureCount() == 2);
+    std::cerr << "trailing mixfix verified\n";
 
     // Multiple patterns may share an initial anchor.  Candidate assembly is
     // bounded and selects the pattern that consumes the longest valid ID
     // range instead of treating the shared anchor as a string ambiguity.
     auto sameAnchorOperators = std::make_shared<Felidae::OperatorRegistry>();
+    std::cerr << "shared-anchor setup entered\n";
     const Felidae::IntegerTokenList sameAnchorTokens(model,
         "@mixfix(pattern: \"plan {name: string} using {strategy: string} with {budget: number}\")\n"
         "longPlan() => return (value: name)\n"
         "@mixfix(pattern: \"plan {value: number} using {enabled: bool}\")\n"
         "shortPlan() => return (value: value)\n"
         "main() => return (long: plan \"x\" using \"y\" with 1, short: plan 7 using true)\n");
+    std::cerr << "shared-anchor input encoded: " << sameAnchorTokens.entries().size() << " pieces\n";
     Felidae::IntegerParser sameAnchorParser(sameAnchorTokens, sameAnchorOperators);
+    std::cerr << "shared-anchor parser constructed\n";
     const auto sameAnchorProgram = sameAnchorParser.parseProgram();
+    std::cerr << "shared-anchor program parsed\n";
     assert(sameAnchorProgram.clauses.size() == 3);
     assert(sameAnchorParser.metrics().backtrackingAttempts > 0);
+    std::cerr << "shared-anchor mixfix verified\n";
 
 
     // Malformed and deliberately deep input must fail cleanly under the
@@ -291,6 +335,7 @@ int main() {
     Felidae::IntegerParser longIdentifierParser(longIdentifierTokens);
     const auto longIdentifierExpr = longIdentifierParser.parseExpressionText();
     assert(longIdentifierExpr->debug() == longIdentifier);
+    std::cerr << "boundary cases verified\n";
 
 
     std::cout << "felidae SentencePiece model validation passed\n";

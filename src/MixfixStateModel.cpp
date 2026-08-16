@@ -83,11 +83,27 @@ std::vector<IrWord> resolveMixfixIrTokens(
     throw IrError("mixfix GRU decoder did not emit IR_END");
 }
 
+std::vector<IrWord> resolveMixfixVocabularyIds(
+    std::span<const MixfixVocabularyId> ids, const MixfixContext& context) {
+    if (ids.size() > context.maximumOutputWords) {
+        throw IrError("mixfix GRU exceeded its bounded decoder output");
+    }
+    std::vector<MixfixIrToken> tokens;
+    tokens.reserve(ids.size());
+    for (const auto id : ids) {
+        if (id >= context.outputVocabulary.size()) {
+            throw IrError("mixfix GRU emitted a token outside the finite output vocabulary");
+        }
+        tokens.push_back(context.outputVocabulary[id]);
+    }
+    return resolveMixfixIrTokens(tokens, context);
+}
+
 FelidaeIr compileVerifiedMixfixIr(MixfixStateModel& model,
                                   std::span<const SentencePieceId> input,
                                   const MixfixContext& context,
                                   FelidaeIr irShell) {
-    irShell.words = model.transform(input, context);
+    irShell.words = resolveMixfixVocabularyIds(model.transform(input, context), context);
     if (irShell.words.size() > context.maximumOutputWords) {
         throw IrError("mixfix model exceeded its bounded IR output");
     }
@@ -100,11 +116,15 @@ public:
 #ifdef FELIDAE_HAS_TORCH
     struct Network final : torch::nn::Module {
         explicit Network(const Configuration& c)
-            : embedding(register_module("embedding", torch::nn::Embedding(c.inputVocabularySize, c.embeddingSize))),
-              decoderEmbedding(register_module("decoder_embedding", torch::nn::Embedding(c.outputVocabularySize, c.embeddingSize))),
-              encoder(register_module("encoder", torch::nn::GRU(torch::nn::GRUOptions(c.embeddingSize, c.hiddenSize).num_layers(c.layerCount)))),
-              decoder(register_module("decoder", torch::nn::GRU(torch::nn::GRUOptions(c.embeddingSize, c.hiddenSize).num_layers(c.layerCount)))),
-              projection(register_module("projection", torch::nn::Linear(c.hiddenSize, c.outputVocabularySize))) {}
+        {
+            embedding = register_module("embedding", torch::nn::Embedding(c.inputVocabularySize, c.embeddingSize));
+            decoderEmbedding = register_module("decoder_embedding", torch::nn::Embedding(c.outputVocabularySize, c.embeddingSize));
+            encoder = register_module("encoder", torch::nn::GRU(
+                torch::nn::GRUOptions(c.embeddingSize, c.hiddenSize).num_layers(c.layerCount)));
+            decoder = register_module("decoder", torch::nn::GRU(
+                torch::nn::GRUOptions(c.embeddingSize, c.hiddenSize).num_layers(c.layerCount)));
+            projection = register_module("projection", torch::nn::Linear(c.hiddenSize, c.outputVocabularySize));
+        }
         torch::nn::Embedding embedding{nullptr};
         torch::nn::Embedding decoderEmbedding{nullptr};
         torch::nn::GRU encoder{nullptr};
@@ -169,7 +189,7 @@ GruMixfixStateModel GruMixfixStateModel::loadVersioned(
     return GruMixfixStateModel(std::move(configuration), artifact);
 }
 
-std::vector<IrWord> GruMixfixStateModel::transform(
+std::vector<MixfixVocabularyId> GruMixfixStateModel::transform(
     std::span<const SentencePieceId> input, const MixfixContext& context) {
     if (input.empty()) throw IrError("mixfix GRU input is empty");
     if (context.outputVocabulary.size() != static_cast<std::size_t>(configuration_.outputVocabularySize)) {
@@ -189,7 +209,7 @@ std::vector<IrWord> GruMixfixStateModel::transform(
     auto encoderResult = implementation_->network->encoder->forward(implementation_->network->embedding->forward(inputIds));
     auto state = std::get<1>(encoderResult);
     auto decoderInput = torch::full({1, 1}, configuration_.beginToken, torch::TensorOptions().dtype(torch::kInt64));
-    std::vector<MixfixIrToken> tokens;
+    std::vector<MixfixVocabularyId> tokens;
     const auto limit = std::min(configuration_.maximumDecodeSteps, context.maximumOutputWords);
     for (std::size_t step = 0; step < limit; ++step) {
         auto decoderResult = implementation_->network->decoder->forward(implementation_->network->decoderEmbedding->forward(decoderInput), state);
@@ -198,12 +218,12 @@ std::vector<IrWord> GruMixfixStateModel::transform(
         if (tokenId < 0 || static_cast<std::size_t>(tokenId) >= context.outputVocabulary.size()) {
             throw IrError("mixfix GRU emitted token outside finite vocabulary");
         }
-        const auto token = context.outputVocabulary[static_cast<std::size_t>(tokenId)];
-        tokens.push_back(token);
-        if (token.kind == MixfixIrTokenKind::End) break;
+        const auto vocabularyId = static_cast<MixfixVocabularyId>(tokenId);
+        tokens.push_back(vocabularyId);
+        if (context.outputVocabulary[vocabularyId].kind == MixfixIrTokenKind::End) break;
         decoderInput.fill_(tokenId);
     }
-    return resolveMixfixIrTokens(tokens, context);
+    return tokens;
 #else
     (void)input; (void)context;
     throw IrError("mixfix GRU backend requires FELIDAE_ENABLE_LIBTORCH=ON");
@@ -271,6 +291,140 @@ void GruMixfixStateModel::saveArtifact(const std::filesystem::path& artifactPath
 #else
     (void)artifactPath;
     throw IrError("mixfix GRU export requires FELIDAE_ENABLE_LIBTORCH=ON");
+#endif
+}
+
+class GruRuntimeStateModel::Implementation {
+public:
+#ifdef FELIDAE_HAS_TORCH
+    struct Network final : torch::nn::Module {
+        explicit Network(const Configuration& configuration) {
+            embedding = register_module("embedding", torch::nn::Embedding(
+                configuration.inputVocabularySize, configuration.embeddingSize));
+            recurrent = register_module("recurrent", torch::nn::GRU(torch::nn::GRUOptions(
+                configuration.embeddingSize, configuration.hiddenSize).num_layers(configuration.layerCount)));
+            projection = register_module("projection", torch::nn::Linear(
+                configuration.hiddenSize, configuration.outputVocabularySize));
+        }
+        torch::nn::Embedding embedding{nullptr};
+        torch::nn::GRU recurrent{nullptr};
+        torch::nn::Linear projection{nullptr};
+    };
+
+    struct ExecutionState {
+        torch::Tensor hidden;
+    };
+
+    explicit Implementation(const Configuration& configuration, const std::filesystem::path& artifact)
+        : network(std::make_shared<Network>(configuration)) {
+        if (artifact.empty() && configuration.allowRandomInitialization) {
+            network->eval();
+            return;
+        }
+        if (artifact.empty() || !std::filesystem::is_regular_file(artifact)) {
+            throw IrError("runtime GRU artifact is unavailable: " + artifact.string());
+        }
+        torch::load(network, artifact.string());
+        network->eval();
+    }
+    std::shared_ptr<Network> network;
+#else
+    explicit Implementation(const Configuration&, const std::filesystem::path&) {
+        throw IrError("runtime GRU backend requires FELIDAE_ENABLE_LIBTORCH=ON");
+    }
+#endif
+};
+
+GruRuntimeStateModel::GruRuntimeStateModel(Configuration configuration,
+                                           std::vector<RuntimeOutputToken> outputVocabulary,
+                                           const std::filesystem::path& artifactPath)
+    : configuration_(configuration), outputVocabulary_(std::move(outputVocabulary)),
+      implementation_(std::make_unique<Implementation>(configuration_, artifactPath)) {
+    if (configuration_.inputVocabularySize <= 8 || configuration_.outputVocabularySize <= 0 ||
+        configuration_.embeddingSize <= 0 || configuration_.hiddenSize <= 0 ||
+        configuration_.layerCount <= 0 ||
+        outputVocabulary_.size() != static_cast<std::size_t>(configuration_.outputVocabularySize)) {
+        throw IrError("runtime GRU configuration or finite output vocabulary is invalid");
+    }
+    for (const auto& token : outputVocabulary_) {
+        if (token.kind == RuntimeOutputTokenKind::Boolean && token.value > 1) {
+            throw IrError("runtime GRU boolean output token is invalid");
+        }
+    }
+}
+
+GruRuntimeStateModel::~GruRuntimeStateModel() = default;
+GruRuntimeStateModel::GruRuntimeStateModel(GruRuntimeStateModel&&) noexcept = default;
+GruRuntimeStateModel& GruRuntimeStateModel::operator=(GruRuntimeStateModel&&) noexcept = default;
+
+std::shared_ptr<void> GruRuntimeStateModel::createExecutionState() {
+#ifdef FELIDAE_HAS_TORCH
+    return std::make_shared<Implementation::ExecutionState>();
+#else
+    throw IrError("runtime GRU backend requires FELIDAE_ENABLE_LIBTORCH=ON");
+#endif
+}
+
+Value GruRuntimeStateModel::evaluate(const RuntimeOperation& operation,
+                                     std::span<const Value> inputs,
+                                     RuntimeContext& context) {
+#ifdef FELIDAE_HAS_TORCH
+    // IDs are feature categories, not serialized values.  The finite decoder
+    // can only return a controlled input reference, nil, or an explicit bool.
+    const auto category = [](const Value& value) -> std::int64_t {
+        if (std::holds_alternative<VmNil>(value)) return 1;
+        if (std::holds_alternative<bool>(value)) return 2;
+        if (std::holds_alternative<double>(value)) return 3;
+        if (std::holds_alternative<VmText>(value)) return 4;
+        if (std::holds_alternative<VmArrayPtr>(value)) return 5;
+        if (std::holds_alternative<VmMapPtr>(value)) return 6;
+        return 7; // VmFactPtr
+    };
+    if (!context.executionState) {
+        throw IrError("runtime GRU evaluation has no execution-local recurrent state");
+    }
+    auto state = std::static_pointer_cast<Implementation::ExecutionState>(context.executionState);
+    const auto operationId = static_cast<std::int64_t>(operation.symbol %
+        static_cast<IrSymbolRef>(configuration_.inputVocabularySize - 8)) + 8;
+    std::vector<std::int64_t> ids;
+    ids.reserve(inputs.size() + 1);
+    ids.push_back(operationId);
+    for (const auto& input : inputs) ids.push_back(category(input));
+    torch::NoGradGuard guard;
+    const auto tensor = torch::tensor(ids, torch::TensorOptions().dtype(torch::kInt64)).reshape({-1, 1});
+    auto result = state->hidden.defined()
+        ? implementation_->network->recurrent->forward(implementation_->network->embedding->forward(tensor), state->hidden)
+        : implementation_->network->recurrent->forward(implementation_->network->embedding->forward(tensor));
+    state->hidden = std::get<1>(result).detach();
+    const auto outputId = implementation_->network->projection->forward(
+        std::get<0>(result).select(0, std::get<0>(result).size(0) - 1).select(0, 0)).argmax().item<std::int64_t>();
+    if (outputId < 0 || static_cast<std::size_t>(outputId) >= outputVocabulary_.size()) {
+        throw IrError("runtime GRU emitted a token outside its finite output vocabulary");
+    }
+    const auto& token = outputVocabulary_[static_cast<std::size_t>(outputId)];
+    switch (token.kind) {
+    case RuntimeOutputTokenKind::InputReference:
+        if (token.value >= inputs.size()) throw IrError("runtime GRU emitted an unavailable input reference");
+        return inputs[token.value];
+    case RuntimeOutputTokenKind::Nil: return VmNil{};
+    case RuntimeOutputTokenKind::Boolean: return token.value != 0;
+    }
+    throw IrError("runtime GRU emitted an invalid output token");
+#else
+    (void)operation; (void)inputs; (void)context;
+    throw IrError("runtime GRU backend requires FELIDAE_ENABLE_LIBTORCH=ON");
+#endif
+}
+
+void GruRuntimeStateModel::saveArtifact(const std::filesystem::path& artifactPath) const {
+#ifdef FELIDAE_HAS_TORCH
+    if (artifactPath.empty()) throw IrError("runtime GRU artifact path is empty");
+    const auto parent = artifactPath.parent_path();
+    if (!parent.empty()) std::filesystem::create_directories(parent);
+    torch::save(implementation_->network, artifactPath.string());
+#else
+    (void)artifactPath;
+    throw IrError("runtime GRU export requires FELIDAE_ENABLE_LIBTORCH=ON");
 #endif
 }
 

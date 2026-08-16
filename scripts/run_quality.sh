@@ -52,12 +52,14 @@ if [[ "$SKIP_BUILD" -eq 0 ]]; then
 fi
 
 tidy_files=(
-    src/Interpreter.cpp
-    src/Env.cpp
-    src/Memory.cpp
-    src/NativeRuntime.cpp
+    src/CompilerFrontend.cpp
+    src/form/RegisterVm.cpp
+    src/form/BinaryIr.cpp
+    src/IrCodeGenerator.cpp
+    src/IntegerParser.cpp
+    src/MixfixStateModel.cpp
     src/BuiltinRegistry.cpp
-    src/FelidaeRuntime.cpp
+    src/SentencePieceModel.cpp
 )
 
 if command -v clang-tidy >/dev/null 2>&1; then

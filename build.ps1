@@ -47,10 +47,12 @@ if ($Configuration -eq "sanitize") {
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
 
 $jobs = if ($env:FELIDAE_JOBS) { $env:FELIDAE_JOBS } else { "1" }
-& $cmakePath --build $buildDir --config $buildType --target felidae --parallel $jobs
+& $cmakePath --build $buildDir --config $buildType --target felidae_compiler felidae_vm --parallel $jobs
 if ($LASTEXITCODE -ne 0) { throw "CMake build failed" }
 
-$executable = Join-Path $buildDir "felidae.exe"
-if ($IsWindows -and -not (Test-Path $executable)) {
-    throw "Build completed but expected executable was not created: $executable"
+foreach ($executable in @("felidae_compiler.exe", "felidae_vm.exe")) {
+    $path = Join-Path $buildDir $executable
+    if ($IsWindows -and -not (Test-Path $path)) {
+        throw "Build completed but expected executable was not created: $path"
+    }
 }

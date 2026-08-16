@@ -1,5 +1,7 @@
 #include "IntegerParser.h"
 
+#include "MixfixStateModel.h"
+
 #include "BuiltinRegistry.h"
 #include "Operator.h"
 #include "OperatorAnnotation.h"
@@ -39,8 +41,9 @@ bool isMethodStyleHead(const Call& head) {
 } // namespace
 
 IntegerParser::IntegerParser(const IntegerTokenList& input,
-                             std::shared_ptr<OperatorRegistry> operators)
-    : input_(input), operators_(std::move(operators)) {
+                             std::shared_ptr<OperatorRegistry> operators,
+                             MixfixStateModel* mixfixModel)
+    : input_(input), operators_(std::move(operators)), mixfixModel_(mixfixModel) {
     metrics_.sourceEncodeCount = input.encodeCount();
     metrics_.tokenCount = input.entries().size();
     const auto advance = [](SourceSpan& target, const IntegerTokenList::Entry& entry,
@@ -1045,16 +1048,16 @@ std::shared_ptr<Expr> IntegerParser::tryParseTrailingPattern(std::shared_ptr<Exp
         }
     }
     if (!selected) {
-        const auto startByte = byte_;
-        const auto startPiece = piece_;
+        const auto deferredStartByte = byte_;
+        const auto deferredStartPiece = piece_;
         std::shared_ptr<Expr> deferred;
-        std::size_t deferredByte = startByte;
-        std::size_t deferredPiece = startPiece;
+        std::size_t deferredByte = deferredStartByte;
+        std::size_t deferredPiece = deferredStartPiece;
         for (const auto* pattern : operators_->deferredTrailingCapturePatterns()) {
             if (static_cast<int>(pattern->precedence) < minimumPrecedence) continue;
             ++metrics_.backtrackingAttempts;
-            byte_ = startByte;
-            piece_ = startPiece;
+            byte_ = deferredStartByte;
+            piece_ = deferredStartPiece;
             try {
                 std::vector<OperatorCapture> captures;
                 captures.reserve(pattern->captureNames.size());
@@ -1086,8 +1089,8 @@ std::shared_ptr<Expr> IntegerParser::tryParseTrailingPattern(std::shared_ptr<Exp
             }
         }
         if (!deferred) {
-            byte_ = startByte;
-            piece_ = startPiece;
+            byte_ = deferredStartByte;
+            piece_ = deferredStartPiece;
             return {};
         }
         byte_ = deferredByte;
@@ -1189,6 +1192,159 @@ std::shared_ptr<Expr> IntegerParser::parseExpressionText() {
 
 FelidaeIr IntegerParser::compileExpressionIr() {
     const auto expression = parseExpressionText();
+    const auto hasMixfix = [](const auto& self, const std::shared_ptr<Expr>& node) -> bool {
+        if (const auto operation = std::dynamic_pointer_cast<OperatorExpression>(node)) {
+            if (operation->coreOperator == CoreOperator::Unknown) return true;
+            for (std::size_t index = 0; index < operation->captureCount(); ++index) {
+                if (self(self, operation->capture(index))) return true;
+            }
+        } else if (const auto array = std::dynamic_pointer_cast<ArrayExpr>(node)) {
+            for (const auto& item : array->items) if (self(self, item)) return true;
+        } else if (const auto map = std::dynamic_pointer_cast<MapExpr>(node)) {
+            for (const auto& entry : map->entries) if (self(self, entry.value)) return true;
+        } else if (const auto access = std::dynamic_pointer_cast<AccessExpr>(node)) {
+            return self(self, access->target);
+        } else if (const auto term = std::dynamic_pointer_cast<TermExpr>(node)) {
+            for (const auto& argument : term->args) if (self(self, argument.value)) return true;
+        }
+        return false;
+    };
+    if (hasMixfix(hasMixfix, expression)) {
+        if (!mixfixModel_) {
+            throw IntegerParserError("mixfix expression requires the verified MixfixStateModel compiler backend");
+        }
+        return compileModelRoutedMixfixExpressionIr(expression);
+    }
+    return compileAstExpressionIr(expression);
+}
+
+FelidaeIr IntegerParser::compileModelRoutedMixfixExpressionIr(
+    const std::shared_ptr<Expr>& expression) const {
+    // This vocabulary is deliberately fixed-size and structural. Dynamic
+    // literals/symbols are collected into bounded parser-owned tables below;
+    // model output can reference them but never manufacture a machine word.
+    constexpr std::size_t kMaximumMixfixRegisters = 64;
+    constexpr std::size_t kMaximumMixfixReferences = 64;
+    FelidaeIr shell;
+    shell.registerCount = kMaximumMixfixRegisters;
+    const auto addConstant = [&](IrConstantKind kind, IrWord value, std::string text = {}) {
+        if (shell.constants.size() >= kMaximumMixfixReferences) {
+            throw IntegerParserError("mixfix compiler context has too many constants");
+        }
+        if (kind == IrConstantKind::Text) {
+            shell.texts.push_back(std::move(text));
+            value = shell.texts.size() - 1;
+        }
+        shell.constants.push_back(value);
+        shell.constantKinds.push_back(kind);
+    };
+    const auto addSymbol = [&](SymbolId symbol) {
+        if (shell.symbols.size() >= kMaximumMixfixReferences) {
+            throw IntegerParserError("mixfix compiler context has too many symbols");
+        }
+        shell.symbols.push_back(symbol);
+    };
+    const auto collect = [&](const auto& self, const std::shared_ptr<Expr>& node) -> void {
+        if (const auto number = std::dynamic_pointer_cast<NumberExpr>(node)) {
+            addConstant(IrConstantKind::Number, encodeIrNumber(number->value));
+        } else if (const auto boolean = std::dynamic_pointer_cast<BoolExpr>(node)) {
+            addConstant(IrConstantKind::Boolean, boolean->value ? 1 : 0);
+        } else if (std::dynamic_pointer_cast<NilExpr>(node)) {
+            addConstant(IrConstantKind::Nil, 0);
+        } else if (const auto text = std::dynamic_pointer_cast<StringExpr>(node)) {
+            addConstant(IrConstantKind::Text, 0, text->value);
+        } else if (const auto variable = std::dynamic_pointer_cast<VarExpr>(node)) {
+            addSymbol(variable->nameId);
+        } else if (const auto array = std::dynamic_pointer_cast<ArrayExpr>(node)) {
+            for (const auto& item : array->items) self(self, item);
+        } else if (const auto map = std::dynamic_pointer_cast<MapExpr>(node)) {
+            if (!map->factType.empty()) addSymbol(symbolIdForName(map->factType));
+            for (const auto& entry : map->entries) { addSymbol(entry.keyId); self(self, entry.value); }
+        } else if (const auto access = std::dynamic_pointer_cast<AccessExpr>(node)) {
+            self(self, access->target); addSymbol(access->keyId);
+        } else if (const auto term = std::dynamic_pointer_cast<TermExpr>(node)) {
+            addSymbol(term->nameId);
+            for (const auto& argument : term->args) { if (!argument.name.empty()) addSymbol(argument.nameId); self(self, argument.value); }
+        } else if (const auto operation = std::dynamic_pointer_cast<OperatorExpression>(node)) {
+            for (std::size_t index = 0; index < operation->captureCount(); ++index) self(self, operation->capture(index));
+        }
+    };
+    collect(collect, expression);
+
+    MixfixContext context;
+    context.maximumOutputWords = 4096;
+    context.outputVocabulary.push_back({MixfixIrTokenKind::End, 0});
+    for (IrWord opcode = 1; opcode < kIrOpcodeCount; ++opcode) {
+        context.outputVocabulary.push_back({MixfixIrTokenKind::Opcode, opcode});
+    }
+    for (IrWord index = 0; index < kMaximumMixfixRegisters; ++index) {
+        context.outputVocabulary.push_back({MixfixIrTokenKind::Register, index});
+    }
+    for (IrWord index = 0; index < kMaximumMixfixReferences; ++index) {
+        context.outputVocabulary.push_back({MixfixIrTokenKind::ConstantReference, index});
+    }
+    for (IrWord index = 0; index < kMaximumMixfixReferences; ++index) {
+        context.outputVocabulary.push_back({MixfixIrTokenKind::SymbolReference, index});
+    }
+    for (IrWord index = 0; index < kMaximumMixfixReferences; ++index) {
+        context.outputVocabulary.push_back({MixfixIrTokenKind::FactReference, index});
+    }
+    for (IrWord index = 0; index < kMaximumMixfixReferences; ++index) {
+        context.outputVocabulary.push_back({MixfixIrTokenKind::ProgramReference, index});
+    }
+    for (IrWord index = 0; index < shell.constants.size(); ++index) context.constantReferences.push_back(index);
+    for (IrWord index = 0; index < shell.symbols.size(); ++index) context.symbolReferences.push_back(index);
+
+    const auto before = [](const SourceSpan& left, const SourceSpan& right) {
+        return left.endLine < right.startLine ||
+            (left.endLine == right.startLine && left.endColumn <= right.startColumn);
+    };
+    std::size_t firstPiece = 0;
+    while (firstPiece < input_.entries().size() && before(pieceStarts_[firstPiece], expression->sourceSpan)) ++firstPiece;
+    std::size_t pastLastPiece = firstPiece;
+    while (pastLastPiece < input_.entries().size() &&
+           !(expression->sourceSpan.endLine < pieceStarts_[pastLastPiece].startLine ||
+             (expression->sourceSpan.endLine == pieceStarts_[pastLastPiece].startLine &&
+              expression->sourceSpan.endColumn <= pieceStarts_[pastLastPiece].startColumn))) {
+        ++pastLastPiece;
+    }
+    if (firstPiece == pastLastPiece) {
+        // Some legacy AST nodes predate span stamping for custom operators.
+        // Their source span is therefore empty even though the parser still
+        // owns one canonical encoded input. Keep the neural boundary safe by
+        // using that single encode, never a second tokenizer; normal stamped
+        // nodes continue to use their selected region above.
+        firstPiece = 0;
+        pastLastPiece = input_.entries().size();
+        if (pastLastPiece == 0) {
+            throw IntegerParserError("mixfix compiler input is empty");
+        }
+    }
+    return compileVerifiedMixfixSpanIr(*mixfixModel_, context, std::move(shell), firstPiece, pastLastPiece);
+}
+
+FelidaeIr IntegerParser::compileVerifiedMixfixSpanIr(MixfixStateModel& model,
+                                                      const MixfixContext& context,
+                                                      FelidaeIr irShell,
+                                                      std::size_t firstPiece,
+                                                      std::size_t pastLastPiece) const {
+    const auto& entries = input_.entries();
+    if (firstPiece >= pastLastPiece || pastLastPiece > entries.size()) {
+        throw IntegerParserError("mixfix compiler span is outside the SentencePiece input");
+    }
+    std::vector<SentencePieceId> ids;
+    ids.reserve(pastLastPiece - firstPiece);
+    for (std::size_t index = firstPiece; index < pastLastPiece; ++index) {
+        ids.push_back(entries[index].id);
+    }
+    try {
+        return compileVerifiedMixfixIr(model, ids, context, std::move(irShell));
+    } catch (const IrError& error) {
+        throw IntegerParserError(std::string("mixfix compiler rejected span: ") + error.what());
+    }
+}
+
+FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& expression) {
     FelidaeIr ir;
     const auto addNumber = [&](double number) {
         ir.constants.push_back(encodeIrNumber(number));
@@ -1276,11 +1432,21 @@ FelidaeIr IntegerParser::compileExpressionIr() {
                 ir.symbols.push_back(entry.keyId);
                 entries.emplace_back(static_cast<IrSymbolRef>(ir.symbols.size() - 1), item);
             }
-            ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::MakeMap), result, 0,
-                                             static_cast<IrWord>(entries.size())});
-            for (const auto& [field, item] : entries) {
-                ir.words.push_back(field);
-                ir.words.push_back(item);
+            if (map->factType.empty()) {
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::MakeMap), result, 0,
+                                                 static_cast<IrWord>(entries.size())});
+                for (const auto& [field, item] : entries) {
+                    ir.words.push_back(field);
+                    ir.words.push_back(item);
+                }
+            } else {
+                ir.symbols.push_back(symbolIdForName(map->factType));
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::MakeFact), result,
+                                                 static_cast<IrWord>(ir.symbols.size() - 1)});
+                for (const auto& [field, item] : entries) {
+                    ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::SetField), result,
+                                                     field, item});
+                }
             }
         } else if (const auto access = std::dynamic_pointer_cast<AccessExpr>(value)) {
             const auto target = self(self, access->target);
@@ -1289,6 +1455,9 @@ FelidaeIr IntegerParser::compileExpressionIr() {
                                              static_cast<IrWord>(ir.symbols.size() - 1)});
         } else if (const auto operation = std::dynamic_pointer_cast<OperatorExpression>(value)) {
             const auto core = operation->coreOperator;
+            if (core == CoreOperator::Unknown) {
+                throw IntegerParserError("mixfix expression requires the verified MixfixStateModel compiler backend");
+            }
             if (core == CoreOperator::UnaryPlus) {
                 return self(self, operation->capture(0));
             }
@@ -1378,6 +1547,63 @@ FelidaeIr IntegerParser::compileExpressionIr() {
                                      static_cast<IrWord>(IrOpcode::End)});
     IrVerifier::verify(ir);
     return ir;
+}
+
+FelidaeIr IntegerParser::compileAstGlobalBindingIr(const GlobalBindingStmt& binding) {
+    if (!binding.expr) throw IntegerParserError("Global binding has no value expression");
+    auto ir = compileAstExpressionIr(binding.expr);
+    if (ir.words.size() < 4 ||
+        ir.words[ir.words.size() - 4] != static_cast<IrWord>(IrOpcode::Return) ||
+        ir.words.back() != static_cast<IrWord>(IrOpcode::End)) {
+        throw IntegerParserError("Expression IR is missing its terminal return");
+    }
+    const auto result = ir.words[ir.words.size() - 3];
+    ir.symbols.push_back(symbolIdForName(binding.name));
+    const auto symbol = static_cast<IrWord>(ir.symbols.size() - 1);
+    ir.words.resize(ir.words.size() - 4);
+    ir.words.insert(ir.words.end(), {
+        static_cast<IrWord>(IrOpcode::StoreSymbol), symbol, result,
+        static_cast<IrWord>(IrOpcode::LoadSymbol), result, symbol,
+        static_cast<IrWord>(IrOpcode::Return), result, 0,
+        static_cast<IrWord>(IrOpcode::End),
+    });
+    const auto& span = binding.sourceSpan;
+    ir.sourceMap.push_back(IrSourceMapEntry{ir.words.size() - 10,
+        {span.startLine, span.startColumn, span.endLine, span.endColumn}});
+    IrVerifier::verify(ir);
+    return ir;
+}
+
+FelidaeIr IntegerParser::compileAstEntryMethodIr(const ClauseStmt& method) {
+    if (method.body.size() != 1 || !method.fallbackBranches.empty()) {
+        throw IntegerParserError("Method has not reached direct entry IR lowering yet");
+    }
+    const auto returned = std::dynamic_pointer_cast<ReturnGoal>(method.body.front());
+    if (!returned) throw IntegerParserError("Direct entry IR lowering requires a return goal");
+    if (returned->fields.empty()) {
+        auto nil = std::make_shared<NilExpr>();
+        nil->sourceSpan = returned->sourceSpan;
+        return compileAstExpressionIr(nil);
+    }
+    bool named = false;
+    for (const auto& field : returned->fields) named = named || !field.name.empty();
+    if (!named) {
+        if (returned->fields.size() != 1) {
+            throw IntegerParserError("Direct entry IR lowering requires one positional return value");
+        }
+        return compileAstExpressionIr(returned->fields.front().value);
+    }
+    std::vector<MapEntry> entries;
+    entries.reserve(returned->fields.size());
+    for (const auto& field : returned->fields) {
+        if (field.name.empty()) {
+            throw IntegerParserError("Direct entry IR lowering cannot mix named and positional return fields");
+        }
+        entries.emplace_back(field.name, field.nameId, field.value);
+    }
+    auto map = std::make_shared<MapExpr>(std::move(entries));
+    map->sourceSpan = returned->sourceSpan;
+    return compileAstExpressionIr(map);
 }
 
 SourceSpan IntegerParser::span(std::size_t begin, std::size_t end) const {

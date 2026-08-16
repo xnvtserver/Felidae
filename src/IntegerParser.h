@@ -10,6 +10,9 @@
 
 namespace Felidae {
 
+class MixfixStateModel;
+struct MixfixContext;
+
 struct IntegerParserMetrics {
     std::size_t tokenCount = 0;
     std::size_t statementCount = 0;
@@ -31,7 +34,8 @@ public:
 class IntegerParser {
 public:
     explicit IntegerParser(const IntegerTokenList& input,
-                           std::shared_ptr<OperatorRegistry> operators = {});
+                           std::shared_ptr<OperatorRegistry> operators = {},
+                           MixfixStateModel* mixfixModel = nullptr);
 
     Program parseProgram();
     std::vector<std::shared_ptr<Goal>> parseQuery();
@@ -40,6 +44,25 @@ public:
     // consumes the existing SentencePiece stream once and returns executable
     // canonical IR without an interpreter invocation.
     FelidaeIr compileExpressionIr();
+    // Compiler-front-end seam: AST is permitted before IR, but this method
+    // always produces typed canonical IR and never carries an AST into VM
+    // registers. Statement/module lowering builds on this same seam.
+    static FelidaeIr compileAstExpressionIr(const std::shared_ptr<Expr>& expression);
+    // Initial statement compiler slice. It deliberately reuses expression
+    // lowering and emits StoreSymbol; no statement AST survives in the IR.
+    static FelidaeIr compileAstGlobalBindingIr(const GlobalBindingStmt& binding);
+    // Initial routine slice for a deterministic zero-argument entry method.
+    // More complex goal lists are intentionally rejected until frame/local
+    // lowering is available, rather than being handed to an AST executor.
+    static FelidaeIr compileAstEntryMethodIr(const ClauseStmt& method);
+    // Compiler-SSM entry point. The caller selects an existing SentencePiece
+    // span; this method never retokenizes source text and always verifies the
+    // finite-vocabulary model output before returning IR.
+    FelidaeIr compileVerifiedMixfixSpanIr(MixfixStateModel& model,
+                                          const MixfixContext& context,
+                                          FelidaeIr irShell,
+                                          std::size_t firstPiece,
+                                          std::size_t pastLastPiece) const;
     bool startsQuery();
     const IntegerParserMetrics& metrics() const noexcept { return metrics_; }
 
@@ -52,6 +75,9 @@ private:
     };
     const IntegerTokenList& input_;
     std::shared_ptr<OperatorRegistry> operators_;
+    // Optional compiler backend.  Normal grammar is always deterministic;
+    // only an assembled custom mixfix expression can reach this model.
+    MixfixStateModel* mixfixModel_ = nullptr;
     std::size_t piece_ = 0;
     std::size_t byte_ = 0;
     std::size_t recursionDepth_ = 0;
@@ -112,6 +138,7 @@ private:
     void consumeStatementTerminator(std::size_t statementBegin);
     SourceSpan span(std::size_t begin, std::size_t end) const;
     void stamp(const std::shared_ptr<AstNode>& node, std::size_t begin, std::size_t end) const;
+    FelidaeIr compileModelRoutedMixfixExpressionIr(const std::shared_ptr<Expr>& expression) const;
 };
 
 } // namespace Felidae

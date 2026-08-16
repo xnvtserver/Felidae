@@ -98,17 +98,17 @@ are always available without any import, because they're dispatched through a
 fixed builtin table rather than a declared `core/*.fx` signature. Import the
 owning module explicitly anyway for clarity and portability.
 
-## Running Programs
+## Compiling And Running Programs
 
-Felidae supports three execution modes:
+Source compilation and VM execution are separate:
 
 ```powershell
-build\felidae.exe program.fx
-build\felidae.exe program.fx '? Query(name: x)'
-build\felidae.exe --repl program.fx
+build\felidae_compiler.exe program.fx
+build\felidae_vm.exe program.fir
 ```
 
-Direct execution calls `main(...)` when present. `main` may declare zero
+The compiler writes a verified sibling `.fir`; the VM loads, verifies, and
+executes that artifact. `main` may declare zero
 arguments (`main() =>`) or accept `arguments: system.stdin` to read CLI args:
 
 ```Felidae
@@ -642,12 +642,9 @@ unsupported-operation error until cancellation semantics are implemented safely.
 bounded, explicit iteration over ordered data without growing one large
 mutable array.
 
-Native libraries and runtime support should stay behind module boundaries
-instead of growing `Interpreter.cpp`. `Memory.cpp` owns fact/type storage and
-compatible-fact caching, `Env.cpp` keeps the environment type boundary explicit,
-and CSV/HTTP support lives under `native_modules/` so the interpreter only
-dispatches to module interfaces. If native modules become dynamic later, the
-loader must map platform extensions explicitly
+Native libraries and runtime support are deferred from the strict IR/Form VM
+path. CSV/HTTP support remains under `native_modules/`; when native services
+are migrated, their loader must map platform extensions explicitly
 (`.dll` on Windows, `.so` on Linux, `.dylib` on macOS) rather than assuming one
 operating system.
 
