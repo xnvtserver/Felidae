@@ -56,7 +56,7 @@ std::size_t widthFor(IrOpcode op) {
     case IrOpcode::LoadSymbol: case IrOpcode::StoreSymbol: case IrOpcode::LoadConst: case IrOpcode::Move:
     case IrOpcode::JumpIfFalse: case IrOpcode::CallNative:
     case IrOpcode::MakeFact: case IrOpcode::Return: return 3;
-    case IrOpcode::Call: case IrOpcode::CallNamed: case IrOpcode::SemanticEval:
+    case IrOpcode::Call: case IrOpcode::CallNamed: case IrOpcode::SemanticEval: case IrOpcode::SsmProcess:
         return 0; // validated below from explicit argument count
     case IrOpcode::MakeArray: return 0; // destination, explicit item count, registers
     case IrOpcode::MakeMap: return 0; // destination, explicit entry count, symbol/register pairs
@@ -164,7 +164,7 @@ void verifyControlFlowInitialization(const FelidaeIr& ir,
         pending.pop_front();
         auto state = *incoming[pc];
         const auto op = static_cast<IrOpcode>(ir.words[pc]);
-        const auto next = pc + (op == IrOpcode::Call || op == IrOpcode::SemanticEval || op == IrOpcode::MakeArray
+        const auto next = pc + (op == IrOpcode::Call || op == IrOpcode::SemanticEval || op == IrOpcode::SsmProcess || op == IrOpcode::MakeArray
             ? dynamicWidth(ir, pc, 1)
             : op == IrOpcode::CallNamed || op == IrOpcode::MakeMap ? dynamicWidth(ir, pc, 2) : widthFor(op));
         auto write = [&](IrWord target) { state[target] = true; };
@@ -179,7 +179,7 @@ void verifyControlFlowInitialization(const FelidaeIr& ir,
         case IrOpcode::Call:
             for (std::size_t i = 0; i < ir.words[pc + 3]; ++i) requireFlowRead(state, ir.words[pc + 4 + i]);
             write(ir.words[pc + 1]); break;
-        case IrOpcode::SemanticEval:
+        case IrOpcode::SemanticEval: case IrOpcode::SsmProcess:
             for (std::size_t i = 0; i < ir.words[pc + 3]; ++i) requireFlowRead(state, ir.words[pc + 4 + i]);
             write(ir.words[pc + 1]); break;
         case IrOpcode::CallNamed:
@@ -394,7 +394,7 @@ void IrVerifier::verify(const FelidaeIr& ir) {
     for (std::size_t scan = 0; scan < ir.words.size();) {
         boundaries.insert(scan);
         const auto opcode = opcodeAt(ir, scan);
-        const auto width = (opcode == IrOpcode::Call || opcode == IrOpcode::SemanticEval || opcode == IrOpcode::MakeArray)
+        const auto width = (opcode == IrOpcode::Call || opcode == IrOpcode::SemanticEval || opcode == IrOpcode::SsmProcess || opcode == IrOpcode::MakeArray)
             ? dynamicWidth(ir, scan, 1)
             : opcode == IrOpcode::CallNamed || opcode == IrOpcode::MakeMap
                 ? dynamicWidth(ir, scan, 2)
@@ -520,7 +520,7 @@ void IrVerifier::verify(const FelidaeIr& ir) {
                 pc += width;
                 break;
             }
-            case IrOpcode::SemanticEval: {
+            case IrOpcode::SemanticEval: case IrOpcode::SsmProcess: {
                 requireWords(ir, pc, 4);
                 requireRegister(ir, ir.words[pc + 1]);
                 if (ir.words[pc + 2] >= ir.symbols.size()) throw IrError("IR semantic operation references an invalid symbol");
@@ -728,7 +728,7 @@ VmValue RegisterVm::execute(const FelidaeIr& ir, VmRuntime& runtime, VmValue sys
                 pc += 4 + count;
                 break;
             }
-            case IrOpcode::SemanticEval: {
+            case IrOpcode::SemanticEval: case IrOpcode::SsmProcess: {
                 const auto semanticSteps = semanticContext.sharedSemanticSteps
                     ? *semanticContext.sharedSemanticSteps : semanticContext.semanticSteps;
                 if (semanticSteps >= semanticContext.maximumSemanticSteps) {

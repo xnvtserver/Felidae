@@ -1,7 +1,9 @@
 #pragma once
 
 #include "Symbol.h"
+#ifndef FELIDAE_GENERATING_MODEL
 #include <FelidaeSentencePieceIds.h>
+#endif
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -315,6 +317,7 @@ inline constexpr const BuiltinTokenDefinition* builtinTokenForSpelling(std::stri
 // Integer grammar vocabulary query.  The parser uses this directly when it
 // assembles non-built-in SentencePiece ranges; no lexer classification is
 // involved.
+#ifndef FELIDAE_GENERATING_MODEL
 inline constexpr bool isBuiltinTokenId(TokenId::Id id) {
     for (const auto builtin : kFelidaeBuiltinSentencePieceIds) {
         if (id == builtin) return true;
@@ -375,7 +378,6 @@ inline constexpr bool isIdentifierBoundaryId(TokenId::Id id) {
     }
 }
 
-#ifndef FELIDAE_GENERATING_MODEL
 inline constexpr bool isDecimalDigitId(TokenId::Id id) {
     return id >= TokenId::DIGIT_0 && id <= TokenId::DIGIT_9;
 }

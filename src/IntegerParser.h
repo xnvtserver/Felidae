@@ -100,6 +100,7 @@ private:
     void step();
     void skipTrivia();
     void alignPiece();
+    std::size_t builtinSequenceLength(TokenId::Id id) const;
     bool at(TokenId::Id id);
     bool match(TokenId::Id id);
     void require(TokenId::Id id, const char* message);

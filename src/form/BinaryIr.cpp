@@ -91,7 +91,7 @@ std::size_t instructionWidth(const std::vector<IrWord>& words, std::size_t pc) {
     case IrOpcode::Add: case IrOpcode::Sub: case IrOpcode::Mul: case IrOpcode::Div: case IrOpcode::Mod:
     case IrOpcode::GetField: case IrOpcode::SetField: return fixed(4);
     case IrOpcode::Compare: return fixed(5);
-    case IrOpcode::Call: case IrOpcode::SemanticEval: case IrOpcode::MakeArray: case IrOpcode::CallNamed: case IrOpcode::MakeMap: {
+    case IrOpcode::Call: case IrOpcode::SemanticEval: case IrOpcode::SsmProcess: case IrOpcode::MakeArray: case IrOpcode::CallNamed: case IrOpcode::MakeMap: {
         fixed(4); const auto stride=(op==IrOpcode::CallNamed||op==IrOpcode::MakeMap)?2u:1u; const auto count=words[pc+3]; if(count>(words.size()-pc-4)/stride)throw IrError("linked IR dynamic instruction is truncated"); return 4+count*stride;
     }
     case IrOpcode::Count: break;
@@ -113,7 +113,7 @@ void rebaseBlockWords(std::vector<IrWord>& words, std::size_t constantBase, std:
         case IrOpcode::LoadConst: adjust(words[pc+2],constantBase); break;
         case IrOpcode::LoadSymbol: case IrOpcode::StoreSymbol: case IrOpcode::CallNative: case IrOpcode::MakeFact: adjust(words[pc+2],symbolBase); break;
         case IrOpcode::GetField: case IrOpcode::SetField: adjust(words[pc+3- (op==IrOpcode::SetField ? 1 : 0)],symbolBase); break;
-        case IrOpcode::Call: case IrOpcode::SemanticEval: adjust(words[pc+2],symbolBase); break;
+        case IrOpcode::Call: case IrOpcode::SemanticEval: case IrOpcode::SsmProcess: adjust(words[pc+2],symbolBase); break;
         case IrOpcode::CallNamed:
             adjust(words[pc+2],symbolBase); for(std::size_t i=0;i<words[pc+3];++i)if(words[pc+4+2*i]!=0)adjust(words[pc+4+2*i],symbolBase); break;
         case IrOpcode::MakeMap: for(std::size_t i=0;i<words[pc+3];++i)adjust(words[pc+4+2*i],symbolBase); break;

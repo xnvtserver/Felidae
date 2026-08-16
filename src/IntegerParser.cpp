@@ -11,11 +11,78 @@
 #include <sentencepiece_processor.h>
 
 #include <algorithm>
+#include <functional>
+#include <unordered_map>
 
 namespace Felidae {
 
 namespace {
 const SymbolId kMainSymbolId = symbolIdForName("main");
+
+bool isFragmentableBuiltin(TokenId::Id id) {
+    switch (id) {
+    case TokenId::IMPORT: case TokenId::NOT: case TokenId::AND: case TokenId::OR:
+    case TokenId::THEN: case TokenId::AS: case TokenId::IF: case TokenId::ELSE:
+    case TokenId::RETURN: case TokenId::WHERE: case TokenId::EXTEND: case TokenId::LAMBDA:
+    case TokenId::TRUE: case TokenId::FALSE: case TokenId::NIL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+std::string pieceFragment(std::string piece) {
+    // SentencePiece's whitespace marker has no lexical spelling once
+    // IntegerParser has already skipped trivia. Byte-fallback pieces are
+    // converted to their original byte so `re` + `turn` and byte fragments
+    // participate in the same finite matching table.
+    constexpr std::string_view marker = "\xE2\x96\x81";
+    if (piece.starts_with(marker)) piece.erase(0, marker.size());
+    if (piece.size() == 6 && piece.starts_with("<0x") && piece[5] == '>') {
+        const auto digit = [](char value) -> int {
+            if (value >= '0' && value <= '9') return value - '0';
+            if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+            return -1;
+        };
+        const int high = digit(piece[3]);
+        const int low = digit(piece[4]);
+        if (high >= 0 && low >= 0) return std::string(1, static_cast<char>((high << 4) | low));
+    }
+    return piece;
+}
+
+const std::vector<std::vector<int>>& builtinPieceSequences(TokenId::Id id) {
+    static std::unordered_map<TokenId::Id, std::vector<std::vector<int>>> cache;
+    if (const auto found = cache.find(id); found != cache.end()) return found->second;
+    auto& sequences = cache[id];
+    const auto spelling = builtinTokenSpelling(id);
+    if (!isFragmentableBuiltin(id) || spelling.empty()) return sequences;
+    const auto& model = felidaeSentencePieceModel();
+    std::vector<std::pair<int, std::string>> pieces;
+    pieces.reserve(static_cast<std::size_t>(model.GetPieceSize()));
+    for (int pieceId = 0; pieceId < model.GetPieceSize(); ++pieceId) {
+        auto fragment = pieceFragment(model.IdToPiece(pieceId));
+        if (!fragment.empty() && fragment.size() <= spelling.size()) {
+            pieces.emplace_back(pieceId, std::move(fragment));
+        }
+    }
+    std::vector<int> current;
+    const auto collect = [&](const auto& self, std::size_t offset) -> void {
+        if (sequences.size() >= 64) return;
+        if (offset == spelling.size()) {
+            sequences.push_back(current);
+            return;
+        }
+        for (const auto& [pieceId, fragment] : pieces) {
+            if (!spelling.substr(offset).starts_with(fragment)) continue;
+            current.push_back(pieceId);
+            self(self, offset + fragment.size());
+            current.pop_back();
+        }
+    };
+    collect(collect, 0);
+    return sequences;
+}
 
 bool hasValueReturn(const std::vector<std::shared_ptr<Goal>>& goals) {
     for (const auto& goal : goals) {
@@ -112,16 +179,39 @@ void IntegerParser::skipTrivia() {
     alignPiece();
 }
 
+std::size_t IntegerParser::builtinSequenceLength(TokenId::Id id) const {
+    const auto& entries = input_.entries();
+    if (piece_ >= entries.size()) return 0;
+    if (entries[piece_].id == id) return 1;
+    if (!isFragmentableBuiltin(id)) return 0;
+    for (const auto& sequence : builtinPieceSequences(id)) {
+        if (sequence.size() < 2 || piece_ + sequence.size() > entries.size()) continue;
+        std::size_t cursor = byte_;
+        bool matches = true;
+        for (std::size_t index = 0; index < sequence.size(); ++index) {
+            const auto& entry = entries[piece_ + index];
+            if (entry.id != sequence[index] || entry.begin > cursor || entry.end <= cursor) {
+                matches = false;
+                break;
+            }
+            cursor = entry.end;
+        }
+        if (matches) return sequence.size();
+    }
+    return 0;
+}
+
 bool IntegerParser::at(TokenId::Id id) {
     skipTrivia();
-    const auto& pieces = input_.entries();
-    return piece_ < pieces.size() && pieces[piece_].id == id;
+    return builtinSequenceLength(id) != 0;
 }
 
 bool IntegerParser::match(TokenId::Id id) {
     if (!at(id)) return false;
-    const auto& entry = input_.entries()[piece_++];
-    byte_ = entry.end;
+    const auto count = builtinSequenceLength(id);
+    const auto& entries = input_.entries();
+    byte_ = entries[piece_ + count - 1].end;
+    piece_ += count;
     return true;
 }
 
@@ -663,7 +753,29 @@ std::vector<std::shared_ptr<Goal>> IntegerParser::parseGoalList(TokenId::Id term
         }
         if (match(TokenId::COMMA)) continue;
         if (atEnd() || at(terminator) || at(TokenId::ELSE)) break;
-        if (!sourceContainsLineBreak(before, byte_) || sourceLineIndent(byte_) < bodyIndent) break;
+        if (!sourceContainsLineBreak(before, byte_) ||
+            sourceLineIndent(byte_) < bodyIndent) break;
+        if (bodyIndent == 0) {
+            // Zero-indented multi-line method bodies are supported for
+            // compatibility.  They are ambiguous with the next top-level
+            // declaration, so detect only unambiguous statement starters
+            // without re-tokenizing source: annotations/imports, a callable
+            // clause head. An assignment remains part of this body: without
+            // indentation, a local assignment and a following global binding
+            // are otherwise indistinguishable, and method-local semantics
+            // take precedence until an explicit declaration boundary.
+            if (at(TokenId::AT) || at(TokenId::IMPORT)) break;
+            const auto statementByte = byte_;
+            const auto statementPiece = piece_;
+            bool topLevelStatement = false;
+            if (atNameRange()) {
+                (void)consumeQualifiedName();
+                topLevelStatement = at(TokenId::LPAREN);
+            }
+            byte_ = statementByte;
+            piece_ = statementPiece;
+            if (topLevelStatement) break;
+        }
     } while (true);
     return goals;
 }
@@ -862,7 +974,8 @@ std::shared_ptr<Expr> IntegerParser::parsePrimary() {
         stamp(result, begin, byte_);
         return result;
     }
-    throw IntegerParserError("Expected an expression");
+    throw IntegerParserError("Expected an expression at source byte " +
+                             std::to_string(byte_));
 }
 
 std::shared_ptr<Expr> IntegerParser::parseExpression() {
