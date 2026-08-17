@@ -111,57 +111,6 @@ private:
     std::unique_ptr<Implementation> implementation_;
 };
 
-// A separate recurrent backend for SemanticEval in the register VM.  It does
-// not share a decoder or vocabulary with the compiler model: compiler output
-// is structural IR, whereas this model selects from a finite set of typed
-// runtime-result actions.  Input references preserve arbitrary VM values
-// (facts, text, arrays, maps, and numeric values) without serializing them or
-// coercing them to booleans.
-enum class RuntimeOutputTokenKind : std::uint8_t {
-    InputReference,
-    Nil,
-    Boolean,
-};
-
-struct RuntimeOutputToken {
-    RuntimeOutputTokenKind kind = RuntimeOutputTokenKind::Nil;
-    std::size_t value = 0; // input index or boolean value (0/1)
-};
-
-class GruRuntimeStateModel final : public RuntimeStateModel {
-public:
-    struct Configuration {
-        std::int64_t inputVocabularySize = 0;
-        std::int64_t outputVocabularySize = 0;
-        std::int64_t embeddingSize = 64;
-        std::int64_t hiddenSize = 128;
-        std::int64_t layerCount = 1;
-        // Used only by explicit tests/training tools. Production inference
-        // requires a saved C++ LibTorch artifact.
-        bool allowRandomInitialization = false;
-    };
-
-    GruRuntimeStateModel(Configuration configuration,
-                         std::vector<RuntimeOutputToken> outputVocabulary,
-                         const std::filesystem::path& artifactPath = {});
-    ~GruRuntimeStateModel() override;
-    GruRuntimeStateModel(GruRuntimeStateModel&&) noexcept;
-    GruRuntimeStateModel& operator=(GruRuntimeStateModel&&) noexcept;
-    GruRuntimeStateModel(const GruRuntimeStateModel&) = delete;
-    GruRuntimeStateModel& operator=(const GruRuntimeStateModel&) = delete;
-
-    std::shared_ptr<void> createExecutionState() override;
-    Value evaluate(const RuntimeOperation& operation, std::span<const Value> inputs,
-                   RuntimeContext& context) override;
-    void saveArtifact(const std::filesystem::path& artifactPath) const;
-
-private:
-    class Implementation;
-    Configuration configuration_;
-    std::vector<RuntimeOutputToken> outputVocabulary_;
-    std::unique_ptr<Implementation> implementation_;
-};
-
 // Shared by every backend: converts a finite decoder token stream to legal IR
 // words and refuses unbounded output or missing IR_END.
 std::vector<IrWord> resolveMixfixIrTokens(

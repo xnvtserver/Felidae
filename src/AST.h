@@ -89,11 +89,21 @@ public:
 
 class StringExpr final : public Expr {
 public:
-    explicit StringExpr(std::string value) : value(std::move(value)) {}
+    explicit StringExpr(std::string value, std::vector<std::uint32_t> sentencePieceIds = {},
+                        bool containsEscape = false)
+        : value(std::move(value)), sentencePieceIds(std::move(sentencePieceIds)),
+          containsEscape(containsEscape) {}
     std::string value;
+    // Captured from the parser's sole full-source SentencePiece encode. The
+    // compiler writes these IDs directly into IR text constants; it never
+    // invokes a second tokenizer for an already parsed literal.
+    std::vector<std::uint32_t> sentencePieceIds;
+    bool containsEscape = false;
 
     ExprKind kind() const override { return ExprKind::String; }
-    std::shared_ptr<Expr> clone() const override { return std::make_shared<StringExpr>(value); }
+    std::shared_ptr<Expr> clone() const override {
+        return std::make_shared<StringExpr>(value, sentencePieceIds, containsEscape);
+    }
     std::string debug() const override {
         std::ostringstream oss;
         oss << '"';
@@ -403,14 +413,19 @@ public:
     OperatorExpression(OperatorId operatorId,
                        PatternId patternId,
                        std::vector<OperatorCapture> captures,
-                       bool explicitlyGrouped = false)
+                       bool explicitlyGrouped = false,
+                       SymbolId resolvedMethodId = 0)
         : operatorId(operatorId), patternId(patternId), coreOperator(CoreOperator::Unknown),
-          explicitlyGrouped(explicitlyGrouped), namedCaptures_(std::move(captures)) {}
+          explicitlyGrouped(explicitlyGrouped), resolvedMethodId(resolvedMethodId),
+          namedCaptures_(std::move(captures)) {}
 
     OperatorId operatorId = 0;
     PatternId patternId = 0;
     CoreOperator coreOperator = CoreOperator::Unknown;
     bool explicitlyGrouped = false;
+    // Compiler-only binding for a unique annotation-declared mixfix target.
+    // The VM receives only the ordinary Call instruction generated from it.
+    SymbolId resolvedMethodId = 0;
     std::string module;
 
     size_t captureCount() const {
@@ -443,11 +458,13 @@ public:
             for (const auto& capture : namedCaptures_) {
                 copied.emplace_back(capture.name, capture.expression->clone());
             }
-            result = std::make_shared<OperatorExpression>(operatorId, patternId, std::move(copied), explicitlyGrouped);
+            result = std::make_shared<OperatorExpression>(operatorId, patternId, std::move(copied),
+                                                          explicitlyGrouped, resolvedMethodId);
         }
         result->operatorId = operatorId;
         result->patternId = patternId;
         result->explicitlyGrouped = explicitlyGrouped;
+        result->resolvedMethodId = resolvedMethodId;
         result->module = module;
         result->sourceSpan = sourceSpan;
         return result;

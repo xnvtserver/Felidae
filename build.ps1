@@ -3,7 +3,9 @@ param(
     [string] $Target = "native",
     [ValidateSet("debug", "release", "production", "sanitize")]
     [string] $Configuration = "release",
-    [switch] $WarningsAsErrors
+    [switch] $WarningsAsErrors,
+    [switch] $Dist,
+    [switch] $Beta
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,7 +49,8 @@ if ($Configuration -eq "sanitize") {
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
 
 $jobs = if ($env:FELIDAE_JOBS) { $env:FELIDAE_JOBS } else { "1" }
-& $cmakePath --build $buildDir --config $buildType --target felidae_compiler felidae_vm --parallel $jobs
+$targets = if ($Beta) { @("felidae_beta") } elseif ($Dist) { @("felidae_dist") } else { @("felidae_compiler", "felidae_vm") }
+& $cmakePath --build $buildDir --config $buildType --target $targets --parallel $jobs
 if ($LASTEXITCODE -ne 0) { throw "CMake build failed" }
 
 foreach ($executable in @("felidae_compiler.exe", "felidae_vm.exe")) {
@@ -55,4 +58,7 @@ foreach ($executable in @("felidae_compiler.exe", "felidae_vm.exe")) {
     if ($IsWindows -and -not (Test-Path $path)) {
         throw "Build completed but expected executable was not created: $path"
     }
+}
+if (($Dist -or $Beta) -and -not (Test-Path (Join-Path $root "dist\models\felidae.model"))) {
+    throw "Distribution staging completed without dist\models\felidae.model"
 }

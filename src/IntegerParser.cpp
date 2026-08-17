@@ -11,6 +11,7 @@
 #include <sentencepiece_processor.h>
 
 #include <algorithm>
+#include <cctype>
 #include <functional>
 #include <unordered_map>
 
@@ -321,9 +322,10 @@ std::string IntegerParser::consumeNameRange() {
     return input_.source().substr(begin, byte_ - begin);
 }
 
-std::string IntegerParser::consumeString() {
+IntegerParser::StringLiteral IntegerParser::consumeString() {
     require(TokenId::QUOTE, "Expected a string literal");
     std::vector<int> ids;
+    bool containsEscape = false;
     while (piece_ < input_.entries().size()) {
         const auto id = input_.entries()[piece_].id;
         if (id == TokenId::QUOTE) {
@@ -355,9 +357,18 @@ std::string IntegerParser::consumeString() {
                         break;
                 }
             }
-            return unescaped;
+            StringLiteral literal;
+            literal.value = std::move(unescaped);
+            literal.containsEscape = containsEscape;
+            literal.sentencePieceIds.reserve(ids.size());
+            for (const auto piece : ids) {
+                if (piece < 0) throw IntegerParserError("SentencePiece emitted an invalid string piece");
+                literal.sentencePieceIds.push_back(static_cast<std::uint32_t>(piece));
+            }
+            return literal;
         }
         if (id == TokenId::BACKSLASH) {
+            containsEscape = true;
             ids.push_back(id);
             byte_ = input_.entries()[piece_++].end;
             if (piece_ == input_.entries().size()) throw IntegerParserError("Unterminated string escape");
@@ -528,39 +539,32 @@ Call IntegerParser::parseAnnotation() {
 const OperatorPatternDefinition& IntegerParser::registerOperatorPattern(
     OperatorPatternDefinition pattern) {
     if (!operators_) throw IntegerParserError("Operator registry is unavailable");
-    // Pattern structure is parsed once by the registry.  Its literal anchors
-    // are then encoded once into model-local integer sequences, before the
-    // pattern becomes visible to the integer matcher.
+    // Pattern structure is registered independently from source IDs. Literal
+    // anchors are matched against offsets from the one full-source
+    // SentencePiece encode; do not encode each anchor again.
     OperatorRegistry::compilePattern(pattern);
-    const auto& model = felidaeSentencePieceModel();
-    for (auto& anchor : pattern.anchorLexemes) {
-        for (auto& lexeme : anchor) {
-            sentencepiece::SentencePieceText encoded;
-            const auto status = model.Encode(lexeme.spelling, &encoded);
-            if (!status.ok() || encoded.pieces_size() == 0) {
-                throw IntegerParserError("Unable to encode mixfix anchor '" + lexeme.spelling + "'");
-            }
-            lexeme.pieceIds.clear();
-            lexeme.pieceIds.reserve(encoded.pieces_size());
-            for (const auto& piece : encoded.pieces()) {
-                lexeme.pieceIds.push_back(static_cast<int>(piece.id()));
-            }
-        }
-    }
     return operators_->registerPattern(std::move(pattern));
 }
 
 void IntegerParser::prepareOperatorAnnotation(const Call& annotation) {
-    if (!operators_ || (annotation.builtinId != BuiltinId::OverloadAnnotation &&
-                        annotation.builtinId != BuiltinId::MixfixAnnotation &&
-                        annotation.builtinId != BuiltinId::MatcherAnnotation)) return;
+    const bool overload = annotation.builtinId == BuiltinId::OverloadAnnotation || annotation.name == "overload";
+    const bool mixfix = annotation.builtinId == BuiltinId::MixfixAnnotation || annotation.name == "mixfix";
+    const bool matcherAnnotation = annotation.builtinId == BuiltinId::MatcherAnnotation || annotation.name == "matcher";
+    if (!operators_ || (!overload && !mixfix && !matcherAnnotation)) return;
+    // SentencePiece may fragment an annotation spelling differently while the
+    // canonical decoded name remains exact. Normalize the parser-owned call
+    // here rather than requiring one tokenization for language syntax.
+    Call normalized = annotation;
+    if (overload) normalized.builtinId = BuiltinId::OverloadAnnotation;
+    else if (mixfix) normalized.builtinId = BuiltinId::MixfixAnnotation;
+    else normalized.builtinId = BuiltinId::MatcherAnnotation;
     ParsedOperatorAnnotation parsed;
     try {
-        parsed = decodeOperatorAnnotation(annotation);
+        parsed = decodeOperatorAnnotation(normalized);
     } catch (const std::runtime_error& error) {
         throw IntegerParserError(error.what());
     }
-    const bool matcher = annotation.builtinId == BuiltinId::MatcherAnnotation;
+    const bool matcher = normalized.builtinId == BuiltinId::MatcherAnnotation;
     const OperatorPatternDefinition* pattern = nullptr;
     try {
         if (parsed.pattern.empty()) {
@@ -794,11 +798,11 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
         std::vector<std::string> paths;
         if (match(TokenId::LPAREN)) {
             if (!at(TokenId::RPAREN)) {
-                do { paths.push_back(consumeString()); } while (match(TokenId::COMMA));
+                do { paths.push_back(consumeString().value); } while (match(TokenId::COMMA));
             }
             require(TokenId::RPAREN, "Expected ')' after import paths");
         } else {
-            paths.push_back(consumeString());
+            paths.push_back(consumeString().value);
         }
         consumeStatementTerminator(begin);
         auto result = std::make_shared<ImportStmt>(std::move(paths));
@@ -877,6 +881,7 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
         throw IntegerParserError("Annotations can only be applied to complete method declarations");
     }
     result->annotations = std::move(annotations);
+    for (const auto& annotation : result->annotations) registerOperatorImplementation(annotation, *result);
     stamp(result, begin, byte_);
     return result;
 }
@@ -928,12 +933,32 @@ std::shared_ptr<Expr> IntegerParser::parsePrimary() {
     skipTrivia();
     const std::size_t begin = byte_;
     if (at(TokenId::QUOTE)) {
-        auto result = std::make_shared<StringExpr>(consumeString());
+        auto literal = consumeString();
+        auto result = std::make_shared<StringExpr>(std::move(literal.value),
+                                                   std::move(literal.sentencePieceIds),
+                                                   literal.containsEscape);
         stamp(result, begin, byte_);
         return result;
     }
     if (piece_ < input_.entries().size() && isDecimalDigitId(input_.entries()[piece_].id)) {
-        auto result = std::make_shared<NumberExpr>(consumeNumber());
+        auto number = consumeNumber();
+        // A postfix percent is a numeric literal, not modulo: `75%` is the
+        // threshold 0.75. `%` remains modulo whenever a right operand follows.
+        const auto beforePercentByte = byte_;
+        const auto beforePercentPiece = piece_;
+        // Percent is postfix only when immediately attached to its number.
+        // Whitespace-delimited `%` remains the binary modulo operator.
+        if (byte_ > 0 && byte_ < input_.source().size() &&
+            input_.source()[byte_ - 1] != ' ' && input_.source()[byte_ - 1] != '\t' &&
+            input_.source()[byte_] == '%' &&
+            piece_ < input_.entries().size() && input_.entries()[piece_].id == TokenId::PERCENT) {
+            byte_ = input_.entries()[piece_++].end;
+            const bool hasRightOperand = (piece_ < input_.entries().size() && isDecimalDigitId(input_.entries()[piece_].id)) ||
+                atNameRange() || at(TokenId::LPAREN) || at(TokenId::LBRACKET) || at(TokenId::LBRACE);
+            if (hasRightOperand) { byte_ = beforePercentByte; piece_ = beforePercentPiece; }
+            else number /= 100.0;
+        }
+        auto result = std::make_shared<NumberExpr>(number);
         stamp(result, begin, byte_);
         return result;
     }
@@ -992,27 +1017,59 @@ bool IntegerParser::atPatternLexeme(const PatternLexeme& lexeme) {
 }
 
 bool IntegerParser::matchPatternLexeme(const PatternLexeme& lexeme) {
-    if (lexeme.pieceIds.empty()) return false;
     const auto& entries = input_.entries();
     const auto savedByte = byte_;
     const auto savedPiece = piece_;
     skipTrivia();
     std::size_t wanted = 0;
-    while (wanted < lexeme.pieceIds.size()) {
+    while (!lexeme.pieceIds.empty() && wanted < lexeme.pieceIds.size()) {
         if (piece_ >= entries.size() || entries[piece_].begin > byte_ ||
             entries[piece_].end <= byte_) {
-            byte_ = savedByte;
-            piece_ = savedPiece;
-            return false;
+            break;
         }
         if (entries[piece_].id != lexeme.pieceIds[wanted]) {
-            byte_ = savedByte;
-            piece_ = savedPiece;
-            return false;
+            break;
         }
         ++wanted;
         byte_ = entries[piece_++].end;
     }
+    if (!lexeme.pieceIds.empty() && wanted == lexeme.pieceIds.size()) return true;
+
+    // Anchors are registered once, but SentencePiece IDs are emitted from one
+    // complete source encode.  The same spelling may therefore be one piece,
+    // several pieces, or carry a neighbouring whitespace piece.  Use the
+    // original encode offsets to recognize the registered literal spelling;
+    // this is not a second tokenizer or a string grammar.
+    byte_ = savedByte;
+    piece_ = savedPiece;
+    skipTrivia();
+    const auto start = byte_;
+    const auto end = start + lexeme.spelling.size();
+    const auto& source = input_.source();
+    if (end > source.size() || source.compare(start, lexeme.spelling.size(), lexeme.spelling) != 0) {
+        byte_ = savedByte;
+        piece_ = savedPiece;
+        return false;
+    }
+    // A word-shaped anchor must end at a source identifier boundary. Without
+    // this, `plan` could incorrectly assemble inside `planar` when the model
+    // fragments that identifier differently from a declaration anchor.
+    const auto isIdentifierByte = [](unsigned char value) {
+        return std::isalnum(value) != 0 || value == '_';
+    };
+    if (!lexeme.spelling.empty() && isIdentifierByte(static_cast<unsigned char>(lexeme.spelling.back())) &&
+        end < source.size() && isIdentifierByte(static_cast<unsigned char>(source[end]))) {
+        byte_ = savedByte;
+        piece_ = savedPiece;
+        return false;
+    }
+    while (piece_ < entries.size() && entries[piece_].end <= end) ++piece_;
+    if (piece_ < entries.size() && entries[piece_].begin < end) {
+        byte_ = savedByte;
+        piece_ = savedPiece;
+        return false;
+    }
+    byte_ = end;
     return true;
 }
 
@@ -1041,7 +1098,7 @@ std::shared_ptr<Expr> IntegerParser::tryParseLeadingPattern() {
     if (!operators_) return {};
     const auto startByte = byte_;
     const auto startPiece = piece_;
-    std::shared_ptr<Expr> selected;
+    std::shared_ptr<OperatorExpression> selected;
     std::size_t selectedByte = startByte;
     std::size_t selectedPiece = startPiece;
     for (const auto& pattern : operators_->patterns()) {
@@ -1071,9 +1128,17 @@ std::shared_ptr<Expr> IntegerParser::tryParseLeadingPattern() {
                     throw IntegerParserError("mixfix candidate did not consume its next anchor");
                 }
             }
-            if (!selected || byte_ > selectedByte) {
-                selected = std::make_shared<OperatorExpression>(
-                    pattern.operatorId, pattern.patternId, std::move(captures));
+            auto candidate = std::make_shared<OperatorExpression>(
+                pattern.operatorId, pattern.patternId, std::move(captures));
+            candidate->resolvedMethodId = resolveMixfixMethod(*candidate);
+            if (candidate->resolvedMethodId == 0 && mixfixModel_) {
+                candidate->resolvedMethodId = resolveModelMixfixMethod(candidate);
+            }
+            stamp(candidate, startByte, byte_);
+            if (!selected || byte_ > selectedByte ||
+                (byte_ == selectedByte && candidate->resolvedMethodId != 0 &&
+                 selected->resolvedMethodId == 0)) {
+                selected = std::move(candidate);
                 selectedByte = byte_;
                 selectedPiece = piece_;
             }
@@ -1092,9 +1157,17 @@ std::shared_ptr<Expr> IntegerParser::tryParseLeadingPattern() {
 std::shared_ptr<Expr> IntegerParser::tryParseTrailingPattern(std::shared_ptr<Expr> left,
                                                               int minimumPrecedence) {
     if (!operators_) return {};
+    const auto leftSpan = left->sourceSpan;
     const auto startByte = byte_;
     const auto startPiece = piece_;
-    std::shared_ptr<Expr> immediate;
+    const auto stampTrailing = [&](const std::shared_ptr<OperatorExpression>& expression,
+                                   std::size_t endByte) {
+        expression->sourceSpan = leftSpan;
+        const auto ending = span(startByte, endByte);
+        expression->sourceSpan.endLine = ending.endLine;
+        expression->sourceSpan.endColumn = ending.endColumn;
+    };
+    std::shared_ptr<OperatorExpression> immediate;
     std::size_t immediateByte = startByte;
     std::size_t immediatePiece = startPiece;
     for (const auto& pattern : operators_->patterns()) {
@@ -1129,6 +1202,11 @@ std::shared_ptr<Expr> IntegerParser::tryParseTrailingPattern(std::shared_ptr<Exp
             if (!immediate || byte_ > immediateByte) {
                 immediate = std::make_shared<OperatorExpression>(
                     pattern.operatorId, pattern.patternId, std::move(captures));
+                immediate->resolvedMethodId = resolveMixfixMethod(*immediate);
+                if (immediate->resolvedMethodId == 0 && mixfixModel_) {
+                    immediate->resolvedMethodId = resolveModelMixfixMethod(immediate);
+                }
+                stampTrailing(immediate, byte_);
                 immediateByte = byte_;
                 immediatePiece = piece_;
             }
@@ -1163,7 +1241,7 @@ std::shared_ptr<Expr> IntegerParser::tryParseTrailingPattern(std::shared_ptr<Exp
     if (!selected) {
         const auto deferredStartByte = byte_;
         const auto deferredStartPiece = piece_;
-        std::shared_ptr<Expr> deferred;
+        std::shared_ptr<OperatorExpression> deferred;
         std::size_t deferredByte = deferredStartByte;
         std::size_t deferredPiece = deferredStartPiece;
         for (const auto* pattern : operators_->deferredTrailingCapturePatterns()) {
@@ -1194,6 +1272,11 @@ std::shared_ptr<Expr> IntegerParser::tryParseTrailingPattern(std::shared_ptr<Exp
                 if (!deferred || byte_ > deferredByte) {
                     deferred = std::make_shared<OperatorExpression>(
                         pattern->operatorId, pattern->patternId, std::move(captures));
+                    deferred->resolvedMethodId = resolveMixfixMethod(*deferred);
+                    if (deferred->resolvedMethodId == 0 && mixfixModel_) {
+                        deferred->resolvedMethodId = resolveModelMixfixMethod(deferred);
+                    }
+                    stampTrailing(deferred, byte_);
                     deferredByte = byte_;
                     deferredPiece = piece_;
                 }
@@ -1238,8 +1321,14 @@ std::shared_ptr<Expr> IntegerParser::tryParseTrailingPattern(std::shared_ptr<Exp
             }
         }
     }
-    return std::make_shared<OperatorExpression>(selected->operatorId, selected->patternId,
-                                                std::move(captures));
+    auto expression = std::make_shared<OperatorExpression>(selected->operatorId, selected->patternId,
+                                                            std::move(captures));
+    expression->resolvedMethodId = resolveMixfixMethod(*expression);
+    if (expression->resolvedMethodId == 0 && mixfixModel_) {
+        expression->resolvedMethodId = resolveModelMixfixMethod(expression);
+    }
+    stampTrailing(expression, byte_);
+    return expression;
 }
 
 std::shared_ptr<Expr> IntegerParser::parseUnary() {
@@ -1340,7 +1429,8 @@ FelidaeIr IntegerParser::compileModelRoutedMixfixExpressionIr(
     constexpr std::size_t kMaximumMixfixReferences = 64;
     FelidaeIr shell;
     shell.registerCount = kMaximumMixfixRegisters;
-    const auto addConstant = [&](IrConstantKind kind, IrWord value, std::string text = {}) {
+    const auto addConstant = [&](IrConstantKind kind, IrWord value,
+                                 std::vector<std::uint32_t> text = {}) {
         if (shell.constants.size() >= kMaximumMixfixReferences) {
             throw IntegerParserError("mixfix compiler context has too many constants");
         }
@@ -1352,6 +1442,7 @@ FelidaeIr IntegerParser::compileModelRoutedMixfixExpressionIr(
         shell.constantKinds.push_back(kind);
     };
     const auto addSymbol = [&](SymbolId symbol) {
+        if (std::find(shell.symbols.begin(), shell.symbols.end(), symbol) != shell.symbols.end()) return;
         if (shell.symbols.size() >= kMaximumMixfixReferences) {
             throw IntegerParserError("mixfix compiler context has too many symbols");
         }
@@ -1365,7 +1456,10 @@ FelidaeIr IntegerParser::compileModelRoutedMixfixExpressionIr(
         } else if (std::dynamic_pointer_cast<NilExpr>(node)) {
             addConstant(IrConstantKind::Nil, 0);
         } else if (const auto text = std::dynamic_pointer_cast<StringExpr>(node)) {
-            addConstant(IrConstantKind::Text, 0, text->value);
+            if (text->containsEscape || text->sentencePieceIds.empty()) {
+                throw IntegerParserError("string literal cannot be lowered without its original SentencePiece IDs");
+            }
+            addConstant(IrConstantKind::Text, 0, text->sentencePieceIds);
         } else if (const auto variable = std::dynamic_pointer_cast<VarExpr>(node)) {
             addSymbol(variable->nameId);
         } else if (const auto array = std::dynamic_pointer_cast<ArrayExpr>(node)) {
@@ -1383,6 +1477,11 @@ FelidaeIr IntegerParser::compileModelRoutedMixfixExpressionIr(
         }
     };
     collect(collect, expression);
+    if (const auto operation = std::dynamic_pointer_cast<OperatorExpression>(expression)) {
+        for (const auto* overload : operators_->overloadsForPattern(operation->patternId)) {
+            addSymbol(overload->methodId);
+        }
+    }
 
     MixfixContext context;
     context.maximumOutputWords = 4096;
@@ -1422,16 +1521,7 @@ FelidaeIr IntegerParser::compileModelRoutedMixfixExpressionIr(
         ++pastLastPiece;
     }
     if (firstPiece == pastLastPiece) {
-        // Some legacy AST nodes predate span stamping for custom operators.
-        // Their source span is therefore empty even though the parser still
-        // owns one canonical encoded input. Keep the neural boundary safe by
-        // using that single encode, never a second tokenizer; normal stamped
-        // nodes continue to use their selected region above.
-        firstPiece = 0;
-        pastLastPiece = input_.entries().size();
-        if (pastLastPiece == 0) {
-            throw IntegerParserError("mixfix compiler input is empty");
-        }
+        throw IntegerParserError("mixfix compiler expression has no bounded SentencePiece source span");
     }
     return compileVerifiedMixfixSpanIr(*mixfixModel_, context, std::move(shell), firstPiece, pastLastPiece);
 }
@@ -1457,7 +1547,93 @@ FelidaeIr IntegerParser::compileVerifiedMixfixSpanIr(MixfixStateModel& model,
     }
 }
 
-FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& expression) {
+void IntegerParser::registerOperatorImplementation(const Call& annotation,
+                                                    const ClauseStmt& method) {
+    if (!operators_) return;
+    const bool overload = annotation.builtinId == BuiltinId::OverloadAnnotation || annotation.name == "overload";
+    const bool mixfix = annotation.builtinId == BuiltinId::MixfixAnnotation || annotation.name == "mixfix";
+    if (!overload && !mixfix) return;
+    Call normalized = annotation;
+    normalized.builtinId = mixfix ? BuiltinId::MixfixAnnotation : BuiltinId::OverloadAnnotation;
+    try {
+        const auto parsed = decodeOperatorAnnotation(normalized);
+        const auto* pattern = parsed.pattern.empty()
+            ? operators_->findPatternByOperator(parsed.operatorName)
+            : operators_->findPattern(parsed.operatorName, parsed.pattern);
+        if (!pattern) throw IntegerParserError("operator implementation has no registered pattern");
+        operators_->registerOverload(makeOperatorOverloadDefinition(
+            parsed, *pattern, method.head.name, method.head.nameId, method.module));
+    } catch (const std::runtime_error& error) {
+        throw IntegerParserError(error.what());
+    }
+}
+
+SymbolId IntegerParser::resolveMixfixMethod(const OperatorExpression& expression) const {
+    if (!operators_) return 0;
+    const auto expressionType = [](const std::shared_ptr<Expr>& expression) {
+        if (std::dynamic_pointer_cast<NumberExpr>(expression)) return LanguageTypeId::Number;
+        if (std::dynamic_pointer_cast<StringExpr>(expression)) return LanguageTypeId::String;
+        if (std::dynamic_pointer_cast<BoolExpr>(expression)) return LanguageTypeId::Bool;
+        if (std::dynamic_pointer_cast<ArrayExpr>(expression)) return LanguageTypeId::Array;
+        if (const auto variable = std::dynamic_pointer_cast<VarExpr>(expression)) return variable->languageTypeId;
+        return LanguageTypeId::Unknown;
+    };
+    std::vector<const OperatorOverloadDefinition*> matches;
+    for (const auto* candidate : operators_->overloadsForPattern(expression.patternId)) {
+        if (candidate->captures.size() != expression.captureCount()) continue;
+        bool compatible = true;
+        for (std::size_t index = 0; index < expression.captureCount(); ++index) {
+            const auto wanted = candidate->captures[index].languageTypeId;
+            const auto actual = expressionType(expression.capture(index));
+            if (wanted != LanguageTypeId::Unknown && wanted != LanguageTypeId::Any &&
+                actual != LanguageTypeId::Unknown && actual != wanted &&
+                !(wanted == LanguageTypeId::Number &&
+                  (actual == LanguageTypeId::Int || actual == LanguageTypeId::Float ||
+                   actual == LanguageTypeId::Double || actual == LanguageTypeId::Decimal))) {
+                compatible = false;
+                break;
+            }
+        }
+        if (compatible) matches.push_back(candidate);
+    }
+    return matches.size() == 1 ? matches.front()->methodId : 0;
+}
+
+SymbolId IntegerParser::resolveModelMixfixMethod(
+    const std::shared_ptr<OperatorExpression>& expression) const {
+    const auto ir = compileModelRoutedMixfixExpressionIr(expression);
+    std::unordered_set<SymbolId> selected;
+    for (std::size_t pc = 0; pc < ir.words.size();) {
+        const auto opcode = static_cast<IrOpcode>(ir.words[pc]);
+        if (opcode == IrOpcode::Call || opcode == IrOpcode::CallNamed) {
+            const auto index = static_cast<std::size_t>(ir.words[pc + 2]);
+            if (index >= ir.symbols.size()) throw IntegerParserError("mixfix model call has an invalid symbol reference");
+            selected.insert(ir.symbols[index]);
+        }
+        switch (opcode) {
+        case IrOpcode::End: ++pc; break;
+        case IrOpcode::Call: case IrOpcode::SemanticEval: case IrOpcode::SsmProcess: case IrOpcode::MakeArray:
+            pc += 4 + ir.words[pc + 3]; break;
+        case IrOpcode::CallNamed: case IrOpcode::MakeMap:
+            pc += 4 + ir.words[pc + 3] * 2; break;
+        case IrOpcode::Jump: pc += 2; break;
+        case IrOpcode::LoadConst: case IrOpcode::LoadSymbol: case IrOpcode::StoreSymbol: case IrOpcode::Move:
+        case IrOpcode::JumpIfFalse: case IrOpcode::CallNative: case IrOpcode::MakeFact: case IrOpcode::Return: pc += 3; break;
+        case IrOpcode::ForEachFact: case IrOpcode::Add: case IrOpcode::Sub: case IrOpcode::Mul: case IrOpcode::Div:
+        case IrOpcode::Mod: case IrOpcode::GetField: case IrOpcode::SetField: case IrOpcode::Similarity: pc += 4; break;
+        case IrOpcode::Membership: pc += 6; break;
+        case IrOpcode::Compare: pc += 5; break;
+        case IrOpcode::Count: throw IntegerParserError("mixfix model emitted an invalid opcode");
+        }
+    }
+    if (selected.size() != 1) {
+        throw IntegerParserError("mixfix model must emit exactly one target procedure call");
+    }
+    return *selected.begin();
+}
+
+FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& expression,
+                                                 const std::unordered_set<SymbolId>& factTypes) {
     FelidaeIr ir;
     const auto addNumber = [&](double number) {
         ir.constants.push_back(encodeIrNumber(number));
@@ -1469,8 +1645,11 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
         ir.constantKinds.push_back(IrConstantKind::Boolean);
         return static_cast<IrWord>(ir.constants.size() - 1);
     };
-    const auto addText = [&](const std::string& text) {
-        ir.texts.push_back(text);
+    const auto addText = [&](const StringExpr& text) {
+        if (text.containsEscape || text.sentencePieceIds.empty()) {
+            throw IntegerParserError("string literal cannot be lowered without its original SentencePiece IDs");
+        }
+        ir.texts.push_back(text.sentencePieceIds);
         ir.constants.push_back(static_cast<IrWord>(ir.texts.size() - 1));
         ir.constantKinds.push_back(IrConstantKind::Text);
         return static_cast<IrWord>(ir.constants.size() - 1);
@@ -1491,7 +1670,7 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
                                              addBoolean(boolean->value)});
         } else if (const auto text = std::dynamic_pointer_cast<StringExpr>(value)) {
             ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst), result,
-                                             addText(text->value)});
+                                             addText(*text)});
         } else if (std::dynamic_pointer_cast<NilExpr>(value)) {
             ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst), result,
                                              addNil()});
@@ -1500,6 +1679,39 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
             ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadSymbol), result,
                                              static_cast<IrWord>(ir.symbols.size() - 1)});
         } else if (const auto term = std::dynamic_pointer_cast<TermExpr>(value)) {
+            if (term->nameId == symbolIdForName("for_each_fact")) {
+                if (term->args.size() != 2) throw IntegerParserError("for_each_fact requires a fact type and callback");
+                const auto type = std::dynamic_pointer_cast<VarExpr>(term->args[0].value);
+                const auto callback = std::dynamic_pointer_cast<VarExpr>(term->args[1].value);
+                if (!type || !callback || !factTypes.contains(type->nameId)) {
+                    throw IntegerParserError("for_each_fact requires a declared fact type and deterministic callback");
+                }
+                ir.symbols.push_back(type->nameId);
+                const auto typeSymbol = static_cast<IrWord>(ir.symbols.size() - 1);
+                ir.symbols.push_back(callback->nameId);
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::ForEachFact), result, typeSymbol,
+                                                 static_cast<IrWord>(ir.symbols.size() - 1)});
+            } else if (term->nameId == symbolIdForName("similarity")) {
+                if (term->args.size() != 2) throw IntegerParserError("similarity requires exactly two arguments");
+                const auto left = self(self, term->args[0].value);
+                const auto right = self(self, term->args[1].value);
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::Similarity), result, left, right});
+            } else if (term->nameId == symbolIdForName("membership")) {
+                if (term->args.size() != 2) throw IntegerParserError("membership requires a value and named profile");
+                const auto valueRegister = self(self, term->args[0].value);
+                const auto profile = self(self, term->args[1].value);
+                const auto field = [&](const char* name) {
+                    const auto fieldRegister = static_cast<RegisterId>(ir.registerCount++);
+                    ir.symbols.push_back(symbolIdForName(name));
+                    ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::GetField), fieldRegister, profile,
+                                                     static_cast<IrWord>(ir.symbols.size() - 1)});
+                    return fieldRegister;
+                };
+                const auto peak = field("peak");
+                const auto fadesIn = field("fades_in");
+                const auto fadesOut = field("fades_out");
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::Membership), result, valueRegister, peak, fadesIn, fadesOut});
+            } else {
             std::vector<RegisterId> arguments;
             arguments.reserve(term->args.size());
             const bool hasNamedArguments = std::any_of(term->args.begin(), term->args.end(),
@@ -1515,13 +1727,26 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
                     names.push_back(static_cast<IrWord>(ir.symbols.size()));
                 }
             }
-            ir.symbols.push_back(term->nameId);
-            if (!hasNamedArguments) {
+            if (factTypes.contains(term->nameId)) {
+                if (!hasNamedArguments) {
+                    throw IntegerParserError("fact construction requires named fields");
+                }
+                ir.symbols.push_back(term->nameId);
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::MakeFact), result,
+                                                 static_cast<IrWord>(ir.symbols.size() - 1)});
+                for (std::size_t index = 0; index < arguments.size(); ++index) {
+                    if (names[index] == 0) throw IntegerParserError("fact construction requires named fields");
+                    ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::SetField), result,
+                                                     names[index] - 1, arguments[index]});
+                }
+            } else {
+                ir.symbols.push_back(term->nameId);
+                if (!hasNamedArguments) {
                 ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::Call), result,
                                                  static_cast<IrWord>(ir.symbols.size() - 1),
                                                  static_cast<IrWord>(arguments.size())});
                 ir.words.insert(ir.words.end(), arguments.begin(), arguments.end());
-            } else {
+                } else {
                 ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::CallNamed), result,
                                                  static_cast<IrWord>(ir.symbols.size() - 1),
                                                  static_cast<IrWord>(arguments.size())});
@@ -1529,6 +1754,8 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
                     ir.words.push_back(names[index]);
                     ir.words.push_back(arguments[index]);
                 }
+                }
+            }
             }
         } else if (const auto array = std::dynamic_pointer_cast<ArrayExpr>(value)) {
             std::vector<RegisterId> items;
@@ -1569,12 +1796,22 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
         } else if (const auto operation = std::dynamic_pointer_cast<OperatorExpression>(value)) {
             const auto core = operation->coreOperator;
             if (core == CoreOperator::Unknown) {
-                throw IntegerParserError("mixfix expression requires the verified MixfixStateModel compiler backend");
-            }
-            if (core == CoreOperator::UnaryPlus) {
+                if (operation->resolvedMethodId == 0) {
+                    throw IntegerParserError("mixfix expression requires verified model target selection");
+                }
+                std::vector<RegisterId> arguments;
+                arguments.reserve(operation->captureCount());
+                for (std::size_t index = 0; index < operation->captureCount(); ++index) {
+                    arguments.push_back(self(self, operation->capture(index)));
+                }
+                ir.symbols.push_back(operation->resolvedMethodId);
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::Call), result,
+                                                 static_cast<IrWord>(ir.symbols.size() - 1),
+                                                 static_cast<IrWord>(arguments.size())});
+                ir.words.insert(ir.words.end(), arguments.begin(), arguments.end());
+            } else if (core == CoreOperator::UnaryPlus) {
                 return self(self, operation->capture(0));
-            }
-            if (core == CoreOperator::UnaryMinus) {
+            } else if (core == CoreOperator::UnaryMinus) {
                 const auto source = self(self, operation->capture(0));
                 const auto zero = static_cast<RegisterId>(ir.registerCount++);
                 ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst), zero,
@@ -1662,9 +1899,10 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
     return ir;
 }
 
-FelidaeIr IntegerParser::compileAstGlobalBindingIr(const GlobalBindingStmt& binding) {
+FelidaeIr IntegerParser::compileAstGlobalBindingIr(const GlobalBindingStmt& binding,
+                                                    const std::unordered_set<SymbolId>& factTypes) {
     if (!binding.expr) throw IntegerParserError("Global binding has no value expression");
-    auto ir = compileAstExpressionIr(binding.expr);
+    auto ir = compileAstExpressionIr(binding.expr, factTypes);
     if (ir.words.size() < 4 ||
         ir.words[ir.words.size() - 4] != static_cast<IrWord>(IrOpcode::Return) ||
         ir.words.back() != static_cast<IrWord>(IrOpcode::End)) {
@@ -1687,7 +1925,8 @@ FelidaeIr IntegerParser::compileAstGlobalBindingIr(const GlobalBindingStmt& bind
     return ir;
 }
 
-FelidaeIr IntegerParser::compileAstEntryMethodIr(const ClauseStmt& method) {
+FelidaeIr IntegerParser::compileAstEntryMethodIr(const ClauseStmt& method,
+                                                  const std::unordered_set<SymbolId>& factTypes) {
     if (method.body.size() != 1 || !method.fallbackBranches.empty()) {
         throw IntegerParserError("Method has not reached direct entry IR lowering yet");
     }
@@ -1696,7 +1935,7 @@ FelidaeIr IntegerParser::compileAstEntryMethodIr(const ClauseStmt& method) {
     if (returned->fields.empty()) {
         auto nil = std::make_shared<NilExpr>();
         nil->sourceSpan = returned->sourceSpan;
-        return compileAstExpressionIr(nil);
+        return compileAstExpressionIr(nil, factTypes);
     }
     bool named = false;
     for (const auto& field : returned->fields) named = named || !field.name.empty();
@@ -1704,7 +1943,7 @@ FelidaeIr IntegerParser::compileAstEntryMethodIr(const ClauseStmt& method) {
         if (returned->fields.size() != 1) {
             throw IntegerParserError("Direct entry IR lowering requires one positional return value");
         }
-        return compileAstExpressionIr(returned->fields.front().value);
+        return compileAstExpressionIr(returned->fields.front().value, factTypes);
     }
     std::vector<MapEntry> entries;
     entries.reserve(returned->fields.size());
@@ -1716,7 +1955,7 @@ FelidaeIr IntegerParser::compileAstEntryMethodIr(const ClauseStmt& method) {
     }
     auto map = std::make_shared<MapExpr>(std::move(entries));
     map->sourceSpan = returned->sourceSpan;
-    return compileAstExpressionIr(map);
+    return compileAstExpressionIr(map, factTypes);
 }
 
 SourceSpan IntegerParser::span(std::size_t begin, std::size_t end) const {

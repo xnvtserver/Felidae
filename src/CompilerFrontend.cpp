@@ -51,27 +51,30 @@ std::filesystem::path resolveProgramEntryPath(const fs::path& path) {
     throw std::runtime_error("Project directory does not contain main.fx: " + normalized.string());
 }
 
-Program parseProgramText(std::string text) {
+Program parseProgramText(std::string text, const CompilerOptions& options) {
     IntegerTokenList input(felidaeSentencePieceModel(), std::move(text));
-    return IntegerParser(input).parseProgram();
+    // Mixfix declarations and uses share one parser-owned registry for this
+    // one full-source SentencePiece encode. Without it annotations parse but
+    // no integer pattern is available to route later mixfix spans.
+    return IntegerParser(input, std::make_shared<OperatorRegistry>(), options.mixfixModel).parseProgram();
 }
 
-Program parseProgramFile(const fs::path& path) {
-    return parseProgramText(readSourceFile(resolveProgramEntryPath(path)));
+Program parseProgramFile(const fs::path& path, const CompilerOptions& options) {
+    return parseProgramText(readSourceFile(resolveProgramEntryPath(path)), options);
 }
 
-IrModule compileProgramTextToIr(std::string text) {
-    return IrCodeGenerator{}.compile(parseProgramText(std::move(text)));
+IrModule compileProgramTextToIr(std::string text, const CompilerOptions& options) {
+    return IrCodeGenerator{}.compile(parseProgramText(std::move(text), options));
 }
 
-IrModule compileProgramFileToIr(const fs::path& path) {
-    return compileProgramTextToIr(readSourceFile(resolveProgramEntryPath(path)));
+IrModule compileProgramFileToIr(const fs::path& path, const CompilerOptions& options) {
+    return compileProgramTextToIr(readSourceFile(resolveProgramEntryPath(path)), options);
 }
 
 std::optional<FelidaeIr> tryCompileExpressionTextToIr(const std::string& text) {
     try {
         IntegerTokenList input(felidaeSentencePieceModel(), text);
-        return IntegerParser(input).compileExpressionIr();
+        return IntegerParser(input, std::make_shared<OperatorRegistry>()).compileExpressionIr();
     } catch (const IntegerParserError&) {
         return std::nullopt;
     }

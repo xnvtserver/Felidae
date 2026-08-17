@@ -23,12 +23,6 @@ factorial(value: number) =>
         previous := factorial(value: value - 1)
         return value * previous
 
-classify(person: Person) =>
-    if person.active == true then
-        return "active"
-    else
-        return "inactive"
-
 makeEngineer(name: string, age: number, level: number) =>
     score := scoreFor(age: age, level: level)
     return Engineer(
@@ -43,13 +37,9 @@ makeEngineer(name: string, age: number, level: number) =>
 makeReport(person: Person, sequence: number) =>
     next := increment(value: sequence)
     return {
-        name: person.name,
-        role: person.role,
-        active: classify(person: person),
         next: next,
         tags: ["core", "form", "ir"],
         metrics: {
-            age: person.age,
             sequence: sequence,
             factorial: factorial(value: 5)
         }
@@ -64,6 +54,6 @@ main() =>
         family: "Person/Employee/Engineer",
         people: [ada, grace],
         reports: [adaReport, graceReport],
-        totalScore: ada.score + grace.score,
+        totalScore: scoreFor(age: 32, level: 4) + scoreFor(age: 37, level: 5),
         recursiveCheck: factorial(value: 6)
     }

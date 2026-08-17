@@ -7,11 +7,18 @@
 
 namespace Felidae {
 
+struct IrFactType {
+    IrSymbolRef symbol = 0;
+    std::vector<IrSymbolRef> parents;
+    IrSourceMapEntry::Span sourceSpan;
+};
+
 // AST-free executable module boundary.  The frontend is responsible for
 // producing this value; the form VM and binary loader only consume it.
 struct IrModule {
     FelidaeIr ir; // module initializer
     std::unordered_map<IrSymbolRef, IrProcedure> procedures;
+    std::vector<IrFactType> factTypes;
     IrSymbolRef entryProcedure = 0;
 };
 
@@ -41,12 +48,13 @@ struct LinkedIrModule {
     std::vector<IrWord> code;
     std::vector<IrWord> constants;
     std::vector<IrConstantKind> constantKinds;
-    std::vector<std::string> texts;
+    std::vector<std::vector<std::uint32_t>> texts;
     std::vector<IrWord> symbols;
     std::vector<IrWord> programs;
     std::vector<IrSourceMapEntry> sourceMap;
     IrProcedureMetadata initializer;
     std::vector<IrProcedureMetadata> procedures;
+    std::vector<IrFactType> factTypes;
     IrSymbolRef entryProcedure = 0;
 };
 

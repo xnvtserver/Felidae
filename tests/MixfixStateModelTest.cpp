@@ -1,4 +1,5 @@
 #include "MixfixStateModel.h"
+#include "form/RuntimeStateModel.h"
 
 #include <cassert>
 #include <iostream>
@@ -13,21 +14,21 @@ int main() {
     public:
         std::vector<MixfixVocabularyId> transform(std::span<const SentencePieceId>,
                                                   const MixfixContext&) override {
-            return {0, 1, 2};
+            return {0, 1, 2, 3};
         }
     };
     class InvalidModel final : public MixfixStateModel {
     public:
         std::vector<MixfixVocabularyId> transform(std::span<const SentencePieceId>,
                                                   const MixfixContext&) override {
-            return {3, 4, 2};
+            return {4, 1, 2, 3};
         }
     };
     class OversizedModel final : public MixfixStateModel {
     public:
         std::vector<MixfixVocabularyId> transform(std::span<const SentencePieceId>,
                                                   const MixfixContext&) override {
-            return {0, 2};
+            return {0, 1, 2, 3};
         }
     };
     class UnknownVocabularyModel final : public MixfixStateModel {
@@ -39,26 +40,28 @@ int main() {
     };
 
     MixfixContext context;
-    context.programReferences = {0};
+    context.constantReferences = {0};
     context.outputVocabulary = {
-        {MixfixIrTokenKind::Opcode, static_cast<IrWord>(IrOpcode::ExecuteProgram)},
-        {MixfixIrTokenKind::ProgramReference, 0},
-        {MixfixIrTokenKind::End, 0},
         {MixfixIrTokenKind::Opcode, static_cast<IrWord>(IrOpcode::LoadConst)},
         {MixfixIrTokenKind::Register, 0},
+        {MixfixIrTokenKind::ConstantReference, 0},
+        {MixfixIrTokenKind::End, 0},
     };
     const std::vector<MixfixIrToken> valid = {
-        {MixfixIrTokenKind::Opcode, static_cast<IrWord>(IrOpcode::ExecuteProgram)},
-        {MixfixIrTokenKind::ProgramReference, 0},
+        {MixfixIrTokenKind::Opcode, static_cast<IrWord>(IrOpcode::LoadConst)},
+        {MixfixIrTokenKind::Register, 0},
+        {MixfixIrTokenKind::ConstantReference, 0},
         {MixfixIrTokenKind::End, 0},
     };
     const auto words = resolveMixfixIrTokens(valid, context);
-    assert((words == std::vector<IrWord>{static_cast<IrWord>(IrOpcode::ExecuteProgram), 0,
+    assert((words == std::vector<IrWord>{static_cast<IrWord>(IrOpcode::LoadConst), 0, 0,
                                          static_cast<IrWord>(IrOpcode::End)}));
 
     FelidaeIr ir;
     ir.words = words;
-    ir.programs = {0};
+    ir.constants = {encodeIrNumber(1.0)};
+    ir.constantKinds = {IrConstantKind::Number};
+    ir.registerCount = 1;
     IrVerifier::verify(ir);
 
     FixedModel model;
@@ -128,15 +131,21 @@ int main() {
                                     {{RuntimeOutputTokenKind::InputReference, 0}});
     RuntimeContext runtimeGruContext;
     runtimeGruContext.executionState = runtimeGru.createExecutionState();
-    const VmValue runtimeText = VmText{{}, "state survives typed input"};
+    const VmValue runtimeText = VmText{{17, 23, 41}};
     assert(std::get<VmText>(runtimeGru.evaluate(RuntimeOperation{1}, {&runtimeText, 1},
-                                                runtimeGruContext)).utf8 ==
-           "state survives typed input");
+                                                runtimeGruContext)).pieces ==
+           std::vector<std::uint32_t>({17, 23, 41}));
     auto runtimeFact = std::make_shared<VmFact>();
     runtimeFact->type = 42;
     const VmValue runtimeFactValue = runtimeFact;
     assert(std::get<VmFactPtr>(runtimeGru.evaluate(RuntimeOperation{2}, {&runtimeFactValue, 1},
                                                     runtimeGruContext))->type == 42);
+    GruRuntimeStateModel softRuntimeGru(runtimeGruConfiguration,
+                                        {{RuntimeOutputTokenKind::DegreeMilli, 725}});
+    RuntimeContext softRuntimeContext;
+    softRuntimeContext.executionState = softRuntimeGru.createExecutionState();
+    const auto softResult = softRuntimeGru.evaluate(RuntimeOperation{3}, {}, softRuntimeContext);
+    assert(std::get<VmDegree>(softResult).value == 0.725);
 #endif
 
     FelidaeIr arithmetic;
@@ -432,7 +441,7 @@ int main() {
     bool rejected = false;
     try {
         const std::vector<MixfixIrToken> noEnd = {
-            {MixfixIrTokenKind::Opcode, static_cast<IrWord>(IrOpcode::ExecuteProgram)}};
+            {MixfixIrTokenKind::Opcode, kIrOpcodeCount}};
         (void)resolveMixfixIrTokens(noEnd, context);
     } catch (const IrError&) {
         rejected = true;

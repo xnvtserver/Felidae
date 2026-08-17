@@ -1,0 +1,8 @@
+model_version=gru-v1
+backend=libtorch-gru
+sentencepiece_model_hash=fnv1a64:719e2d3cfd22970f
+ir_vocabulary_version=felidae-ir-v8
+input_vocabulary=8
+output_vocabulary=1
+begin_token=0
+artifact_hash=fnv1a64:1af112417639cbc1

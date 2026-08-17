@@ -1,325 +1,141 @@
 # Felidae
 
-Felidae is a functional logic language for `.fx` files where code and data share
-the same shape. Facts act as a lightweight database, methods transform and query
-those facts explicitly, and native services stay outside the compiler and Form VM.
+Felidae compiles `.fx` source into verified, integer-only `.fir` artifacts.
+The compiler and VM are separate C++ executables:
 
-The repository contains two isolated C++ products:
-
-- `felidae_compiler.exe`: `SentencePiece -> IntegerParser -> AST compiler -> verified .fir`.
-- `felidae_vm.exe`: `.fir -> verifier -> Form register VM`.
-- `felidae_debug.exe`: `SentencePiece -> IntegerParser -> AST Analyzer`, for diagnostics, AST
-  checks, and editor LSP integration.
-
-The compiler does not execute source directly, and the Form VM does not depend
-on parser, AST, or source syntax. The debugger is a separate diagnostic target.
-
-## Language Shape
-
-Facts are stored data:
-
-```felidae
-Person(name: "Alice", role: "Engineer")
-Person(name: "Bob", role: "Manager")
+```text
+source.fx -> SentencePiece IDs -> IntegerParser -> AST compiler -> verified .fir
+program.fir -> binary loader -> verifier -> Form register VM
 ```
 
-Methods use explicit named inputs and immutable bindings:
+The Form VM executes IR only. It does not link the parser, AST, Interpreter,
+or legacy AST runtime. `.fir` stores integer opcodes, registers, symbol IDs,
+SentencePiece text IDs, constants, source-map spans, and procedure metadata;
+it never stores source syntax, pointers, or AST objects.
 
-```felidae
-main(arguments: system.stdin) =>
-    engineers := lambda(Person, p => p.role == "Engineer")
-    return (
-        count: count(engineers),
-        args: arguments.args
-    )
-```
+## Build on Windows
 
-Statements end at a newline, not a trailing `.` — `.` is reserved for decimals
-and same-line member access (`a.b.c`). Commas between goals in a body are
-still accepted but are optional; a bare newline separates goals just as well.
-See [docs_language.md](docs_language.md) for the full grammar, and
-[v2_examples](v2_examples) for reference programs. `examples/` still holds
-programs written for the older dot-terminated grammar.
-
-Felidae does not implicitly scan all facts from a method call. Use
-`lambda(FactType, item => expression)` or an explicit list/array when iteration
-is required. This keeps dataflow visible and makes performance easier to reason
-about.
-
-## Runtime And Analysis
-
-Compile a program, then execute its binary artifact:
+SentencePiece and LibTorch are C++ dependencies. No Python or Celidae runtime
+is required.
 
 ```powershell
-build\felidae_compiler.exe examples\main.fx
-build\felidae_vm.exe build\main.fir
-```
-
-Check a file with structured diagnostics:
-
-```powershell
-build\felidae_debug.exe examples\main.fx --check-json
-```
-
-Start the Felidae debugger JSON-RPC language server:
-
-```powershell
-build\felidae_debug.exe --lsp
-```
-
-Create a visualization snapshot:
-
-```powershell
-build\celidae.exe examples\main.fx --load-imports > snapshot.html
-```
-
-Celidae offers nine views. Four are structural — `schema`, `graph`, `er`,
-`hierarchy` — describing what the program declares. The other five analyse the
-literal values facts carry: `timeline` (records in date order, with per-period
-volume and a spike test), `stats` (coverage and data-quality findings),
-`distribution` (per-field histograms and robust outlier detection),
-`comparison` (correlation between fields), and `cluster` (records projected onto
-their principal components and grouped by k-means, with the number of segments
-chosen by silhouette rather than fixed).
-
-Running `celidae program.fx` bundles every view into one self-contained HTML
-file; `--template=<name>` narrows that to just one. This is the only output
-Celidae produces - there is no separate JSON or SVG export mode - because the
-charts that carry the analysis here (treemaps, heatmaps, parallel coordinates,
-decision trees, per-panel chart-type switching) are meant to be read by
-hovering, filtering and switching how they are drawn, and a static copy of
-them was a worse version of a better thing. To find out which views a
-program's data actually supports, and why:
-
-```powershell
-build\celidae.exe examples\main.fx --recommend
-```
-
-Celidae's own acceptance tests — payload integrity, analysis correctness against
-a fixture with known answers, XML/JSON escaping, determinism, and a sweep of
-every example program across every view:
-
-```powershell
-.\scripts\test_celidae.ps1          # add -Quick to skip the corpus sweep
-```
-
-Target-specific C++ files live under `src/celidae` and `src/debugger`, split so
-the two halves fail differently: `Analytics.cpp` holds the measurements (a bug
-there gives a wrong number) and `Reasoning.cpp` holds the explanations (a bug
-there gives a right number with a wrong story). Both run on Eigen, vendored
-header-only in `third_party/Eigen`:
-
-| Decomposition | Step |
-| --- | --- |
-| `SelfAdjointEigenSolver` | PCA projection for the segments view |
-| `JacobiSVD` | effective rank, condition number, collinearity |
-| `LDLT` | Mahalanobis multivariate outliers |
-| `CompleteOrthogonalDecomposition` | rank-revealing least squares for "what moves this number" |
-| `LDLT` | Fisher discriminant directions for oblique decision-tree splits |
-| `SelfAdjointEigenSolver` | Fiedler-vector seriation, so related fields adjoin in a heatmap |
-| `SelfAdjointEigenSolver` | Laplacian eigenmaps for the SVG network layout |
-| `JacobiSVD` | correspondence analysis: two categorical fields in one space |
-| `JacobiSVD` | latent semantic analysis over text values (TF-IDF) |
-
-Nothing about any particular dataset is written down. Which charts a fact type
-earns is decided by measuring its shape, and a view that cannot answer its own
-question declines and says why rather than substituting an axis it does not
-have — `celidae <file> --recommend` prints those verdicts.
-
-## Build
-
-Use the platform build wrapper when possible:
-
-```bash
-./build.sh
-```
-
-`build.sh` detects Linux and macOS hosts, asks before using `sudo` to install
-missing build dependencies, and builds `build/felidae`, `build/celidae`, and
-`build/felidae_debug`. Supported dependency installers include apt
-(Debian/Ubuntu), dnf (Fedora), zypper (openSUSE), pacman (Arch), and Apple
-Command Line Tools/Homebrew on macOS.
-
-On Windows:
-
-```powershell
-.\build.cmd
-.\build.cmd native --configuration production
-.\build.cmd --target windows-x64 --configuration release
-.\build.cmd --target windows-arm64 --configuration release
-```
-
-Build configurations are `debug`, `release`, `production`, and `sanitize`.
-Production builds use `-O3`, `NDEBUG`, LTO, and `lld`. Build targets include
-`native`, `windows-x64`, `windows-arm64`, `linux-x64`, `linux-arm64`,
-`macos-x64`, `macos-arm64`, `android`, and `wasm`. Cross-targets require the
-matching platform SDK/toolchain; for Ubuntu LTS package verification, run the
-Linux target inside the intended Ubuntu 22.04 or 24.04 build container/runner.
-
-Android is available as an NDK cross-build target when the NDK is installed:
-
-```bash
-ANDROID_NDK_HOME=/opt/android-ndk ANDROID_ABI=arm64-v8a ./build.sh --target android
-```
-
-Build the browser playground runtime with Emscripten when docs code blocks need in-browser execution:
-
-On Windows:
-
-```powershell
-.\build.cmd wasm
-```
-
-On Linux/macOS:
-
-```bash
-./build.sh --target wasm
-```
-
-Without host Emscripten, use Docker:
-
-```bash
-./build/felidae wasm.fx
-```
-
-`wasm.fx` calls `emcc.fx`, which uses the common `docker.fx` helpers with `emscripten/emsdk:latest`, mounts the repository, and runs the same `./build.sh --target wasm` path inside the container.
-
-That emits `docs/wasm/felidae_wasm.js`, `docs/wasm/felidae_wasm.wasm`, and `docs/wasm/felidae_wasm.data`, with `core/*.fx` packaged for language-native imports.
-
-Linux packages can be created after a successful native Linux build:
-
-```bash
-scripts/package-linux.sh
-```
-
-The package helper always creates a tarball and creates `.deb`, `.rpm`, or
-`.pkg.tar.zst` packages when local distro packaging tools are available.
-
-CMake targets are also provided for environments that prefer generated build
-files:
-
-```bash
 cmake -S . -B build
-cmake --build build
+cmake --build build --config Debug --target felidae_compiler felidae_vm
 ```
 
-## Test
+Both executables are written directly to `build/`:
 
-Run the reusable Felidae test suite:
+```text
+build/felidae_compiler.exe
+build/felidae_vm.exe
+```
+
+When LibTorch DLLs are not already on `PATH`, add them before running either
+executable:
 
 ```powershell
-build\felidae.exe examples\felidae_test_suite.fx
+$env:PATH = 'C:\libtorch\lib;' + $env:PATH
 ```
 
-Useful focused checks:
+## Compile, inspect, execute
+
+The compiler writes the binary beside its executable, so source folders stay
+unchanged:
 
 ```powershell
-build\felidae_debug.exe examples\diagnostics_ast_warnings.fx --check-json
-build\felidae_debug.exe examples\invalid\undeclared_body_var.fx --check-json
-build\celidae.exe examples\main.fx --load-imports > snapshot.html
+build\felidae_compiler.exe v2_examples\form_core_concepts.fx
+build\felidae_vm.exe build\form_core_concepts.fir
 ```
 
-Run the production quality gate:
+The VM verifies the binary again before execution. A malformed, truncated, or
+unverified `.fir` fails before it can run.
+
+For the long-lived Form daemon mode:
 
 ```powershell
-.\scripts\run_quality.ps1 -Configuration production -RunFullExamples
+build\felidae_vm.exe --serve build\form_core_concepts.fir
+# stdin commands: run, facts [type-id], field <symbol-id>, history,
+# proof <child-type-id> <ancestor-type-id>, load <other.fir>, modules, quit
 ```
 
-On Linux or WSL, the same quality gate can also run Valgrind when installed:
+## Working examples
 
-```bash
-./scripts/run_quality.sh --configuration production --full-examples
-```
+These examples use the current compiler/VM pipeline and produce `.fir` files
+in `build/`.
 
-The quality scripts run the stricter compiler build, `clang-tidy`, `cppcheck`
-when installed, CodeChecker when installed, Valgrind on Linux when installed,
-and Felidae `.fx` smoke or regression programs. Reports are written to
-`build/quality/report.md`.
+| Example | Covers |
+| --- | --- |
+| `v2_examples/form_core_concepts.fx` | globals, procedures, arrays/maps, facts, fields and comparisons |
+| `v2_examples/degree_profiles.fx` | deterministic `similarity`, `membership`, and `Degree` thresholds |
+| `v2_examples/fact_degree_loop.fx` | typed fact traversal and degree-carrying values |
+| `v2_examples/mixfix_ir_roundtrip.fx` | annotation-declared mixfix resolved to normal IR calls |
+| `v2_examples/mixfix_deep_ir_nesting.fx` | deeply nested prefix/infix mixfix forms; result is `9`, `36`, `756` |
+| `v2_examples/mixfix_fuzzy_fact_report.fx` | mixfix composition with facts and fuzzy degrees |
 
-### SonarQube
-
-Run a local SonarQube server and C++ analysis entirely through Docker:
+For example:
 
 ```powershell
-.\scripts\run_sonar_scan.ps1 -StartOnly -Token placeholder
+build\felidae_compiler.exe v2_examples\mixfix_deep_ir_nesting.fx
+build\felidae_vm.exe build\mixfix_deep_ir_nesting.fir
+# {#...: 9, #...: 36, #...: 756}
 ```
 
-Open `http://localhost:9000`, complete the first-run setup, create a project
-token, then run:
+Fact keys and type names display as numeric symbol IDs by design. VM text is
+stored as SentencePiece IDs and is decoded only for display; symbol spelling is
+not serialized into `.fir`.
+
+## Mixfix and recurrent models
+
+Normal syntax and uniquely resolved annotated mixfix stay deterministic and
+compile directly to the same register IR. The compiler-side `MixfixStateModel`
+uses a C++ LibTorch GRU and accepts only a finite structural IR vocabulary.
+Its output is verifier-gated; missing models, invalid output, confidence
+failure, or malformed spans are compile errors and never fall back to AST
+execution.
+
+The VM has a different optional recurrent model for `SemanticEval`/future
+`SSM_PROCESS` work. It is built from `src/form/RuntimeStateModel.cpp` and uses
+typed result actions (facts, text, arrays, maps, values, or `Degree`), never
+implicit truthiness. Use a versioned runtime artifact explicitly:
 
 ```powershell
-.\scripts\run_sonar_scan.ps1 -Token "your-project-token"
+build\felidae_vm.exe --model models\runtime_gru_benchmark build\form_core_concepts.fir
 ```
 
-The scanner creates a Linux CMake compilation database before analysis, so
-SonarQube can inspect the interpreter and native modules rather than treating
-the C++ sources as plain text. Stop the local service with:
+## Validation
+
+Run the focused compiler, binary, VM, SentencePiece, and GRU checks:
 
 ```powershell
-docker compose -f .\docker-compose.sonar.yml down
+$env:PATH = 'C:\libtorch\lib;' + $env:PATH
+ctest --test-dir build -R 'felidae_(sentencepiece_model|sentencepiece_pipeline|mixfix_state_model|form_binary)' --output-on-failure
 ```
 
-## Native Modules
-
-Native modules are declared in `core/*.fx` and implemented in C++ modules under
-`native_modules/`. The interpreter validates typed arguments before calling a
-native function, so a bad user call fails at the Felidae layer rather than
-crashing a shared library.
-
-See [docs_native_modules.md](docs_native_modules.md) for the native ABI.
-
-## Editor Support
-
-### VS Code
-
-The VS Code extension is in [vs-code-extension](vs-code-extension). It provides
-syntax highlighting, file icons, snippets, import navigation, hovers, CodeLens
-actions, debugger integration, felidae_debug-backed Problems diagnostics, and a data
-visualizer with SVG/HTML export.
-
-Development commands:
+Create a portable shipment only after a successful build:
 
 ```powershell
-cd vs-code-extension
-npm install
-npm run compile
-npm run lint
-npx vsce package
+# Builds, runs focused tests, stages dist/, starts the staged executables,
+# and compiles/runs the nested-mixfix smoke program through them.
+cmake --build build --target felidae_beta
+# equivalent wrapper:
+.\build.ps1 -Beta
 ```
 
-Install the generated VSIX:
+`dist/` contains the two executables, models, and required LibTorch DLLs; it
+does not contain source or CMake build state. The staged package writes
+`SHA256SUMS.txt`; verify it before uploading the beta.
 
-```powershell
-code --install-extension felidae-vscode-0.0.2.vsix
-```
+## Beta release checklist
 
-### IntelliJ IDEA
-
-The IntelliJ plugin is in [intellij-idea-extension](intellij-idea-extension). It
-registers `.fx` files, highlights Felidae syntax, delegates diagnostics to
-felidae_debug `--check-json`, and adds run/check/visualize actions.
-
-Development commands:
-
-```powershell
-cd intellij-idea-extension
-.\gradlew.bat runIde
-.\gradlew.bat buildPlugin
-```
-
-If Gradle is not cached locally, the first build needs network access to fetch
-the Gradle distribution and IntelliJ Platform dependencies.
-
-## Documentation
-
-- [docs_language.md](docs_language.md): language notes and runtime behavior.
-- [docs_native_modules.md](docs_native_modules.md): native module loading and ABI.
-- [docs_github_linguist.md](docs_github_linguist.md): GitHub language detection notes.
-- [tree-sitter-felidae](tree-sitter-felidae): starter grammar for future editor and GitHub navigation work.
-
-## Repository Notes
-
-Felidae source files use `.fx`. `.gitattributes` marks them as Felidae, but
-GitHub will show Felidae as a first-class language only after GitHub Linguist
-adds upstream support for the language.
-
+1. Start with the existing `build/` directory and a clean intended source
+   revision. Do not create a parallel build directory.
+2. Configure a Release LibTorch build, then run `cmake --build build --target
+   felidae_beta`.
+3. Confirm the gate reports the compiler and VM version
+   `0.2.3-beta.1`, all focused tests pass, and `dist/` contains only the
+   approved executables, models, runtime DLLs, `README.txt`, and
+   `SHA256SUMS.txt`.
+4. Copy `dist/` to a clean Windows machine, verify checksums, compile a `.fx`
+   file, and run its generated `.fir` using only the copied folder.
+5. Tag and publish the exact revision only after that clean-machine smoke
+   succeeds. Do not publish files directly from `build/`.
