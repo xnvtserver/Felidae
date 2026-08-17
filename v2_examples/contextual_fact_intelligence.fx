@@ -98,17 +98,7 @@ QuantityAnswer(
     evidence: []
 )
 
-@overload(
-    operator: bankContext,
-    pattern: "{context} bank",
-    type: postfix,
-    captures: {context: expr},
-    result: KnowledgeContext,
-    precedence: relationship,
-    associativity: none,
-    cardinality: one,
-    effects: pure
-)
+@mixfix(pattern: "{context:obj} bank")
 interpretBankContext() =>
     return KnowledgeContext(
         term: "bank",
@@ -116,17 +106,7 @@ interpretBankContext() =>
         article: nil
     )
 
-@overload(
-    operator: articleContext,
-    pattern: "a {subject}",
-    type: prefix,
-    captures: {subject: KnowledgeContext},
-    result: KnowledgeContext,
-    precedence: relationship,
-    associativity: right,
-    cardinality: one,
-    effects: pure
-)
+@mixfix(pattern: "a {subject:obj}")
 applyArticleContext() =>
     return KnowledgeContext(
         term: subject.term,
@@ -134,17 +114,7 @@ applyArticleContext() =>
         article: "a"
     )
 
-@overload(
-    operator: explainKnowledge,
-    pattern: "what is {subject}",
-    type: prefix,
-    captures: {subject: expr},
-    result: ContextualAnswer,
-    precedence: relationship,
-    associativity: right,
-    cardinality: one,
-    effects: pure
-)
+@mixfix(pattern: "what is {subject:obj}")
 explainLearnedTerm() =>
     term := subject.text
     matches := lambda(Knowledge, fact => fact.name == term)
@@ -192,17 +162,7 @@ explainLearnedTerm() =>
                 evidence: []
             )
 
-@overload(
-    operator: explainKnowledge,
-    pattern: "what is {subject}",
-    type: prefix,
-    captures: {subject: KnowledgeContext},
-    result: ContextualAnswer,
-    precedence: relationship,
-    associativity: right,
-    cardinality: one,
-    effects: pure
-)
+@mixfix(pattern: "what is {subject:obj}")
 explainLearnedContext() =>
     matches := lambda(BankMeaning, fact => fact.context == subject.context)
     matchCount := array.len(data: matches)
@@ -237,17 +197,7 @@ explainLearnedContext() =>
             evidence: []
         )
 
-@overload(
-    operator: countLearnedProperty,
-    pattern: "how many {property} {subject} have",
-    type: mixfix,
-    captures: {property: expr, subject: expr},
-    result: QuantityAnswer,
-    precedence: relationship,
-    associativity: none,
-    cardinality: one,
-    effects: pure
-)
+@mixfix(pattern: "how many {property:obj} {subject:obj} have")
 answerLearnedQuantity() =>
     propertyName := property.text
     subjectName := subject.text

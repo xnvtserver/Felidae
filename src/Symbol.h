@@ -49,12 +49,9 @@ inline std::string internalSymbolString(InternalSymbolKind kind) {
     return std::string(internalSymbolName(kind));
 }
 
-// Identifier hashes are not identities: two different names are allowed to
-// have the same hash.  The old implementation used std::hash directly as a
-// SymbolId and therefore had to retain and compare strings throughout every
-// hot lookup to defend against collisions.  This process-wide interner gives
-// every spelling one canonical, collision-free id while keeping source text
-// on AST nodes for diagnostics and serialization.
+// Source symbols use deterministic 63-bit FNV-1a IDs. The compiler retains
+// spellings only while compiling to detect the astronomically unlikely hash
+// collision; binary IR and the VM carry IDs only.
 class SymbolInterner {
 public:
     static constexpr SymbolId GeneratedIdBase = SymbolId{1} << 63U;
@@ -73,9 +70,13 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         const auto found = ids_.find(key);
         if (found != ids_.end()) return found->second;
-        const SymbolId id = nextId_++;
+        const SymbolId id = deterministicId(name);
+        const auto collision = names_.find(id);
+        if (collision != names_.end() && collision->second != key) {
+            throw std::runtime_error("Felidae SymbolId hash collision");
+        }
         ids_.emplace(key, id);
-        names_.push_back(key);
+        names_.emplace(id, key);
         return id;
     }
 
@@ -96,9 +97,8 @@ public:
         if (reserved != reservedNames_.end()) return reserved->second;
         const auto generated = generatedNames_.find(id);
         if (generated != generatedNames_.end()) return generated->second;
-        if (id < 1024) return {};
-        const std::size_t index = static_cast<std::size_t>(id - 1024);
-        return index < names_.size() ? names_[index] : std::string{};
+        const auto found = names_.find(id);
+        return found == names_.end() ? std::string{} : found->second;
     }
 
 private:
@@ -106,13 +106,19 @@ private:
         ids_.emplace(std::string(name), id);
         reservedNames_.emplace(id, std::string(name));
     }
+    static SymbolId deterministicId(std::string_view name) noexcept {
+        SymbolId value = 1469598103934665603ull;
+        for (const unsigned char byte : name) { value ^= byte; value *= 1099511628211ull; }
+        value &= ~(SymbolId{1} << 63U);
+        value |= SymbolId{1} << 62U;
+        return value;
+    }
 
     mutable std::mutex mutex_;
     std::unordered_map<std::string, SymbolId> ids_;
     std::unordered_map<SymbolId, std::string> reservedNames_;
     std::unordered_map<SymbolId, std::string> generatedNames_;
-    std::vector<std::string> names_;
-    SymbolId nextId_ = 1024;
+    std::unordered_map<SymbolId, std::string> names_;
     SymbolId nextGeneratedId_ = GeneratedIdBase;
 };
 

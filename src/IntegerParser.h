@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <memory>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace Felidae {
 
@@ -47,14 +48,17 @@ public:
     // Compiler-front-end seam: AST is permitted before IR, but this method
     // always produces typed canonical IR and never carries an AST into VM
     // registers. Statement/module lowering builds on this same seam.
-    static FelidaeIr compileAstExpressionIr(const std::shared_ptr<Expr>& expression);
+    static FelidaeIr compileAstExpressionIr(const std::shared_ptr<Expr>& expression,
+                                            const std::unordered_set<SymbolId>& factTypes = {});
     // Initial statement compiler slice. It deliberately reuses expression
     // lowering and emits StoreSymbol; no statement AST survives in the IR.
-    static FelidaeIr compileAstGlobalBindingIr(const GlobalBindingStmt& binding);
+    static FelidaeIr compileAstGlobalBindingIr(const GlobalBindingStmt& binding,
+                                               const std::unordered_set<SymbolId>& factTypes = {});
     // Initial routine slice for a deterministic zero-argument entry method.
     // More complex goal lists are intentionally rejected until frame/local
     // lowering is available, rather than being handed to an AST executor.
-    static FelidaeIr compileAstEntryMethodIr(const ClauseStmt& method);
+    static FelidaeIr compileAstEntryMethodIr(const ClauseStmt& method,
+                                             const std::unordered_set<SymbolId>& factTypes = {});
     // Compiler-SSM entry point. The caller selects an existing SentencePiece
     // span; this method never retokenizes source text and always verifies the
     // finite-vocabulary model output before returning IR.
@@ -72,6 +76,11 @@ private:
         SymbolId nameId = 0;
         BuiltinId builtinId = BuiltinId::Unknown;
         bool isCapitalized = false;
+    };
+    struct StringLiteral {
+        std::string value;
+        std::vector<std::uint32_t> sentencePieceIds;
+        bool containsEscape = false;
     };
     const IntegerTokenList& input_;
     std::shared_ptr<OperatorRegistry> operators_;
@@ -128,9 +137,12 @@ private:
     std::shared_ptr<Statement> parseStatement();
     Call parseAnnotation();
     void prepareOperatorAnnotation(const Call& annotation);
+    void registerOperatorImplementation(const Call& annotation, const ClauseStmt& method);
     const OperatorPatternDefinition& registerOperatorPattern(OperatorPatternDefinition pattern);
+    SymbolId resolveMixfixMethod(const OperatorExpression& expression) const;
+    SymbolId resolveModelMixfixMethod(const std::shared_ptr<OperatorExpression>& expression) const;
     std::string consumeNameRange();
-    std::string consumeString();
+    StringLiteral consumeString();
     double consumeNumber();
     bool atNameRange();
     bool sourceContainsLineBreak(std::size_t begin, std::size_t end) const;

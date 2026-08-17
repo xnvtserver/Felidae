@@ -210,9 +210,10 @@ int main() {
     assert(fallbackProgram.clauses.size() == 1);
     assert(fallbackProgram.clauses.front()->fallbackBranches.size() == 1);
 
-    // Annotation syntax is assembled from the same integer stream.  Literal
-    // mixfix anchors are encoded once at declaration time and stored as ID
-    // sequences on the canonical operator pattern.
+    // Annotation syntax is assembled from the same integer stream. Literal
+    // anchors retain their spelling but deliberately do not trigger a second
+    // SentencePiece encode; matching advances only through full-source
+    // encode offsets.
     auto operators = std::make_shared<Felidae::OperatorRegistry>();
     const Felidae::IntegerTokenList mixfixDeclarationTokens(model,
         "@mixfix(pattern: \"choose {value: expr}\")\n"
@@ -222,7 +223,8 @@ int main() {
     assert(mixfixDeclarationProgram.clauses.size() == 1);
     assert(operators->patterns().size() == 1);
     assert(!operators->patterns().front().anchorLexemes.empty());
-    assert(!operators->patterns().front().anchorLexemes.front().front().pieceIds.empty());
+    assert(operators->patterns().front().anchorLexemes.front().front().spelling == "choose");
+    assert(operators->patterns().front().anchorLexemes.front().front().pieceIds.empty());
     const Felidae::IntegerTokenList mixfixUseTokens(model, "choose 7");
     Felidae::IntegerParser mixfixUseParser(mixfixUseTokens, operators);
     const auto mixfixUse = std::dynamic_pointer_cast<Felidae::OperatorExpression>(
@@ -230,6 +232,13 @@ int main() {
     assert(mixfixUse);
     assert(mixfixUse->patternId == operators->patterns().front().patternId);
     assert(mixfixUse->captureCount() == 1);
+    // Literal anchors cannot consume an identifier prefix after SentencePiece
+    // fragmentation: `choose` is not an operator occurrence in `chooseable`.
+    assertIntegerParseFails([&] {
+        Felidae::IntegerTokenList prefixedAnchor(model, "chooseable 7");
+        Felidae::IntegerParser parser(prefixedAnchor, operators);
+        (void)parser.parseExpressionText();
+    });
 
 
     const Felidae::IntegerTokenList nestedMixfixDeclarationTokens(model,

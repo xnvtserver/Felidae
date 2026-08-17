@@ -29,6 +29,16 @@ if "%~1"=="--warnings-as-errors" (
     shift
     goto parse
 )
+if "%~1"=="--dist" (
+    set "PS_ARGS=%PS_ARGS% -Dist"
+    shift
+    goto parse
+)
+if "%~1"=="--beta" (
+    set "PS_ARGS=%PS_ARGS% -Beta"
+    shift
+    goto parse
+)
 if "%~1"=="-Target" (
     set "PS_ARGS=%PS_ARGS% -Target %~2"
     shift
@@ -43,6 +53,16 @@ if "%~1"=="-Configuration" (
 )
 if "%~1"=="-WarningsAsErrors" (
     set "PS_ARGS=%PS_ARGS% -WarningsAsErrors"
+    shift
+    goto parse
+)
+if "%~1"=="-Dist" (
+    set "PS_ARGS=%PS_ARGS% -Dist"
+    shift
+    goto parse
+)
+if "%~1"=="-Beta" (
+    set "PS_ARGS=%PS_ARGS% -Beta"
     shift
     goto parse
 )

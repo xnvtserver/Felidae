@@ -16,15 +16,20 @@
 #include <variant>
 #include <unordered_map>
 
+#include <sentencepiece_processor.h>
+
 int main() {
-    static_assert(std::variant_size_v<Felidae::VmValue> == 7,
+    Felidae::setVmTextDecoder([](std::span<const std::uint32_t> pieces) {
+        std::vector<int> ids(pieces.begin(), pieces.end());
+        std::string text;
+        const auto status = Felidae::felidaeSentencePieceModel().Decode(ids, &text);
+        assert(status.ok());
+        return text;
+    });
+    static_assert(std::variant_size_v<Felidae::VmValue> == 8,
                   "production VM values must remain typed and AST-free");
-    const auto hasLegacyExecution = [](const Felidae::FelidaeIr& ir) {
-        return std::find(ir.words.begin(), ir.words.end(),
-            static_cast<Felidae::IrWord>(Felidae::IrOpcode::ExecuteProgram)) != ir.words.end();
-    };
-    // This covers the production path: source -> SentencePiece IDs -> integer
-    // parser -> executable intermediate tree -> interpreter.
+    // This covers the production frontend: source -> SentencePiece IDs ->
+    // integer parser -> AST compiler -> verified IR. No AST runtime exists.
     const auto program = Felidae::parseProgramFile(FELIDAE_PIPELINE_FIXTURE_PATH);
     assert(program.clauses.size() == 1);
     assert(program.clauses.front()->head.name == "main");
@@ -38,14 +43,57 @@ int main() {
     assert(program.clauses.front()->body.front()->sourceSpan.startLine == 2);
     assert(program.clauses.front()->body.back()->sourceSpan.startLine == 3);
 
+    // Mixfix declarations and uses share one parser-owned registry over the
+    // same full-source SentencePiece stream. This must parse even when the
+    // strict module compiler can lower a uniquely typed implementation into
+    // the same Call IR used by ordinary function syntax.
+    const auto mixfixProgram = Felidae::parseProgramText(
+        "@mixfix(pattern: \"{left: number} combine {right: number}\")\n"
+        "combineValue() => return left + right\n"
+        "main() => return 2 combine 3\n");
+    assert(mixfixProgram.clauses.size() == 2);
+    assert(mixfixProgram.clauses.back()->head.name == "main");
+
+    const auto directMixfixModule = Felidae::compileProgramTextToIr(
+        "@mixfix(pattern: \"{left: number} combine {right: number}\")\n"
+        "combineValue(left: number, right: number) => return left + right\n"
+        "main() => return 17 combine 25\n");
+    Felidae::RegisterVm directMixfixVm;
+    Felidae::DirectVmRuntime directMixfixRuntime(directMixfixModule.procedures);
+    assert(std::get<double>(directMixfixVm.executeMain(directMixfixModule,
+                                                        directMixfixRuntime)) == 42.0);
+
+    // Nested leading and infix mixfix expressions recursively lower to Call
+    // IR. The values prove capture boundaries are preserved at every depth.
+    const auto nestedMixfixModule = Felidae::compileProgramTextToIr(
+        "@mixfix(pattern: \"{left: number} blend {right: number}\")\n"
+        "blend(left: number, right: number) => return left + right\n"
+        "@mixfix(pattern: \"combine {left: number} with {right: number}\")\n"
+        "combine(left: number, right: number) => return left * right\n"
+        "@mixfix(pattern: \"scale {value: number} by {factor: number}\")\n"
+        "scale(value: number, factor: number) => return value * factor\n"
+        "@mixfix(pattern: \"offset {value: number} by {amount: number}\")\n"
+        "offset(value: number, amount: number) => return value + amount\n"
+        "main() =>\n"
+        "leaf := 4 blend 5\n"
+        "branch := combine (1 blend 2) with (3 blend leaf)\n"
+        "deep := scale (combine branch with (offset (2 blend 3) by (1 blend 1))) by (2 blend 1)\n"
+        "return (leaf: leaf, branch: branch, deep: deep)\n");
+    Felidae::DirectVmRuntime nestedMixfixRuntime(nestedMixfixModule.procedures);
+    const auto nestedMixfixResult = std::get<Felidae::VmMapPtr>(
+        directMixfixVm.executeMain(nestedMixfixModule, nestedMixfixRuntime));
+    assert(nestedMixfixResult && nestedMixfixResult->entries.size() == 3);
+    assert(std::get<double>(nestedMixfixResult->entries[0].second) == 9.0);
+    assert(std::get<double>(nestedMixfixResult->entries[1].second) == 36.0);
+    assert(std::get<double>(nestedMixfixResult->entries[2].second) == 756.0);
+
     // The public execution path is parser -> verified IR -> register VM.
     // This test deliberately does not construct Interpreter or a legacy
     // runtime, so a passing pipeline cannot hide an AST execution fallback.
     const auto module = Felidae::compileProgramFileToIr(FELIDAE_PIPELINE_FIXTURE_PATH);
-    assert(!hasLegacyExecution(module.ir));
-    for (const auto& [_, procedure] : module.procedures) {
-        assert(!hasLegacyExecution(procedure.ir));
-    }
+    // IrVerifier decodes instruction boundaries. Do not scan raw words for
+    // opcode values: legal registers, constants, and symbols may share a
+    // numeric value with an opcode.
     Felidae::IrVerifier::verify(module.ir);
     const auto linkedModule = Felidae::linkIrModule(module);
     assert(!linkedModule.code.empty());
@@ -277,7 +325,7 @@ int main() {
     assert(std::get<double>(nativeVm.execute(*namedCallIr, noRuntime, Felidae::VmNil{})) == 13.0);
     const auto textIr = Felidae::tryCompileExpressionTextToIr("\"mixfix text\"");
     assert(textIr);
-    assert(std::get<Felidae::VmText>(nativeVm.execute(*textIr, noRuntime, Felidae::VmNil{})).utf8 == "mixfix text");
+    assert(Felidae::vmValueToDisplayString(nativeVm.execute(*textIr, noRuntime, Felidae::VmNil{})) == "mixfix text");
     const auto nilIr = Felidae::tryCompileExpressionTextToIr("nil");
     assert(nilIr);
     assert(std::holds_alternative<Felidae::VmNil>(nativeVm.execute(*nilIr, noRuntime, Felidae::VmNil{})));

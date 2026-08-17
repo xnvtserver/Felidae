@@ -146,11 +146,21 @@ endfunction()
 # subtly different copies of the runtime.
 add_library(felidae_form STATIC
     src/form/RegisterVm.cpp
-    src/form/BinaryIr.cpp)
+    src/form/BinaryIr.cpp
+    src/form/RuntimeTraining.cpp)
 target_include_directories(felidae_form PUBLIC src)
 
-add_executable(felidae_vm src/form/main.cpp)
-target_link_libraries(felidae_vm PRIVATE felidae_form)
+add_executable(felidae_vm
+    src/form/main.cpp
+    src/SentencePieceModel.cpp)
+target_link_libraries(felidae_vm PRIVATE felidae_form sentencepiece)
+target_include_directories(felidae_vm BEFORE PRIVATE
+    third_party/sentencepiece
+    third_party/sentencepiece/src
+    ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
+target_compile_definitions(felidae_vm PRIVATE
+    FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
+felidae_use_sentencepiece_model(felidae_vm)
 set_target_properties(felidae_vm PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
@@ -158,6 +168,43 @@ set_target_properties(felidae_vm PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}")
 felidae_enable_static_analysis(felidae_vm)
+
+if(FELIDAE_ENABLE_LIBTORCH)
+    # The daemon owns an optional runtime-only GRU. Form itself remains free
+    # of LibTorch and all compiler/parser dependencies.
+    target_sources(felidae_vm PRIVATE src/form/RuntimeStateModel.cpp)
+    target_compile_definitions(felidae_vm PRIVATE FELIDAE_HAS_TORCH=1)
+    target_link_libraries(felidae_vm PRIVATE ${TORCH_LIBRARIES})
+endif()
+
+# Portable shipping folder. Build with: cmake --build build --target felidae_dist
+# It intentionally stages outside build/ so build remains build products only.
+set(FELIDAE_DIST_DIR "${CMAKE_SOURCE_DIR}/dist")
+set(FELIDAE_DIST_COMMAND
+    "${CMAKE_COMMAND}"
+    "-DFELIDAE_DIST_DIR=${FELIDAE_DIST_DIR}"
+    "-DFELIDAE_DIST_BUILD_DIR=${CMAKE_BINARY_DIR}"
+    "-DFELIDAE_DIST_MODEL_DIR=${CMAKE_SOURCE_DIR}/models"
+    "-DFELIDAE_DIST_VERSION=0.2.3-beta.1")
+if(FELIDAE_ENABLE_LIBTORCH)
+    list(APPEND FELIDAE_DIST_COMMAND "-DFELIDAE_DIST_TORCH_LIB_DIR=${TORCH_INSTALL_PREFIX}/lib")
+endif()
+list(APPEND FELIDAE_DIST_COMMAND "-P" "${CMAKE_SOURCE_DIR}/cmake/StageDistribution.cmake")
+add_custom_target(felidae_dist
+    COMMAND ${FELIDAE_DIST_COMMAND}
+    DEPENDS felidae_compiler felidae_vm felidae_sentencepiece_model
+    COMMENT "Staging portable Felidae distribution in dist/")
+
+# Explicit data-generation step for the runtime SSM. It executes verified .fir
+# through the Form VM and records facts, hierarchy types, execution trace and
+# verified result; it never trains from binary bytes alone.
+add_executable(felidae_build_runtime_dataset EXCLUDE_FROM_ALL
+    tools/BuildRuntimeTrainingDataset.cpp)
+target_link_libraries(felidae_build_runtime_dataset PRIVATE felidae_form)
+set_target_properties(felidae_build_runtime_dataset PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}")
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 8)
     message(FATAL_ERROR "Felidae requires GCC 8 or newer for std::filesystem. Use GCC 8+, Clang 7+, AppleClang 10+, or MSVC 2019+.")
@@ -206,6 +253,17 @@ if(FELIDAE_ENABLE_LIBTORCH)
     target_compile_definitions(felidae_train_mixfix_gru PRIVATE FELIDAE_HAS_TORCH=1)
     target_link_libraries(felidae_train_mixfix_gru PRIVATE ${TORCH_LIBRARIES})
     felidae_use_sentencepiece_model(felidae_train_mixfix_gru)
+
+    add_executable(felidae_train_runtime_gru EXCLUDE_FROM_ALL
+        tools/TrainRuntimeGru.cpp
+        src/form/RuntimeStateModel.cpp)
+    target_include_directories(felidae_train_runtime_gru PRIVATE src)
+    target_compile_definitions(felidae_train_runtime_gru PRIVATE FELIDAE_HAS_TORCH=1)
+    target_link_libraries(felidae_train_runtime_gru PRIVATE felidae_form ${TORCH_LIBRARIES})
+    set_target_properties(felidae_train_runtime_gru PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}")
 endif()
 felidae_use_sentencepiece_model(felidae_compiler)
 if(TARGET OpenMP::OpenMP_CXX)
@@ -324,7 +382,8 @@ if(FELIDAE_BUILD_TESTS)
     add_executable(felidae_mixfix_state_model_test
         tests/MixfixStateModelTest.cpp
         src/MixfixStateModel.cpp
-        src/form/RegisterVm.cpp)
+        src/form/RegisterVm.cpp
+        src/form/RuntimeStateModel.cpp)
     target_include_directories(felidae_mixfix_state_model_test PRIVATE src)
     target_compile_options(felidae_mixfix_state_model_test PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
@@ -487,3 +546,20 @@ foreach(felidae_quality_target IN ITEMS
         felidae_enable_quality_warnings(${felidae_quality_target})
     endif()
 endforeach()
+
+if(FELIDAE_BUILD_TESTS)
+    # Release gate: build the portable distribution, run the focused IR/VM
+    # regression suite, then execute a compiler->.fir->VM smoke through the
+    # staged binaries themselves. It never creates a second build tree.
+    add_custom_target(felidae_beta
+        COMMAND "${CMAKE_CTEST_COMMAND}" --test-dir "${CMAKE_BINARY_DIR}"
+                -R felidae_
+                --output-on-failure
+        COMMAND "${CMAKE_COMMAND}"
+                "-DFELIDAE_BETA_DIST_DIR=${FELIDAE_DIST_DIR}"
+                "-DFELIDAE_BETA_EXAMPLE=${CMAKE_SOURCE_DIR}/v2_examples/mixfix_deep_ir_nesting.fx"
+                -P "${CMAKE_SOURCE_DIR}/cmake/BetaReleaseCheck.cmake"
+        DEPENDS felidae_dist felidae_sentencepiece_model_test felidae_sentencepiece_pipeline_test
+                felidae_mixfix_state_model_test felidae_form_binary_test
+        COMMENT "Running Felidae beta release gate")
+endif()
