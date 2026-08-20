@@ -1,6 +1,4 @@
 #include "BinaryIr.h"
-#include "../Symbol.h"
-
 #include <algorithm>
 #include <array>
 #include <chrono>

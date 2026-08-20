@@ -151,7 +151,9 @@ add_library(felidae_form STATIC
 target_include_directories(felidae_form PUBLIC src)
 
 add_executable(felidae_vm
-    src/form/main.cpp
+    # CLI composition owns SentencePiece display decoding; Form itself stays
+    # integer/IR-only and is independently linkable.
+    src/VmMain.cpp
     src/SentencePieceModel.cpp)
 target_link_libraries(felidae_vm PRIVATE felidae_form sentencepiece)
 target_include_directories(felidae_vm BEFORE PRIVATE
@@ -418,6 +420,17 @@ if(FELIDAE_BUILD_TESTS)
         $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
     add_test(NAME felidae_form_binary COMMAND felidae_form_binary_test)
     set_tests_properties(felidae_form_binary PROPERTIES TIMEOUT 30)
+
+    # This target includes only Form headers and links only felidae_form. It
+    # prevents AST/parser/SentencePiece headers from leaking across the VM
+    # boundary as the repository is refactored.
+    add_executable(felidae_form_isolation_test tests/FormIsolationTest.cpp)
+    target_link_libraries(felidae_form_isolation_test PRIVATE felidae_form)
+    target_compile_options(felidae_form_isolation_test PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
+    add_test(NAME felidae_form_isolation COMMAND felidae_form_isolation_test)
+    set_tests_properties(felidae_form_isolation PROPERTIES TIMEOUT 30)
 endif()
 add_library(felidae_smoke SHARED native_modules/smoke/NativeSmoke.cpp)
 set_target_properties(felidae_smoke PROPERTIES
@@ -564,5 +577,6 @@ if(FELIDAE_BUILD_TESTS)
                 -P "${CMAKE_SOURCE_DIR}/cmake/BetaReleaseCheck.cmake"
         DEPENDS felidae_dist felidae_sentencepiece_model_test felidae_sentencepiece_pipeline_test
                 felidae_mixfix_state_model_test felidae_form_binary_test
+                felidae_form_isolation_test
         COMMENT "Running Felidae beta release gate")
 endif()

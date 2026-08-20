@@ -65,7 +65,8 @@ int main(int argc, char** argv) {
         if (binary.extension() != kBinaryIrExtension) {
             throw std::runtime_error("felidae_vm accepts only .bin binary IR files");
         }
-        setVmTextDecoder([](std::span<const std::uint32_t> pieces) {
+        VmDisplayContext display;
+        display.textDecoder = [](std::span<const std::uint32_t> pieces) {
             std::vector<int> ids;
             ids.reserve(pieces.size());
             for (const auto piece : pieces) ids.push_back(static_cast<int>(piece));
@@ -73,7 +74,7 @@ int main(int argc, char** argv) {
             const auto status = felidaeSentencePieceModel().Decode(ids, &text);
             if (!status.ok()) throw IrError("SentencePiece cannot decode VM text");
             return text;
-        });
+        };
         auto module = loadBinaryIr(binary);
 #ifdef FELIDAE_HAS_TORCH
         std::unique_ptr<GruRuntimeStateModel> model;
@@ -101,7 +102,7 @@ int main(int argc, char** argv) {
         runtime.installModule(module);
         RegisterVm vm;
         const auto execute = [&] {
-            std::cout << vmValueToDisplayString(vm.executeMain(module, runtime)) << "\n";
+            std::cout << vmValueToDisplayString(vm.executeMain(module, runtime), display) << "\n";
         };
         if (!options->serve) {
             execute();
