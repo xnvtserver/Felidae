@@ -6,11 +6,12 @@
 
 namespace Felidae {
 
-inline constexpr const char kBinaryIrExtension[] = ".fir";
-inline constexpr std::uint32_t kBinaryIrVersion = 7;
+inline constexpr const char kBinaryIrExtension[] = ".bin";
+inline constexpr std::uint32_t kBinaryIrVersion = 8;
 
-// Both functions verify all code blocks and reject legacy execution opcodes.
-// Version 5 starts with a fixed little-endian header (magic, version, entry
+// FELBIN v8 is an intentionally incompatible successor to the old FELIR/.fir
+// container. Both functions verify all code blocks and reject legacy execution
+// opcodes. The fixed little-endian header contains magic, version, entry
 // procedure, and offset/count pairs for metadata, constants, text, symbols,
 // programs, source maps, and code). It contains no pointers, AST nodes, or
 // runtime values. Text is encoded as SentencePiece IDs and symbols are IDs only.

@@ -8,7 +8,7 @@
 namespace Felidae {
 
 // Versioned, integer-only sample for runtime-model training. It represents
-// observed verified execution, not a raw .fir byte sequence. A model builder
+// observed verified execution, not a raw .bin byte sequence. A model builder
 // may use the opcode stream as an additional feature, but this record keeps
 // the deterministic result and fact/hierarchy context authoritative.
 struct RuntimeTrainingRecord {

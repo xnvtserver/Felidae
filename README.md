@@ -1,15 +1,17 @@
 # Felidae
 
-Felidae compiles `.fx` source into verified, integer-only `.fir` artifacts.
+Felidae compiles `.fx` source into verified, integer-only `.bin` artifacts.
+`.bin` uses the incompatible **FELBIN v8** container; legacy `FELIR`/`.fir`
+artifacts are rejected and their `.fx` sources must be recompiled.
 The compiler and VM are separate C++ executables:
 
 ```text
-source.fx -> SentencePiece IDs -> IntegerParser -> AST compiler -> verified .fir
-program.fir -> binary loader -> verifier -> Form register VM
+source.fx -> SentencePiece IDs -> IntegerParser -> AST compiler -> verified .bin
+program.bin -> binary loader -> verifier -> Form register VM
 ```
 
 The Form VM executes IR only. It does not link the parser, AST, Interpreter,
-or legacy AST runtime. `.fir` stores integer opcodes, registers, symbol IDs,
+or legacy AST runtime. `.bin` stores integer opcodes, registers, symbol IDs,
 SentencePiece text IDs, constants, source-map spans, and procedure metadata;
 it never stores source syntax, pointers, or AST objects.
 
@@ -44,23 +46,23 @@ unchanged:
 
 ```powershell
 build\felidae_compiler.exe v2_examples\form_core_concepts.fx
-build\felidae_vm.exe build\form_core_concepts.fir
+build\felidae_vm.exe build\form_core_concepts.bin
 ```
 
 The VM verifies the binary again before execution. A malformed, truncated, or
-unverified `.fir` fails before it can run.
+unverified `.bin` fails before it can run.
 
 For the long-lived Form daemon mode:
 
 ```powershell
-build\felidae_vm.exe --serve build\form_core_concepts.fir
+build\felidae_vm.exe --serve build\form_core_concepts.bin
 # stdin commands: run, facts [type-id], field <symbol-id>, history,
-# proof <child-type-id> <ancestor-type-id>, load <other.fir>, modules, quit
+# proof <child-type-id> <ancestor-type-id>, load <other.bin>, modules, quit
 ```
 
 ## Working examples
 
-These examples use the current compiler/VM pipeline and produce `.fir` files
+These examples use the current compiler/VM pipeline and produce `.bin` files
 in `build/`.
 
 | Example | Covers |
@@ -76,13 +78,13 @@ For example:
 
 ```powershell
 build\felidae_compiler.exe v2_examples\mixfix_deep_ir_nesting.fx
-build\felidae_vm.exe build\mixfix_deep_ir_nesting.fir
+build\felidae_vm.exe build\mixfix_deep_ir_nesting.bin
 # {#...: 9, #...: 36, #...: 756}
 ```
 
 Fact keys and type names display as numeric symbol IDs by design. VM text is
 stored as SentencePiece IDs and is decoded only for display; symbol spelling is
-not serialized into `.fir`.
+not serialized into `.bin`.
 
 ## Mixfix and recurrent models
 
@@ -99,7 +101,7 @@ typed result actions (facts, text, arrays, maps, values, or `Degree`), never
 implicit truthiness. Use a versioned runtime artifact explicitly:
 
 ```powershell
-build\felidae_vm.exe --model models\runtime_gru_benchmark build\form_core_concepts.fir
+build\felidae_vm.exe --model models\runtime_gru_benchmark build\form_core_concepts.bin
 ```
 
 ## Validation
@@ -136,6 +138,6 @@ does not contain source or CMake build state. The staged package writes
    approved executables, models, runtime DLLs, `README.txt`, and
    `SHA256SUMS.txt`.
 4. Copy `dist/` to a clean Windows machine, verify checksums, compile a `.fx`
-   file, and run its generated `.fir` using only the copied folder.
+   file, and run its generated `.bin` using only the copied folder.
 5. Tag and publish the exact revision only after that clean-machine smoke
    succeeds. Do not publish files directly from `build/`.

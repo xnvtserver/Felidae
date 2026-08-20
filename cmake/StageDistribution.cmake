@@ -35,16 +35,27 @@ if(DEFINED FELIDAE_DIST_TORCH_LIB_DIR AND EXISTS "${FELIDAE_DIST_TORCH_LIB_DIR}"
     endforeach()
 endif()
 
-set(release_files felidae_compiler.exe felidae_vm.exe models/felidae.model)
+file(WRITE "${FELIDAE_DIST_DIR}/README.txt"
+"Felidae ${FELIDAE_DIST_VERSION} beta portable distribution\n\nRun from this directory:\n  felidae_compiler.exe program.fx\n  felidae_vm.exe program.bin\n\nThe compiler writes .bin next to itself; use a disposable working copy or move the artifact after compilation.\nFELBIN v8 is incompatible with legacy FELIR/.fir artifacts; recompile the .fx source.\nmodels/felidae.model is required for SentencePiece encoding/decoding.\nLibTorch DLLs are staged beside the executables when this distribution was built with runtime SSM support.\nVerify shipped files with SHA256SUMS.txt before publishing.\n")
+
+set(release_files felidae_compiler.exe felidae_vm.exe README.txt)
 if(DEFINED FELIDAE_DIST_TORCH_LIB_DIR AND EXISTS "${FELIDAE_DIST_TORCH_LIB_DIR}")
     list(APPEND release_files c10.dll torch_cpu.dll libiomp5md.dll uv.dll)
 endif()
+# All copied model artifacts, including nested GRU checkpoints and manifests,
+# are part of the release integrity boundary rather than an unchecked sidecar.
+file(GLOB_RECURSE staged_model_entries RELATIVE "${FELIDAE_DIST_DIR}"
+     "${FELIDAE_DIST_DIR}/models/*")
+foreach(entry IN LISTS staged_model_entries)
+    if(NOT IS_DIRECTORY "${FELIDAE_DIST_DIR}/${entry}")
+        list(APPEND release_files "${entry}")
+    endif()
+endforeach()
+list(REMOVE_DUPLICATES release_files)
+list(SORT release_files)
 set(checksums "# Felidae ${FELIDAE_DIST_VERSION} beta distribution SHA-256\n")
 foreach(release_file IN LISTS release_files)
     file(SHA256 "${FELIDAE_DIST_DIR}/${release_file}" digest)
     string(APPEND checksums "${digest}  ${release_file}\n")
 endforeach()
 file(WRITE "${FELIDAE_DIST_DIR}/SHA256SUMS.txt" "${checksums}")
-
-file(WRITE "${FELIDAE_DIST_DIR}/README.txt"
-"Felidae ${FELIDAE_DIST_VERSION} beta portable distribution\n\nRun from this directory:\n  felidae_compiler.exe program.fx\n  felidae_vm.exe program.fir\n\nThe compiler writes .fir next to itself; use a disposable working copy or move the artifact after compilation.\nmodels/felidae.model is required for SentencePiece encoding/decoding.\nLibTorch DLLs are staged beside the executables when this distribution was built with runtime SSM support.\nVerify shipped executable/model files with SHA256SUMS.txt before publishing.\n")

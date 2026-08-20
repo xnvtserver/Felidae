@@ -14,7 +14,7 @@ int main(int argc, char** argv) {
     try {
         if (argc != 3) throw std::runtime_error("usage: felidae_build_runtime_dataset program.fir output.frtd");
         const std::filesystem::path input(argv[1]);
-        if (input.extension() != Felidae::kBinaryIrExtension) throw std::runtime_error("runtime dataset input must be .fir");
+        if (input.extension() != Felidae::kBinaryIrExtension) throw std::runtime_error("runtime dataset input must be .bin");
         const auto module = Felidae::loadBinaryIr(input);
         Felidae::FelidaeKnowledgeRuntime runtime;
         Felidae::RegisterVm vm;

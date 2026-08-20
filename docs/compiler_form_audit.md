@@ -7,10 +7,10 @@ existing `felidae_integer_parser_benchmark` target, five process-start runs.
 
 ```text
 felidae_compiler.exe
-  source.fx -> SentencePiece -> IntegerParser -> AST -> IrCodeGenerator -> .fir
+  source.fx -> SentencePiece -> IntegerParser -> AST -> IrCodeGenerator -> .bin
 
 felidae_vm.exe
-  program.fir -> binary validation -> IR verifier -> Form RegisterVm
+  program.bin -> binary validation -> IR verifier -> Form RegisterVm
 ```
 
 `felidae_vm.exe` links only `src/form/`; it has no parser, AST, SentencePiece,
