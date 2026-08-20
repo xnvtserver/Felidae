@@ -23,8 +23,8 @@ native_modules/**/*.exp
 
 # Third-party sources are not tracked by default, but the vendored
 # header-only dependencies ARE part of the build and must come with a clone.
-# Without these negations `third_party/*` hides Eigen, and Celidae fails to
-# compile on a fresh checkout.
+# Without these negations `third_party/*` hides the header-only dependencies
+# required by a fresh compiler/VM checkout.
 third_party/*
 !third_party/cpp-httplib/
 !third_party/rapidcsv/
@@ -51,11 +51,8 @@ intellij-idea-extension/build/
 *.tmp
 *.temp
 *.fx.lock
-# Celidae writes .html/.svg exports anywhere the user points it, so these stay
-# ignored by default - but they also caught real, hand-authored sources. The
-# Celidae visualizer template in particular was untracked while its generated
-# output (GeneratedVisualizerAssets.h) was committed, so a fresh clone could
-# never regenerate the UI.
+# Generated documentation and visual assets stay ignored, while checked-in
+# editor resources remain explicitly visible to Git.
 *.html
 !src/celidae/webui/template.html
 *.svg
@@ -65,6 +62,7 @@ intellij-idea-extension/build/
 
 # Editor/OS noise
 .vs/
+.idea/
 out/
 CMakeSettings.json
 .DS_Store

@@ -23,13 +23,17 @@ int main() {
         std::error_code ignored;
         std::filesystem::remove(path, ignored);
     };
-    Felidae::setVmTextDecoder([](std::span<const std::uint32_t> pieces) {
+    Felidae::VmDisplayContext display;
+    display.textDecoder = [](std::span<const std::uint32_t> pieces) {
         std::vector<int> ids(pieces.begin(), pieces.end());
         std::string text;
         const auto status = Felidae::felidaeSentencePieceModel().Decode(ids, &text);
         assert(status.ok());
         return text;
-    });
+    };
+    display.symbolDecoder = [](Felidae::IrSymbolRef symbol) {
+        return Felidae::symbolNameForId(static_cast<Felidae::SymbolId>(symbol));
+    };
     static_assert(std::variant_size_v<Felidae::VmValue> == 8,
                   "production VM values must remain typed and AST-free");
     // This covers the production frontend: source -> SentencePiece IDs ->
@@ -107,7 +111,7 @@ int main() {
     Felidae::RegisterVm vm;
     Felidae::DirectVmRuntime moduleRuntime(module.procedures);
     const auto vmResult = vm.executeMain(module, moduleRuntime);
-    assert(Felidae::vmValueToDisplayString(vmResult) == "{answer: 42}");
+    assert(Felidae::vmValueToDisplayString(vmResult, display) == "{answer: 42}");
 
     // The serialized artifact is executable in a fresh module/runtime path:
     // loader verification occurs before RegisterVm sees any instruction.
@@ -115,7 +119,7 @@ int main() {
     Felidae::writeBinaryIr(binaryPath, module);
     const auto loadedModule = Felidae::loadBinaryIr(binaryPath);
     Felidae::DirectVmRuntime loadedRuntime(loadedModule.procedures);
-    assert(Felidae::vmValueToDisplayString(vm.executeMain(loadedModule, loadedRuntime)) ==
+    assert(Felidae::vmValueToDisplayString(vm.executeMain(loadedModule, loadedRuntime), display) ==
            "{answer: 42}");
     const auto malformedPath = std::filesystem::temp_directory_path() / "felidae_pipeline_bad.bin";
     { std::ofstream bad(malformedPath, std::ios::binary | std::ios::trunc); bad << "not a felidae IR"; }
@@ -228,7 +232,7 @@ int main() {
     const auto directResult = nativeVm.execute(directModule.ir, directRuntime, Felidae::VmNil{});
     const auto directMap = std::get<Felidae::VmMapPtr>(directResult);
     assert(directMap && std::get<double>(directMap->entries.front().second) == 42.0);
-    assert(Felidae::vmValueToDisplayString(directResult) == "{answer: 42}");
+    assert(Felidae::vmValueToDisplayString(directResult, display) == "{answer: 42}");
     const auto executeBinaryModule = [&](const Felidae::IrModule& candidate) {
         const auto path = std::filesystem::temp_directory_path() / "felidae_pipeline_feature_roundtrip.bin";
         try {
@@ -237,7 +241,7 @@ int main() {
             Felidae::DirectVmRuntime runtime(loaded.procedures);
             const auto result = nativeVm.executeMain(loaded, runtime);
             std::filesystem::remove(path);
-            return Felidae::vmValueToDisplayString(result);
+            return Felidae::vmValueToDisplayString(result, display);
         } catch (...) {
             std::filesystem::remove(path);
             throw;
@@ -249,33 +253,33 @@ int main() {
     Felidae::IrVerifier::verify(globalsModule.ir);
     Felidae::DirectVmRuntime globalsRuntime(globalsModule.procedures);
     const auto globalsResult = nativeVm.execute(globalsModule.ir, globalsRuntime, Felidae::VmNil{});
-    assert(Felidae::vmValueToDisplayString(globalsResult) == "{answer: 42}");
+    assert(Felidae::vmValueToDisplayString(globalsResult, display) == "{answer: 42}");
     assert(executeBinaryModule(globalsModule) == "{answer: 42}");
     const auto textGlobalsModule = Felidae::compileProgramTextToIr(
         "label := \"meow\".\nmain() => return (label: label).");
     Felidae::DirectVmRuntime textGlobalsRuntime(textGlobalsModule.procedures);
     const auto textGlobalsResult = nativeVm.execute(textGlobalsModule.ir, textGlobalsRuntime, Felidae::VmNil{});
-    assert(Felidae::vmValueToDisplayString(textGlobalsResult) == "{label: meow}");
+    assert(Felidae::vmValueToDisplayString(textGlobalsResult, display) == "{label: meow}");
     assert(executeBinaryModule(textGlobalsModule) == "{label: meow}");
     const auto conditionalModule = Felidae::compileProgramTextToIr(
         "main() =>\nif 3 > 2 then\nreturn (result: \"yes\")\nelse\nreturn (result: \"no\").");
     Felidae::IrVerifier::verify(conditionalModule.ir);
     Felidae::DirectVmRuntime conditionalRuntime(conditionalModule.procedures);
     const auto conditionalResult = nativeVm.execute(conditionalModule.ir, conditionalRuntime, Felidae::VmNil{});
-    assert(Felidae::vmValueToDisplayString(conditionalResult) == "{result: yes}");
+    assert(Felidae::vmValueToDisplayString(conditionalResult, display) == "{result: yes}");
     assert(executeBinaryModule(conditionalModule) == "{result: yes}");
     const auto falseConditionalModule = Felidae::compileProgramTextToIr(
         "main() =>\nif 2 > 3 then\nreturn (result: \"yes\")\nelse\nreturn (result: \"no\").");
     Felidae::DirectVmRuntime falseConditionalRuntime(falseConditionalModule.procedures);
     const auto falseConditionalResult = nativeVm.execute(falseConditionalModule.ir, falseConditionalRuntime, Felidae::VmNil{});
-    assert(Felidae::vmValueToDisplayString(falseConditionalResult) == "{result: no}");
+    assert(Felidae::vmValueToDisplayString(falseConditionalResult, display) == "{result: no}");
     assert(executeBinaryModule(falseConditionalModule) == "{result: no}");
     const auto localBindingModule = Felidae::compileProgramTextToIr(
         "main() =>\nvalue := 40\nanswer := value + 2\nreturn (answer: answer).");
     Felidae::IrVerifier::verify(localBindingModule.ir);
     Felidae::DirectVmRuntime localBindingRuntime(localBindingModule.procedures);
     const auto localBindingResult = nativeVm.execute(localBindingModule.ir, localBindingRuntime, Felidae::VmNil{});
-    assert(Felidae::vmValueToDisplayString(localBindingResult) == "{answer: 42}");
+    assert(Felidae::vmValueToDisplayString(localBindingResult, display) == "{answer: 42}");
     // Signatures are collected before lowering bodies, so main can call a
     // later declaration and that declaration can in turn call another later
     // declaration. Parameters live in independent VM call frames and named
@@ -289,7 +293,7 @@ int main() {
     Felidae::IrVerifier::verify(callsModule.ir);
     Felidae::DirectVmRuntime callsRuntime(callsModule.procedures);
     const auto callsResult = nativeVm.execute(callsModule.ir, callsRuntime, Felidae::VmNil{});
-    assert(Felidae::vmValueToDisplayString(callsResult) == "{answer: 42}");
+    assert(Felidae::vmValueToDisplayString(callsResult, display) == "{answer: 42}");
     assert(executeBinaryModule(callsModule) == "{answer: 42}");
     const auto recursionModule = Felidae::compileProgramTextToIr(
         "main() => return (answer: countdown(value: 4)).\n"
@@ -300,7 +304,7 @@ int main() {
         "return countdown(value: value - 1).");
     Felidae::DirectVmRuntime recursionRuntime(recursionModule.procedures, nullptr, 1024, 16);
     const auto recursionResult = nativeVm.execute(recursionModule.ir, recursionRuntime, Felidae::VmNil{});
-    assert(Felidae::vmValueToDisplayString(recursionResult) == "{answer: 0}");
+    assert(Felidae::vmValueToDisplayString(recursionResult, display) == "{answer: 0}");
     assert(executeBinaryModule(recursionModule) == "{answer: 0}");
     bool undefinedProcedureRejected = false;
     try {
@@ -329,7 +333,7 @@ int main() {
     assert(std::get<double>(nativeVm.execute(*namedCallIr, noRuntime, Felidae::VmNil{})) == 13.0);
     const auto textIr = Felidae::tryCompileExpressionTextToIr("\"mixfix text\"");
     assert(textIr);
-    assert(Felidae::vmValueToDisplayString(nativeVm.execute(*textIr, noRuntime, Felidae::VmNil{})) == "mixfix text");
+    assert(Felidae::vmValueToDisplayString(nativeVm.execute(*textIr, noRuntime, Felidae::VmNil{}), display) == "mixfix text");
     const auto nilIr = Felidae::tryCompileExpressionTextToIr("nil");
     assert(nilIr);
     assert(std::holds_alternative<Felidae::VmNil>(nativeVm.execute(*nilIr, noRuntime, Felidae::VmNil{})));

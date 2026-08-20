@@ -17,8 +17,8 @@ it never stores source syntax, pointers, or AST objects.
 
 ## Build on Windows
 
-SentencePiece and LibTorch are C++ dependencies. No Python or Celidae runtime
-is required.
+SentencePiece and LibTorch are C++ dependencies. No Python or deprecated
+visualizer runtime is required.
 
 ```powershell
 cmake -S . -B build

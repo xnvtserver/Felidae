@@ -44,7 +44,7 @@ enum class IrOpcode : IrWord {
     SemanticEval,
     // destination, model-operation symbol, input count, input registers.
     // This explicit recurrent/SSM operation keeps the binary operand schema
-    // stable while using the typed RuntimeStateModel boundary.
+    // stable while using the typed runtime-state-model boundary.
     SsmProcess,
     MakeFact,
     MakeArray,
@@ -128,11 +128,16 @@ using VmFactPtr = std::shared_ptr<VmFact>;
 using VmValue = std::variant<VmNil, bool, double, VmDegree, VmText, VmArrayPtr, VmMapPtr, VmFactPtr>;
 // Public runtime spelling for canonical VM values.
 using Value = VmValue;
-// Typed result rendering for direct VM execution. It deliberately does not
-// reconstruct AST nodes or consult Interpreter display helpers.
-std::string vmValueToDisplayString(const VmValue& value);
 using VmTextDecoder = std::function<std::string(std::span<const std::uint32_t>)>;
-void setVmTextDecoder(VmTextDecoder decoder);
+using VmSymbolDecoder = std::function<std::string(IrSymbolRef)>;
+// Rendering is an adapter boundary, not VM state. Form consumes only IDs and
+// typed values; callers may inject SentencePiece and symbol decoders for UI.
+struct VmDisplayContext {
+    VmTextDecoder textDecoder;
+    VmSymbolDecoder symbolDecoder;
+};
+std::string vmValueToDisplayString(const VmValue& value,
+                                   const VmDisplayContext& context = {});
 struct VmArray {
     std::vector<VmValue> values;
 };

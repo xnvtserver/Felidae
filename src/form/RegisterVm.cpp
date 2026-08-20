@@ -2,8 +2,6 @@
 
 #include "IrModule.h"
 
-#include "Symbol.h"
-
 #include <algorithm>
 #include <cmath>
 #include <deque>
@@ -268,14 +266,8 @@ void verifyControlFlowInitialization(const FelidaeIr& ir,
 
 } // namespace
 
-namespace {
-VmTextDecoder& textDecoder() { static VmTextDecoder decoder; return decoder; }
-}
-
-void setVmTextDecoder(VmTextDecoder decoder) { textDecoder() = std::move(decoder); }
-
-std::string vmValueToDisplayString(const VmValue& value) {
-    const auto render = [](const auto& self, const VmValue& item) -> std::string {
+std::string vmValueToDisplayString(const VmValue& value, const VmDisplayContext& context) {
+    const auto render = [&](const auto& self, const VmValue& item) -> std::string {
         if (std::holds_alternative<VmNil>(item)) return "nil";
         if (const auto boolean = std::get_if<bool>(&item)) return *boolean ? "true" : "false";
         if (const auto number = std::get_if<double>(&item)) {
@@ -291,8 +283,8 @@ std::string vmValueToDisplayString(const VmValue& value) {
             return out.str();
         }
         if (const auto text = std::get_if<VmText>(&item)) {
-            if (!textDecoder()) throw IrError("VM text display requires a SentencePiece decoder");
-            return textDecoder()(text->pieces);
+            if (!context.textDecoder) throw IrError("VM text display requires an injected SentencePiece decoder");
+            return context.textDecoder(text->pieces);
         }
         if (const auto array = std::get_if<VmArrayPtr>(&item)) {
             if (!*array) throw IrError("VM display received an invalid array value");
@@ -309,7 +301,7 @@ std::string vmValueToDisplayString(const VmValue& value) {
             out << "{";
             for (std::size_t index = 0; index < fields.size(); ++index) {
                 if (index) out << ", ";
-                auto name = symbolNameForId(static_cast<SymbolId>(fields[index].first));
+                auto name = context.symbolDecoder ? context.symbolDecoder(fields[index].first) : std::string{};
                 if (name.empty()) name = "#" + std::to_string(fields[index].first);
                 out << name << ": "
                     << self(self, fields[index].second);
