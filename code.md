@@ -9,7 +9,7 @@ source.fx
   -> IntegerParser
   -> AST compiler / SymbolId interning
   -> verified integer IR
-  -> .fir binary artifact
+  -> .bin binary artifact
   -> Form RegisterVm
 ```
 

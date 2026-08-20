@@ -195,7 +195,7 @@ add_custom_target(felidae_dist
     DEPENDS felidae_compiler felidae_vm felidae_sentencepiece_model
     COMMENT "Staging portable Felidae distribution in dist/")
 
-# Explicit data-generation step for the runtime SSM. It executes verified .fir
+# Explicit data-generation step for the runtime SSM. It executes verified .bin
 # through the Form VM and records facts, hierarchy types, execution trace and
 # verified result; it never trains from binary bytes alone.
 add_executable(felidae_build_runtime_dataset EXCLUDE_FROM_ALL
@@ -410,9 +410,12 @@ endif()
 
 if(FELIDAE_BUILD_TESTS)
     # This executable intentionally links only the form boundary. It proves a
-    # generated .fir can be loaded and run without AST/parser/Interpreter.
+    # generated .bin can be loaded and run without AST/parser/Interpreter.
     add_executable(felidae_form_binary_test tests/FormBinaryIrTest.cpp)
     target_link_libraries(felidae_form_binary_test PRIVATE felidae_form)
+    target_compile_options(felidae_form_binary_test PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
     add_test(NAME felidae_form_binary COMMAND felidae_form_binary_test)
     set_tests_properties(felidae_form_binary PROPERTIES TIMEOUT 30)
 endif()
@@ -549,7 +552,7 @@ endforeach()
 
 if(FELIDAE_BUILD_TESTS)
     # Release gate: build the portable distribution, run the focused IR/VM
-    # regression suite, then execute a compiler->.fir->VM smoke through the
+    # regression suite, then execute a compiler->.bin->VM smoke through the
     # staged binaries themselves. It never creates a second build tree.
     add_custom_target(felidae_beta
         COMMAND "${CMAKE_CTEST_COMMAND}" --test-dir "${CMAKE_BINARY_DIR}"

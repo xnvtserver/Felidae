@@ -79,7 +79,7 @@ struct FelidaeIr {
     // Text is a dedicated side table: integer IR words carry only its bounded
     // index, never a pointer or unrestricted string payload.
     // Every text constant is a SentencePiece ID sequence. Raw UTF-8 never
-    // enters .fir or the VM's persistent state.
+    // enters .bin or the VM's persistent state.
     std::vector<std::vector<std::uint32_t>> texts;
     std::vector<IrWord> symbols;
     std::vector<IrWord> programs;
@@ -215,7 +215,7 @@ struct RuntimeOperation {
 };
 
 // A compact, integer-only record of behavior observed while verified IR runs.
-// It is deliberately not a copy of the .fir byte stream: model builders use
+// It is deliberately not a copy of the .bin byte stream: model builders use
 // these records with the fact/hierarchy state and the verified result.
 enum class VmTraceKind : std::uint8_t { ExecutionBegin, ModuleInstalled, ProcedureCall, FactRetained, SsmProposal, ExecutionResult };
 struct VmExecutionTrace {

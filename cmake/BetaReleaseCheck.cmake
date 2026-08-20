@@ -14,6 +14,49 @@ foreach(forbidden CMakeCache.txt compile_commands.json felidae_compiler.pdb feli
     endif()
 endforeach()
 
+# A release contains only the two tools, their runtime DLLs, a checksum/readme,
+# and model artifacts. This catches accidental staging of build products.
+file(GLOB_RECURSE staged_entries RELATIVE "${FELIDAE_BETA_DIST_DIR}" "${FELIDAE_BETA_DIST_DIR}/*")
+foreach(entry IN LISTS staged_entries)
+    if(IS_DIRECTORY "${FELIDAE_BETA_DIST_DIR}/${entry}")
+        continue()
+    endif()
+    if(NOT entry MATCHES "^(felidae_compiler|felidae_vm)\\.exe$|^(c10|torch_cpu|libiomp5md|uv)\\.dll$|^(README|SHA256SUMS)\\.txt$|^models/.+\\.(model|pt|txt)$")
+        message(FATAL_ERROR "beta distribution contains an unapproved file: ${entry}")
+    endif()
+endforeach()
+
+# Verify every staged file except the checksum manifest itself, and require the
+# manifest to cover every file it claims to ship.
+file(STRINGS "${FELIDAE_BETA_DIST_DIR}/SHA256SUMS.txt" checksum_lines)
+set(checksummed_files)
+foreach(line IN LISTS checksum_lines)
+    if(line MATCHES "^#" OR line STREQUAL "")
+        continue()
+    endif()
+    if(NOT line MATCHES "^([0-9A-Fa-f]+)  (.+)$")
+        message(FATAL_ERROR "beta checksum entry is malformed: ${line}")
+    endif()
+    set(expected_digest "${CMAKE_MATCH_1}")
+    set(checksummed_file "${CMAKE_MATCH_2}")
+    if(NOT EXISTS "${FELIDAE_BETA_DIST_DIR}/${checksummed_file}")
+        message(FATAL_ERROR "beta checksum target is missing: ${checksummed_file}")
+    endif()
+    file(SHA256 "${FELIDAE_BETA_DIST_DIR}/${checksummed_file}" actual_digest)
+    if(NOT actual_digest STREQUAL expected_digest)
+        message(FATAL_ERROR "beta checksum mismatch: ${checksummed_file}")
+    endif()
+    list(APPEND checksummed_files "${checksummed_file}")
+endforeach()
+foreach(entry IN LISTS staged_entries)
+    if(NOT IS_DIRECTORY "${FELIDAE_BETA_DIST_DIR}/${entry}" AND NOT entry STREQUAL "SHA256SUMS.txt")
+        list(FIND checksummed_files "${entry}" checksum_index)
+        if(checksum_index EQUAL -1)
+            message(FATAL_ERROR "beta distribution file is missing from SHA256SUMS.txt: ${entry}")
+        endif()
+    endif()
+endforeach()
+
 execute_process(COMMAND "${FELIDAE_BETA_DIST_DIR}/felidae_compiler.exe" --version
     RESULT_VARIABLE compiler_version_result OUTPUT_VARIABLE compiler_version ERROR_VARIABLE compiler_version_error)
 if(NOT compiler_version_result EQUAL 0)
@@ -26,7 +69,7 @@ if(NOT vm_version_result EQUAL 0)
 endif()
 
 get_filename_component(example_name "${FELIDAE_BETA_EXAMPLE}" NAME_WE)
-set(binary "${FELIDAE_BETA_DIST_DIR}/${example_name}.fir")
+set(binary "${FELIDAE_BETA_DIST_DIR}/${example_name}.bin")
 execute_process(COMMAND "${FELIDAE_BETA_DIST_DIR}/felidae_compiler.exe" "${FELIDAE_BETA_EXAMPLE}"
     RESULT_VARIABLE compile_result OUTPUT_VARIABLE compile_output ERROR_VARIABLE compile_error)
 if(NOT compile_result EQUAL 0 OR NOT EXISTS "${binary}")
@@ -34,11 +77,20 @@ if(NOT compile_result EQUAL 0 OR NOT EXISTS "${binary}")
 endif()
 execute_process(COMMAND "${FELIDAE_BETA_DIST_DIR}/felidae_vm.exe" "${binary}"
     RESULT_VARIABLE vm_result OUTPUT_VARIABLE vm_output ERROR_VARIABLE vm_error)
-file(REMOVE "${binary}")
 if(NOT vm_result EQUAL 0)
     message(FATAL_ERROR "beta VM smoke failed: ${vm_error}${vm_output}")
 endif()
 if(NOT vm_output MATCHES "756")
     message(FATAL_ERROR "beta VM smoke output is unexpected: ${vm_output}")
 endif()
+
+# The VM rejects the retired extension before it even opens a file; the gate
+# deliberately does not create or stage an old-format artifact.
+set(legacy_binary "${FELIDAE_BETA_DIST_DIR}/${example_name}.fir")
+execute_process(COMMAND "${FELIDAE_BETA_DIST_DIR}/felidae_vm.exe" "${legacy_binary}"
+    RESULT_VARIABLE legacy_result OUTPUT_VARIABLE legacy_output ERROR_VARIABLE legacy_error)
+if(legacy_result EQUAL 0 OR NOT legacy_error MATCHES "only \\.bin")
+    message(FATAL_ERROR "beta VM did not reject legacy .fir input: ${legacy_error}${legacy_output}")
+endif()
+file(REMOVE "${binary}")
 message(STATUS "Felidae beta release check passed: ${compiler_version}${vm_version}")

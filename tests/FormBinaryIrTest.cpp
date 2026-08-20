@@ -5,7 +5,9 @@
 #include <cassert>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <span>
+#include <string>
 
 int main() {
     using namespace Felidae;
@@ -33,12 +35,50 @@ int main() {
         static_cast<IrWord>(IrOpcode::End)};
     module.procedures.emplace(mainSymbol, std::move(main));
 
-    const auto path = std::filesystem::temp_directory_path() / "felidae_form_standalone.fir";
+    const auto path = std::filesystem::temp_directory_path() / "felidae_form_standalone.bin";
     writeBinaryIr(path, module);
+    std::array<char, 8> magic{};
+    { std::ifstream input(path, std::ios::binary); input.read(magic.data(), magic.size()); }
+    assert((magic == std::array<char, 8>{'F','E','L','B','I','N','\0','\0'}));
     const auto loaded = loadBinaryIr(path);
     DirectVmRuntime runtime(loaded.procedures);
     RegisterVm vm;
     assert(std::get<double>(vm.executeMain(loaded, runtime)) == 42.0);
+
+    // FELIR/.fir is deliberately incompatible with the FELBIN v8 container,
+    // even when a legacy artifact is merely renamed to the new extension.
+    const auto legacyPath = std::filesystem::temp_directory_path() / "felidae_legacy_renamed.bin";
+    std::filesystem::copy_file(path, legacyPath, std::filesystem::copy_options::overwrite_existing);
+    { std::fstream legacy(legacyPath, std::ios::binary | std::ios::in | std::ios::out);
+      const std::array<char, 8> legacyMagic{'F','E','L','I','R','\0','\0','\0'};
+      const std::array<char, 4> legacyVersion{7, 0, 0, 0};
+      legacy.write(legacyMagic.data(), legacyMagic.size()); legacy.write(legacyVersion.data(), legacyVersion.size()); legacy.close(); }
+    bool legacyRejected = false;
+    try { (void)loadBinaryIr(legacyPath); }
+    catch (const IrError& error) { legacyRejected = std::string(error.what()).find("legacy .fir") != std::string::npos; }
+    assert(legacyRejected);
+    std::error_code ignored;
+    std::filesystem::remove(legacyPath, ignored);
+
+    // A FELBIN container with the former version is also rejected. This is
+    // separate from the legacy magic check so format evolution is explicit.
+    const auto oldVersionPath = std::filesystem::temp_directory_path() / "felidae_v7.bin";
+    std::filesystem::copy_file(path, oldVersionPath, std::filesystem::copy_options::overwrite_existing);
+    { std::fstream oldVersion(oldVersionPath, std::ios::binary | std::ios::in | std::ios::out);
+      oldVersion.seekp(8); const std::array<char, 4> version{7, 0, 0, 0}; oldVersion.write(version.data(), version.size()); oldVersion.close(); }
+    bool oldVersionRejected = false;
+    try { (void)loadBinaryIr(oldVersionPath); }
+    catch (const IrError& error) { oldVersionRejected = std::string(error.what()).find("version") != std::string::npos; }
+    assert(oldVersionRejected);
+    std::filesystem::remove(oldVersionPath, ignored);
+
+    const auto truncatedPath = std::filesystem::temp_directory_path() / "felidae_truncated.bin";
+    { std::ofstream truncated(truncatedPath, std::ios::binary); truncated.write("FELBIN", 6); }
+    bool truncatedRejected = false;
+    try { (void)loadBinaryIr(truncatedPath); }
+    catch (const IrError& error) { truncatedRejected = std::string(error.what()).find("truncated") != std::string::npos; }
+    assert(truncatedRejected);
+    std::filesystem::remove(truncatedPath, ignored);
 
     // Module verification closes the gap between a structurally valid call
     // operand and an actual procedure that can be invoked after loading.
@@ -108,8 +148,10 @@ int main() {
         {0.0, 30.0}, {10.0, 50.0}, {30.0, 70.0}, {50.0, 90.0}, {75.0, 100.0}}};
     for (std::size_t index = 0; index < ratings.size(); ++index) {
         assert(std::abs(VmFactStore::gaussianMembership(ratings[index].peak, ratings[index]) - 1.0) < 1e-12);
-        assert(std::abs(VmFactStore::gaussianMembership(boundaries[index].first, ratings[index]) - 0.01) < 1e-12);
-        assert(std::abs(VmFactStore::gaussianMembership(boundaries[index].second, ratings[index]) - 0.01) < 1e-12);
+        const auto expectedAtLowerBoundary = boundaries[index].first == ratings[index].peak ? 1.0 : 0.01;
+        const auto expectedAtUpperBoundary = boundaries[index].second == ratings[index].peak ? 1.0 : 0.01;
+        assert(std::abs(VmFactStore::gaussianMembership(boundaries[index].first, ratings[index]) - expectedAtLowerBoundary) < 1e-12);
+        assert(std::abs(VmFactStore::gaussianMembership(boundaries[index].second, ratings[index]) - expectedAtUpperBoundary) < 1e-12);
     }
 
     FelidaeIr fuzzy;
@@ -128,5 +170,5 @@ int main() {
     IrVerifier::verify(fuzzy);
     const auto degree = std::get<VmDegree>(vm.execute(fuzzy, runtime, VmNil{}));
     assert(std::abs(degree.value - 0.696947396356321) < 1e-12);
-    std::filesystem::remove(path);
+    std::filesystem::remove(path, ignored);
 }

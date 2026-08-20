@@ -1,6 +1,6 @@
 # Core Form/IR workload: no imports, native services, queries, or mixfix.
 # It intentionally exercises the language constructs that the source compiler
-# must eventually lower into one verified, standalone .fir module.
+# must eventually lower into one verified, standalone .bin module.
 
 Person(name: "unknown", age: 0, active: false)
 Employee extend Person(name: "unknown", age: 0, active: true, role: "staff")

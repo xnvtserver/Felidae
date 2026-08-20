@@ -104,10 +104,10 @@ Source compilation and VM execution are separate:
 
 ```powershell
 build\felidae_compiler.exe program.fx
-build\felidae_vm.exe build\program.fir
+build\felidae_vm.exe build\program.bin
 ```
 
-The compiler writes a verified `.fir` into `build`; the VM loads, verifies, and
+The compiler writes a verified `.bin` into `build`; the VM loads, verifies, and
 executes that artifact. `main` may declare zero
 arguments (`main() =>`) or accept `arguments: system.stdin` to read CLI args:
 

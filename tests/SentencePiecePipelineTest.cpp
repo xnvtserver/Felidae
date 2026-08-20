@@ -19,6 +19,10 @@
 #include <sentencepiece_processor.h>
 
 int main() {
+    const auto removeTemporary = [](const std::filesystem::path& path) {
+        std::error_code ignored;
+        std::filesystem::remove(path, ignored);
+    };
     Felidae::setVmTextDecoder([](std::span<const std::uint32_t> pieces) {
         std::vector<int> ids(pieces.begin(), pieces.end());
         std::string text;
@@ -107,18 +111,18 @@ int main() {
 
     // The serialized artifact is executable in a fresh module/runtime path:
     // loader verification occurs before RegisterVm sees any instruction.
-    const auto binaryPath = std::filesystem::temp_directory_path() / "felidae_pipeline_roundtrip.fir";
+    const auto binaryPath = std::filesystem::temp_directory_path() / "felidae_pipeline_roundtrip.bin";
     Felidae::writeBinaryIr(binaryPath, module);
     const auto loadedModule = Felidae::loadBinaryIr(binaryPath);
     Felidae::DirectVmRuntime loadedRuntime(loadedModule.procedures);
     assert(Felidae::vmValueToDisplayString(vm.executeMain(loadedModule, loadedRuntime)) ==
            "{answer: 42}");
-    const auto malformedPath = std::filesystem::temp_directory_path() / "felidae_pipeline_bad.fir";
+    const auto malformedPath = std::filesystem::temp_directory_path() / "felidae_pipeline_bad.bin";
     { std::ofstream bad(malformedPath, std::ios::binary | std::ios::trunc); bad << "not a felidae IR"; }
     bool malformedRejected = false;
     try { (void)Felidae::loadBinaryIr(malformedPath); } catch (const Felidae::IrError&) { malformedRejected = true; }
     assert(malformedRejected);
-    const auto badOffsetPath = std::filesystem::temp_directory_path() / "felidae_pipeline_bad_offset.fir";
+    const auto badOffsetPath = std::filesystem::temp_directory_path() / "felidae_pipeline_bad_offset.bin";
     std::filesystem::copy_file(binaryPath, badOffsetPath, std::filesystem::copy_options::overwrite_existing);
     // The first section offset starts after magic/version/endian/entry: byte 24.
     // A zero offset must be rejected before any section allocation or parsing.
@@ -129,12 +133,12 @@ int main() {
     assert(badOffsetRejected);
 
     const auto expectRejectedCopy = [&](const char* suffix, const auto& mutate) {
-        auto candidate = std::filesystem::temp_directory_path() / (std::string("felidae_pipeline_") + suffix + ".fir");
+        auto candidate = std::filesystem::temp_directory_path() / (std::string("felidae_pipeline_") + suffix + ".bin");
         std::filesystem::copy_file(binaryPath, candidate, std::filesystem::copy_options::overwrite_existing);
         mutate(candidate);
         bool rejected = false;
         try { (void)Felidae::loadBinaryIr(candidate); } catch (const Felidae::IrError&) { rejected = true; }
-        std::filesystem::remove(candidate);
+        removeTemporary(candidate);
         assert(rejected);
     };
     expectRejectedCopy("bad_version", [](const auto& candidate) {
@@ -160,9 +164,9 @@ int main() {
         output.seekp(codeOffset); const std::array<char, 8> executeProgram{22, 0, 0, 0, 0, 0, 0, 0};
         output.write(executeProgram.data(), executeProgram.size());
     });
-    std::filesystem::remove(binaryPath);
-    std::filesystem::remove(malformedPath);
-    std::filesystem::remove(badOffsetPath);
+    removeTemporary(binaryPath);
+    removeTemporary(malformedPath);
+    removeTemporary(badOffsetPath);
 
     // Primitive normal syntax is directly lowered from the integer parser to
     // canonical IR and evaluated by the register VM, without Interpreter.
@@ -226,7 +230,7 @@ int main() {
     assert(directMap && std::get<double>(directMap->entries.front().second) == 42.0);
     assert(Felidae::vmValueToDisplayString(directResult) == "{answer: 42}");
     const auto executeBinaryModule = [&](const Felidae::IrModule& candidate) {
-        const auto path = std::filesystem::temp_directory_path() / "felidae_pipeline_feature_roundtrip.fir";
+        const auto path = std::filesystem::temp_directory_path() / "felidae_pipeline_feature_roundtrip.bin";
         try {
             Felidae::writeBinaryIr(path, candidate);
             const auto loaded = Felidae::loadBinaryIr(path);

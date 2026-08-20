@@ -64,6 +64,9 @@ intellij-idea-extension/build/
 !vs-code-extension/themes/*.svg
 
 # Editor/OS noise
+.vs/
+out/
+CMakeSettings.json
 .DS_Store
 Thumbs.db
 desktop.ini

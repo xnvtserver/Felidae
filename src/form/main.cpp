@@ -28,20 +28,20 @@ std::optional<Options> parseInput(int argc, char** argv) {
             options.modelDirectory = fs::path(argv[index]);
             continue;
         }
-        if (!options.input.empty()) throw std::runtime_error("felidae_vm accepts exactly one .fir binary IR file");
+        if (!options.input.empty()) throw std::runtime_error("felidae_vm accepts exactly one .bin binary IR file");
         options.input = argument;
     }
-    if (options.input.empty()) throw std::runtime_error("felidae_vm requires a .fir binary IR file");
+    if (options.input.empty()) throw std::runtime_error("felidae_vm requires a .bin binary IR file");
     return options;
 }
 
 void printHelp() {
     std::cout << LANGUAGE_NAME << " Form VM v" << LANGUAGE_VERSION << "\n\n"
-              << "Usage: felidae_vm program.fir\n"
-              << "       felidae_vm [--serve] [--model models/runtime] program.fir\n"
+              << "Usage: felidae_vm program.bin\n"
+              << "       felidae_vm [--serve] [--model models/runtime] program.bin\n"
               << "Loads, verifies, and executes binary IR. --serve keeps one VM and "
                  "its fact memory resident; use run, facts [type-id], field <id>, "
-                 "history, proof <child-id> <ancestor-id>, load <module.fir>, "
+                 "history, proof <child-id> <ancestor-id>, load <module.bin>, "
                  "modules, or quit on stdin.\n";
 }
 
@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
         if (!options) { printHelp(); return argc == 1 ? 1 : 0; }
         const auto binary = fs::absolute(options->input).lexically_normal();
         if (binary.extension() != kBinaryIrExtension) {
-            throw std::runtime_error("felidae_vm accepts only .fir binary IR files");
+            throw std::runtime_error("felidae_vm accepts only .bin binary IR files");
         }
         setVmTextDecoder([](std::span<const std::uint32_t> pieces) {
             std::vector<int> ids;
@@ -115,9 +115,9 @@ int main(int argc, char** argv) {
             if (verb == "run") execute();
             else if (verb == "load") {
                 std::string path;
-                if (!(words >> path)) throw std::runtime_error("load requires a .fir binary IR file");
+                if (!(words >> path)) throw std::runtime_error("load requires a .bin binary IR file");
                 const auto next = fs::absolute(fs::path(path)).lexically_normal();
-                if (next.extension() != kBinaryIrExtension) throw std::runtime_error("load accepts only .fir binary IR files");
+                if (next.extension() != kBinaryIrExtension) throw std::runtime_error("load accepts only .bin binary IR files");
                 module = loadBinaryIr(next);
                 // Registration is explicit and verified before this module can
                 // become the daemon's current entry point. Persistent facts

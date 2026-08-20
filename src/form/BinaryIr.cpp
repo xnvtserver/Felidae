@@ -21,7 +21,10 @@
 
 namespace Felidae {
 namespace {
-constexpr std::array<char, 8> kMagic{'F','E','L','I','R','\0','\0','\0'};
+constexpr std::array<char, 8> kMagic{'F','E','L','B','I','N','\0','\0'};
+// Rejection-only sentinel: FELBIN never reads, translates, or executes the
+// retired container. Keeping this check gives users an actionable error.
+constexpr std::array<char, 8> kRetiredContainerMagic{'F','E','L','I','R','\0','\0','\0'};
 constexpr std::uint32_t kEndian = 0x01020304u;
 constexpr std::uint32_t kMaxItems = 1u << 24;
 // A hostile section offset must not turn into an unbounded allocation before
@@ -60,7 +63,7 @@ std::uint32_t narrow(std::size_t value, const char* field) {
     return static_cast<std::uint32_t>(value);
 }
 // Text is serialized only as fixed SentencePiece IDs. No UTF-8 bytes, symbol
-// spellings, or source syntax are embedded in a .fir file.
+// spellings, or source syntax are embedded in a .bin file.
 void writeTextPieces(std::ostream& out, const std::vector<std::uint32_t>& value) {
     writeLe<std::uint32_t>(out, narrow(value.size(), "text piece count"));
     for (const auto piece : value) writeLe<std::uint32_t>(out, piece);
@@ -361,8 +364,14 @@ IrModule loadBinaryIr(const std::filesystem::path& path) {
         throw IrError("binary IR file exceeds its byte limit");
     }
     const auto fileSize = static_cast<std::size_t>(rawFileSize); in.seekg(0);
-    std::array<char,8> magic{}; in.read(magic.data(),8); if(!in||magic!=kMagic)throw IrError("binary IR magic is invalid");
-    if(readLe<std::uint32_t>(in)!=kBinaryIrVersion)throw IrError("binary IR version is unsupported");
+    std::array<char,8> magic{};
+    in.read(magic.data(),8);
+    if (!in) throw IrError("binary IR is truncated");
+    if (magic == kRetiredContainerMagic) {
+        throw IrError("legacy .fir FELIR artifact is unsupported; recompile the .fx source to FELBIN v8");
+    }
+    if (magic != kMagic) throw IrError("binary IR magic is invalid");
+    if(readLe<std::uint32_t>(in)!=kBinaryIrVersion)throw IrError("FELBIN v8 binary IR version is unsupported");
     if(readLe<std::uint32_t>(in)!=kEndian)throw IrError("binary IR endian marker is invalid");
     LinkedIrModule linked; linked.entryProcedure=readLe<std::uint64_t>(in);
     std::array<SectionHeader, kSectionCount> headers{};
@@ -393,7 +402,7 @@ IrModule loadBinaryIr(const std::filesystem::path& path) {
     for(std::uint32_t i=0;i<headers[1].count;++i){const auto kind=readLe<std::uint8_t>(constants);if(kind>static_cast<std::uint8_t>(IrConstantKind::Text))throw IrError("binary IR constant kind is invalid");linked.constantKinds.push_back(static_cast<IrConstantKind>(kind));linked.constants.push_back(readLe<std::uint64_t>(constants));} if(constants.peek()!=EOF)throw IrError("binary IR constant section size is invalid");
     auto texts = readSection(static_cast<std::size_t>(SectionId::Texts)); for(std::uint32_t i=0;i<headers[2].count;++i)linked.texts.push_back(readTextPieces(texts)); if(texts.peek()!=EOF)throw IrError("binary IR text section size is invalid");
     // Symbol IDs are deterministic compiler identities. The VM consumes them
-    // directly; .fir deliberately contains no identifier spellings.
+    // directly; .bin deliberately contains no identifier spellings.
     auto symbols = readSection(static_cast<std::size_t>(SectionId::Symbols));
     for(std::uint32_t i=0;i<headers[3].count;++i){
         const auto symbol=readLe<std::uint64_t>(symbols);
