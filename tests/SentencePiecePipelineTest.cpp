@@ -295,6 +295,32 @@ int main() {
     const auto callsResult = nativeVm.execute(callsModule.ir, callsRuntime, Felidae::VmNil{});
     assert(Felidae::vmValueToDisplayString(callsResult, display) == "{answer: 42}");
     assert(executeBinaryModule(callsModule) == "{answer: 42}");
+    // A procedure receives an independent lexical frame.  Its local `seed`
+    // cannot overwrite the caller's local of the same name.
+    const auto isolatedScopeModule = Felidae::compileProgramTextToIr(
+        "main() =>\n"
+        "seed := 5\n"
+        "return (caller: seed, callee: wrap(value: 7)).\n"
+        "wrap(value: expr) =>\n"
+        "seed := value + 1\n"
+        "return seed.");
+    Felidae::IrVerifier::verify(isolatedScopeModule.ir);
+    Felidae::DirectVmRuntime isolatedScopeRuntime(isolatedScopeModule.procedures);
+    assert(Felidae::vmValueToDisplayString(nativeVm.execute(isolatedScopeModule.ir, isolatedScopeRuntime, Felidae::VmNil{}), display) ==
+           "{caller: 5, callee: 8}");
+    assert(executeBinaryModule(isolatedScopeModule) == "{caller: 5, callee: 8}");
+    const auto scopeCompileRejected = [](const std::string& source) {
+        try {
+            (void)Felidae::compileProgramTextToIr(source);
+            return false;
+        } catch (const Felidae::IntegerParserError&) {
+            return true;
+        }
+    };
+    assert(scopeCompileRejected("value := 1.\nvalue := 2.\nmain() => return value."));
+    assert(scopeCompileRejected("value := 1.\nmain() => return value.\nhelper(value: expr) => return value."));
+    assert(scopeCompileRejected("main() => return helper(value: 1).\nhelper(value: expr) =>\nvalue := 2\nreturn value."));
+    assert(scopeCompileRejected("main() => return helper(value: 1).\nhelper(value: expr, value: expr) => return value."));
     const auto recursionModule = Felidae::compileProgramTextToIr(
         "main() => return (answer: countdown(value: 4)).\n"
         "countdown(value: expr) =>\n"

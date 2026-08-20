@@ -97,11 +97,14 @@ execution.
 
 The VM has a different optional recurrent model for `SemanticEval`/future
 `SSM_PROCESS` work. It is built from `src/form/RuntimeStateModel.cpp` and uses
-typed result actions (facts, text, arrays, maps, values, or `Degree`), never
-implicit truthiness. Use a versioned runtime artifact explicitly:
+a finite, typed result vocabulary (nil, boolean, bounded Degree, a validated
+input reference, or a fact derived from a validated input), never implicit
+truthiness. No runtime artifact is shipped until it has been trained and
+validated against FELBIN v8. Generate and validate one explicitly before use:
 
 ```powershell
-build\felidae_vm.exe --model models\runtime_gru_benchmark build\form_core_concepts.bin
+build\felidae_train_runtime_gru.exe build\runtime.frtd models\runtime_gru
+build\felidae_vm.exe --model models\runtime_gru build\form_core_concepts.bin
 ```
 
 ## Validation

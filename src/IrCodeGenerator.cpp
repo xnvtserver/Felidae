@@ -383,6 +383,24 @@ IrModule IrCodeGenerator::compile(Program program) const {
                 std::to_string(clause->sourceSpan.startColumn));
         }
     }
+    // Module bindings form one immutable namespace.  Reject collisions before
+    // lowering so a valid-looking FELBIN cannot defer a scope error until VM
+    // execution.  Procedure locals are checked separately against parameters
+    // and globals by isDirectProcedure/isDirectGoalSequence.
+    std::unordered_set<SymbolId> globalSymbols;
+    for (const auto& binding : program.globals) {
+        if (!binding || binding->name.empty()) {
+            throw IntegerParserError("not yet lowered to IR: invalid global binding at " +
+                std::to_string(binding ? binding->sourceSpan.startLine : 1) + ":" +
+                std::to_string(binding ? binding->sourceSpan.startColumn : 1));
+        }
+        const auto symbol = symbolIdForName(binding->name);
+        if (!globalSymbols.insert(symbol).second || procedureSymbols.contains(symbol) || factTypes.contains(symbol)) {
+            throw IntegerParserError("not yet lowered to IR: duplicate or conflicting global binding at " +
+                std::to_string(binding->sourceSpan.startLine) + ":" +
+                std::to_string(binding->sourceSpan.startColumn));
+        }
+    }
     const DirectCompileContext context{procedureSymbols, factTypes};
     for (const auto& clause : program.clauses) {
         if (!clause || !clause->isFact()) continue;

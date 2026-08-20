@@ -5,20 +5,20 @@
 #include <filesystem>
 #include <iostream>
 
+#include <torch/torch.h>
+
 namespace {
 using namespace Felidae;
 
 std::size_t targetFor(const RuntimeTrainingRecord& record,
                       const std::vector<RuntimeOutputToken>& vocabulary) {
-    // VmValue variant order: nil=0, bool=1, number=2, text=3, array=4,
-    // map=5, fact=6. The finite action target is selected from verified
-    // result kind; unsupported values intentionally fail rather than being
-    // stringified or silently coerced.
+    // The finite action target uses a stable semantic kind. Unsupported
+    // values fail rather than being stringified or silently coerced.
     for (std::size_t i = 0; i < vocabulary.size(); ++i) {
         const auto& token = vocabulary[i];
-        if (record.resultKind == 0 && token.kind == RuntimeOutputTokenKind::Nil) return i;
-        if (record.resultKind == 1 && token.kind == RuntimeOutputTokenKind::Boolean) return i;
-        if (record.resultKind == 6 && token.kind == RuntimeOutputTokenKind::FactFromInput && token.value == 0) return i;
+        if (record.resultKind == RuntimeValueKind::Nil && token.kind == RuntimeOutputTokenKind::Nil) return i;
+        if (record.resultKind == RuntimeValueKind::Boolean && token.kind == RuntimeOutputTokenKind::Boolean) return i;
+        if (record.resultKind == RuntimeValueKind::Fact && token.kind == RuntimeOutputTokenKind::FactFromInput && token.value == 0) return i;
         if (record.resultKind == record.inputKind && token.kind == RuntimeOutputTokenKind::InputReference && token.value == 0) return i;
     }
     throw IrError("runtime dataset result has no permitted finite GRU action target");
@@ -45,6 +45,9 @@ int main(int argc, char** argv) {
         configuration.inputVocabularySize = 4096;
         configuration.outputVocabularySize = static_cast<std::int64_t>(vocabulary.size());
         configuration.allowRandomInitialization = true;
+        // Explicit CPU-first reproducibility: data ordering plus this seed
+        // makes a repeated C++ training run comparable before benchmarking.
+        torch::manual_seed(0);
         Felidae::GruRuntimeStateModel model(configuration, vocabulary);
         for (std::size_t epoch = 0; epoch < epochs; ++epoch) {
             double totalLoss = 0.0;

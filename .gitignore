@@ -54,7 +54,6 @@ intellij-idea-extension/build/
 # Generated documentation and visual assets stay ignored, while checked-in
 # editor resources remain explicitly visible to Git.
 *.html
-!src/celidae/webui/template.html
 *.svg
 !**/resources/**/*.svg
 !vs-code-extension/icons/*.svg

@@ -13,14 +13,15 @@ namespace Felidae {
 // the deterministic result and fact/hierarchy context authoritative.
 struct RuntimeTrainingRecord {
     IrSymbolRef moduleEntry = 0;
-    IrWord inputKind = 0;
-    IrWord resultKind = 0;
+    RuntimeValueKind inputKind = RuntimeValueKind::Nil;
+    // Target metadata.  It is intentionally never used as a model input.
+    RuntimeValueKind resultKind = RuntimeValueKind::Nil;
     std::vector<IrFactRef> relevantFacts;
     std::vector<IrSymbolRef> factTypes;
     std::vector<VmExecutionTrace> trace;
 };
 
-inline constexpr std::uint32_t kRuntimeTrainingSchemaVersion = 1;
+inline constexpr std::uint32_t kRuntimeTrainingSchemaVersion = 2;
 void writeRuntimeTrainingDataset(const std::filesystem::path& path,
                                  std::span<const RuntimeTrainingRecord> records);
 std::vector<RuntimeTrainingRecord> loadRuntimeTrainingDataset(const std::filesystem::path& path);

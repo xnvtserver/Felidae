@@ -128,6 +128,21 @@ using VmFactPtr = std::shared_ptr<VmFact>;
 using VmValue = std::variant<VmNil, bool, double, VmDegree, VmText, VmArrayPtr, VmMapPtr, VmFactPtr>;
 // Public runtime spelling for canonical VM values.
 using Value = VmValue;
+
+// Stable model/dataset contract.  Do not persist VmValue::index(): changing
+// the in-memory variant layout must never reinterpret an existing corpus or
+// model artifact.
+enum class RuntimeValueKind : std::uint8_t {
+    Nil = 1,
+    Boolean = 2,
+    Number = 3,
+    Degree = 4,
+    Text = 5,
+    Array = 6,
+    Map = 7,
+    Fact = 8,
+};
+RuntimeValueKind runtimeValueKind(const VmValue& value) noexcept;
 using VmTextDecoder = std::function<std::string(std::span<const std::uint32_t>)>;
 using VmSymbolDecoder = std::function<std::string(IrSymbolRef)>;
 // Rendering is an adapter boundary, not VM state. Form consumes only IDs and
@@ -359,9 +374,6 @@ public:
     // dispatches the declared entry procedure through ordinary verified IR.
     VmValue executeMain(const IrModule& module, VmRuntime& runtime,
                         VmValue systemInput = VmNil{});
-
-private:
-    std::vector<VmValue> registers_;
 };
 
 } // namespace Felidae

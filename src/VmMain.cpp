@@ -1,7 +1,7 @@
-#include "BinaryIr.h"
-#include "RuntimeStateModel.h"
-#include "../SentencePieceModel.h"
-#include "../Version.h"
+#include "form/BinaryIr.h"
+#include "form/RuntimeStateModel.h"
+#include "SentencePieceModel.h"
+#include "Version.h"
 
 #include <filesystem>
 #include <iostream>
