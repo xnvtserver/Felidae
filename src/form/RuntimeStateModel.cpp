@@ -51,6 +51,16 @@ public:
         torch::load(network, artifact.string()); network->eval();
     }
     std::shared_ptr<Network> network;
+    std::unique_ptr<torch::optim::Adam> optimizer;
+    double optimizerLearningRate = 0.0;
+
+    void prepareOptimizer(double learningRate) {
+        if (!optimizer || optimizerLearningRate != learningRate) {
+            optimizer = std::make_unique<torch::optim::Adam>(
+                network->parameters(), torch::optim::AdamOptions(learningRate));
+            optimizerLearningRate = learningRate;
+        }
+    }
 #else
     explicit Implementation(const Configuration&, const std::filesystem::path&) { throw IrError("runtime GRU backend requires FELIDAE_ENABLE_LIBTORCH=ON"); }
 #endif
@@ -97,14 +107,15 @@ Value GruRuntimeStateModel::evaluate(const RuntimeOperation& operation, std::spa
     const auto category = [](const Value& value) -> std::int64_t {
         if (std::holds_alternative<VmNil>(value)) return 1; if (std::holds_alternative<bool>(value)) return 2;
         if (std::holds_alternative<double>(value)) return 3; if (std::holds_alternative<VmText>(value)) return 4;
-        if (std::holds_alternative<VmArrayPtr>(value)) return 5; if (std::holds_alternative<VmMapPtr>(value)) return 6; return 7;
+        if (std::holds_alternative<VmArrayPtr>(value)) return 5; if (std::holds_alternative<VmMapPtr>(value)) return 6;
+        if (std::holds_alternative<VmDegree>(value)) return 7; return 8;
     };
     if (!context.executionState) throw IrError("runtime GRU evaluation has no execution-local recurrent state");
     auto state = std::static_pointer_cast<Implementation::ExecutionState>(context.executionState);
     std::vector<std::int64_t> ids; ids.reserve(inputs.size() + 1);
     ids.push_back(static_cast<std::int64_t>(operation.symbol % static_cast<IrSymbolRef>(configuration_.inputVocabularySize - 8)) + 8);
     for (const auto& input : inputs) ids.push_back(category(input));
-    torch::NoGradGuard guard; const auto input = torch::tensor(ids, torch::TensorOptions().dtype(torch::kInt64)).reshape({-1, 1});
+    torch::InferenceMode guard; const auto input = torch::tensor(ids, torch::TensorOptions().dtype(torch::kInt64)).reshape({-1, 1});
     const auto result = state->hidden.defined() ? implementation_->network->recurrent->forward(implementation_->network->embedding->forward(input), state->hidden)
                                                   : implementation_->network->recurrent->forward(implementation_->network->embedding->forward(input));
     state->hidden = std::get<1>(result).detach();
@@ -127,13 +138,20 @@ double GruRuntimeStateModel::trainTeacherForced(const RuntimeTrainingRecord& rec
 #ifdef FELIDAE_HAS_TORCH
     if (targetToken >= outputVocabulary_.size() || learningRate <= 0.0) throw IrError("runtime GRU training target or learning rate is invalid");
     const auto bounded = [&](std::uint64_t value) { return static_cast<std::int64_t>(value % static_cast<std::uint64_t>(configuration_.inputVocabularySize - 8)) + 8; };
-    std::vector<std::int64_t> ids{bounded(record.moduleEntry), static_cast<std::int64_t>(record.inputKind % 8), static_cast<std::int64_t>(record.resultKind % 8)};
+    // resultKind is the label, never an input feature: including it would
+    // leak the expected answer and invalidate loss/accuracy measurements.
+    std::vector<std::int64_t> ids{bounded(record.moduleEntry), static_cast<std::int64_t>(record.inputKind)};
     for (const auto type : record.factTypes) ids.push_back(bounded(type)); for (const auto& event : record.trace) ids.push_back(bounded(static_cast<std::uint64_t>(event.kind) + event.symbol));
-    if (ids.size() > 4096) throw IrError("runtime GRU training record is too large"); implementation_->network->zero_grad();
+    if (ids.size() > 4096) throw IrError("runtime GRU training record is too large");
+    implementation_->prepareOptimizer(learningRate);
+    implementation_->network->train();
+    implementation_->optimizer->zero_grad();
     const auto input = torch::tensor(ids, torch::TensorOptions().dtype(torch::kInt64)).reshape({-1, 1}); const auto recurrent = implementation_->network->recurrent->forward(implementation_->network->embedding->forward(input));
     const auto logits = implementation_->network->projection->forward(std::get<0>(recurrent).select(0, std::get<0>(recurrent).size(0) - 1).select(0, 0));
     const auto target = torch::tensor({static_cast<std::int64_t>(targetToken)}, torch::TensorOptions().dtype(torch::kInt64)); const auto loss = torch::nn::functional::cross_entropy(logits.unsqueeze(0), target); loss.backward();
-    torch::NoGradGuard guard; for (auto& parameter : implementation_->network->parameters()) if (parameter.grad().defined()) parameter.add_(parameter.grad(), -learningRate); implementation_->network->eval(); return loss.item<double>();
+    implementation_->optimizer->step();
+    implementation_->network->eval();
+    return loss.item<double>();
 #else
     (void)record; (void)targetToken; (void)learningRate; throw IrError("runtime GRU training requires FELIDAE_ENABLE_LIBTORCH=ON");
 #endif

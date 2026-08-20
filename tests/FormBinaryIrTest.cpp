@@ -1,4 +1,5 @@
 #include "form/BinaryIr.h"
+#include "form/RuntimeTraining.h"
 #include "Symbol.h"
 
 #include <array>
@@ -109,6 +110,17 @@ int main() {
     assert(std::get<double>(namedRuntime.callSymbolNamed(
         mainSymbol, std::span<const VmCallArgument>{&namedArgument, 1})) == 99.0);
 
+    // Bindings are immutable in every frame, including the module-global
+    // initializer frame. Crafted IR therefore cannot introduce mutable
+    // globals that source compilation would have rejected.
+    DirectVmRuntime immutableRuntime({{mainSymbol, namedProcedure}});
+    const auto immutableSymbol = symbolIdForName("immutable");
+    immutableRuntime.storeSymbol(immutableSymbol, 1.0);
+    bool globalRebindRejected = false;
+    try { immutableRuntime.storeSymbol(immutableSymbol, 2.0); }
+    catch (const IrError&) { globalRebindRejected = true; }
+    assert(globalRebindRejected);
+
     // Fact analysis stays numeric/structural: hierarchy queries return type
     // IDs, ranking returns ordered facts, and Gaussian membership is a degree
     // rather than a boolean predicate.
@@ -170,5 +182,72 @@ int main() {
     IrVerifier::verify(fuzzy);
     const auto degree = std::get<VmDegree>(vm.execute(fuzzy, runtime, VmNil{}));
     assert(std::abs(degree.value - 0.696947396356321) < 1e-12);
+
+    // Branching is a narrow control protocol, not a conversion of all values
+    // into booleans. A number must continue through the non-false path, while
+    // an explicit false value alone selects the alternate path.
+    FelidaeIr numberBranch;
+    numberBranch.registerCount = 2;
+    numberBranch.constants = {encodeIrNumber(7.0), encodeIrNumber(11.0), encodeIrNumber(22.0)};
+    numberBranch.constantKinds = {IrConstantKind::Number, IrConstantKind::Number, IrConstantKind::Number};
+    numberBranch.words = {
+        static_cast<IrWord>(IrOpcode::LoadConst), 0, 0,
+        static_cast<IrWord>(IrOpcode::JumpIfFalse), 0, 11,
+        static_cast<IrWord>(IrOpcode::LoadConst), 1, 1,
+        static_cast<IrWord>(IrOpcode::Jump), 14,
+        static_cast<IrWord>(IrOpcode::LoadConst), 1, 2,
+        static_cast<IrWord>(IrOpcode::Return), 1, 0,
+        static_cast<IrWord>(IrOpcode::End)};
+    IrVerifier::verify(numberBranch);
+    assert(std::get<double>(vm.execute(numberBranch, runtime, VmNil{})) == 11.0);
+
+    auto falseBranch = numberBranch;
+    falseBranch.constants = {0, encodeIrNumber(11.0), encodeIrNumber(22.0)};
+    falseBranch.constantKinds = {IrConstantKind::Boolean, IrConstantKind::Number, IrConstantKind::Number};
+    IrVerifier::verify(falseBranch);
+    assert(std::get<double>(vm.execute(falseBranch, runtime, VmNil{})) == 22.0);
+
+    // A single runtime result may retain crisp and soft data together. The
+    // boolean comparison is data, rather than a whole-program truth value;
+    // the fact and Degree retain their own typed semantics in the same array.
+    FelidaeIr mixed;
+    mixed.registerCount = 5;
+    mixed.constants = {encodeIrNumber(68.0), encodeIrNumber(75.0), encodeIrNumber(50.0), encodeIrNumber(90.0), 1};
+    mixed.constantKinds = {IrConstantKind::Number, IrConstantKind::Number, IrConstantKind::Number,
+                           IrConstantKind::Number, IrConstantKind::Boolean};
+    mixed.symbols = {symbolIdForName("Observation")};
+    mixed.words = {
+        static_cast<IrWord>(IrOpcode::LoadConst), 0, 0,
+        static_cast<IrWord>(IrOpcode::LoadConst), 1, 1,
+        static_cast<IrWord>(IrOpcode::LoadConst), 2, 2,
+        static_cast<IrWord>(IrOpcode::LoadConst), 3, 3,
+        static_cast<IrWord>(IrOpcode::Membership), 4, 0, 1, 2, 3,
+        static_cast<IrWord>(IrOpcode::MakeFact), 0, 0,
+        static_cast<IrWord>(IrOpcode::LoadConst), 1, 4,
+        static_cast<IrWord>(IrOpcode::MakeArray), 2, 0, 3, 0, 1, 4,
+        static_cast<IrWord>(IrOpcode::Return), 2, 0,
+        static_cast<IrWord>(IrOpcode::End)};
+    IrVerifier::verify(mixed);
+    const auto mixedResult = std::get<VmArrayPtr>(vm.execute(mixed, runtime, VmNil{}));
+    assert(mixedResult->values.size() == 3);
+    assert(std::holds_alternative<VmFactPtr>(mixedResult->values[0]));
+    assert(std::get<bool>(mixedResult->values[1]));
+    assert(std::holds_alternative<VmDegree>(mixedResult->values[2]));
+
+    // Training records persist stable semantic IDs, not the implementation
+    // order of VmValue's std::variant alternatives. A schema-v2 round trip
+    // protects the model/dataset contract from incidental value-layout edits.
+    RuntimeTrainingRecord trainingRecord;
+    trainingRecord.moduleEntry = mainSymbol;
+    trainingRecord.inputKind = RuntimeValueKind::Text;
+    trainingRecord.resultKind = RuntimeValueKind::Fact;
+    trainingRecord.factTypes = {animal};
+    const auto datasetPath = std::filesystem::temp_directory_path() / "felidae_runtime_schema_v2.frtd";
+    writeRuntimeTrainingDataset(datasetPath, std::span<const RuntimeTrainingRecord>{&trainingRecord, 1});
+    const auto loadedRecords = loadRuntimeTrainingDataset(datasetPath);
+    assert(loadedRecords.size() == 1);
+    assert(loadedRecords.front().inputKind == RuntimeValueKind::Text);
+    assert(loadedRecords.front().resultKind == RuntimeValueKind::Fact);
+    std::filesystem::remove(datasetPath, ignored);
     std::filesystem::remove(path, ignored);
 }

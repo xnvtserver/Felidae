@@ -86,7 +86,6 @@ endfunction()
 # Explicit opt-in only: it never runs during normal builds or tests.
 add_executable(felidae_integer_parser_benchmark EXCLUDE_FROM_ALL
     tools/IntegerParserBenchmark.cpp
-    src/form/RegisterVm.cpp
     src/MixfixStateModel.cpp
     src/SentencePieceModel.cpp
     src/IntegerTokenList.cpp
@@ -99,7 +98,7 @@ target_include_directories(felidae_integer_parser_benchmark BEFORE PRIVATE
     ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
 target_compile_definitions(felidae_integer_parser_benchmark PRIVATE
     FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
-target_link_libraries(felidae_integer_parser_benchmark PRIVATE sentencepiece)
+target_link_libraries(felidae_integer_parser_benchmark PRIVATE felidae_form sentencepiece)
 felidae_use_sentencepiece_model(felidae_integer_parser_benchmark)
 
 function(felidae_enable_sanitizers target)
@@ -121,23 +120,34 @@ function(felidae_enable_sanitizers target)
 endfunction()
 
 function(felidae_enable_quality_warnings target)
-    if(NOT FELIDAE_ENABLE_STRICT_WARNINGS OR
-       NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    if(NOT FELIDAE_ENABLE_STRICT_WARNINGS)
         return()
     endif()
-    target_compile_options(${target} PRIVATE
-        -Wconversion -Wsign-conversion -Wformat=2 -Wformat-overflow=2
-        -Wformat-truncation=2 -Wstringop-overflow=4 -Wstringop-truncation
-        -Warray-bounds=2 -Walloc-zero -Walloca -Wcast-align -Wcast-qual
-        -Wdouble-promotion -Wduplicated-cond -Wduplicated-branches -Wlogical-op
-        -Wnull-dereference -Wpointer-arith -Wredundant-decls -Wswitch-enum
-        -Wundef -Wuninitialized -Wmaybe-uninitialized -Wuse-after-free=3 -Wvla
-        -Wunused -Wunused-function -Wunused-variable -Wunused-parameter)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /EHsc /permissive-)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        target_compile_options(${target} PRIVATE
+            -Wconversion -Wsign-conversion -Wformat=2 -Wformat-overflow=2
+            -Wformat-truncation=2 -Wstringop-overflow=4 -Wstringop-truncation
+            -Warray-bounds=2 -Walloc-zero -Walloca -Wcast-align -Wcast-qual
+            -Wdouble-promotion -Wduplicated-cond -Wduplicated-branches -Wlogical-op
+            -Wnull-dereference -Wpointer-arith -Wredundant-decls -Wswitch-enum
+            -Wundef -Wuninitialized -Wmaybe-uninitialized -Wuse-after-free=3 -Wvla
+            -Wunused -Wunused-function -Wunused-variable -Wunused-parameter)
+    endif()
 endfunction()
 
 function(felidae_enable_static_analysis target)
     if(MSVC AND FELIDAE_ENABLE_MSVC_STATIC_ANALYSIS)
         target_compile_options(${target} PRIVATE /analyze /analyze:external-)
+    endif()
+endfunction()
+
+function(felidae_enable_msvc_exceptions target)
+    if(MSVC)
+        # Source, IR, and binary diagnostics use exceptions.  Scope this to
+        # Felidae targets so dependency builds retain their upstream flags.
+        target_compile_options(${target} PRIVATE /EHsc)
     endif()
 endfunction()
 
@@ -149,6 +159,8 @@ add_library(felidae_form STATIC
     src/form/BinaryIr.cpp
     src/form/RuntimeTraining.cpp)
 target_include_directories(felidae_form PUBLIC src)
+felidae_enable_static_analysis(felidae_form)
+felidae_enable_msvc_exceptions(felidae_form)
 
 add_executable(felidae_vm
     # CLI composition owns SentencePiece display decoding; Form itself stays
@@ -162,6 +174,7 @@ target_include_directories(felidae_vm BEFORE PRIVATE
     ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
 target_compile_definitions(felidae_vm PRIVATE
     FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
+felidae_enable_msvc_exceptions(felidae_vm)
 felidae_use_sentencepiece_model(felidae_vm)
 set_target_properties(felidae_vm PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
@@ -203,6 +216,7 @@ add_custom_target(felidae_dist
 add_executable(felidae_build_runtime_dataset EXCLUDE_FROM_ALL
     tools/BuildRuntimeTrainingDataset.cpp)
 target_link_libraries(felidae_build_runtime_dataset PRIVATE felidae_form)
+felidae_enable_msvc_exceptions(felidae_build_runtime_dataset)
 set_target_properties(felidae_build_runtime_dataset PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
@@ -241,6 +255,7 @@ target_include_directories(felidae_compiler BEFORE PRIVATE
 target_include_directories(felidae_compiler SYSTEM PRIVATE third_party)
 target_compile_definitions(felidae_compiler PRIVATE
     FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
+felidae_enable_msvc_exceptions(felidae_compiler)
 target_link_libraries(felidae_compiler PRIVATE felidae_form sentencepiece)
 if(FELIDAE_ENABLE_LIBTORCH)
     target_compile_definitions(felidae_compiler PRIVATE FELIDAE_HAS_TORCH=1)
@@ -249,11 +264,10 @@ if(FELIDAE_ENABLE_LIBTORCH)
     # Explicit only: C++ LibTorch training is never a normal build step.
     add_executable(felidae_train_mixfix_gru EXCLUDE_FROM_ALL
         tools/TrainMixfixGru.cpp
-        src/MixfixStateModel.cpp
-        src/form/RegisterVm.cpp)
+        src/MixfixStateModel.cpp)
     target_include_directories(felidae_train_mixfix_gru PRIVATE src)
     target_compile_definitions(felidae_train_mixfix_gru PRIVATE FELIDAE_HAS_TORCH=1)
-    target_link_libraries(felidae_train_mixfix_gru PRIVATE ${TORCH_LIBRARIES})
+    target_link_libraries(felidae_train_mixfix_gru PRIVATE felidae_form ${TORCH_LIBRARIES})
     felidae_use_sentencepiece_model(felidae_train_mixfix_gru)
 
     add_executable(felidae_train_runtime_gru EXCLUDE_FROM_ALL
@@ -262,6 +276,7 @@ if(FELIDAE_ENABLE_LIBTORCH)
     target_include_directories(felidae_train_runtime_gru PRIVATE src)
     target_compile_definitions(felidae_train_runtime_gru PRIVATE FELIDAE_HAS_TORCH=1)
     target_link_libraries(felidae_train_runtime_gru PRIVATE felidae_form ${TORCH_LIBRARIES})
+    felidae_enable_msvc_exceptions(felidae_train_runtime_gru)
     set_target_properties(felidae_train_runtime_gru PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
         RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
@@ -285,8 +300,6 @@ set(FELIDAE_DEBUG_SOURCES
     src/debugger/main.cpp
     src/debugger/AstAnalyzer.cpp
     src/tooling/SourceParser.cpp
-    src/form/RegisterVm.cpp
-    src/form/BinaryIr.cpp
     src/IrCodeGenerator.cpp
     src/MixfixStateModel.cpp
     src/SentencePieceModel.cpp
@@ -304,7 +317,7 @@ target_include_directories(felidae_debug BEFORE PRIVATE
 target_include_directories(felidae_debug SYSTEM PRIVATE third_party)
 target_compile_definitions(felidae_debug PRIVATE
     FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
-target_link_libraries(felidae_debug PRIVATE sentencepiece)
+target_link_libraries(felidae_debug PRIVATE felidae_form sentencepiece)
 felidae_use_sentencepiece_model(felidae_debug)
 if(TARGET OpenMP::OpenMP_CXX)
     target_link_libraries(felidae_debug PRIVATE OpenMP::OpenMP_CXX)
@@ -319,7 +332,6 @@ if(FELIDAE_BUILD_TESTS)
     enable_testing()
     add_executable(felidae_sentencepiece_model_test
         tests/SentencePieceModelTest.cpp
-        src/form/RegisterVm.cpp
         src/MixfixStateModel.cpp
         src/SentencePieceModel.cpp
         src/IntegerTokenList.cpp
@@ -338,7 +350,8 @@ if(FELIDAE_BUILD_TESTS)
     target_compile_options(felidae_sentencepiece_model_test PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
         $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
-    target_link_libraries(felidae_sentencepiece_model_test PRIVATE sentencepiece)
+    felidae_enable_msvc_exceptions(felidae_sentencepiece_model_test)
+    target_link_libraries(felidae_sentencepiece_model_test PRIVATE felidae_form sentencepiece)
     felidae_use_sentencepiece_model(felidae_sentencepiece_model_test)
     if(TARGET OpenMP::OpenMP_CXX)
         target_link_libraries(felidae_sentencepiece_model_test PRIVATE OpenMP::OpenMP_CXX)
@@ -348,8 +361,6 @@ if(FELIDAE_BUILD_TESTS)
     add_executable(felidae_sentencepiece_pipeline_test
         tests/SentencePiecePipelineTest.cpp
         src/CompilerFrontend.cpp
-        src/form/RegisterVm.cpp
-        src/form/BinaryIr.cpp
         src/MixfixStateModel.cpp
         src/IrCodeGenerator.cpp
         src/SentencePieceModel.cpp
@@ -367,7 +378,8 @@ if(FELIDAE_BUILD_TESTS)
     target_compile_options(felidae_sentencepiece_pipeline_test PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
         $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
-    target_link_libraries(felidae_sentencepiece_pipeline_test PRIVATE sentencepiece)
+    felidae_enable_msvc_exceptions(felidae_sentencepiece_pipeline_test)
+    target_link_libraries(felidae_sentencepiece_pipeline_test PRIVATE felidae_form sentencepiece)
     felidae_use_sentencepiece_model(felidae_sentencepiece_pipeline_test)
     if(TARGET OpenMP::OpenMP_CXX)
         target_link_libraries(felidae_sentencepiece_pipeline_test PRIVATE OpenMP::OpenMP_CXX)
@@ -384,12 +396,12 @@ if(FELIDAE_BUILD_TESTS)
     add_executable(felidae_mixfix_state_model_test
         tests/MixfixStateModelTest.cpp
         src/MixfixStateModel.cpp
-        src/form/RegisterVm.cpp
         src/form/RuntimeStateModel.cpp)
     target_include_directories(felidae_mixfix_state_model_test PRIVATE src)
     target_compile_options(felidae_mixfix_state_model_test PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
         $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
+    felidae_enable_msvc_exceptions(felidae_mixfix_state_model_test)
     if(FELIDAE_ENABLE_LIBTORCH)
         target_compile_definitions(felidae_mixfix_state_model_test PRIVATE FELIDAE_HAS_TORCH=1)
         target_link_libraries(felidae_mixfix_state_model_test PRIVATE ${TORCH_LIBRARIES})
@@ -418,6 +430,8 @@ if(FELIDAE_BUILD_TESTS)
     target_compile_options(felidae_form_binary_test PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
         $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
+    felidae_enable_msvc_exceptions(felidae_form_binary_test)
+    target_link_libraries(felidae_mixfix_state_model_test PRIVATE felidae_form)
     add_test(NAME felidae_form_binary COMMAND felidae_form_binary_test)
     set_tests_properties(felidae_form_binary PROPERTIES TIMEOUT 30)
 
@@ -429,6 +443,7 @@ if(FELIDAE_BUILD_TESTS)
     target_compile_options(felidae_form_isolation_test PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
         $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
+    felidae_enable_msvc_exceptions(felidae_form_isolation_test)
     add_test(NAME felidae_form_isolation COMMAND felidae_form_isolation_test)
     set_tests_properties(felidae_form_isolation PROPERTIES TIMEOUT 30)
 endif()
@@ -555,7 +570,8 @@ endif()
 
 foreach(felidae_quality_target IN ITEMS
         felidae_sentencepiece_model_generator felidae_integer_parser_benchmark
-        felidae_compiler felidae_vm felidae_debug felidae_sentencepiece_model_test felidae_sentencepiece_pipeline_test
+        felidae_form felidae_compiler felidae_vm felidae_debug
+        felidae_sentencepiece_model_test felidae_sentencepiece_pipeline_test
         felidae_smoke csv db_native http process set_native group_native wordnet
         fact fact_analysis plot gtk qt)
     if(TARGET ${felidae_quality_target})

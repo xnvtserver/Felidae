@@ -1,14 +1,19 @@
 #include "MixfixStateModel.h"
 
 #include <charconv>
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <numeric>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include <torch/torch.h>
 
 #ifndef FELIDAE_SENTENCEPIECE_MODEL_PATH
 #error "The C++ mixfix trainer requires the generated SentencePiece model path"
@@ -88,9 +93,15 @@ int main(int argc, char** argv) {
         const auto artifact = outputDirectory / "mixfix-gru.pt";
         Felidae::GruMixfixStateModel model(config,
             std::filesystem::is_regular_file(artifact) ? artifact : std::filesystem::path{});
+        torch::manual_seed(0);
+        std::mt19937 generator(0);
+        std::vector<std::size_t> order(samples.size());
+        std::iota(order.begin(), order.end(), 0);
         for (std::size_t epoch = 0; epoch < epochs; ++epoch) {
+            std::shuffle(order.begin(), order.end(), generator);
             double total = 0.0;
-            for (const auto& sample : samples) {
+            for (const auto index : order) {
+                const auto& sample = samples[index];
                 total += model.trainTeacherForced(sample.input, sample.target, learningRate);
             }
             std::cout << "epoch=" << (epoch + 1) << " loss=" << (total / samples.size()) << "\n";

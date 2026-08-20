@@ -11,6 +11,17 @@
 #include <unordered_set>
 
 namespace Felidae {
+
+RuntimeValueKind runtimeValueKind(const VmValue& value) noexcept {
+    if (std::holds_alternative<VmNil>(value)) return RuntimeValueKind::Nil;
+    if (std::holds_alternative<bool>(value)) return RuntimeValueKind::Boolean;
+    if (std::holds_alternative<double>(value)) return RuntimeValueKind::Number;
+    if (std::holds_alternative<VmDegree>(value)) return RuntimeValueKind::Degree;
+    if (std::holds_alternative<VmText>(value)) return RuntimeValueKind::Text;
+    if (std::holds_alternative<VmArrayPtr>(value)) return RuntimeValueKind::Array;
+    if (std::holds_alternative<VmMapPtr>(value)) return RuntimeValueKind::Map;
+    return RuntimeValueKind::Fact;
+}
 VmDegree::VmDegree(double value) : value(value) {
     if (!std::isfinite(value) || value < 0.0 || value > 1.0) throw IrError("Degree must be finite and within [0,1]");
 }
@@ -631,7 +642,11 @@ VmValue FelidaeKnowledgeRuntime::loadSymbol(IrSymbolRef symbol) {
 
 void FelidaeKnowledgeRuntime::storeSymbol(IrSymbolRef symbol, const VmValue& value) {
     if (callFrames_.empty()) {
-        modules_.at(activeModule_).globals[symbol] = value;
+        auto& globals = modules_.at(activeModule_).globals;
+        if (globals.contains(symbol)) {
+            throw IrError("direct VM runtime cannot rebind an immutable global");
+        }
+        globals.emplace(symbol, value);
         return;
     }
     auto& locals = callFrames_.back().locals;
@@ -1059,7 +1074,10 @@ VmValue RegisterVm::execute(const FelidaeIr& ir, VmRuntime& runtime, VmValue sys
         VmRuntime& runtime;
         ~ExecutionScope() { runtime.endExecution(); }
     } executionScope{runtime};
-    registers_.assign(ir.registerCount, VmNil{});
+    // Registers are execution-local. RegisterVm is therefore reusable across
+    // requests without carrying one invocation's register contents into the
+    // next; concurrency still requires distinct runtime instances.
+    std::vector<VmValue> registers_(ir.registerCount, VmNil{});
     auto semanticContext = runtime.makeRuntimeContext(ir, systemInput);
     for (std::size_t pc = 0; pc < ir.words.size();) {
         const auto op = static_cast<IrOpcode>(ir.words[pc]);
