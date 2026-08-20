@@ -1,3 +1,12 @@
 [submodule "third_party/sentencepiece"]
 	path = third_party/sentencepiece
 	url = https://github.com/google/sentencepiece.git
+[submodule "third_party/nlohmann_json"]
+	path = third_party/nlohmann_json
+	url = https://github.com/nlohmann/json.git
+[submodule "third_party/abseil-cpp"]
+	path = third_party/abseil-cpp
+	url = https://github.com/abseil/abseil-cpp.git
+[submodule "third_party/protobuf"]
+	path = third_party/protobuf
+	url = https://github.com/protocolbuffers/protobuf.git
