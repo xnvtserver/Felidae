@@ -27,7 +27,7 @@ int main() {
     module.procedures.emplace(kMain, std::move(procedure));
 
     verifyIrModule(module);
-    DirectVmRuntime runtime(module.procedures);
+    FelidaeKnowledgeRuntime runtime(module.procedures);
     RegisterVm vm;
     assert(std::get<double>(vm.executeMain(module, runtime)) == 42.0);
 }

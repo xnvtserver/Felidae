@@ -1,9 +1,13 @@
 #include "form/RuntimeStateModel.h"
 #include "form/BinaryIr.h"
 #include "form/RuntimeTraining.h"
+#include "form/RuntimeTrainingCommand.h"
 
 #include <filesystem>
 #include <iostream>
+#include <algorithm>
+#include <map>
+#include <random>
 
 #include <torch/torch.h>
 
@@ -12,35 +16,35 @@ using namespace Felidae;
 
 std::size_t targetFor(const RuntimeTrainingRecord& record,
                       const std::vector<RuntimeOutputToken>& vocabulary) {
-    // The finite action target uses a stable semantic kind. Unsupported
-    // values fail rather than being stringified or silently coerced.
+    const auto matches = [&](const RuntimeOutputToken& token) {
+        switch (record.targetKind) {
+        case RuntimeTrainingTargetKind::InputReference: return token.kind == RuntimeOutputTokenKind::InputReference;
+        case RuntimeTrainingTargetKind::FactFromInput: return token.kind == RuntimeOutputTokenKind::FactFromInput;
+        case RuntimeTrainingTargetKind::DegreeMilli: return token.kind == RuntimeOutputTokenKind::DegreeMilli;
+        case RuntimeTrainingTargetKind::Nil: return token.kind == RuntimeOutputTokenKind::Nil;
+        case RuntimeTrainingTargetKind::Boolean: return token.kind == RuntimeOutputTokenKind::Boolean;
+        }
+        return false;
+    };
     for (std::size_t i = 0; i < vocabulary.size(); ++i) {
         const auto& token = vocabulary[i];
-        if (record.resultKind == RuntimeValueKind::Nil && token.kind == RuntimeOutputTokenKind::Nil) return i;
-        if (record.resultKind == RuntimeValueKind::Boolean && token.kind == RuntimeOutputTokenKind::Boolean) return i;
-        if (record.resultKind == RuntimeValueKind::Fact && token.kind == RuntimeOutputTokenKind::FactFromInput && token.value == 0) return i;
-        if (record.resultKind == record.inputKind && token.kind == RuntimeOutputTokenKind::InputReference && token.value == 0) return i;
+        if (matches(token) && token.value == record.targetValue) return i;
     }
     throw IrError("runtime dataset result has no permitted finite GRU action target");
 }
 }
 
-int main(int argc, char** argv) {
+int Felidae::runRuntimeGruTraining(int argc, char** argv) {
     try {
         if (argc < 3 || argc > 5) {
-            throw std::runtime_error("usage: felidae_train_runtime_gru data.frtd models-dir [epochs] [learning-rate]");
+            throw std::runtime_error("internal error: VM training arguments are invalid");
         }
         const auto records = Felidae::loadRuntimeTrainingDataset(argv[1]);
-        if (records.empty()) throw Felidae::IrError("runtime training dataset is empty");
+        if (records.size() < 10) throw Felidae::IrError("runtime training dataset requires at least ten records");
         const std::size_t epochs = argc >= 4 ? std::stoull(argv[3]) : 8;
         const double rate = argc == 5 ? std::stod(argv[4]) : 0.001;
         if (epochs == 0 || rate <= 0.0) throw Felidae::IrError("runtime training options are invalid");
-        std::vector<Felidae::RuntimeOutputToken> vocabulary{
-            {Felidae::RuntimeOutputTokenKind::Nil, 0},
-            {Felidae::RuntimeOutputTokenKind::Boolean, 0},
-            {Felidae::RuntimeOutputTokenKind::InputReference, 0},
-            {Felidae::RuntimeOutputTokenKind::FactFromInput, 0},
-        };
+        auto vocabulary = Felidae::defaultRuntimeOutputVocabulary();
         Felidae::GruRuntimeStateModel::Configuration configuration;
         configuration.inputVocabularySize = 4096;
         configuration.outputVocabularySize = static_cast<std::int64_t>(vocabulary.size());
@@ -49,12 +53,54 @@ int main(int argc, char** argv) {
         // makes a repeated C++ training run comparable before benchmarking.
         torch::manual_seed(0);
         Felidae::GruRuntimeStateModel model(configuration, vocabulary);
+        std::mt19937_64 random(0);
+        // Split whole operation/action families. A random record-level split
+        // lets repeated context templates into both partitions and therefore
+        // overstates generalization. Rare families stay training-only rather
+        // than being presented as reliable held-out evidence.
+        using EvaluationBucket = std::pair<IrSymbolRef, std::size_t>;
+        std::map<EvaluationBucket, std::vector<std::size_t>> families;
+        for (std::size_t index = 0; index < records.size(); ++index) {
+            families[{records[index].operationSymbol, targetFor(records[index], vocabulary)}].push_back(index);
+        }
+        std::vector<std::size_t> training;
+        std::vector<std::size_t> validation;
+        for (auto& [bucket, family] : families) {
+            (void)bucket;
+            std::shuffle(family.begin(), family.end(), random);
+            const auto heldOut = family.size() / 5;
+            validation.insert(validation.end(), family.begin(), family.begin() + heldOut);
+            training.insert(training.end(), family.begin() + heldOut, family.end());
+        }
+        if (validation.empty()) throw Felidae::IrError("runtime dataset has no operation/action family large enough for held-out validation");
+        if (training.empty()) throw Felidae::IrError("runtime dataset has no training records after grouped split");
+        std::cout << "records=" << records.size() << " operation_action_families=" << families.size()
+                  << " training=" << training.size() << " validation=" << validation.size() << "\n";
         for (std::size_t epoch = 0; epoch < epochs; ++epoch) {
+            std::shuffle(training.begin(), training.end(), random);
             double totalLoss = 0.0;
-            for (const auto& record : records) {
+            for (const auto index : training) {
+                const auto& record = records[index];
                 totalLoss += model.trainTeacherForced(record, targetFor(record, vocabulary), rate);
             }
-            std::cout << "epoch=" << (epoch + 1) << " loss=" << (totalLoss / records.size()) << "\n";
+            std::size_t correct = 0;
+            std::map<EvaluationBucket, std::pair<std::size_t, std::size_t>> bucketMetrics;
+            for (const auto index : validation) {
+                const auto& record = records[index];
+                const auto target = targetFor(record, vocabulary);
+                const auto predicted = model.predictTeacherToken(record);
+                auto& metric = bucketMetrics[{record.operationSymbol, target}];
+                ++metric.second;
+                correct += predicted == target ? 1 : 0;
+                if (predicted == target) ++metric.first;
+            }
+            std::cout << "epoch=" << (epoch + 1)
+                      << " train_loss=" << (totalLoss / training.size())
+                      << " validation_accuracy=" << (static_cast<double>(correct) / validation.size()) << "\n";
+            for (const auto& [bucket, metric] : bucketMetrics) {
+                std::cout << "  validation_operation=" << bucket.first << " target_token=" << bucket.second
+                          << " correct=" << metric.first << '/' << metric.second << "\n";
+            }
         }
         const std::filesystem::path output(argv[2]);
         std::filesystem::create_directories(output);

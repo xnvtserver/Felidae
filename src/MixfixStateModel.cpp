@@ -51,6 +51,33 @@ IrWord resolveReference(IrWord index, const std::vector<IrWord>& table,
 
 } // namespace
 
+MixfixContext makeMixfixContext(const FelidaeIr& shell) {
+    MixfixContext context;
+    context.maximumOutputWords = 4096;
+    context.outputVocabulary.push_back({MixfixIrTokenKind::End, 0});
+    for (IrWord opcode = 1; opcode < kIrOpcodeCount; ++opcode) {
+        context.outputVocabulary.push_back({MixfixIrTokenKind::Opcode, opcode});
+    }
+    for (IrWord index = 0; index < kMaximumMixfixRegisters; ++index) {
+        context.outputVocabulary.push_back({MixfixIrTokenKind::Register, index});
+    }
+    for (IrWord index = 0; index < kMaximumMixfixReferences; ++index) {
+        context.outputVocabulary.push_back({MixfixIrTokenKind::ConstantReference, index});
+    }
+    for (IrWord index = 0; index < kMaximumMixfixReferences; ++index) {
+        context.outputVocabulary.push_back({MixfixIrTokenKind::SymbolReference, index});
+    }
+    for (IrWord index = 0; index < kMaximumMixfixReferences; ++index) {
+        context.outputVocabulary.push_back({MixfixIrTokenKind::FactReference, index});
+    }
+    for (IrWord index = 0; index < kMaximumMixfixReferences; ++index) {
+        context.outputVocabulary.push_back({MixfixIrTokenKind::ProgramReference, index});
+    }
+    for (IrWord index = 0; index < shell.constants.size(); ++index) context.constantReferences.push_back(index);
+    for (IrWord index = 0; index < shell.symbols.size(); ++index) context.symbolReferences.push_back(index);
+    return context;
+}
+
 std::vector<IrWord> resolveMixfixIrTokens(
     std::span<const MixfixIrToken> tokens, const MixfixContext& context) {
     if (context.maximumOutputWords == 0) throw IrError("mixfix IR output limit is zero");
@@ -291,6 +318,47 @@ double GruMixfixStateModel::trainTeacherForced(
 #else
     (void)input; (void)targetTokenIds; (void)learningRate;
     throw IrError("mixfix GRU training requires FELIDAE_ENABLE_LIBTORCH=ON");
+#endif
+}
+
+double GruMixfixStateModel::evaluateTeacherForced(
+    std::span<const SentencePieceId> input,
+    std::span<const std::int64_t> targetTokenIds) {
+    if (input.empty() || targetTokenIds.empty()) {
+        throw IrError("mixfix GRU validation batch is invalid");
+    }
+#ifdef FELIDAE_HAS_TORCH
+    std::vector<std::int64_t> encoderIds;
+    encoderIds.reserve(input.size());
+    for (const auto id : input) {
+        if (id > static_cast<SentencePieceId>(std::numeric_limits<std::int64_t>::max()) ||
+            static_cast<std::int64_t>(id) >= configuration_.inputVocabularySize) {
+            throw IrError("validation SentencePiece ID is outside model vocabulary");
+        }
+        encoderIds.push_back(static_cast<std::int64_t>(id));
+    }
+    std::vector<std::int64_t> decoderIds{configuration_.beginToken};
+    decoderIds.insert(decoderIds.end(), targetTokenIds.begin(), targetTokenIds.end() - 1);
+    for (const auto id : targetTokenIds) {
+        if (id < 0 || id >= configuration_.outputVocabularySize) {
+            throw IrError("validation IR token is outside finite vocabulary");
+        }
+    }
+    torch::InferenceMode guard;
+    implementation_->network->eval();
+    const auto encoderInput = torch::tensor(encoderIds, torch::TensorOptions().dtype(torch::kInt64)).reshape({-1, 1});
+    const auto decoderInput = torch::tensor(decoderIds, torch::TensorOptions().dtype(torch::kInt64)).reshape({-1, 1});
+    const auto target = torch::tensor(std::vector<std::int64_t>(targetTokenIds.begin(), targetTokenIds.end()),
+                                      torch::TensorOptions().dtype(torch::kInt64));
+    const auto encoded = implementation_->network->encoder->forward(
+        implementation_->network->embedding->forward(encoderInput));
+    const auto decoded = implementation_->network->decoder->forward(
+        implementation_->network->decoderEmbedding->forward(decoderInput), std::get<1>(encoded));
+    const auto logits = implementation_->network->projection->forward(std::get<0>(decoded).squeeze(1));
+    return torch::nn::functional::cross_entropy(logits, target).item<double>();
+#else
+    (void)input; (void)targetTokenIds;
+    throw IrError("mixfix GRU validation requires FELIDAE_ENABLE_LIBTORCH=ON");
 #endif
 }
 

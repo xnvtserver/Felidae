@@ -1425,8 +1425,6 @@ FelidaeIr IntegerParser::compileModelRoutedMixfixExpressionIr(
     // This vocabulary is deliberately fixed-size and structural. Dynamic
     // literals/symbols are collected into bounded parser-owned tables below;
     // model output can reference them but never manufacture a machine word.
-    constexpr std::size_t kMaximumMixfixRegisters = 64;
-    constexpr std::size_t kMaximumMixfixReferences = 64;
     FelidaeIr shell;
     shell.registerCount = kMaximumMixfixRegisters;
     const auto addConstant = [&](IrConstantKind kind, IrWord value,
@@ -1483,29 +1481,7 @@ FelidaeIr IntegerParser::compileModelRoutedMixfixExpressionIr(
         }
     }
 
-    MixfixContext context;
-    context.maximumOutputWords = 4096;
-    context.outputVocabulary.push_back({MixfixIrTokenKind::End, 0});
-    for (IrWord opcode = 1; opcode < kIrOpcodeCount; ++opcode) {
-        context.outputVocabulary.push_back({MixfixIrTokenKind::Opcode, opcode});
-    }
-    for (IrWord index = 0; index < kMaximumMixfixRegisters; ++index) {
-        context.outputVocabulary.push_back({MixfixIrTokenKind::Register, index});
-    }
-    for (IrWord index = 0; index < kMaximumMixfixReferences; ++index) {
-        context.outputVocabulary.push_back({MixfixIrTokenKind::ConstantReference, index});
-    }
-    for (IrWord index = 0; index < kMaximumMixfixReferences; ++index) {
-        context.outputVocabulary.push_back({MixfixIrTokenKind::SymbolReference, index});
-    }
-    for (IrWord index = 0; index < kMaximumMixfixReferences; ++index) {
-        context.outputVocabulary.push_back({MixfixIrTokenKind::FactReference, index});
-    }
-    for (IrWord index = 0; index < kMaximumMixfixReferences; ++index) {
-        context.outputVocabulary.push_back({MixfixIrTokenKind::ProgramReference, index});
-    }
-    for (IrWord index = 0; index < shell.constants.size(); ++index) context.constantReferences.push_back(index);
-    for (IrWord index = 0; index < shell.symbols.size(); ++index) context.symbolReferences.push_back(index);
+    MixfixContext context = makeMixfixContext(shell);
 
     const auto before = [](const SourceSpan& left, const SourceSpan& right) {
         return left.endLine < right.startLine ||
@@ -1585,7 +1561,12 @@ SymbolId IntegerParser::resolveMixfixMethod(const OperatorExpression& expression
         for (std::size_t index = 0; index < expression.captureCount(); ++index) {
             const auto wanted = candidate->captures[index].languageTypeId;
             const auto actual = expressionType(expression.capture(index));
+            // `expr` is the structural capture category used by mixfix
+            // patterns. It deliberately accepts every parsed expression
+            // shape (literal, fact, variable, nested mixfix, and so on),
+            // rather than acting as a concrete runtime value type.
             if (wanted != LanguageTypeId::Unknown && wanted != LanguageTypeId::Any &&
+                wanted != LanguageTypeId::Expr &&
                 actual != LanguageTypeId::Unknown && actual != wanted &&
                 !(wanted == LanguageTypeId::Number &&
                   (actual == LanguageTypeId::Int || actual == LanguageTypeId::Float ||
@@ -1727,7 +1708,12 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
                     names.push_back(static_cast<IrWord>(ir.symbols.size()));
                 }
             }
-            if (factTypes.contains(term->nameId)) {
+            // Capitalized terms with named fields are first-class fact values
+            // even without a separately declared fact schema. The AST carries
+            // this grammar decision; lowering does not infer it from text.
+            const bool factValue = factTypes.contains(term->nameId) ||
+                (term->isCapitalized && hasNamedArguments);
+            if (factValue) {
                 if (!hasNamedArguments) {
                     throw IntegerParserError("fact construction requires named fields");
                 }

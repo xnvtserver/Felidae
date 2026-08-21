@@ -1,99 +1,197 @@
 #include "RuntimeTraining.h"
 
-#include <cstdio>
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
 #include <fstream>
 #include <limits>
-#include <type_traits>
+#include <string>
+#include <system_error>
 
 namespace Felidae {
 namespace {
-constexpr std::uint32_t kMagic = 0x44545246; // FRTD, little endian.
+using Json = nlohmann::json;
+constexpr std::size_t kMaximumRecords = 1'000'000;
+constexpr std::size_t kMaximumItems = 1'000'000;
 
-std::uint32_t checked(std::size_t value, const char* what) {
-    if (value > std::numeric_limits<std::uint32_t>::max()) throw IrError(what);
-    return static_cast<std::uint32_t>(value);
-}
-template <typename T> void writeLe(std::ofstream& output, T value) {
-    static_assert(std::is_unsigned_v<T>);
-    for (std::size_t index = 0; index < sizeof(T); ++index) {
-        output.put(static_cast<char>((value >> (index * 8)) & 0xffu));
-    }
-    if (!output) throw IrError("cannot write runtime dataset");
-}
-template <typename T> T readLe(std::ifstream& input) {
-    static_assert(std::is_unsigned_v<T>);
-    T value = 0;
-    for (std::size_t index = 0; index < sizeof(T); ++index) {
-        const auto byte = input.get();
-        if (byte == EOF) throw IrError("runtime dataset is truncated");
-        value |= static_cast<T>(static_cast<unsigned char>(byte)) << (index * 8);
-    }
-    return value;
-}
-void write32(std::ofstream& output, std::uint32_t value) { writeLe(output, value); }
-void write64(std::ofstream& output, std::uint64_t value) { writeLe(output, value); }
-std::uint32_t read32(std::ifstream& input) { return readLe<std::uint32_t>(input); }
-std::uint64_t read64(std::ifstream& input) { return readLe<std::uint64_t>(input); }
-template <typename T> void writeIds(std::ofstream& output, const std::vector<T>& ids, const char* what) {
-    write32(output, checked(ids.size(), what)); for (const auto id : ids) write64(output, id);
-}
-template <typename T> std::vector<T> readIds(std::ifstream& input, const char* what) {
-    const auto count = read32(input); if (count > 1'000'000) throw IrError(what);
-    std::vector<T> ids; ids.reserve(count); for (std::uint32_t i = 0; i < count; ++i) ids.push_back(static_cast<T>(read64(input))); return ids;
-}
+void requireJsonlPath(const std::filesystem::path& path) {
+    if (path.extension() != ".jsonl") throw IrError("runtime training datasets must use the .jsonl extension");
 }
 
-void writeRuntimeTrainingDataset(const std::filesystem::path& path,
-                                 std::span<const RuntimeTrainingRecord> records) {
-    if (records.size() > 1'000'000) throw IrError("runtime dataset has too many records");
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    if (!output) throw IrError("cannot write runtime training dataset");
-    write32(output, kMagic); write32(output, kRuntimeTrainingSchemaVersion); write32(output, checked(records.size(), "runtime dataset has too many records"));
+std::uint64_t unsignedValue(const Json& value, const char* name) {
+    if (!value.is_number_unsigned()) throw IrError(std::string("runtime JSONL ") + name + " must be an unsigned integer");
+    return value.get<std::uint64_t>();
+}
+
+std::uint64_t member(const Json& object, const char* name) {
+    if (!object.contains(name)) throw IrError(std::string("runtime JSONL record is missing ") + name);
+    return unsignedValue(object.at(name), name);
+}
+
+template <typename T> T bounded(std::uint64_t value, const char* name) {
+    if (value > static_cast<std::uint64_t>(std::numeric_limits<T>::max())) {
+        throw IrError(std::string("runtime JSONL ") + name + " exceeds the supported ID range");
+    }
+    return static_cast<T>(value);
+}
+
+RuntimeValueKind valueKind(std::uint64_t value, const char* name) {
+    if (value < static_cast<std::uint64_t>(RuntimeValueKind::Nil) || value > static_cast<std::uint64_t>(RuntimeValueKind::Fact)) {
+        throw IrError(std::string("runtime JSONL has an invalid ") + name);
+    }
+    return static_cast<RuntimeValueKind>(value);
+}
+
+RuntimeTrainingTargetKind targetKind(std::uint64_t value) {
+    if (value < static_cast<std::uint64_t>(RuntimeTrainingTargetKind::InputReference) ||
+        value > static_cast<std::uint64_t>(RuntimeTrainingTargetKind::Boolean)) {
+        throw IrError("runtime JSONL has an invalid target kind");
+    }
+    return static_cast<RuntimeTrainingTargetKind>(value);
+}
+
+template <typename T> std::vector<T> ids(const Json& object, const char* name) {
+    if (!object.contains(name) || !object.at(name).is_array()) throw IrError(std::string("runtime JSONL record requires array ") + name);
+    const auto& source = object.at(name);
+    if (source.size() > kMaximumItems) throw IrError(std::string("runtime JSONL ") + name + " is too large");
+    std::vector<T> output;
+    output.reserve(source.size());
+    for (const auto& value : source) output.push_back(bounded<T>(unsignedValue(value, name), name));
+    return output;
+}
+
+std::vector<std::pair<IrSymbolRef, IrSymbolRef>> hierarchyEdges(const Json& object) {
+    if (!object.contains("hierarchy_edges") || !object.at("hierarchy_edges").is_array()) {
+        throw IrError("runtime JSONL record requires array hierarchy_edges");
+    }
+    const auto& source = object.at("hierarchy_edges");
+    if (source.size() > kMaximumItems) throw IrError("runtime JSONL hierarchy_edges is too large");
+    std::vector<std::pair<IrSymbolRef, IrSymbolRef>> result;
+    result.reserve(source.size());
+    for (const auto& edge : source) {
+        if (!edge.is_array() || edge.size() != 2) throw IrError("runtime JSONL hierarchy edge must contain child and parent IDs");
+        const auto child = bounded<IrSymbolRef>(unsignedValue(edge[0], "hierarchy edge child"), "hierarchy edge child");
+        const auto parent = bounded<IrSymbolRef>(unsignedValue(edge[1], "hierarchy edge parent"), "hierarchy edge parent");
+        if (child == 0 || parent == 0) throw IrError("runtime JSONL hierarchy edge is invalid");
+        result.emplace_back(child, parent);
+    }
+    return result;
+}
+
+std::vector<std::pair<IrSymbolRef, std::uint32_t>> factTypeCounts(const Json& object) {
+    if (!object.contains("fact_type_counts") || !object.at("fact_type_counts").is_array()) {
+        throw IrError("runtime JSONL record requires array fact_type_counts");
+    }
+    const auto& source = object.at("fact_type_counts");
+    if (source.size() > kMaximumItems) throw IrError("runtime JSONL fact_type_counts is too large");
+    std::vector<std::pair<IrSymbolRef, std::uint32_t>> result;
+    result.reserve(source.size());
+    for (const auto& item : source) {
+        if (!item.is_array() || item.size() != 2) throw IrError("runtime JSONL fact-type count must contain type ID and count");
+        const auto type = bounded<IrSymbolRef>(unsignedValue(item[0], "fact-type count type"), "fact-type count type");
+        if (type == 0) throw IrError("runtime JSONL fact-type count has an invalid type");
+        result.emplace_back(type, bounded<std::uint32_t>(unsignedValue(item[1], "fact-type count"), "fact-type count"));
+    }
+    if (!std::is_sorted(result.begin(), result.end()) ||
+        std::adjacent_find(result.begin(), result.end(), [](const auto& left, const auto& right) { return left.first == right.first; }) != result.end()) {
+        throw IrError("runtime JSONL fact_type_counts must be sorted and unique");
+    }
+    return result;
+}
+} // namespace
+
+void writeRuntimeTrainingDataset(const std::filesystem::path& path, std::span<const RuntimeTrainingRecord> records) {
+    requireJsonlPath(path);
+    if (records.size() > kMaximumRecords) throw IrError("runtime dataset has too many records");
+    const auto temporary = path.string() + ".tmp";
+    std::ofstream output(temporary, std::ios::trunc);
+    if (!output) throw IrError("cannot write runtime JSONL dataset");
     for (const auto& record : records) {
-        write64(output, record.moduleEntry);
-        write32(output, static_cast<std::uint32_t>(record.inputKind));
-        write32(output, static_cast<std::uint32_t>(record.resultKind));
-        writeIds(output, record.relevantFacts, "runtime dataset has too many facts");
-        writeIds(output, record.factTypes, "runtime dataset has too many fact types");
-        write32(output, checked(record.trace.size(), "runtime dataset trace is too large"));
-        for (const auto& event : record.trace) {
-            write64(output, event.sequence); write32(output, static_cast<std::uint32_t>(event.kind));
-            write64(output, event.symbol); write64(output, event.fact); write64(output, event.callDepth);
+        if (record.operationSymbol == 0 || record.inputKinds.size() > kMaximumItems ||
+            record.factTypes.size() > kMaximumItems || record.factTypeCounts.size() > kMaximumItems ||
+            record.hierarchyEdges.size() > kMaximumItems) throw IrError("runtime JSONL record is invalid or too large");
+        for (const auto kind : record.inputKinds) (void)valueKind(static_cast<std::uint64_t>(kind), "input value kind");
+        for (const auto type : record.factTypes) if (type == 0) throw IrError("runtime JSONL fact type is invalid");
+        if (!std::is_sorted(record.factTypeCounts.begin(), record.factTypeCounts.end()) ||
+            std::adjacent_find(record.factTypeCounts.begin(), record.factTypeCounts.end(), [](const auto& left, const auto& right) { return left.first == right.first; }) != record.factTypeCounts.end()) {
+            throw IrError("runtime JSONL fact_type_counts must be sorted and unique");
         }
+        for (const auto& [type, count] : record.factTypeCounts) {
+            (void)count;
+            if (type == 0) throw IrError("runtime JSONL fact-type count is invalid");
+        }
+        for (const auto& [child, parent] : record.hierarchyEdges) {
+            if (child == 0 || parent == 0) throw IrError("runtime JSONL hierarchy edge is invalid");
+        }
+        const auto target = targetKind(static_cast<std::uint64_t>(record.targetKind));
+        if ((target == RuntimeTrainingTargetKind::Boolean && record.targetValue > 1) ||
+            (target == RuntimeTrainingTargetKind::DegreeMilli && record.targetValue > 1000)) {
+            throw IrError("runtime JSONL target value is invalid");
+        }
+        Json inputKinds = Json::array();
+        for (const auto kind : record.inputKinds) inputKinds.push_back(static_cast<std::uint8_t>(kind));
+        Json factTypes = Json::array();
+        for (const auto type : record.factTypes) factTypes.push_back(type);
+        Json typeCounts = Json::array();
+        for (const auto& [type, count] : record.factTypeCounts) typeCounts.push_back({type, count});
+        Json edges = Json::array();
+        for (const auto& [child, parent] : record.hierarchyEdges) edges.push_back({child, parent});
+        output << Json{{"schema_version", kRuntimeTrainingSchemaVersion}, {"operation_symbol", record.operationSymbol},
+                       {"input_kinds", std::move(inputKinds)}, {"fact_types", std::move(factTypes)},
+                       {"fact_type_counts", std::move(typeCounts)},
+                       {"hierarchy_edges", std::move(edges)}, {"target_kind", static_cast<std::uint8_t>(target)},
+                       {"target_value", record.targetValue}}.dump() << '\n';
+        if (!output) throw IrError("cannot write runtime JSONL dataset");
     }
-    if (!output) throw IrError("cannot finish runtime training dataset");
+    output.close();
+    std::error_code error;
+    std::filesystem::rename(temporary, path, error);
+    if (error) {
+        std::filesystem::remove(path, error);
+        error.clear();
+        std::filesystem::rename(temporary, path, error);
+    }
+    if (error) throw IrError("cannot finalize runtime JSONL dataset");
 }
 
 std::vector<RuntimeTrainingRecord> loadRuntimeTrainingDataset(const std::filesystem::path& path) {
-    std::ifstream input(path, std::ios::binary); if (!input) throw IrError("cannot read runtime training dataset");
-    if (read32(input) != kMagic || read32(input) != kRuntimeTrainingSchemaVersion) throw IrError("runtime training dataset header is incompatible");
-    const auto count = read32(input); if (count > 1'000'000) throw IrError("runtime dataset has too many records");
-    std::vector<RuntimeTrainingRecord> records; records.reserve(count);
-    for (std::uint32_t i = 0; i < count; ++i) {
-        RuntimeTrainingRecord record;
-        record.moduleEntry = read64(input);
-        const auto inputKind = read32(input);
-        const auto resultKind = read32(input);
-        if (inputKind < static_cast<std::uint32_t>(RuntimeValueKind::Nil) ||
-            inputKind > static_cast<std::uint32_t>(RuntimeValueKind::Fact) ||
-            resultKind < static_cast<std::uint32_t>(RuntimeValueKind::Nil) ||
-            resultKind > static_cast<std::uint32_t>(RuntimeValueKind::Fact)) {
-            throw IrError("runtime dataset has an invalid stable value kind");
+    requireJsonlPath(path);
+    std::ifstream input(path);
+    if (!input) throw IrError("cannot read runtime JSONL dataset");
+    std::vector<RuntimeTrainingRecord> records;
+    std::string line;
+    std::size_t lineNumber = 0;
+    while (std::getline(input, line)) {
+        ++lineNumber;
+        if (line.empty()) continue;
+        try {
+            const auto object = Json::parse(line);
+            if (!object.is_object()) throw IrError("record must be an object");
+            if (member(object, "schema_version") != kRuntimeTrainingSchemaVersion) throw IrError("schema version is incompatible");
+            RuntimeTrainingRecord record;
+            record.operationSymbol = bounded<IrSymbolRef>(member(object, "operation_symbol"), "operation_symbol");
+            if (record.operationSymbol == 0) throw IrError("operation symbol is invalid");
+            const auto rawInputKinds = ids<std::uint8_t>(object, "input_kinds");
+            for (const auto kind : rawInputKinds) record.inputKinds.push_back(valueKind(kind, "input value kind"));
+            record.factTypes = ids<IrSymbolRef>(object, "fact_types");
+            for (const auto type : record.factTypes) if (type == 0) throw IrError("fact type is invalid");
+            record.factTypeCounts = factTypeCounts(object);
+            record.hierarchyEdges = hierarchyEdges(object);
+            record.targetKind = targetKind(member(object, "target_kind"));
+            record.targetValue = bounded<std::uint32_t>(member(object, "target_value"), "target_value");
+            if ((record.targetKind == RuntimeTrainingTargetKind::Boolean && record.targetValue > 1) ||
+                (record.targetKind == RuntimeTrainingTargetKind::DegreeMilli && record.targetValue > 1000)) {
+                throw IrError("target value is invalid");
+            }
+            records.push_back(std::move(record));
+            if (records.size() > kMaximumRecords) throw IrError("runtime dataset has too many records");
+        } catch (const nlohmann::json::exception& error) {
+            throw IrError("runtime JSONL line " + std::to_string(lineNumber) + ": " + error.what());
+        } catch (const IrError& error) {
+            throw IrError("runtime JSONL line " + std::to_string(lineNumber) + ": " + error.what());
         }
-        record.inputKind = static_cast<RuntimeValueKind>(inputKind);
-        record.resultKind = static_cast<RuntimeValueKind>(resultKind);
-        record.relevantFacts = readIds<IrFactRef>(input, "runtime dataset fact section is too large");
-        record.factTypes = readIds<IrSymbolRef>(input, "runtime dataset type section is too large");
-        const auto traceCount = read32(input); if (traceCount > 1'000'000) throw IrError("runtime dataset trace section is too large");
-        record.trace.reserve(traceCount);
-        for (std::uint32_t j = 0; j < traceCount; ++j) {
-            VmExecutionTrace event; event.sequence = read64(input); const auto kind = read32(input);
-            if (kind > static_cast<std::uint32_t>(VmTraceKind::ExecutionResult)) throw IrError("runtime dataset has an invalid trace kind");
-            event.kind = static_cast<VmTraceKind>(kind); event.symbol = read64(input); event.fact = read64(input); event.callDepth = read64(input); record.trace.push_back(event);
-        }
-        records.push_back(std::move(record));
     }
-    if (input.peek() != std::ifstream::traits_type::eof()) throw IrError("runtime dataset has trailing bytes");
+    if (!input.eof()) throw IrError("cannot read runtime JSONL dataset");
     return records;
 }
 } // namespace Felidae

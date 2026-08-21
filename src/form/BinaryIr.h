@@ -18,4 +18,8 @@ inline constexpr std::uint32_t kBinaryIrVersion = 8;
 void writeBinaryIr(const std::filesystem::path& path, const IrModule& module);
 IrModule loadBinaryIr(const std::filesystem::path& path);
 
+// Scans verified instruction boundaries. Consumers must not scan raw words:
+// an ordinary operand can have the same integer value as an opcode.
+bool containsRuntimeSsmOperation(const IrModule& module);
+
 } // namespace Felidae

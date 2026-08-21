@@ -525,6 +525,25 @@ std::vector<VmFactPtr> VmFactStore::snapshotByField(IrSymbolRef field) const {
 std::vector<VmFactMutation> VmFactStore::mutations() const { std::lock_guard lock(mutex_); return mutations_; }
 std::vector<VmFactProvenance> VmFactStore::provenance() const { std::lock_guard lock(mutex_); return provenance_; }
 
+VmKnowledgeSnapshot VmFactStore::knowledgeSnapshot() const {
+    std::lock_guard lock(mutex_);
+    VmKnowledgeSnapshot result;
+    result.factTypes.reserve(byType_.size());
+    result.factTypeCounts.reserve(byType_.size());
+    for (const auto& [type, facts] : byType_) {
+        result.factTypes.push_back(type);
+        result.factTypeCounts.emplace_back(type, static_cast<std::uint32_t>(
+            std::min(facts.size(), static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()))));
+    }
+    std::sort(result.factTypes.begin(), result.factTypes.end());
+    std::sort(result.factTypeCounts.begin(), result.factTypeCounts.end());
+    for (const auto& [child, parents] : parents_) {
+        for (const auto parent : parents) result.hierarchyEdges.emplace_back(child, parent);
+    }
+    std::sort(result.hierarchyEdges.begin(), result.hierarchyEdges.end());
+    return result;
+}
+
 std::size_t VmFactStore::size() const {
     std::lock_guard lock(mutex_);
     return facts_.size();
@@ -679,7 +698,12 @@ RuntimeContext FelidaeKnowledgeRuntime::makeRuntimeContext(const FelidaeIr&, con
     context.maximumSemanticSteps = maximumSemanticSteps_;
     context.executionState = executionState_;
     context.sharedSemanticSteps = sharedSemanticSteps_;
+    context.knowledge = factStore_->knowledgeSnapshot();
     return context;
+}
+
+void FelidaeKnowledgeRuntime::refreshRuntimeContext(RuntimeContext& context) const {
+    context.knowledge = factStore_->knowledgeSnapshot();
 }
 
 VmValue FelidaeKnowledgeRuntime::callSymbol(IrSymbolRef symbol, std::span<const VmValue> arguments) {
@@ -1004,8 +1028,23 @@ void IrVerifier::verify(const FelidaeIr& ir) {
     verifyControlFlowInitialization(ir, boundaries);
 }
 
-IrWord encodeIrNumber(double value) noexcept { return std::bit_cast<IrWord>(value); }
-double decodeIrNumber(IrWord word) noexcept { return std::bit_cast<double>(word); }
+IrWord encodeIrNumber(double value) noexcept {
+    if constexpr (sizeof(IrWord) == sizeof(std::uint64_t)) {
+        return static_cast<IrWord>(std::bit_cast<std::uint64_t>(value));
+    } else {
+        // The v8 container explicitly stores a 32-bit word on the supported
+        // Win32 build; retain a compact IEEE-754 payload without aliasing.
+        return static_cast<IrWord>(std::bit_cast<std::uint32_t>(static_cast<float>(value)));
+    }
+}
+
+double decodeIrNumber(IrWord word) noexcept {
+    if constexpr (sizeof(IrWord) == sizeof(std::uint64_t)) {
+        return std::bit_cast<double>(static_cast<std::uint64_t>(word));
+    } else {
+        return static_cast<double>(std::bit_cast<float>(static_cast<std::uint32_t>(word)));
+    }
+}
 
 bool VmRuntime::shouldBranchFalse(const VmValue& value) const {
     if (std::holds_alternative<VmNil>(value)) return true;
@@ -1062,6 +1101,8 @@ void VmRuntime::endExecution() noexcept {}
 RuntimeContext VmRuntime::makeRuntimeContext(const FelidaeIr&, const VmValue&) const {
     return {};
 }
+
+void VmRuntime::refreshRuntimeContext(RuntimeContext&) const {}
 
 bool VmRuntime::validateSemanticResult(const VmValue& value, const RuntimeContext&) const {
     return validVmValue(value);
@@ -1133,6 +1174,7 @@ VmValue RegisterVm::execute(const FelidaeIr& ir, VmRuntime& runtime, VmValue sys
                 break;
             }
             case IrOpcode::SemanticEval: case IrOpcode::SsmProcess: {
+                runtime.refreshRuntimeContext(semanticContext);
                 const auto semanticSteps = semanticContext.sharedSemanticSteps
                     ? *semanticContext.sharedSemanticSteps : semanticContext.semanticSteps;
                 if (semanticSteps >= semanticContext.maximumSemanticSteps) {

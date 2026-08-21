@@ -241,7 +241,10 @@ inline constexpr std::string_view languageTypeName(LanguageTypeId type) {
 }
 
 inline LanguageTypeId languageTypeIdForName(const std::string& name) {
-    if (name == "any") return LanguageTypeId::Any;
+    // `obj` is the concise generic-capture spelling used by existing Felidae
+    // mixfix declarations. It is an alias, not a distinct runtime type: both
+    // spellings retain Any's intentionally unconstrained matching semantics.
+    if (name == "any" || name == "obj") return LanguageTypeId::Any;
     if (name == "array") return LanguageTypeId::Array;
     if (name == "bool") return LanguageTypeId::Bool;
     if (name == "boolean") return LanguageTypeId::Boolean;

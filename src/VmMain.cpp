@@ -1,5 +1,7 @@
 #include "form/BinaryIr.h"
 #include "form/RuntimeStateModel.h"
+#include "form/RuntimeTrainingCommand.h"
+#include "ModelStore.h"
 #include "SentencePieceModel.h"
 #include "Version.h"
 
@@ -39,10 +41,30 @@ void printHelp() {
     std::cout << LANGUAGE_NAME << " Form VM v" << LANGUAGE_VERSION << "\n\n"
               << "Usage: felidae_vm program.bin\n"
               << "       felidae_vm [--serve] [--model models/runtime] program.bin\n"
+              << "       felidae_vm --train datasets/vm/runtime-context-v1.jsonl --store-model build|dist [--epochs N] [--learning-rate R]\n"
               << "Loads, verifies, and executes binary IR. --serve keeps one VM and "
                  "its fact memory resident; use run, facts [type-id], field <id>, "
                  "history, proof <child-id> <ancestor-id>, load <module.bin>, "
                  "modules, or quit on stdin.\n";
+}
+
+int trainRuntimeModel(const ModelTrainingOptions& training) {
+#ifdef FELIDAE_HAS_TORCH
+    if (training.dataset.extension() != ".jsonl") {
+        throw std::runtime_error("--train requires one VM .jsonl dataset");
+    }
+    const auto output = modelStoreDirectory(training.store, "runtime-gru");
+    std::vector<std::string> arguments{
+        "felidae_vm", training.dataset.string(), output.string(),
+        std::to_string(training.epochs), std::to_string(training.learningRate)};
+    std::vector<char*> rawArguments;
+    rawArguments.reserve(arguments.size());
+    for (auto& argument : arguments) rawArguments.push_back(argument.data());
+    return runRuntimeGruTraining(static_cast<int>(rawArguments.size()), rawArguments.data());
+#else
+    (void)training;
+    throw std::runtime_error("this VM build has no LibTorch training support");
+#endif
 }
 
 IrSymbolRef readSymbol(std::istringstream& input, const char* command) {
@@ -58,6 +80,9 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string(argv[1]) == "--version") {
             std::cout << LANGUAGE_NAME << " Form VM v" << LANGUAGE_VERSION << "\n";
             return 0;
+        }
+        if (const auto training = parseModelTrainingOptions(argc, argv)) {
+            return trainRuntimeModel(*training);
         }
         const auto options = parseInput(argc, argv);
         if (!options) { printHelp(); return argc == 1 ? 1 : 0; }
@@ -79,15 +104,7 @@ int main(int argc, char** argv) {
 #ifdef FELIDAE_HAS_TORCH
         std::unique_ptr<GruRuntimeStateModel> model;
         if (options->modelDirectory) {
-            std::vector<RuntimeOutputToken> vocabulary{
-                {RuntimeOutputTokenKind::Nil, 0},
-                {RuntimeOutputTokenKind::Boolean, 0},
-                {RuntimeOutputTokenKind::InputReference, 0},
-                {RuntimeOutputTokenKind::FactFromInput, 0},
-                // A bounded learned evidence result; output remains a typed
-                // Degree rather than an implicit boolean decision.
-                {RuntimeOutputTokenKind::DegreeMilli, 500},
-            };
+            auto vocabulary = defaultRuntimeOutputVocabulary();
             GruRuntimeStateModel::Configuration configuration;
             configuration.inputVocabularySize = 4096;
             configuration.outputVocabularySize = static_cast<std::int64_t>(vocabulary.size());

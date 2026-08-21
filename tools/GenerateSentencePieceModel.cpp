@@ -31,7 +31,16 @@ void writeFile(const std::string& path, const std::string& data) {
 }
 
 bool beginsWithAsciiUppercase(const std::string& piece) {
-    if (piece.size() == 1 && piece.front() >= 'A' && piece.front() <= 'Z') return true;
+    // A SentencePiece can contain the complete leading identifier fragment
+    // ("Stage"), only a prefix ("St"), or one byte ("S").  The grammar
+    // property is carried by its first source character, not by a particular
+    // fragmentation length.
+    std::size_t start = 0;
+    // SentencePiece represents preceding source whitespace with U+2581. The
+    // marker is not part of the identifier, so it must not hide an uppercase
+    // first source byte after indentation or a separator.
+    if (piece.size() >= 3 && piece.compare(0, 3, "\xE2\x96\x81") == 0) start = 3;
+    if (piece.size() > start && piece[start] >= 'A' && piece[start] <= 'Z') return true;
     // Byte-fallback pieces are serialized by SentencePiece as <0xNN>.
     return piece.size() == 6 && piece[0] == '<' && piece[1] == '0' && piece[2] == 'x' &&
            piece[5] == '>' &&

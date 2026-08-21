@@ -1,5 +1,8 @@
 #include "CompilerFrontend.h"
+#include "IntegerTokenList.h"
+#include "MixfixTraining.h"
 #include "MixfixStateModel.h"
+#include "ModelStore.h"
 #include "SentencePieceModel.h"
 #include "Version.h"
 #include "form/BinaryIr.h"
@@ -9,6 +12,9 @@
 #include <iostream>
 #include <optional>
 #include <string>
+#include <vector>
+
+#include <sentencepiece_processor.h>
 
 namespace fs = std::filesystem;
 using namespace Felidae;
@@ -47,7 +53,49 @@ std::string manifestValue(const fs::path& manifest, const char* key) {
 void printHelp() {
     std::cout << LANGUAGE_NAME << " compiler v" << LANGUAGE_VERSION << "\n\n"
               << "Usage: felidae_compiler [--mixfix-model models/mixfix] program.fx\n"
+              << "       felidae_compiler --tokenize input.fx\n"
+              << "       felidae_compiler --train datasets/compiler/mixfix-v1.jsonl --store-model build|dist [--epochs N] [--learning-rate R]\n"
               << "Writes verified binary IR to the compiler build directory.\n";
+}
+
+std::string readSourceFile(const fs::path& source) {
+    std::ifstream input(source, std::ios::binary);
+    if (!input) throw std::runtime_error("cannot open source file: " + source.string());
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+int tokenizeSource(const fs::path& input) {
+    const auto source = resolveProgramEntryPath(input);
+    if (source.extension() != FILE_EXTENSION) {
+        throw std::runtime_error("--tokenize accepts only .fx source files");
+    }
+    const IntegerTokenList tokens(felidaeSentencePieceModel(), readSourceFile(source));
+    std::cout << '[';
+    for (std::size_t index = 0; index < tokens.entries().size(); ++index) {
+        if (index != 0) std::cout << ',';
+        std::cout << tokens.entries()[index].id;
+    }
+    std::cout << "]\n";
+    return 0;
+}
+
+int trainMixfixModel(const ModelTrainingOptions& training) {
+#ifdef FELIDAE_HAS_TORCH
+    const auto datasets = expandJsonlDatasetPaths(training.dataset);
+    const auto output = modelStoreDirectory(training.store, "mixfix-gru");
+    const auto inputVocabulary = std::to_string(felidaeSentencePieceModel().GetPieceSize());
+    const auto outputVocabulary = std::to_string(kMixfixStructuralVocabularySize);
+    std::vector<std::string> arguments{
+        "felidae_compiler", encodeDatasetPaths(datasets), output.string(), inputVocabulary,
+        outputVocabulary, "0", std::to_string(training.epochs), std::to_string(training.learningRate)};
+    std::vector<char*> rawArguments;
+    rawArguments.reserve(arguments.size());
+    for (auto& argument : arguments) rawArguments.push_back(argument.data());
+    return runMixfixGruTraining(static_cast<int>(rawArguments.size()), rawArguments.data());
+#else
+    (void)training;
+    throw std::runtime_error("this compiler build has no LibTorch training support");
+#endif
 }
 } // namespace
 
@@ -56,6 +104,12 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string(argv[1]) == "--version") {
             std::cout << LANGUAGE_NAME << " compiler v" << LANGUAGE_VERSION << "\n";
             return 0;
+        }
+        if (argc == 3 && std::string(argv[1]) == "--tokenize") {
+            return tokenizeSource(argv[2]);
+        }
+        if (const auto training = parseModelTrainingOptions(argc, argv)) {
+            return trainMixfixModel(*training);
         }
         const auto input = parseInput(argc, argv);
         if (!input) { printHelp(); return argc == 1 ? 1 : 0; }
@@ -81,11 +135,15 @@ int main(int argc, char** argv) {
 #endif
         const auto module = compileProgramFileToIr(source, compilerOptions);
         verifyIrModule(module);
-        // Build artifacts never modify example/source directories.  The
-        // compiler executable is placed in build/, so its parent is the
-        // canonical output directory on every supported CMake generator.
-        const auto executable = fs::absolute(argv[0]).lexically_normal();
-        auto output = executable.parent_path() / source.filename();
+        // Build artifacts never modify example/source directories or a staged
+        // distribution. The caller's existing build/ directory is the one
+        // canonical artifact location for both a developer build and the
+        // portable compiler.
+        const auto workingDirectory = fs::current_path().lexically_normal();
+        const auto outputDirectory = workingDirectory.filename() == "build"
+            ? workingDirectory : (workingDirectory / "build");
+        fs::create_directories(outputDirectory);
+        auto output = outputDirectory / source.filename();
         output.replace_extension(kBinaryIrExtension);
         writeBinaryIr(output, module);
         std::cout << output.string() << "\n";

@@ -21,10 +21,8 @@ native_modules/**/*.exp
 *.lib
 *.a
 
-# Third-party sources are not tracked by default, but the vendored
-# header-only dependencies ARE part of the build and must come with a clone.
-# Without these negations `third_party/*` hides the header-only dependencies
-# required by a fresh compiler/VM checkout.
+# Third-party working trees are ignored by default. Pinned dependencies are
+# registered as Git submodules and remain tracked as gitlinks.
 third_party/*
 !third_party/cpp-httplib/
 !third_party/rapidcsv/

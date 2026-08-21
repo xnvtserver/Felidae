@@ -13,6 +13,8 @@ option(FELIDAE_ENABLE_STRICT_WARNINGS
 option(FELIDAE_ENABLE_MSVC_STATIC_ANALYSIS
     "Enable MSVC /analyze on compiler and Form VM targets" OFF)
 option(FELIDAE_ENABLE_LIBTORCH "Enable the C++ LibTorch neural mixfix backend" OFF)
+option(FELIDAE_BUILD_NATIVE_MODULES
+    "Build retired native-extension DLLs (not used by the compiler/Form VM)" OFF)
 
 # Keep the lexical model native and reproducible: SentencePiece is pinned as a
 # git submodule instead of being found from an arbitrary system installation.
@@ -23,7 +25,20 @@ set(SPM_ENABLE_TCMALLOC OFF CACHE BOOL "" FORCE)
 # not need to build protoc/libprotoc just to train the fixed lexical model.
 set(protobuf_BUILD_PROTOC_BINARIES OFF CACHE BOOL "" FORCE)
 set(protobuf_BUILD_LIBPROTOC OFF CACHE BOOL "" FORCE)
+# SentencePiece otherwise fetches these sources while configuring. Use their
+# pinned submodules when initialized; an archive/source-only checkout retains
+# SentencePiece's normal FetchContent behavior instead of referring to a
+# nonexistent local path. FetchContent preserves the dependency hyphen.
+if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/abseil-cpp/CMakeLists.txt")
+    set("FETCHCONTENT_SOURCE_DIR_ABSEIL-CPP" "${CMAKE_SOURCE_DIR}/third_party/abseil-cpp"
+        CACHE PATH "Pinned Abseil source used by SentencePiece" FORCE)
+endif()
+if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/protobuf/CMakeLists.txt")
+    set(FETCHCONTENT_SOURCE_DIR_PROTOBUF "${CMAKE_SOURCE_DIR}/third_party/protobuf"
+        CACHE PATH "Pinned Protobuf source used by SentencePiece" FORCE)
+endif()
 add_subdirectory(third_party/sentencepiece EXCLUDE_FROM_ALL)
+add_subdirectory(third_party/nlohmann_json EXCLUDE_FROM_ALL)
 find_package(OpenMP)
 
 # SentencePiece owns the pinned Protobuf target used by the project. Find
@@ -101,6 +116,31 @@ target_compile_definitions(felidae_integer_parser_benchmark PRIVATE
 target_link_libraries(felidae_integer_parser_benchmark PRIVATE felidae_form sentencepiece)
 felidae_use_sentencepiece_model(felidae_integer_parser_benchmark)
 
+# Corpus extraction reuses the source parser and deterministic IR lowering as
+# its only teacher. It is explicit: normal builds never create or retrain ML
+# artifacts.
+add_executable(felidae_extract_mixfix_dataset EXCLUDE_FROM_ALL
+    tools/ExtractMixfixDataset.cpp
+    src/CompilerFrontend.cpp
+    src/IrCodeGenerator.cpp
+    src/MixfixStateModel.cpp
+    src/SentencePieceModel.cpp
+    src/IntegerTokenList.cpp
+    src/IntegerParser.cpp
+    src/BuiltinRegistry.cpp)
+target_include_directories(felidae_extract_mixfix_dataset PRIVATE src)
+target_include_directories(felidae_extract_mixfix_dataset BEFORE PRIVATE
+    third_party/sentencepiece third_party/sentencepiece/src
+    ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
+target_include_directories(felidae_extract_mixfix_dataset SYSTEM PRIVATE third_party)
+target_compile_definitions(felidae_extract_mixfix_dataset PRIVATE
+    FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
+target_link_libraries(felidae_extract_mixfix_dataset PRIVATE felidae_form sentencepiece nlohmann_json::nlohmann_json)
+if(MSVC)
+    target_compile_options(felidae_extract_mixfix_dataset PRIVATE /EHsc)
+endif()
+felidae_use_sentencepiece_model(felidae_extract_mixfix_dataset)
+
 function(felidae_enable_sanitizers target)
     if(NOT FELIDAE_ENABLE_SANITIZERS)
         return()
@@ -159,6 +199,7 @@ add_library(felidae_form STATIC
     src/form/BinaryIr.cpp
     src/form/RuntimeTraining.cpp)
 target_include_directories(felidae_form PUBLIC src)
+target_link_libraries(felidae_form PRIVATE nlohmann_json::nlohmann_json)
 felidae_enable_static_analysis(felidae_form)
 felidae_enable_msvc_exceptions(felidae_form)
 
@@ -187,7 +228,7 @@ felidae_enable_static_analysis(felidae_vm)
 if(FELIDAE_ENABLE_LIBTORCH)
     # The daemon owns an optional runtime-only GRU. Form itself remains free
     # of LibTorch and all compiler/parser dependencies.
-    target_sources(felidae_vm PRIVATE src/form/RuntimeStateModel.cpp)
+    target_sources(felidae_vm PRIVATE src/form/RuntimeStateModel.cpp tools/TrainRuntimeGru.cpp)
     target_compile_definitions(felidae_vm PRIVATE FELIDAE_HAS_TORCH=1)
     target_link_libraries(felidae_vm PRIVATE ${TORCH_LIBRARIES})
 endif()
@@ -210,9 +251,9 @@ add_custom_target(felidae_dist
     DEPENDS felidae_compiler felidae_vm felidae_sentencepiece_model
     COMMENT "Staging portable Felidae distribution in dist/")
 
-# Explicit data-generation step for the runtime SSM. It executes verified .bin
-# through the Form VM and records facts, hierarchy types, execution trace and
-# verified result; it never trains from binary bytes alone.
+# Explicit runtime-corpus boundary. The tool accepts only verified .bin input
+# and refuses to invent operation labels from a whole-program result. It will
+# write JSONL only after a future operation-level teacher is supplied.
 add_executable(felidae_build_runtime_dataset EXCLUDE_FROM_ALL
     tools/BuildRuntimeTrainingDataset.cpp)
 target_link_libraries(felidae_build_runtime_dataset PRIVATE felidae_form)
@@ -256,31 +297,13 @@ target_include_directories(felidae_compiler SYSTEM PRIVATE third_party)
 target_compile_definitions(felidae_compiler PRIVATE
     FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
 felidae_enable_msvc_exceptions(felidae_compiler)
-target_link_libraries(felidae_compiler PRIVATE felidae_form sentencepiece)
+target_link_libraries(felidae_compiler PRIVATE felidae_form sentencepiece nlohmann_json::nlohmann_json)
 if(FELIDAE_ENABLE_LIBTORCH)
     target_compile_definitions(felidae_compiler PRIVATE FELIDAE_HAS_TORCH=1)
     target_link_libraries(felidae_compiler PRIVATE ${TORCH_LIBRARIES})
-
-    # Explicit only: C++ LibTorch training is never a normal build step.
-    add_executable(felidae_train_mixfix_gru EXCLUDE_FROM_ALL
-        tools/TrainMixfixGru.cpp
-        src/MixfixStateModel.cpp)
-    target_include_directories(felidae_train_mixfix_gru PRIVATE src)
-    target_compile_definitions(felidae_train_mixfix_gru PRIVATE FELIDAE_HAS_TORCH=1)
-    target_link_libraries(felidae_train_mixfix_gru PRIVATE felidae_form ${TORCH_LIBRARIES})
-    felidae_use_sentencepiece_model(felidae_train_mixfix_gru)
-
-    add_executable(felidae_train_runtime_gru EXCLUDE_FROM_ALL
-        tools/TrainRuntimeGru.cpp
-        src/form/RuntimeStateModel.cpp)
-    target_include_directories(felidae_train_runtime_gru PRIVATE src)
-    target_compile_definitions(felidae_train_runtime_gru PRIVATE FELIDAE_HAS_TORCH=1)
-    target_link_libraries(felidae_train_runtime_gru PRIVATE felidae_form ${TORCH_LIBRARIES})
-    felidae_enable_msvc_exceptions(felidae_train_runtime_gru)
-    set_target_properties(felidae_train_runtime_gru PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}")
+    # Training is an explicit subcommand of felidae_compiler/felidae_vm.  Do
+    # not create separate trainer executables in build/.
+    target_sources(felidae_compiler PRIVATE tools/TrainMixfixGru.cpp)
 endif()
 felidae_use_sentencepiece_model(felidae_compiler)
 if(TARGET OpenMP::OpenMP_CXX)
@@ -447,6 +470,11 @@ if(FELIDAE_BUILD_TESTS)
     add_test(NAME felidae_form_isolation COMMAND felidae_form_isolation_test)
     set_tests_properties(felidae_form_isolation PROPERTIES TIMEOUT 30)
 endif()
+
+# Form executes verified integer IR and has no production native-extension
+# dispatch path. Keep retired DLL experiments opt-in so ordinary builds do not
+# write generated binaries into source directories or ship parallel services.
+if(FELIDAE_BUILD_NATIVE_MODULES)
 add_library(felidae_smoke SHARED native_modules/smoke/NativeSmoke.cpp)
 set_target_properties(felidae_smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/smoke"
@@ -501,14 +529,6 @@ set_target_properties(fact PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/fact"
 )
 
-add_library(fact_analysis SHARED native_modules/fact/NativeFact.cpp)
-target_include_directories(fact_analysis PRIVATE native_modules/fact)
-set_target_properties(fact_analysis PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/fact_analysis"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/fact_analysis"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native_modules/fact_analysis"
-)
-
 add_library(plot SHARED native_modules/plot/NativePlot.cpp)
 target_include_directories(plot PRIVATE native_modules/plot)
 target_compile_definitions(plot PRIVATE FELIDAE_PLOT_BUILD=1)
@@ -557,10 +577,10 @@ felidae_native_manifest(set_native set SET)
 felidae_native_manifest(group_native group GROUP)
 felidae_native_manifest(wordnet wordnet WORDNET)
 felidae_native_manifest(fact fact FACT)
-felidae_native_manifest(fact_analysis fact_analysis FACT_ANALYSIS)
 felidae_native_manifest(plot plot PLOT)
 felidae_native_manifest(gtk gtk GTK)
 felidae_native_manifest(qt qt QT)
+endif()
 
 find_package(Eigen3 QUIET)
 if(Eigen3_FOUND)
@@ -570,10 +590,11 @@ endif()
 
 foreach(felidae_quality_target IN ITEMS
         felidae_sentencepiece_model_generator felidae_integer_parser_benchmark
+        felidae_extract_mixfix_dataset
         felidae_form felidae_compiler felidae_vm felidae_debug
         felidae_sentencepiece_model_test felidae_sentencepiece_pipeline_test
         felidae_smoke csv db_native http process set_native group_native wordnet
-        fact fact_analysis plot gtk qt)
+        fact plot gtk qt)
     if(TARGET ${felidae_quality_target})
         felidae_enable_quality_warnings(${felidae_quality_target})
     endif()
@@ -589,6 +610,7 @@ if(FELIDAE_BUILD_TESTS)
                 --output-on-failure
         COMMAND "${CMAKE_COMMAND}"
                 "-DFELIDAE_BETA_DIST_DIR=${FELIDAE_DIST_DIR}"
+                "-DFELIDAE_BETA_BUILD_DIR=${CMAKE_BINARY_DIR}"
                 "-DFELIDAE_BETA_EXAMPLE=${CMAKE_SOURCE_DIR}/v2_examples/mixfix_deep_ir_nesting.fx"
                 -P "${CMAKE_SOURCE_DIR}/cmake/BetaReleaseCheck.cmake"
         DEPENDS felidae_dist felidae_sentencepiece_model_test felidae_sentencepiece_pipeline_test

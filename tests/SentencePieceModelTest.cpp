@@ -2,6 +2,7 @@
 #include "IntegerParser.h"
 #include "FelidaeGrammar.h"
 #include "MixfixStateModel.h"
+#include "ModelStore.h"
 
 #include <sentencepiece_processor.h>
 #include <sentencepiece.pb.h>
@@ -22,6 +23,31 @@ void assertIntegerParseFails(Fn&& fn) {
 }
 
 int main() {
+    // CLI-support helpers remain side-effect free and are covered here rather
+    // than by a scratch executable. Windows-native wildcard expansion is
+    // required because cmd.exe and PowerShell pass `*.jsonl` literally.
+    assert(Felidae::wildcardMatches("*.jsonl", "mixfix-v1.jsonl"));
+    assert(Felidae::wildcardMatches("mixfix-*.jsonl", "mixfix-invalid-v1.jsonl"));
+    assert(!Felidae::wildcardMatches("*.jsonl", "mixfix-v1.tsv"));
+    char train[] = "--train";
+    char dataset[] = "datasets/compiler/*.jsonl";
+    char store[] = "--store-model";
+    char build[] = "build";
+    char epochs[] = "--epochs";
+    char twelve[] = "12";
+    char rate[] = "--learning-rate";
+    char learningRate[] = "0.01";
+    char* trainingArguments[]{nullptr, train, dataset, store, build, epochs, twelve, rate, learningRate};
+    const auto training = Felidae::parseModelTrainingOptions(
+        static_cast<int>(std::size(trainingArguments)), trainingArguments);
+    assert(training && training->dataset == std::filesystem::path(dataset));
+    assert(training->store == std::filesystem::path(build));
+    assert(training->epochs == 12 && training->learningRate == 0.01);
+    const auto buildModel = Felidae::modelStoreDirectory("build", "mixfix-gru");
+    const auto distModel = Felidae::modelStoreDirectory("dist", "runtime-gru");
+    assert(buildModel.filename() == "mixfix-gru" && buildModel.parent_path().filename() == "build");
+    assert(distModel.filename() == "runtime-gru" && distModel.parent_path().filename() == "models");
+
     sentencepiece::SentencePieceProcessor model;
     const auto loaded = model.Load(FELIDAE_SENTENCEPIECE_MODEL_PATH);
     assert(loaded.ok());
@@ -40,6 +66,16 @@ int main() {
         assert(encoded.pieces(0).begin() == 0);
         assert(encoded.pieces(0).end() == static_cast<int>(spelling.size()));
     }
+
+    // Capitalization is a source property even when SentencePiece places its
+    // whitespace marker and several bytes in the first identifier piece.
+    // This keeps capitalized, named terms on the fact-value path after an
+    // indented return.
+    const Felidae::IntegerTokenList indentedFactTokens(model, "    Stage(depth: 1)");
+    Felidae::IntegerParser indentedFactParser(indentedFactTokens);
+    const auto indentedFact = std::dynamic_pointer_cast<Felidae::TermExpr>(
+        indentedFactParser.parseExpressionText());
+    assert(indentedFact && indentedFact->isCapitalized);
 
 
     // Arbitrary source spelling must remain distinguishable as integer
