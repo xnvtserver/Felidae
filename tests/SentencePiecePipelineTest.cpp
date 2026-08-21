@@ -67,9 +67,45 @@ int main() {
         "combineValue(left: number, right: number) => return left + right\n"
         "main() => return 17 combine 25\n");
     Felidae::RegisterVm directMixfixVm;
-    Felidae::DirectVmRuntime directMixfixRuntime(directMixfixModule.procedures);
+    Felidae::FelidaeKnowledgeRuntime directMixfixRuntime(directMixfixModule.procedures);
     assert(std::get<double>(directMixfixVm.executeMain(directMixfixModule,
                                                         directMixfixRuntime)) == 42.0);
+
+    // Annotation-declared captures are compiler-local procedure parameters
+    // when an implementation omits them from its callable head. The runtime
+    // still sees only an ordinary verified Call with isolated bindings.
+    const auto implicitMixfixModule = Felidae::compileProgramTextToIr(
+        "@mixfix(pattern: \"{left: number} combine {right: number}\")\n"
+        "combineValue() => return left + right\n"
+        "main() => return 2 combine 3\n");
+    Felidae::FelidaeKnowledgeRuntime implicitMixfixRuntime(implicitMixfixModule.procedures);
+    assert(std::get<double>(directMixfixVm.executeMain(implicitMixfixModule,
+                                                        implicitMixfixRuntime)) == 5.0);
+
+    // The parser preserves dotted names so qualified calls and `fx.` keys
+    // remain one SentencePiece-aware spelling.  The compiler resolves only a
+    // scoped `value.depth` spelling into GetField IR; Form never sees AST or
+    // source syntax.
+    const auto implicitFactMixfixModule = Felidae::compileProgramTextToIr(
+        "@mixfix(pattern: \"seed {value: number}\")\n"
+        "seedValue() => return Stage(depth: value)\n"
+        "@mixfix(pattern: \"advance {value: mixfix} by {amount: number}\")\n"
+        "advanceValue() => return Stage(depth: value.depth + amount)\n"
+        "main() => return advance (seed 1) by 2\n");
+    Felidae::FelidaeKnowledgeRuntime implicitFactMixfixRuntime(implicitFactMixfixModule.procedures);
+    const auto implicitFactMixfix = std::get<Felidae::VmFactPtr>(
+        directMixfixVm.executeMain(implicitFactMixfixModule, implicitFactMixfixRuntime));
+    assert(implicitFactMixfix && std::get<double>(implicitFactMixfix->fields.front().second) == 3.0);
+
+    // `obj` is the established concise spelling of an unconstrained mixfix
+    // capture. It must reuse Any matching, not introduce a second type path.
+    const auto objectMixfixModule = Felidae::compileProgramTextToIr(
+        "@mixfix(pattern: \"echo {value: obj}\")\n"
+        "echoValue(value: expr) => return value\n"
+        "main() => return echo 17\n");
+    Felidae::FelidaeKnowledgeRuntime objectMixfixRuntime(objectMixfixModule.procedures);
+    assert(std::get<double>(directMixfixVm.executeMain(objectMixfixModule,
+                                                        objectMixfixRuntime)) == 17.0);
 
     // Nested leading and infix mixfix expressions recursively lower to Call
     // IR. The values prove capture boundaries are preserved at every depth.
@@ -87,13 +123,59 @@ int main() {
         "branch := combine (1 blend 2) with (3 blend leaf)\n"
         "deep := scale (combine branch with (offset (2 blend 3) by (1 blend 1))) by (2 blend 1)\n"
         "return (leaf: leaf, branch: branch, deep: deep)\n");
-    Felidae::DirectVmRuntime nestedMixfixRuntime(nestedMixfixModule.procedures);
+    Felidae::FelidaeKnowledgeRuntime nestedMixfixRuntime(nestedMixfixModule.procedures);
     const auto nestedMixfixResult = std::get<Felidae::VmMapPtr>(
         directMixfixVm.executeMain(nestedMixfixModule, nestedMixfixRuntime));
     assert(nestedMixfixResult && nestedMixfixResult->entries.size() == 3);
     assert(std::get<double>(nestedMixfixResult->entries[0].second) == 9.0);
     assert(std::get<double>(nestedMixfixResult->entries[1].second) == 36.0);
     assert(std::get<double>(nestedMixfixResult->entries[2].second) == 756.0);
+
+    // `expr` is a structural mixfix capture: it accepts literals, facts,
+    // variables, and nested mixfix values without weakening typed captures.
+    const auto typedNestedMixfixModule = Felidae::compileProgramTextToIr(
+        "@mixfix(pattern: \"reason {subject: expr} using {evidence: Evidence} within {context: Context}\")\n"
+        "reasonFactValue() => return Explanation(subject: subject, evidence: evidence, context: context)\n"
+        "@mixfix(pattern: \"validate {claim: expr} with {expected: string}\")\n"
+        "validateReasonValue() => return Validation(claim: claim, expected: expected)\n"
+        "main() =>\n"
+        "evidence := Evidence(kind: \"observed\")\n"
+        "context := Context(domain: \"animal-behaviour\")\n"
+        "claim := reason \"tiger\" using evidence within context\n"
+        "direct := validate (reason \"cat\" using evidence within context) with \"explanation\"\n"
+        "return (bound: claim, direct: direct)\n");
+    Felidae::FelidaeKnowledgeRuntime typedNestedMixfixRuntime(typedNestedMixfixModule.procedures);
+    const auto typedNestedMixfixResult = std::get<Felidae::VmMapPtr>(
+        directMixfixVm.executeMain(typedNestedMixfixModule, typedNestedMixfixRuntime));
+    assert(typedNestedMixfixResult && typedNestedMixfixResult->entries.size() == 2);
+    assert(std::holds_alternative<Felidae::VmFactPtr>(typedNestedMixfixResult->entries[0].second));
+    assert(std::holds_alternative<Felidae::VmFactPtr>(typedNestedMixfixResult->entries[1].second));
+
+    // @overload uses the same annotation-capture binding path. Nested core
+    // expressions remain deterministic and no parser detail reaches Form.
+    const auto overloadModule = Felidae::compileProgramTextToIr(
+        "@overload(operator: transformWith, pattern: \"{value} transform {model} with {count}\", "
+        "type: mixfix, captures: {value: number, model: number, count: number}, result: number)\n"
+        "transformValue() => return value + model * count\n"
+        "main() =>\n"
+        "result := 2 transform 3 with 4\n"
+        "nested := (1 + 1) transform (2 + 1) with 2\n"
+        "return (result: result, nested: nested)\n");
+    Felidae::FelidaeKnowledgeRuntime overloadRuntime(overloadModule.procedures);
+    const auto overloadResult = std::get<Felidae::VmMapPtr>(
+        directMixfixVm.executeMain(overloadModule, overloadRuntime));
+    assert(std::get<double>(overloadResult->entries[0].second) == 14.0);
+    assert(std::get<double>(overloadResult->entries[1].second) == 8.0);
+
+    // Capitalized named terms are primary fact values even without an
+    // explicit schema declaration. They remain typed facts after a binary
+    // round-trip rather than being mis-lowered as an unknown call.
+    const auto adHocFactModule = Felidae::compileProgramTextToIr(
+        "main() => return Plan(name: \"procedure\", enabled: true)\n");
+    Felidae::FelidaeKnowledgeRuntime adHocFactRuntime(adHocFactModule.procedures);
+    const auto adHocFact = std::get<Felidae::VmFactPtr>(
+        directMixfixVm.executeMain(adHocFactModule, adHocFactRuntime));
+    assert(adHocFact && adHocFact->fields.size() == 2);
 
     // The public execution path is parser -> verified IR -> register VM.
     // This test deliberately does not construct Interpreter or a legacy
@@ -109,7 +191,7 @@ int main() {
     const auto materializedModule = Felidae::materializeIrModule(linkedModule);
     assert(materializedModule.entryProcedure == module.entryProcedure);
     Felidae::RegisterVm vm;
-    Felidae::DirectVmRuntime moduleRuntime(module.procedures);
+    Felidae::FelidaeKnowledgeRuntime moduleRuntime(module.procedures);
     const auto vmResult = vm.executeMain(module, moduleRuntime);
     assert(Felidae::vmValueToDisplayString(vmResult, display) == "{answer: 42}");
 
@@ -118,7 +200,7 @@ int main() {
     const auto binaryPath = std::filesystem::temp_directory_path() / "felidae_pipeline_roundtrip.bin";
     Felidae::writeBinaryIr(binaryPath, module);
     const auto loadedModule = Felidae::loadBinaryIr(binaryPath);
-    Felidae::DirectVmRuntime loadedRuntime(loadedModule.procedures);
+    Felidae::FelidaeKnowledgeRuntime loadedRuntime(loadedModule.procedures);
     assert(Felidae::vmValueToDisplayString(vm.executeMain(loadedModule, loadedRuntime), display) ==
            "{answer: 42}");
     const auto malformedPath = std::filesystem::temp_directory_path() / "felidae_pipeline_bad.bin";
@@ -228,7 +310,7 @@ int main() {
     assert(std::get<double>(directFactResult->fields.front().second) == 4.0);
     const auto directModule = Felidae::compileProgramTextToIr("main() => return (answer: 42).");
     Felidae::IrVerifier::verify(directModule.ir);
-    Felidae::DirectVmRuntime directRuntime(directModule.procedures);
+    Felidae::FelidaeKnowledgeRuntime directRuntime(directModule.procedures);
     const auto directResult = nativeVm.execute(directModule.ir, directRuntime, Felidae::VmNil{});
     const auto directMap = std::get<Felidae::VmMapPtr>(directResult);
     assert(directMap && std::get<double>(directMap->entries.front().second) == 42.0);
@@ -238,7 +320,7 @@ int main() {
         try {
             Felidae::writeBinaryIr(path, candidate);
             const auto loaded = Felidae::loadBinaryIr(path);
-            Felidae::DirectVmRuntime runtime(loaded.procedures);
+            Felidae::FelidaeKnowledgeRuntime runtime(loaded.procedures);
             const auto result = nativeVm.executeMain(loaded, runtime);
             std::filesystem::remove(path);
             return Felidae::vmValueToDisplayString(result, display);
@@ -251,33 +333,33 @@ int main() {
     const auto globalsModule = Felidae::compileProgramTextToIr(
         "answer := 6 * 7.\nmain() => return (answer: answer).");
     Felidae::IrVerifier::verify(globalsModule.ir);
-    Felidae::DirectVmRuntime globalsRuntime(globalsModule.procedures);
+    Felidae::FelidaeKnowledgeRuntime globalsRuntime(globalsModule.procedures);
     const auto globalsResult = nativeVm.execute(globalsModule.ir, globalsRuntime, Felidae::VmNil{});
     assert(Felidae::vmValueToDisplayString(globalsResult, display) == "{answer: 42}");
     assert(executeBinaryModule(globalsModule) == "{answer: 42}");
     const auto textGlobalsModule = Felidae::compileProgramTextToIr(
         "label := \"meow\".\nmain() => return (label: label).");
-    Felidae::DirectVmRuntime textGlobalsRuntime(textGlobalsModule.procedures);
+    Felidae::FelidaeKnowledgeRuntime textGlobalsRuntime(textGlobalsModule.procedures);
     const auto textGlobalsResult = nativeVm.execute(textGlobalsModule.ir, textGlobalsRuntime, Felidae::VmNil{});
     assert(Felidae::vmValueToDisplayString(textGlobalsResult, display) == "{label: meow}");
     assert(executeBinaryModule(textGlobalsModule) == "{label: meow}");
     const auto conditionalModule = Felidae::compileProgramTextToIr(
         "main() =>\nif 3 > 2 then\nreturn (result: \"yes\")\nelse\nreturn (result: \"no\").");
     Felidae::IrVerifier::verify(conditionalModule.ir);
-    Felidae::DirectVmRuntime conditionalRuntime(conditionalModule.procedures);
+    Felidae::FelidaeKnowledgeRuntime conditionalRuntime(conditionalModule.procedures);
     const auto conditionalResult = nativeVm.execute(conditionalModule.ir, conditionalRuntime, Felidae::VmNil{});
     assert(Felidae::vmValueToDisplayString(conditionalResult, display) == "{result: yes}");
     assert(executeBinaryModule(conditionalModule) == "{result: yes}");
     const auto falseConditionalModule = Felidae::compileProgramTextToIr(
         "main() =>\nif 2 > 3 then\nreturn (result: \"yes\")\nelse\nreturn (result: \"no\").");
-    Felidae::DirectVmRuntime falseConditionalRuntime(falseConditionalModule.procedures);
+    Felidae::FelidaeKnowledgeRuntime falseConditionalRuntime(falseConditionalModule.procedures);
     const auto falseConditionalResult = nativeVm.execute(falseConditionalModule.ir, falseConditionalRuntime, Felidae::VmNil{});
     assert(Felidae::vmValueToDisplayString(falseConditionalResult, display) == "{result: no}");
     assert(executeBinaryModule(falseConditionalModule) == "{result: no}");
     const auto localBindingModule = Felidae::compileProgramTextToIr(
         "main() =>\nvalue := 40\nanswer := value + 2\nreturn (answer: answer).");
     Felidae::IrVerifier::verify(localBindingModule.ir);
-    Felidae::DirectVmRuntime localBindingRuntime(localBindingModule.procedures);
+    Felidae::FelidaeKnowledgeRuntime localBindingRuntime(localBindingModule.procedures);
     const auto localBindingResult = nativeVm.execute(localBindingModule.ir, localBindingRuntime, Felidae::VmNil{});
     assert(Felidae::vmValueToDisplayString(localBindingResult, display) == "{answer: 42}");
     // Signatures are collected before lowering bodies, so main can call a
@@ -291,7 +373,7 @@ int main() {
         "return doubled.\n"
         "add(left: expr, right: expr) => return left + right.");
     Felidae::IrVerifier::verify(callsModule.ir);
-    Felidae::DirectVmRuntime callsRuntime(callsModule.procedures);
+    Felidae::FelidaeKnowledgeRuntime callsRuntime(callsModule.procedures);
     const auto callsResult = nativeVm.execute(callsModule.ir, callsRuntime, Felidae::VmNil{});
     assert(Felidae::vmValueToDisplayString(callsResult, display) == "{answer: 42}");
     assert(executeBinaryModule(callsModule) == "{answer: 42}");
@@ -305,7 +387,7 @@ int main() {
         "seed := value + 1\n"
         "return seed.");
     Felidae::IrVerifier::verify(isolatedScopeModule.ir);
-    Felidae::DirectVmRuntime isolatedScopeRuntime(isolatedScopeModule.procedures);
+    Felidae::FelidaeKnowledgeRuntime isolatedScopeRuntime(isolatedScopeModule.procedures);
     assert(Felidae::vmValueToDisplayString(nativeVm.execute(isolatedScopeModule.ir, isolatedScopeRuntime, Felidae::VmNil{}), display) ==
            "{caller: 5, callee: 8}");
     assert(executeBinaryModule(isolatedScopeModule) == "{caller: 5, callee: 8}");
@@ -328,7 +410,7 @@ int main() {
         "return 0\n"
         "else\n"
         "return countdown(value: value - 1).");
-    Felidae::DirectVmRuntime recursionRuntime(recursionModule.procedures, nullptr, 1024, 16);
+    Felidae::FelidaeKnowledgeRuntime recursionRuntime(recursionModule.procedures, nullptr, 1024, 16);
     const auto recursionResult = nativeVm.execute(recursionModule.ir, recursionRuntime, Felidae::VmNil{});
     assert(Felidae::vmValueToDisplayString(recursionResult, display) == "{answer: 0}");
     assert(executeBinaryModule(recursionModule) == "{answer: 0}");

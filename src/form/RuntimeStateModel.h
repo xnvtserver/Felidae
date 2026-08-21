@@ -26,6 +26,15 @@ struct RuntimeOutputToken {
     std::size_t value = 0;
 };
 
+// The GRU may select one of these bounded argument positions.  This remains
+// a finite decoder vocabulary and every selected position is range-checked
+// against the current operation inputs before it enters a VM register.
+inline constexpr std::size_t kRuntimeModelReferenceLimit = 16;
+
+// Single production vocabulary contract used by both the VM loader and the
+// C++ trainer. A manifest's output_vocabulary is checked against this list.
+std::vector<RuntimeOutputToken> defaultRuntimeOutputVocabulary();
+
 class GruRuntimeStateModel final : public RuntimeStateModel {
 public:
     struct Configuration {
@@ -54,6 +63,9 @@ public:
                    RuntimeContext& context) override;
     double trainTeacherForced(const RuntimeTrainingRecord& record,
                               std::size_t targetToken, double learningRate);
+    // Deterministic validation path for a persisted JSONL record. It returns
+    // a finite vocabulary index without constructing a runtime VmValue.
+    std::size_t predictTeacherToken(const RuntimeTrainingRecord& record) const;
     void saveArtifact(const std::filesystem::path& artifactPath) const;
 
 private:

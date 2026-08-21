@@ -2,6 +2,7 @@
 #include "form/RuntimeTraining.h"
 #include "Symbol.h"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>
@@ -42,7 +43,7 @@ int main() {
     { std::ifstream input(path, std::ios::binary); input.read(magic.data(), magic.size()); }
     assert((magic == std::array<char, 8>{'F','E','L','B','I','N','\0','\0'}));
     const auto loaded = loadBinaryIr(path);
-    DirectVmRuntime runtime(loaded.procedures);
+    FelidaeKnowledgeRuntime runtime(loaded.procedures);
     RegisterVm vm;
     assert(std::get<double>(vm.executeMain(loaded, runtime)) == 42.0);
 
@@ -105,7 +106,7 @@ int main() {
         static_cast<IrWord>(IrOpcode::LoadSymbol), 0, 0,
         static_cast<IrWord>(IrOpcode::Return), 0, 0,
         static_cast<IrWord>(IrOpcode::End)};
-    DirectVmRuntime namedRuntime({{mainSymbol, namedProcedure}});
+    FelidaeKnowledgeRuntime namedRuntime({{mainSymbol, namedProcedure}});
     const VmCallArgument namedArgument{publicName, 99.0};
     assert(std::get<double>(namedRuntime.callSymbolNamed(
         mainSymbol, std::span<const VmCallArgument>{&namedArgument, 1})) == 99.0);
@@ -113,7 +114,7 @@ int main() {
     // Bindings are immutable in every frame, including the module-global
     // initializer frame. Crafted IR therefore cannot introduce mutable
     // globals that source compilation would have rejected.
-    DirectVmRuntime immutableRuntime({{mainSymbol, namedProcedure}});
+    FelidaeKnowledgeRuntime immutableRuntime({{mainSymbol, namedProcedure}});
     const auto immutableSymbol = symbolIdForName("immutable");
     immutableRuntime.storeSymbol(immutableSymbol, 1.0);
     bool globalRebindRejected = false;
@@ -234,20 +235,36 @@ int main() {
     assert(std::get<bool>(mixedResult->values[1]));
     assert(std::holds_alternative<VmDegree>(mixedResult->values[2]));
 
-    // Training records persist stable semantic IDs, not the implementation
-    // order of VmValue's std::variant alternatives. A schema-v2 round trip
-    // protects the model/dataset contract from incidental value-layout edits.
+    // Training records persist stable semantic IDs and finite action kinds,
+    // never VmValue's std::variant alternative order or a model-logit index.
     RuntimeTrainingRecord trainingRecord;
-    trainingRecord.moduleEntry = mainSymbol;
-    trainingRecord.inputKind = RuntimeValueKind::Text;
-    trainingRecord.resultKind = RuntimeValueKind::Fact;
-    trainingRecord.factTypes = {animal};
-    const auto datasetPath = std::filesystem::temp_directory_path() / "felidae_runtime_schema_v2.frtd";
+    trainingRecord.operationSymbol = mainSymbol;
+    trainingRecord.inputKinds = {RuntimeValueKind::Text, RuntimeValueKind::Fact};
+    trainingRecord.factTypes = {symbolIdForName("Observation"), symbolIdForName("Signal")};
+    std::sort(trainingRecord.factTypes.begin(), trainingRecord.factTypes.end());
+    trainingRecord.factTypeCounts = {{trainingRecord.factTypes[0], 2}, {trainingRecord.factTypes[1], 5}};
+    trainingRecord.hierarchyEdges = {{symbolIdForName("Signal"), symbolIdForName("Observation")}};
+    trainingRecord.targetKind = RuntimeTrainingTargetKind::FactFromInput;
+    trainingRecord.targetValue = 0;
+    const auto datasetPath = std::filesystem::temp_directory_path() / "felidae_runtime_schema_v6.jsonl";
     writeRuntimeTrainingDataset(datasetPath, std::span<const RuntimeTrainingRecord>{&trainingRecord, 1});
     const auto loadedRecords = loadRuntimeTrainingDataset(datasetPath);
     assert(loadedRecords.size() == 1);
-    assert(loadedRecords.front().inputKind == RuntimeValueKind::Text);
-    assert(loadedRecords.front().resultKind == RuntimeValueKind::Fact);
+    assert(loadedRecords.front().operationSymbol == mainSymbol);
+    assert(loadedRecords.front().inputKinds == trainingRecord.inputKinds);
+    assert(loadedRecords.front().factTypes == trainingRecord.factTypes);
+    assert(loadedRecords.front().factTypeCounts == trainingRecord.factTypeCounts);
+    assert(loadedRecords.front().hierarchyEdges == trainingRecord.hierarchyEdges);
+    assert(loadedRecords.front().targetKind == RuntimeTrainingTargetKind::FactFromInput);
+    assert(loadedRecords.front().targetValue == 0);
+    bool retiredDatasetRejected = false;
+    try {
+        writeRuntimeTrainingDataset(std::filesystem::temp_directory_path() / "felidae_runtime_schema_v2.frtd",
+                                    std::span<const RuntimeTrainingRecord>{&trainingRecord, 1});
+    } catch (const IrError&) {
+        retiredDatasetRejected = true;
+    }
+    assert(retiredDatasetRejected);
     std::filesystem::remove(datasetPath, ignored);
     std::filesystem::remove(path, ignored);
 }

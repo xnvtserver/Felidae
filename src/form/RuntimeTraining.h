@@ -7,21 +7,33 @@
 
 namespace Felidae {
 
-// Versioned, integer-only sample for runtime-model training. It represents
-// observed verified execution, not a raw .bin byte sequence. A model builder
-// may use the opcode stream as an additional feature, but this record keeps
-// the deterministic result and fact/hierarchy context authoritative.
-struct RuntimeTrainingRecord {
-    IrSymbolRef moduleEntry = 0;
-    RuntimeValueKind inputKind = RuntimeValueKind::Nil;
-    // Target metadata.  It is intentionally never used as a model input.
-    RuntimeValueKind resultKind = RuntimeValueKind::Nil;
-    std::vector<IrFactRef> relevantFacts;
-    std::vector<IrSymbolRef> factTypes;
-    std::vector<VmExecutionTrace> trace;
+// Stable semantic actions produced by the finite runtime GRU vocabulary.
+// This is deliberately not VmValue::index() or a model-logit index.
+enum class RuntimeTrainingTargetKind : std::uint8_t {
+    InputReference = 1,
+    FactFromInput = 2,
+    DegreeMilli = 3,
+    Nil = 4,
+    Boolean = 5,
 };
 
-inline constexpr std::uint32_t kRuntimeTrainingSchemaVersion = 2;
+// One verified runtime operation, represented exactly as the current GRU
+// sees it: operation identity, ordered input kinds, and a bounded snapshot of
+// fact types plus hierarchy edges. Hidden train-only features are forbidden.
+struct RuntimeTrainingRecord {
+    IrSymbolRef operationSymbol = 0;
+    std::vector<RuntimeValueKind> inputKinds;
+    std::vector<IrSymbolRef> factTypes;
+    std::vector<std::pair<IrSymbolRef, std::uint32_t>> factTypeCounts;
+    std::vector<std::pair<IrSymbolRef, IrSymbolRef>> hierarchyEdges;
+    RuntimeTrainingTargetKind targetKind = RuntimeTrainingTargetKind::Nil;
+    std::uint32_t targetValue = 0;
+};
+
+// JSON Lines v6: one self-describing, integer-only record per line.  The
+// schema value is repeated deliberately: lines can be validated or streamed
+// independently and no legacy binary header needs to be retained.
+inline constexpr std::uint32_t kRuntimeTrainingSchemaVersion = 6;
 void writeRuntimeTrainingDataset(const std::filesystem::path& path,
                                  std::span<const RuntimeTrainingRecord> records);
 std::vector<RuntimeTrainingRecord> loadRuntimeTrainingDataset(const std::filesystem::path& path);

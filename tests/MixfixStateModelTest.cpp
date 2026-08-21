@@ -117,11 +117,23 @@ int main() {
     const auto gruTokens = gruModel.transform(input, gruContext);
     assert((gruTokens == std::vector<MixfixVocabularyId>{0}));
 
+    // The VM recurrent backend has one shared finite output vocabulary for
+    // both model loading and C++ training. It retains bounded references to
+    // every supported input position rather than silently limiting models to
+    // argument zero.
+    const auto runtimeVocabulary = defaultRuntimeOutputVocabulary();
+    assert(runtimeVocabulary.size() == 3 + 2 * kRuntimeModelReferenceLimit + 5);
+    assert(runtimeVocabulary[3].kind == RuntimeOutputTokenKind::InputReference && runtimeVocabulary[3].value == 0);
+    assert(runtimeVocabulary[3 + kRuntimeModelReferenceLimit - 1].kind == RuntimeOutputTokenKind::InputReference &&
+           runtimeVocabulary[3 + kRuntimeModelReferenceLimit - 1].value == kRuntimeModelReferenceLimit - 1);
+    assert(runtimeVocabulary[3 + kRuntimeModelReferenceLimit].kind == RuntimeOutputTokenKind::FactFromInput &&
+           runtimeVocabulary[3 + kRuntimeModelReferenceLimit].value == 0);
+
     // The VM recurrent backend has its own finite output vocabulary.  A
     // reference token returns the original typed Value, so state-model use
     // never invents boolean truthiness or loses fact/text/container payloads.
     GruRuntimeStateModel::Configuration runtimeGruConfiguration;
-    runtimeGruConfiguration.inputVocabularySize = 16;
+    runtimeGruConfiguration.inputVocabularySize = 17;
     runtimeGruConfiguration.outputVocabularySize = 1;
     runtimeGruConfiguration.embeddingSize = 4;
     runtimeGruConfiguration.hiddenSize = 4;
@@ -165,7 +177,18 @@ int main() {
     RegisterVm nativeVm;
     const auto arithmeticResult = nativeVm.execute(arithmetic, noRuntime, VmNil{});
     assert(std::get<double>(arithmeticResult) == 42.0);
+    // The branch protocol is deliberately narrower than host-language
+    // truthiness. Every non-boolean VM type remains usable data and must not
+    // become an implicit control decision.
+    assert(noRuntime.shouldBranchFalse(VmNil{}));
+    assert(noRuntime.shouldBranchFalse(false));
+    assert(!noRuntime.shouldBranchFalse(true));
     assert(!noRuntime.shouldBranchFalse(0.0));
+    assert(!noRuntime.shouldBranchFalse(VmDegree(0.0)));
+    assert(!noRuntime.shouldBranchFalse(VmText{{1, 2}}));
+    assert(!noRuntime.shouldBranchFalse(std::make_shared<VmArray>()));
+    assert(!noRuntime.shouldBranchFalse(std::make_shared<VmMap>()));
+    assert(!noRuntime.shouldBranchFalse(std::make_shared<VmFact>()));
 
     FelidaeIr factProgram;
     factProgram.registerCount = 2;
@@ -229,7 +252,7 @@ int main() {
         static_cast<IrWord>(IrOpcode::Return), 0, 0,
         static_cast<IrWord>(IrOpcode::End),
     };
-    DirectVmRuntime procedureRuntime({{99, IrProcedure{directProcedure, {}, {}, {}}}});
+    FelidaeKnowledgeRuntime procedureRuntime({{99, IrProcedure{directProcedure, {}, {}, {}}}});
     assert(std::get<double>(nativeVm.execute(directCaller, procedureRuntime, VmNil{})) == 7.0);
     FelidaeIr recursiveProcedure;
     recursiveProcedure.registerCount = 1;
@@ -241,7 +264,7 @@ int main() {
     };
     FelidaeIr recursiveCaller = directCaller;
     recursiveCaller.symbols = {77};
-    DirectVmRuntime boundedRecursionRuntime({{77, IrProcedure{recursiveProcedure, {}, {}, {}}}},
+    FelidaeKnowledgeRuntime boundedRecursionRuntime({{77, IrProcedure{recursiveProcedure, {}, {}, {}}}},
                                              nullptr, 1024, 2);
     bool recursionRejected = false;
     try {
@@ -301,8 +324,35 @@ int main() {
     // A new VM execution owns a new RuntimeContext; recurrent state cannot
     // leak across requests even when the backend instance is reused.
     assert(std::get<double>(nativeVm.execute(semanticProgram, semanticRuntime, VmNil{})) == 5.0);
-    DirectVmRuntime directSemanticRuntime({}, &semanticModel);
+    FelidaeKnowledgeRuntime directSemanticRuntime({}, &semanticModel);
     assert(std::get<double>(nativeVm.execute(semanticProgram, directSemanticRuntime, VmNil{})) == 5.0);
+    // Facts asserted earlier in the same VM program are refreshed into the
+    // learned-operation context; a model never trains on a snapshot it cannot
+    // observe during production execution.
+    class KnowledgeCheckingModel final : public RuntimeStateModel {
+    public:
+        VmValue evaluate(const RuntimeOperation& operation, std::span<const VmValue> inputs,
+                         RuntimeContext& context) override {
+            assert(operation.symbol == 99 && inputs.size() == 1);
+            assert(context.knowledge.factTypes.size() == 1 && context.knowledge.factTypes[0] == 77);
+            assert(context.knowledge.factTypeCounts.size() == 1 &&
+                   context.knowledge.factTypeCounts[0].first == 77 &&
+                   context.knowledge.factTypeCounts[0].second == 1);
+            assert(std::holds_alternative<VmFactPtr>(inputs.front()));
+            return inputs.front();
+        }
+    } knowledgeModel;
+    FelidaeIr knowledgeProgram;
+    knowledgeProgram.registerCount = 2;
+    knowledgeProgram.symbols = {77, 99};
+    knowledgeProgram.words = {
+        static_cast<IrWord>(IrOpcode::MakeFact), 0, 0,
+        static_cast<IrWord>(IrOpcode::SsmProcess), 1, 1, 1, 0,
+        static_cast<IrWord>(IrOpcode::Return), 1, 0,
+        static_cast<IrWord>(IrOpcode::End),
+    };
+    FelidaeKnowledgeRuntime knowledgeRuntime({}, &knowledgeModel);
+    assert(std::holds_alternative<VmFactPtr>(nativeVm.execute(knowledgeProgram, knowledgeRuntime, VmNil{})));
     // Nested calls are part of one top-level execution: the SSM state and
     // semantic budget are shared across their fresh register frames.
     FelidaeIr semanticCaller;
@@ -314,7 +364,7 @@ int main() {
         static_cast<IrWord>(IrOpcode::Return), 1, 0,
         static_cast<IrWord>(IrOpcode::End),
     };
-    DirectVmRuntime nestedSemanticRuntime({{99, IrProcedure{semanticProgram, {}, {}, {}}}},
+    FelidaeKnowledgeRuntime nestedSemanticRuntime({{99, IrProcedure{semanticProgram, {}, {}, {}}}},
                                           &semanticModel, 2);
     assert(std::get<double>(nativeVm.execute(semanticCaller, nestedSemanticRuntime, VmNil{})) == 6.0);
     FelidaeIr overLimitSemanticProgram;
@@ -336,7 +386,7 @@ int main() {
         semanticLimitRejected = true;
     }
     assert(semanticLimitRejected);
-    DirectVmRuntime oneStepSemanticRuntime({}, &semanticModel, 1);
+    FelidaeKnowledgeRuntime oneStepSemanticRuntime({}, &semanticModel, 1);
     bool directSemanticLimitRejected = false;
     try {
         (void)nativeVm.execute(overLimitSemanticProgram, oneStepSemanticRuntime, VmNil{});

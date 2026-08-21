@@ -91,20 +91,33 @@ not serialized into `.bin`.
 Normal syntax and uniquely resolved annotated mixfix stay deterministic and
 compile directly to the same register IR. The compiler-side `MixfixStateModel`
 uses a C++ LibTorch GRU and accepts only a finite structural IR vocabulary.
-Its output is verifier-gated; missing models, invalid output, confidence
-failure, or malformed spans are compile errors and never fall back to AST
-execution.
+Its output is verifier-gated; missing models, invalid output, or malformed
+spans are compile errors and never fall back to AST execution. No trained
+mixfix artifact is currently shipped.
+
+The reusable deterministic corpus is generated explicitly from examples:
+
+```powershell
+build\felidae_extract_mixfix_dataset.exe datasets\compiler\mixfix-v1.jsonl v2_examples
+```
 
 The VM has a different optional recurrent model for `SemanticEval`/future
 `SSM_PROCESS` work. It is built from `src/form/RuntimeStateModel.cpp` and uses
-a finite, typed result vocabulary (nil, boolean, bounded Degree, a validated
-input reference, or a fact derived from a validated input), never implicit
+a finite, typed result vocabulary (nil, boolean, a bounded Degree lattice, a
+validated bounded input reference, or a fact derived from a validated input), never implicit
 truthiness. No runtime artifact is shipped until it has been trained and
-validated against FELBIN v8. Generate and validate one explicitly before use:
+validated against FELBIN v8. No runtime artifact is currently shipped. The
+dataset tool can prepare deterministic identity and fact/hierarchy-context
+operation teachers from verified examples, while binaries with
+`SemanticEval`/`SsmProcess` still require explicit teachers rather than false
+whole-program labels.
+
+Prepare the reusable VM baseline from verified build artifacts, then train a
+non-shipping probe explicitly (both commands are C++/LibTorch only):
 
 ```powershell
-build\felidae_train_runtime_gru.exe build\runtime.frtd models\runtime_gru
-build\felidae_vm.exe --model models\runtime_gru build\form_core_concepts.bin
+build\felidae_build_runtime_dataset.exe datasets\vm\runtime-context-v1.jsonl build\form_core_concepts.bin build\degree_profiles.bin
+build\felidae_vm.exe --train datasets\vm\runtime-context-v1.jsonl --store-model build
 ```
 
 ## Validation

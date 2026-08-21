@@ -47,6 +47,16 @@ struct MixfixContext {
     std::size_t maximumOutputWords = 4096;
 };
 
+// The parser and corpus extractor share this one fixed structural vocabulary.
+// Dynamic constants and symbols remain context-table references.
+inline constexpr std::size_t kMaximumMixfixRegisters = 64;
+inline constexpr std::size_t kMaximumMixfixReferences = 64;
+// End plus every real opcode, fixed registers, and four bounded reference
+// classes. Training artifacts must use this exact parser-owned vocabulary.
+inline constexpr std::size_t kMixfixStructuralVocabularySize =
+    static_cast<std::size_t>(kIrOpcodeCount) + kMaximumMixfixRegisters + 4 * kMaximumMixfixReferences;
+MixfixContext makeMixfixContext(const FelidaeIr& shell);
+
 class MixfixStateModel {
 public:
     virtual ~MixfixStateModel() = default;
@@ -102,6 +112,11 @@ public:
     double trainTeacherForced(std::span<const SentencePieceId> input,
                               std::span<const std::int64_t> targetTokenIds,
                               double learningRate);
+
+    // Held-out teacher-forcing loss. This has no optimizer step and is the
+    // training tool's validation metric, not an inference-quality claim.
+    double evaluateTeacherForced(std::span<const SentencePieceId> input,
+                                 std::span<const std::int64_t> targetTokenIds);
 
     void saveArtifact(const std::filesystem::path& artifactPath) const;
 

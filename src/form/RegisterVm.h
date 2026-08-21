@@ -172,6 +172,13 @@ struct VmFact {
 
 struct VmFactMutation { std::uint64_t sequence = 0; IrFactRef fact = 0; IrSymbolRef field = 0; };
 struct VmFactProvenance { IrFactRef fact = 0; IrSymbolRef procedure = 0; bool derived = false; };
+struct VmKnowledgeSnapshot {
+    std::vector<IrSymbolRef> factTypes;
+    // Sorted, bounded fact population by type. This is a compact runtime
+    // observation, not a second fact store or a source-text representation.
+    std::vector<std::pair<IrSymbolRef, std::uint32_t>> factTypeCounts;
+    std::vector<std::pair<IrSymbolRef, IrSymbolRef>> hierarchyEdges;
+};
 // Numeric, non-boolean evidence returned by Form's deterministic fact
 // analysis.  `membership` is always in [0, 1] and is never a branch value.
 struct VmGaussianProfile { double peak = 0.0; double fadesIn = 0.0; double fadesOut = 0.0; };
@@ -200,6 +207,7 @@ public:
     std::vector<VmFactPtr> snapshotByField(IrSymbolRef field) const;
     std::vector<VmFactMutation> mutations() const;
     std::vector<VmFactProvenance> provenance() const;
+    VmKnowledgeSnapshot knowledgeSnapshot() const;
     std::size_t size() const;
 
     // A Gaussian tail reaches 1% at each fade boundary.  Degenerate edge
@@ -254,12 +262,16 @@ struct RuntimeContext {
     std::size_t semanticSteps = 0;
     std::shared_ptr<void> executionState;
     std::shared_ptr<std::size_t> sharedSemanticSteps;
+    // Refreshed immediately before each semantic operation. It contains only
+    // integer IDs, so a runtime model observes the current fact/hierarchy
+    // state without source parsing or text search.
+    VmKnowledgeSnapshot knowledge;
 };
 
 class RuntimeStateModel {
 public:
     virtual ~RuntimeStateModel() = default;
-    // Called once for each top-level DirectVmRuntime execution. Backends use
+    // Called once for each top-level Form runtime execution. Backends use
     // this to allocate their recurrent/SSM state without retaining it across
     // requests. The default model is stateless.
     virtual std::shared_ptr<void> createExecutionState() { return {}; }
@@ -292,6 +304,9 @@ public:
     virtual void endExecution() noexcept;
     virtual RuntimeContext makeRuntimeContext(const FelidaeIr& ir,
                                               const VmValue& systemInput) const;
+    // A long-lived runtime updates operation context at the semantic boundary;
+    // the base runtime has no knowledge state to add.
+    virtual void refreshRuntimeContext(RuntimeContext& context) const;
     // Runtime-owned handles (facts, native objects, hierarchy cursors) can be
     // checked here before a learned result enters a VM register. The default
     // admits only structurally valid VM values.
@@ -329,6 +344,7 @@ public:
     void endExecution() noexcept override;
     RuntimeContext makeRuntimeContext(const FelidaeIr& ir,
                                       const VmValue& systemInput) const override;
+    void refreshRuntimeContext(RuntimeContext& context) const override;
     const std::shared_ptr<VmFactStore>& factStore() const noexcept { return factStore_; }
     std::vector<VmExecutionTrace> executionTraces() const;
     std::size_t installedModuleCount() const noexcept { return modules_.contains(0) ? modules_.size() - 1 : modules_.size(); }
@@ -362,10 +378,6 @@ private:
     std::shared_ptr<void> executionState_;
     std::shared_ptr<std::size_t> sharedSemanticSteps_;
 };
-
-// Transition spelling retained for source compatibility. New code should name
-// the persistent role explicitly rather than calling it a "direct" runtime.
-using DirectVmRuntime = FelidaeKnowledgeRuntime;
 
 class RegisterVm {
 public:

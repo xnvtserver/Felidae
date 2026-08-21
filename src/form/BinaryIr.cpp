@@ -193,6 +193,22 @@ IrModule materializeIrModule(const LinkedIrModule& source) {
     IrModule module;module.entryProcedure=source.entryProcedure;module.ir=materialize(source.initializer);for(const auto& m:source.procedures){if(m.symbol==0)throw IrError("linked IR procedure symbol is invalid");IrProcedure p;p.ir=materialize(m);p.positionalParameters=m.positionalParameters;p.namedParameters=m.namedParameters;p.sourceSpan=m.sourceSpan;if(!module.procedures.emplace(m.symbol,std::move(p)).second)throw IrError("linked IR has duplicate procedure metadata");}module.factTypes=source.factTypes;verifyIrModule(module);return module;
 }
 
+bool containsRuntimeSsmOperation(const IrModule& module) {
+    verifyIrModule(module);
+    const auto contains = [](const FelidaeIr& ir) {
+        for (std::size_t pc = 0; pc < ir.words.size(); pc += instructionWidth(ir.words, pc)) {
+            const auto opcode = static_cast<IrOpcode>(ir.words[pc]);
+            if (opcode == IrOpcode::SemanticEval || opcode == IrOpcode::SsmProcess) return true;
+        }
+        return false;
+    };
+    if (contains(module.ir)) return true;
+    for (const auto& [_, procedure] : module.procedures) {
+        if (contains(procedure.ir)) return true;
+    }
+    return false;
+}
+
 VmValue RegisterVm::executeMain(const IrModule& module, VmRuntime& runtime,
                                 VmValue systemInput) {
     verifyIrModule(module);

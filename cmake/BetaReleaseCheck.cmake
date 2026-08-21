@@ -1,4 +1,4 @@
-if(NOT DEFINED FELIDAE_BETA_DIST_DIR OR NOT DEFINED FELIDAE_BETA_EXAMPLE)
+if(NOT DEFINED FELIDAE_BETA_DIST_DIR OR NOT DEFINED FELIDAE_BETA_BUILD_DIR OR NOT DEFINED FELIDAE_BETA_EXAMPLE)
     message(FATAL_ERROR "beta release check paths are incomplete")
 endif()
 
@@ -69,7 +69,10 @@ if(NOT vm_version_result EQUAL 0)
 endif()
 
 get_filename_component(example_name "${FELIDAE_BETA_EXAMPLE}" NAME_WE)
-set(binary "${FELIDAE_BETA_DIST_DIR}/${example_name}.bin")
+# The compiler's contract is to write generated binaries to build/, never
+# into the portable distribution. The staged VM still consumes that freshly
+# generated artifact as a separate process.
+set(binary "${FELIDAE_BETA_BUILD_DIR}/${example_name}.bin")
 execute_process(COMMAND "${FELIDAE_BETA_DIST_DIR}/felidae_compiler.exe" "${FELIDAE_BETA_EXAMPLE}"
     RESULT_VARIABLE compile_result OUTPUT_VARIABLE compile_output ERROR_VARIABLE compile_error)
 if(NOT compile_result EQUAL 0 OR NOT EXISTS "${binary}")
