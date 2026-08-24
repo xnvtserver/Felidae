@@ -37,3 +37,6 @@
 [submodule "vim-extension"]
 	path = vim-extension
 	url = https://github.com/vishalkrishnaag/vim-extension.git
+[submodule "zed-extension"]
+	path = zed-extension
+	url = https://github.com/vishalkrishnaag/zed-extension.git
