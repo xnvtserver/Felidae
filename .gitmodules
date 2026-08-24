@@ -19,3 +19,21 @@
 [submodule "third_party/rapidcsv"]
 	path = third_party/rapidcsv
 	url = https://github.com/d99kris/rapidcsv.git
+[submodule "intellij-idea-extension"]
+	path = intellij-idea-extension
+	url = https://github.com/vishalkrishnaag/intellij-idea-extension.git
+[submodule "vs-code-extension"]
+	path = vs-code-extension
+	url = https://github.com/vishalkrishnaag/vs-code-extension.git
+[submodule "emacs-extension"]
+	path = emacs-extension
+	url = https://github.com/vishalkrishnaag/emacs-extension.git
+[submodule "nano-extension"]
+	path = nano-extension
+	url = https://github.com/vishalkrishnaag/nano-extension.git
+[submodule "sublime-text-extension"]
+	path = sublime-text-extension
+	url = https://github.com/vishalkrishnaag/sublime-text-extension.git
+[submodule "vim-extension"]
+	path = vim-extension
+	url = https://github.com/vishalkrishnaag/vim-extension.git

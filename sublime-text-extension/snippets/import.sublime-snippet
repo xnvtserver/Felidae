@@ -1,6 +1,0 @@
-<snippet>
-    <content><![CDATA[import "${1:file.fx}"]]></content>
-    <tabTrigger>import</tabTrigger>
-    <scope>source.felidae</scope>
-    <description>Import another Felidae file</description>
-</snippet>

@@ -1,7 +1,0 @@
-<snippet>
-    <content><![CDATA[${1:RuleName}(${2:input}: ${3:value}) =>
-    ${4:Predicate}(${2:input}: ${3:value})]]></content>
-    <tabTrigger>rule</tabTrigger>
-    <scope>source.felidae</scope>
-    <description>Create a Felidae rule</description>
-</snippet>
