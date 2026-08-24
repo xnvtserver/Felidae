@@ -40,3 +40,9 @@
 [submodule "zed-extension"]
 	path = zed-extension
 	url = https://github.com/vishalkrishnaag/zed-extension.git
+[submodule "notepad-plus-plus-extension"]
+	path = notepad-plus-plus-extension
+	url = https://github.com/vishalkrishnaag/notepad-plus-plus-extension.git
+[submodule "tree-sitter-felidae"]
+	path = tree-sitter-felidae
+	url = https://github.com/vishalkrishnaag/tree-sitter-felidae.git
