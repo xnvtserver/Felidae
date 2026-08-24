@@ -1751,12 +1751,12 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
                                              static_cast<IrWord>(items.size())});
             ir.words.insert(ir.words.end(), items.begin(), items.end());
         } else if (const auto map = std::dynamic_pointer_cast<MapExpr>(value)) {
-            std::vector<std::pair<IrSymbolRef, RegisterId>> entries;
+            std::vector<std::pair<IrWord, RegisterId>> entries;
             entries.reserve(map->entries.size());
             for (const auto& entry : map->entries) {
                 const auto item = self(self, entry.value);
                 ir.symbols.push_back(entry.keyId);
-                entries.emplace_back(static_cast<IrSymbolRef>(ir.symbols.size() - 1), item);
+                entries.emplace_back(static_cast<IrWord>(ir.symbols.size() - 1), item);
             }
             if (map->factType.empty()) {
                 ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::MakeMap), result, 0,

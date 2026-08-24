@@ -8,6 +8,8 @@
 #include <sentencepiece.pb.h>
 
 #include <cassert>
+#include <chrono>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -47,6 +49,23 @@ int main() {
     const auto distModel = Felidae::modelStoreDirectory("dist", "runtime-gru");
     assert(buildModel.filename() == "mixfix-gru" && buildModel.parent_path().filename() == "build");
     assert(distModel.filename() == "runtime-gru" && distModel.parent_path().filename() == "models");
+
+    // Expansion occurs in the executable, not in the user's shell.  Use an
+    // isolated temporary directory so this remains a unit test and does not
+    // introduce a generated dataset into the repository.
+    const auto datasetTestDirectory = std::filesystem::temp_directory_path() /
+        ("felidae-model-store-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(datasetTestDirectory);
+    {
+        std::ofstream(datasetTestDirectory / "mixfix-v1.jsonl") << "{}\n";
+        std::ofstream(datasetTestDirectory / "mixfix-invalid-v1.jsonl") << "{}\n";
+        std::ofstream(datasetTestDirectory / "ignored.tsv") << "{}\n";
+    }
+    const auto expanded = Felidae::expandJsonlDatasetPaths(datasetTestDirectory / "mixfix-*.jsonl");
+    assert(expanded.size() == 2);
+    assert(expanded[0].filename() == "mixfix-invalid-v1.jsonl");
+    assert(expanded[1].filename() == "mixfix-v1.jsonl");
+    std::filesystem::remove_all(datasetTestDirectory);
 
     sentencepiece::SentencePieceProcessor model;
     const auto loaded = model.Load(FELIDAE_SENTENCEPIECE_MODEL_PATH);
