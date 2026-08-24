@@ -18,10 +18,13 @@ namespace Felidae {
 
 struct IrModule;
 
+// Instruction operands are verifier-bounded host indices. Symbol values are
+// deliberately separate: source SymbolId values are always 64-bit and must
+// never narrow through a pointer-width IR word on Win32.
 using IrWord = std::size_t;
 using RegisterId = std::size_t;
 using IrConstantId = std::size_t;
-using IrSymbolRef = std::size_t;
+using IrSymbolRef = std::uint64_t;
 using IrFactRef = std::size_t;
 
 enum class IrOpcode : IrWord {
@@ -81,7 +84,7 @@ struct FelidaeIr {
     // Every text constant is a SentencePiece ID sequence. Raw UTF-8 never
     // enters .bin or the VM's persistent state.
     std::vector<std::vector<std::uint32_t>> texts;
-    std::vector<IrWord> symbols;
+    std::vector<IrSymbolRef> symbols;
     std::vector<IrWord> programs;
     std::vector<IrSourceMapEntry> sourceMap;
     std::size_t registerCount = 0;
