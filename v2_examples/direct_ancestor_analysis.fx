@@ -8,18 +8,14 @@ Left extend Alpha, Beta(name: "left")
 Right extend Alpha, Beta(name: "right")
 
 main() =>
-    lefts := lambda(Left, fact => fact.name == "left")
-    rights := lambda(Right, fact => fact.name == "right")
-    left := array.get(data: lefts, position: 0)
-    right := array.get(data: rights, position: 0)
+    left := Left(name: "left")
+    right := Right(name: "right")
 
     common := commonAncestors(left: left, right: right)
     lowest := lowestCommonAncestor(left: left, right: right)
     highest := highestCommonAncestor(left: left, right: right)
-    report := ancestorAnalysis(left: left, right: right)
     return (
         common: common,
         lowest: lowest,
-        highest: highest,
-        report: report
+        highest: highest
     )
