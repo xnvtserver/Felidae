@@ -10,3 +10,39 @@
 [submodule "third_party/protobuf"]
 	path = third_party/protobuf
 	url = https://github.com/protocolbuffers/protobuf.git
+[submodule "third_party/Eigen"]
+	path = third_party/Eigen
+	url = https://gitlab.com/libeigen/eigen.git
+[submodule "third_party/cpp-httplib"]
+	path = third_party/cpp-httplib
+	url = https://github.com/yhirose/cpp-httplib.git
+[submodule "third_party/rapidcsv"]
+	path = third_party/rapidcsv
+	url = https://github.com/d99kris/rapidcsv.git
+[submodule "intellij-idea-extension"]
+	path = intellij-idea-extension
+	url = https://github.com/vishalkrishnaag/intellij-idea-extension.git
+[submodule "vs-code-extension"]
+	path = vs-code-extension
+	url = https://github.com/vishalkrishnaag/vs-code-extension.git
+[submodule "emacs-extension"]
+	path = emacs-extension
+	url = https://github.com/vishalkrishnaag/emacs-extension.git
+[submodule "nano-extension"]
+	path = nano-extension
+	url = https://github.com/vishalkrishnaag/nano-extension.git
+[submodule "sublime-text-extension"]
+	path = sublime-text-extension
+	url = https://github.com/vishalkrishnaag/sublime-text-extension.git
+[submodule "vim-extension"]
+	path = vim-extension
+	url = https://github.com/vishalkrishnaag/vim-extension.git
+[submodule "zed-extension"]
+	path = zed-extension
+	url = https://github.com/vishalkrishnaag/zed-extension.git
+[submodule "notepad-plus-plus-extension"]
+	path = notepad-plus-plus-extension
+	url = https://github.com/vishalkrishnaag/notepad-plus-plus-extension.git
+[submodule "tree-sitter-felidae"]
+	path = tree-sitter-felidae
+	url = https://github.com/vishalkrishnaag/tree-sitter-felidae.git
