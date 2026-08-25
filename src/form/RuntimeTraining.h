@@ -14,14 +14,14 @@ enum class RuntimeTrainingTargetKind : std::uint8_t {
     FactFromInput = 2,
     DegreeMilli = 3,
     Nil = 4,
-    Boolean = 5,
+    NumericTruth = 5,
 };
 
 // One verified runtime operation, represented exactly as the current GRU
 // sees it: operation identity, ordered input kinds, and a bounded snapshot of
 // fact types plus hierarchy edges. Hidden train-only features are forbidden.
 struct RuntimeTrainingRecord {
-    IrSymbolRef operationSymbol = 0;
+    std::uint16_t operationId = 0;
     std::vector<RuntimeValueKind> inputKinds;
     std::vector<IrSymbolRef> factTypes;
     std::vector<std::pair<IrSymbolRef, std::uint32_t>> factTypeCounts;
@@ -30,10 +30,11 @@ struct RuntimeTrainingRecord {
     std::uint32_t targetValue = 0;
 };
 
-// JSON Lines v6: one self-describing, integer-only record per line.  The
+// JSON Lines v7: one self-describing, integer-only record per line.  The
 // schema value is repeated deliberately: lines can be validated or streamed
 // independently and no legacy binary header needs to be retained.
-inline constexpr std::uint32_t kRuntimeTrainingSchemaVersion = 6;
+inline constexpr std::uint32_t kRuntimeTrainingSchemaVersion = 7;
+void verifyRuntimeTrainingRecord(const RuntimeTrainingRecord& record);
 void writeRuntimeTrainingDataset(const std::filesystem::path& path,
                                  std::span<const RuntimeTrainingRecord> records);
 std::vector<RuntimeTrainingRecord> loadRuntimeTrainingDataset(const std::filesystem::path& path);

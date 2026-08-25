@@ -1,13 +1,15 @@
 #include "form/RuntimeStateModel.h"
-#include "form/BinaryIr.h"
+#include "form/BinaryIsa.h"
 #include "form/RuntimeTraining.h"
 #include "form/RuntimeTrainingCommand.h"
 
 #include <filesystem>
+#include <chrono>
 #include <iostream>
 #include <algorithm>
 #include <map>
 #include <random>
+#include <tuple>
 
 #include <torch/torch.h>
 
@@ -22,7 +24,7 @@ std::size_t targetFor(const RuntimeTrainingRecord& record,
         case RuntimeTrainingTargetKind::FactFromInput: return token.kind == RuntimeOutputTokenKind::FactFromInput;
         case RuntimeTrainingTargetKind::DegreeMilli: return token.kind == RuntimeOutputTokenKind::DegreeMilli;
         case RuntimeTrainingTargetKind::Nil: return token.kind == RuntimeOutputTokenKind::Nil;
-        case RuntimeTrainingTargetKind::Boolean: return token.kind == RuntimeOutputTokenKind::Boolean;
+        case RuntimeTrainingTargetKind::NumericTruth: return token.kind == RuntimeOutputTokenKind::NumericTruth;
         }
         return false;
     };
@@ -54,29 +56,27 @@ int Felidae::runRuntimeGruTraining(int argc, char** argv) {
         torch::manual_seed(0);
         Felidae::GruRuntimeStateModel model(configuration, vocabulary);
         std::mt19937_64 random(0);
-        // Split whole operation/action families. A random record-level split
-        // lets repeated context templates into both partitions and therefore
-        // overstates generalization. Rare families stay training-only rather
-        // than being presented as reliable held-out evidence.
-        using EvaluationBucket = std::pair<IrSymbolRef, std::size_t>;
-        std::map<EvaluationBucket, std::vector<std::size_t>> families;
+        // Split whole operation/input-shape/action families. A random
+        // record-level split lets repeated context templates into multiple
+        // partitions and therefore overstates generalization.
+        using StructuralFamily = std::tuple<std::uint16_t,
+            std::vector<RuntimeValueKind>, std::size_t>;
+        using EvaluationBucket = std::pair<std::uint16_t, std::size_t>;
+        std::map<StructuralFamily, std::vector<std::size_t>> families;
         for (std::size_t index = 0; index < records.size(); ++index) {
-            families[{records[index].operationSymbol, targetFor(records[index], vocabulary)}].push_back(index);
+            families[{records[index].operationId, records[index].inputKinds,
+                      targetFor(records[index], vocabulary)}].push_back(index);
         }
-        std::vector<std::size_t> training;
-        std::vector<std::size_t> validation;
-        for (auto& [bucket, family] : families) {
-            (void)bucket;
-            std::shuffle(family.begin(), family.end(), random);
-            const auto heldOut = family.size() / 5;
-            validation.insert(validation.end(), family.begin(), family.begin() + heldOut);
-            training.insert(training.end(), family.begin() + heldOut, family.end());
-        }
-        if (validation.empty()) throw Felidae::IrError("runtime dataset has no operation/action family large enough for held-out validation");
-        if (training.empty()) throw Felidae::IrError("runtime dataset has no training records after grouped split");
-        std::cout << "records=" << records.size() << " operation_action_families=" << families.size()
-                  << " training=" << training.size() << " validation=" << validation.size() << "\n";
+        if(families.size()<3)throw Felidae::IrError("runtime dataset requires at least three operation/action families for train/validation/test splits");
+        std::vector<std::vector<std::size_t>*> familyOrder;for(auto& [bucket,family]:families){(void)bucket;familyOrder.push_back(&family);}std::shuffle(familyOrder.begin(),familyOrder.end(),random);
+        std::vector<std::size_t> training,validation,test;
+        for(std::size_t familyIndex=0;familyIndex<familyOrder.size();++familyIndex){auto& destination=familyIndex%10==0?test:familyIndex%10==1?validation:training;destination.insert(destination.end(),familyOrder[familyIndex]->begin(),familyOrder[familyIndex]->end());}
+        if(training.empty()||validation.empty()||test.empty())throw Felidae::IrError("runtime structural-family split produced an empty partition");
+        std::cout << "records=" << records.size() << " structural_families=" << families.size()
+                  << " training=" << training.size() << " validation=" << validation.size()
+                  << " test=" << test.size() << "\n";
         for (std::size_t epoch = 0; epoch < epochs; ++epoch) {
+            const auto epochStarted = std::chrono::steady_clock::now();
             std::shuffle(training.begin(), training.end(), random);
             double totalLoss = 0.0;
             for (const auto index : training) {
@@ -89,22 +89,28 @@ int Felidae::runRuntimeGruTraining(int argc, char** argv) {
                 const auto& record = records[index];
                 const auto target = targetFor(record, vocabulary);
                 const auto predicted = model.predictTeacherToken(record);
-                auto& metric = bucketMetrics[{record.operationSymbol, target}];
+                auto& metric = bucketMetrics[{record.operationId, target}];
                 ++metric.second;
                 correct += predicted == target ? 1 : 0;
                 if (predicted == target) ++metric.first;
             }
+            const auto epochSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-epochStarted).count();
             std::cout << "epoch=" << (epoch + 1)
                       << " train_loss=" << (totalLoss / training.size())
-                      << " validation_accuracy=" << (static_cast<double>(correct) / validation.size()) << "\n";
+                      << " validation_accuracy=" << (static_cast<double>(correct) / validation.size())
+                      << " seconds=" << epochSeconds
+                      << " train_samples_per_second=" << (epochSeconds>0.0?static_cast<double>(training.size())/epochSeconds:0.0) << "\n";
             for (const auto& [bucket, metric] : bucketMetrics) {
                 std::cout << "  validation_operation=" << bucket.first << " target_token=" << bucket.second
                           << " correct=" << metric.first << '/' << metric.second << "\n";
             }
         }
+        std::size_t testCorrect=0;for(const auto index:test){const auto& record=records[index];testCorrect+=model.predictTeacherToken(record)==targetFor(record,vocabulary)?1u:0u;}
+        std::cout<<"test_accuracy="<<(static_cast<double>(testCorrect)/test.size())<<" correct="<<testCorrect<<'/'<<test.size()<<"\n";
         const std::filesystem::path output(argv[2]);
         std::filesystem::create_directories(output);
-        model.saveArtifact(output / "runtime-gru.pt");
+        model.saveCheckpoint(output / "runtime-gru.ckpt");
+        model.exportTorchScript(output / "runtime-gru.pt");
         // Treat export as successful only when the production manifest gate
         // can load these exact weights again.
         auto verified = Felidae::GruRuntimeStateModel::loadVersioned(configuration, vocabulary, output);

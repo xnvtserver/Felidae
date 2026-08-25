@@ -6,19 +6,32 @@
 #include "Operator.h"
 #include "OperatorAnnotation.h"
 #include "SentencePieceModel.h"
+#include "form/SemanticOperation.h"
 
 #include <sentencepiece.pb.h>
 #include <sentencepiece_processor.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <functional>
+#include <iostream>
 #include <unordered_map>
 
 namespace Felidae {
 
 namespace {
 const SymbolId kMainSymbolId = symbolIdForName("main");
+
+#ifndef NDEBUG
+bool parserTraceEnabled() {
+    static const bool enabled = [] {
+        const auto* value = std::getenv("FELIDAE_TRACE");
+        return value != nullptr && *value != '\0' && std::string_view(value) != "0";
+    }();
+    return enabled;
+}
+#endif
 
 bool isFragmentableBuiltin(TokenId::Id id) {
     switch (id) {
@@ -114,6 +127,13 @@ IntegerParser::IntegerParser(const IntegerTokenList& input,
     : input_(input), operators_(std::move(operators)), mixfixModel_(mixfixModel) {
     metrics_.sourceEncodeCount = input.encodeCount();
     metrics_.tokenCount = input.entries().size();
+#ifndef NDEBUG
+    if (parserTraceEnabled()) {
+        std::clog << "[felidae.parser] source_bytes=" << input.source().size()
+                  << " sentencepiece_tokens=" << metrics_.tokenCount
+                  << " encode_passes=" << metrics_.sourceEncodeCount << '\n';
+    }
+#endif
     const auto advance = [](SourceSpan& target, const IntegerTokenList::Entry& entry,
                             std::size_t count) {
         if (entry.id == TokenId::NEWLINE || entry.id == TokenId::CARRIAGE_RETURN) {
@@ -887,6 +907,9 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
 }
 
 Program IntegerParser::parseProgram() {
+#ifndef NDEBUG
+    if (parserTraceEnabled()) std::clog << "[felidae.parser] action=parse_program begin\n";
+#endif
     Program program;
     while (!atEnd()) {
         const auto before = byte_;
@@ -894,6 +917,12 @@ Program IntegerParser::parseProgram() {
         ++metrics_.statementCount;
         if (byte_ == before) throw IntegerParserError("Integer parser made no progress in program");
     }
+#ifndef NDEBUG
+    if (parserTraceEnabled()) {
+        std::clog << "[felidae.parser] action=parse_program complete statements="
+                  << metrics_.statementCount << " final_byte=" << byte_ << '\n';
+    }
+#endif
     return program;
 }
 
@@ -1108,6 +1137,7 @@ std::shared_ptr<Expr> IntegerParser::tryParseLeadingPattern() {
         if (!atPatternLexeme(pattern.anchorLexemes.front().front())) continue;
         byte_ = startByte;
         piece_ = startPiece;
+        bool candidateParsed = false;
         try {
             if (!matchPatternAnchor(pattern.anchorLexemes.front())) continue;
             std::vector<OperatorCapture> captures;
@@ -1130,11 +1160,12 @@ std::shared_ptr<Expr> IntegerParser::tryParseLeadingPattern() {
             }
             auto candidate = std::make_shared<OperatorExpression>(
                 pattern.operatorId, pattern.patternId, std::move(captures));
+            candidateParsed = true;
+            stamp(candidate, startByte, byte_);
             candidate->resolvedMethodId = resolveMixfixMethod(*candidate);
             if (candidate->resolvedMethodId == 0 && mixfixModel_) {
                 candidate->resolvedMethodId = resolveModelMixfixMethod(candidate);
             }
-            stamp(candidate, startByte, byte_);
             if (!selected || byte_ > selectedByte ||
                 (byte_ == selectedByte && candidate->resolvedMethodId != 0 &&
                  selected->resolvedMethodId == 0)) {
@@ -1143,6 +1174,10 @@ std::shared_ptr<Expr> IntegerParser::tryParseLeadingPattern() {
                 selectedPiece = piece_;
             }
         } catch (const IntegerParserError&) {
+            // Once the full syntax shape has parsed, an SSM/IR verification
+            // error is authoritative. Do not disguise it as an unrelated
+            // leftover-token parse failure by backtracking to a plain name.
+            if (candidateParsed) throw;
             // Another candidate sharing this integer anchor may still match.
         }
         byte_ = startByte;
@@ -1178,6 +1213,7 @@ std::shared_ptr<Expr> IntegerParser::tryParseTrailingPattern(std::shared_ptr<Exp
         if (!atPatternLexeme(pattern.anchorLexemes.front().front())) continue;
         byte_ = startByte;
         piece_ = startPiece;
+        bool candidateParsed = false;
         try {
             if (!matchPatternAnchor(pattern.anchorLexemes.front())) continue;
             std::vector<OperatorCapture> captures;
@@ -1202,15 +1238,17 @@ std::shared_ptr<Expr> IntegerParser::tryParseTrailingPattern(std::shared_ptr<Exp
             if (!immediate || byte_ > immediateByte) {
                 immediate = std::make_shared<OperatorExpression>(
                     pattern.operatorId, pattern.patternId, std::move(captures));
+                candidateParsed = true;
+                stampTrailing(immediate, byte_);
                 immediate->resolvedMethodId = resolveMixfixMethod(*immediate);
                 if (immediate->resolvedMethodId == 0 && mixfixModel_) {
                     immediate->resolvedMethodId = resolveModelMixfixMethod(immediate);
                 }
-                stampTrailing(immediate, byte_);
                 immediateByte = byte_;
                 immediatePiece = piece_;
             }
         } catch (const IntegerParserError&) {
+            if (candidateParsed) throw;
             // Another pattern sharing this anchor may still match.
         }
         byte_ = startByte;
@@ -1249,6 +1287,7 @@ std::shared_ptr<Expr> IntegerParser::tryParseTrailingPattern(std::shared_ptr<Exp
             ++metrics_.backtrackingAttempts;
             byte_ = deferredStartByte;
             piece_ = deferredStartPiece;
+            bool candidateParsed = false;
             try {
                 std::vector<OperatorCapture> captures;
                 captures.reserve(pattern->captureNames.size());
@@ -1272,15 +1311,17 @@ std::shared_ptr<Expr> IntegerParser::tryParseTrailingPattern(std::shared_ptr<Exp
                 if (!deferred || byte_ > deferredByte) {
                     deferred = std::make_shared<OperatorExpression>(
                         pattern->operatorId, pattern->patternId, std::move(captures));
+                    candidateParsed = true;
+                    stampTrailing(deferred, byte_);
                     deferred->resolvedMethodId = resolveMixfixMethod(*deferred);
                     if (deferred->resolvedMethodId == 0 && mixfixModel_) {
                         deferred->resolvedMethodId = resolveModelMixfixMethod(deferred);
                     }
-                    stampTrailing(deferred, byte_);
                     deferredByte = byte_;
                     deferredPiece = piece_;
                 }
             } catch (const IntegerParserError&) {
+                if (candidateParsed) throw;
                 // A different deferred shape may consume this same ID range.
             }
         }
@@ -1323,11 +1364,11 @@ std::shared_ptr<Expr> IntegerParser::tryParseTrailingPattern(std::shared_ptr<Exp
     }
     auto expression = std::make_shared<OperatorExpression>(selected->operatorId, selected->patternId,
                                                             std::move(captures));
+    stampTrailing(expression, byte_);
     expression->resolvedMethodId = resolveMixfixMethod(*expression);
     if (expression->resolvedMethodId == 0 && mixfixModel_) {
         expression->resolvedMethodId = resolveModelMixfixMethod(expression);
     }
-    stampTrailing(expression, byte_);
     return expression;
 }
 
@@ -1428,7 +1469,7 @@ FelidaeIr IntegerParser::compileModelRoutedMixfixExpressionIr(
     FelidaeIr shell;
     shell.registerCount = kMaximumMixfixRegisters;
     const auto addConstant = [&](IrConstantKind kind, IrWord value,
-                                 std::vector<std::uint32_t> text = {}) {
+                                 std::string text = {}) {
         if (shell.constants.size() >= kMaximumMixfixReferences) {
             throw IntegerParserError("mixfix compiler context has too many constants");
         }
@@ -1457,7 +1498,7 @@ FelidaeIr IntegerParser::compileModelRoutedMixfixExpressionIr(
             if (text->containsEscape || text->sentencePieceIds.empty()) {
                 throw IntegerParserError("string literal cannot be lowered without its original SentencePiece IDs");
             }
-            addConstant(IrConstantKind::Text, 0, text->sentencePieceIds);
+            addConstant(IrConstantKind::Text, 0, text->value);
         } else if (const auto variable = std::dynamic_pointer_cast<VarExpr>(node)) {
             addSymbol(variable->nameId);
         } else if (const auto array = std::dynamic_pointer_cast<ArrayExpr>(node)) {
@@ -1514,10 +1555,27 @@ FelidaeIr IntegerParser::compileVerifiedMixfixSpanIr(MixfixStateModel& model,
     std::vector<SentencePieceId> ids;
     ids.reserve(pastLastPiece - firstPiece);
     for (std::size_t index = firstPiece; index < pastLastPiece; ++index) {
-        ids.push_back(entries[index].id);
+        if (entries[index].id < 0) {
+            throw IntegerParserError("SentencePiece produced a negative token ID");
+        }
+        ids.push_back(static_cast<SentencePieceId>(entries[index].id));
     }
     try {
-        return compileVerifiedMixfixIr(model, ids, context, std::move(irShell));
+        #ifndef NDEBUG
+        if (parserTraceEnabled()) {
+            std::clog << "[felidae.parser] action=compiler_ssm span_first_piece=" << firstPiece
+                      << " span_past_last_piece=" << pastLastPiece
+                      << " input_ids=" << ids.size() << '\n';
+        }
+        #endif
+        auto verified = compileVerifiedMixfixIr(model, ids, context, std::move(irShell));
+        #ifndef NDEBUG
+        if (parserTraceEnabled()) {
+            std::clog << "[felidae.parser] action=compiler_ssm verified_ir_words="
+                      << verified.words.size() << " registers=" << verified.registerCount << '\n';
+        }
+        #endif
+        return verified;
     } catch (const IrError& error) {
         throw IntegerParserError(std::string("mixfix compiler rejected span: ") + error.what());
     }
@@ -1593,7 +1651,7 @@ SymbolId IntegerParser::resolveModelMixfixMethod(
         }
         switch (opcode) {
         case IrOpcode::End: ++pc; break;
-        case IrOpcode::Call: case IrOpcode::SemanticEval: case IrOpcode::SsmProcess: case IrOpcode::MakeArray:
+        case IrOpcode::Call: case IrOpcode::SemanticEval: case IrOpcode::MakeArray:
             pc += 4 + ir.words[pc + 3]; break;
         case IrOpcode::CallNamed: case IrOpcode::MakeMap:
             pc += 4 + ir.words[pc + 3] * 2; break;
@@ -1601,7 +1659,10 @@ SymbolId IntegerParser::resolveModelMixfixMethod(
         case IrOpcode::LoadConst: case IrOpcode::LoadSymbol: case IrOpcode::StoreSymbol: case IrOpcode::Move:
         case IrOpcode::JumpIfFalse: case IrOpcode::CallNative: case IrOpcode::MakeFact: case IrOpcode::Return: pc += 3; break;
         case IrOpcode::ForEachFact: case IrOpcode::Add: case IrOpcode::Sub: case IrOpcode::Mul: case IrOpcode::Div:
-        case IrOpcode::Mod: case IrOpcode::GetField: case IrOpcode::SetField: case IrOpcode::Similarity: pc += 4; break;
+        case IrOpcode::Mod: case IrOpcode::GetField: case IrOpcode::SetField: case IrOpcode::Similarity:
+        case IrOpcode::HierarchyIsA: case IrOpcode::HierarchyCommonAncestors:
+        case IrOpcode::HierarchyLeastCommonAncestors: case IrOpcode::HierarchyMostGeneralAncestors:
+        case IrOpcode::TemporalRank: pc += 4; break;
         case IrOpcode::Membership: pc += 6; break;
         case IrOpcode::Compare: pc += 5; break;
         case IrOpcode::Count: throw IntegerParserError("mixfix model emitted an invalid opcode");
@@ -1614,7 +1675,8 @@ SymbolId IntegerParser::resolveModelMixfixMethod(
 }
 
 FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& expression,
-                                                 const std::unordered_set<SymbolId>& factTypes) {
+                                                 const std::unordered_set<SymbolId>& factTypes,
+                                                 const std::unordered_map<SymbolId, SymbolId>& factDesignations) {
     FelidaeIr ir;
     const auto addNumber = [&](double number) {
         ir.constants.push_back(encodeIrNumber(number));
@@ -1627,10 +1689,7 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
         return static_cast<IrWord>(ir.constants.size() - 1);
     };
     const auto addText = [&](const StringExpr& text) {
-        if (text.containsEscape || text.sentencePieceIds.empty()) {
-            throw IntegerParserError("string literal cannot be lowered without its original SentencePiece IDs");
-        }
-        ir.texts.push_back(text.sentencePieceIds);
+        ir.texts.push_back(text.value);
         ir.constants.push_back(static_cast<IrWord>(ir.texts.size() - 1));
         ir.constantKinds.push_back(IrConstantKind::Text);
         return static_cast<IrWord>(ir.constants.size() - 1);
@@ -1640,6 +1699,14 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
         ir.constantKinds.push_back(IrConstantKind::Nil);
         return static_cast<IrWord>(ir.constants.size() - 1);
     };
+    const auto semanticOperation = [](SymbolId name) -> std::optional<SemanticOperationId> {
+        if (name == symbolIdForName("semantic_identity")) return SemanticOperationId::Identity;
+        if (name == symbolIdForName("semantic_select_fact")) return SemanticOperationId::SelectFact;
+        if (name == symbolIdForName("semantic_derive_fact")) return SemanticOperationId::DeriveFact;
+        if (name == symbolIdForName("semantic_evaluate_degree")) return SemanticOperationId::EvaluateDegree;
+        return std::nullopt;
+    };
+    std::optional<RegisterId> pipelineResult;
     auto lower = [&](auto&& self, const std::shared_ptr<Expr>& value) -> RegisterId {
         const auto emittedAt = ir.words.size();
         const auto result = static_cast<RegisterId>(ir.registerCount++);
@@ -1656,18 +1723,38 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
             ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst), result,
                                              addNil()});
         } else if (const auto variable = std::dynamic_pointer_cast<VarExpr>(value)) {
+            if (variable->nameId == symbolIdForName("system.result")) {
+                if (!pipelineResult) {
+                    throw IntegerParserError("system.result is available only on the right side of 'then'");
+                }
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::Move), result,
+                                                 *pipelineResult});
+                return result;
+            }
             ir.symbols.push_back(variable->nameId);
             ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadSymbol), result,
                                              static_cast<IrWord>(ir.symbols.size() - 1)});
         } else if (const auto term = std::dynamic_pointer_cast<TermExpr>(value)) {
-            if (term->nameId == symbolIdForName("for_each_fact")) {
+            if (const auto operation = semanticOperation(term->nameId)) {
+                if (term->args.size() > 255) throw IntegerParserError("semantic operation has too many inputs");
+                std::vector<RegisterId> inputs;
+                inputs.reserve(term->args.size());
+                for (const auto& argument : term->args) inputs.push_back(self(self, argument.value));
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::SemanticEval), result,
+                                                 static_cast<IrWord>(*operation),
+                                                 static_cast<IrWord>(inputs.size())});
+                ir.words.insert(ir.words.end(), inputs.begin(), inputs.end());
+            } else if (term->nameId == symbolIdForName("for_each_fact")) {
                 if (term->args.size() != 2) throw IntegerParserError("for_each_fact requires a fact type and callback");
                 const auto type = std::dynamic_pointer_cast<VarExpr>(term->args[0].value);
                 const auto callback = std::dynamic_pointer_cast<VarExpr>(term->args[1].value);
-                if (!type || !callback || !factTypes.contains(type->nameId)) {
+                const auto designation = type ? factDesignations.find(type->nameId) : factDesignations.end();
+                const auto typeId = type && factTypes.contains(type->nameId) ? type->nameId :
+                    designation != factDesignations.end() ? designation->second : 0;
+                if (!type || !callback || typeId == 0) {
                     throw IntegerParserError("for_each_fact requires a declared fact type and deterministic callback");
                 }
-                ir.symbols.push_back(type->nameId);
+                ir.symbols.push_back(typeId);
                 const auto typeSymbol = static_cast<IrWord>(ir.symbols.size() - 1);
                 ir.symbols.push_back(callback->nameId);
                 ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::ForEachFact), result, typeSymbol,
@@ -1677,6 +1764,45 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
                 const auto left = self(self, term->args[0].value);
                 const auto right = self(self, term->args[1].value);
                 ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::Similarity), result, left, right});
+            } else if (term->nameId == symbolIdForName("isA") ||
+                       term->nameId == symbolIdForName("commonAncestors") ||
+                       term->nameId == symbolIdForName("lowestCommonAncestor") ||
+                       term->nameId == symbolIdForName("highestCommonAncestor")) {
+                if (term->args.size() != 2) {
+                    throw IntegerParserError(term->name + " requires exactly two hierarchy arguments");
+                }
+                const auto left = self(self, term->args[0].value);
+                const auto right = self(self, term->args[1].value);
+                const auto opcode = term->nameId == symbolIdForName("isA")
+                    ? IrOpcode::HierarchyIsA
+                    : term->nameId == symbolIdForName("commonAncestors")
+                    ? IrOpcode::HierarchyCommonAncestors
+                    : term->nameId == symbolIdForName("lowestCommonAncestor")
+                        ? IrOpcode::HierarchyLeastCommonAncestors
+                        : IrOpcode::HierarchyMostGeneralAncestors;
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(opcode), result, left, right});
+            } else if (term->nameId == symbolIdForName("temporalRank")) {
+                if (term->args.size() != 2) {
+                    throw IntegerParserError("temporalRank requires effective-at and priority field symbols");
+                }
+                const auto fieldSymbol = [&](const Arg& argument) {
+                    SymbolId fieldId = 0;
+                    if (const auto field = std::dynamic_pointer_cast<VarExpr>(argument.value)) {
+                        fieldId = field->nameId;
+                    } else if (const auto access = std::dynamic_pointer_cast<AccessExpr>(argument.value)) {
+                        const auto scope = std::dynamic_pointer_cast<VarExpr>(access->target);
+                        if (scope) fieldId = symbolIdForName(scope->name + "." + access->key);
+                    }
+                    if (fieldId == 0) {
+                        throw IntegerParserError("temporalRank fields must be symbol names");
+                    }
+                    ir.symbols.push_back(fieldId);
+                    return static_cast<IrWord>(ir.symbols.size() - 1);
+                };
+                const auto effectiveAt = fieldSymbol(term->args[0]);
+                const auto priority = fieldSymbol(term->args[1]);
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::TemporalRank), result,
+                                                 effectiveAt, priority});
             } else if (term->nameId == symbolIdForName("membership")) {
                 if (term->args.size() != 2) throw IntegerParserError("membership requires a value and named profile");
                 const auto valueRegister = self(self, term->args[0].value);
@@ -1712,7 +1838,7 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
             // even without a separately declared fact schema. The AST carries
             // this grammar decision; lowering does not infer it from text.
             const bool factValue = factTypes.contains(term->nameId) ||
-                (term->isCapitalized && hasNamedArguments);
+                (term->isCapitalized && term->name.find('.') == std::string::npos && hasNamedArguments);
             if (factValue) {
                 if (!hasNamedArguments) {
                     throw IntegerParserError("fact construction requires named fields");
@@ -1797,6 +1923,16 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
                 ir.words.insert(ir.words.end(), arguments.begin(), arguments.end());
             } else if (core == CoreOperator::UnaryPlus) {
                 return self(self, operation->capture(0));
+            } else if (core == CoreOperator::Then) {
+                if (operation->captureCount() != 2) {
+                    throw IntegerParserError("then pipeline requires a left and right expression");
+                }
+                const auto left = self(self, operation->capture(0));
+                const auto previousPipelineResult = pipelineResult;
+                pipelineResult = left;
+                const auto right = self(self, operation->capture(1));
+                pipelineResult = previousPipelineResult;
+                ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::Move), result, right});
             } else if (core == CoreOperator::UnaryMinus) {
                 const auto source = self(self, operation->capture(0));
                 const auto zero = static_cast<RegisterId>(ir.registerCount++);
@@ -1818,35 +1954,40 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
                 ir.words[branch + 7] = endTarget;
             } else if (core == CoreOperator::LogicalAnd || core == CoreOperator::LogicalOr) {
                 const auto left = self(self, operation->capture(0));
-                const auto right = self(self, operation->capture(1));
                 const auto trueConstant = addBoolean(true);
                 const auto falseConstant = addBoolean(false);
                 if (core == CoreOperator::LogicalAnd) {
                     const auto leftBranch = ir.words.size();
-                    ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::JumpIfFalse), left, 0,
-                                                     static_cast<IrWord>(IrOpcode::JumpIfFalse), right, 0,
+                    ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::JumpIfFalse), left, 0});
+                    const auto right = self(self, operation->capture(1));
+                    const auto rightBranch = ir.words.size();
+                    ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::JumpIfFalse), right, 0,
                                                      static_cast<IrWord>(IrOpcode::LoadConst), result, trueConstant,
                                                      static_cast<IrWord>(IrOpcode::Jump), 0});
                     const auto falseTarget = ir.words.size();
                     ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst), result, falseConstant});
                     const auto endTarget = ir.words.size();
                     ir.words[leftBranch + 2] = falseTarget;
-                    ir.words[leftBranch + 5] = falseTarget;
-                    ir.words[leftBranch + 10] = endTarget;
+                    ir.words[rightBranch + 2] = falseTarget;
+                    ir.words[rightBranch + 7] = endTarget;
                 } else {
                     const auto leftBranch = ir.words.size();
                     ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::JumpIfFalse), left, 0,
                                                      static_cast<IrWord>(IrOpcode::LoadConst), result, trueConstant,
                                                      static_cast<IrWord>(IrOpcode::Jump), 0});
+                    const auto rightTarget = ir.words.size();
+                    const auto right = self(self, operation->capture(1));
                     const auto rightBranch = ir.words.size();
                     ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::JumpIfFalse), right, 0,
-                                                     static_cast<IrWord>(IrOpcode::Jump), leftBranch + 3});
+                                                     static_cast<IrWord>(IrOpcode::LoadConst), result, trueConstant,
+                                                     static_cast<IrWord>(IrOpcode::Jump), 0});
                     const auto falseTarget = ir.words.size();
                     ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst), result, falseConstant});
                     const auto endTarget = ir.words.size();
-                    ir.words[leftBranch + 2] = rightBranch;
+                    ir.words[leftBranch + 2] = rightTarget;
                     ir.words[leftBranch + 7] = endTarget;
                     ir.words[rightBranch + 2] = falseTarget;
+                    ir.words[rightBranch + 7] = endTarget;
                 }
             } else {
                 const auto left = self(self, operation->capture(0));
@@ -1882,13 +2023,21 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
     ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::Return), result, 0,
                                      static_cast<IrWord>(IrOpcode::End)});
     IrVerifier::verify(ir);
+#ifndef NDEBUG
+    if (parserTraceEnabled()) {
+        std::clog << "[felidae.parser] action=lower_expression verified_ir_words="
+                  << ir.words.size() << " registers=" << ir.registerCount
+                  << " constants=" << ir.constants.size() << " symbols=" << ir.symbols.size() << '\n';
+    }
+#endif
     return ir;
 }
 
 FelidaeIr IntegerParser::compileAstGlobalBindingIr(const GlobalBindingStmt& binding,
-                                                    const std::unordered_set<SymbolId>& factTypes) {
+                                                    const std::unordered_set<SymbolId>& factTypes,
+                                                    const std::unordered_map<SymbolId, SymbolId>& factDesignations) {
     if (!binding.expr) throw IntegerParserError("Global binding has no value expression");
-    auto ir = compileAstExpressionIr(binding.expr, factTypes);
+    auto ir = compileAstExpressionIr(binding.expr, factTypes, factDesignations);
     if (ir.words.size() < 4 ||
         ir.words[ir.words.size() - 4] != static_cast<IrWord>(IrOpcode::Return) ||
         ir.words.back() != static_cast<IrWord>(IrOpcode::End)) {
@@ -1912,7 +2061,8 @@ FelidaeIr IntegerParser::compileAstGlobalBindingIr(const GlobalBindingStmt& bind
 }
 
 FelidaeIr IntegerParser::compileAstEntryMethodIr(const ClauseStmt& method,
-                                                  const std::unordered_set<SymbolId>& factTypes) {
+                                                  const std::unordered_set<SymbolId>& factTypes,
+                                                  const std::unordered_map<SymbolId, SymbolId>& factDesignations) {
     if (method.body.size() != 1 || !method.fallbackBranches.empty()) {
         throw IntegerParserError("Method has not reached direct entry IR lowering yet");
     }
@@ -1921,7 +2071,7 @@ FelidaeIr IntegerParser::compileAstEntryMethodIr(const ClauseStmt& method,
     if (returned->fields.empty()) {
         auto nil = std::make_shared<NilExpr>();
         nil->sourceSpan = returned->sourceSpan;
-        return compileAstExpressionIr(nil, factTypes);
+        return compileAstExpressionIr(nil, factTypes, factDesignations);
     }
     bool named = false;
     for (const auto& field : returned->fields) named = named || !field.name.empty();
@@ -1929,7 +2079,7 @@ FelidaeIr IntegerParser::compileAstEntryMethodIr(const ClauseStmt& method,
         if (returned->fields.size() != 1) {
             throw IntegerParserError("Direct entry IR lowering requires one positional return value");
         }
-        return compileAstExpressionIr(returned->fields.front().value, factTypes);
+        return compileAstExpressionIr(returned->fields.front().value, factTypes, factDesignations);
     }
     std::vector<MapEntry> entries;
     entries.reserve(returned->fields.size());
@@ -1941,7 +2091,7 @@ FelidaeIr IntegerParser::compileAstEntryMethodIr(const ClauseStmt& method,
     }
     auto map = std::make_shared<MapExpr>(std::move(entries));
     map->sourceSpan = returned->sourceSpan;
-    return compileAstExpressionIr(map, factTypes);
+    return compileAstExpressionIr(map, factTypes, factDesignations);
 }
 
 SourceSpan IntegerParser::span(std::size_t begin, std::size_t end) const {

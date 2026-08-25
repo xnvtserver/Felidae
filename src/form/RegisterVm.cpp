@@ -1,23 +1,31 @@
 #include "RegisterVm.h"
 
+#ifdef FELIDAE_IR_VERIFIER_ONLY
 #include "IrModule.h"
+#endif
+#include "FelidaeIsa.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <deque>
+#include <iomanip>
+#include <iostream>
 #include <optional>
 #include <sstream>
 #include <limits>
+#include <string_view>
 #include <unordered_set>
 
 namespace Felidae {
 
+#ifndef FELIDAE_IR_VERIFIER_ONLY
 RuntimeValueKind runtimeValueKind(const VmValue& value) noexcept {
     if (std::holds_alternative<VmNil>(value)) return RuntimeValueKind::Nil;
-    if (std::holds_alternative<bool>(value)) return RuntimeValueKind::Boolean;
     if (std::holds_alternative<double>(value)) return RuntimeValueKind::Number;
     if (std::holds_alternative<VmDegree>(value)) return RuntimeValueKind::Degree;
     if (std::holds_alternative<VmText>(value)) return RuntimeValueKind::Text;
+    if (std::holds_alternative<VmSymbol>(value)) return RuntimeValueKind::Symbol;
     if (std::holds_alternative<VmArrayPtr>(value)) return RuntimeValueKind::Array;
     if (std::holds_alternative<VmMapPtr>(value)) return RuntimeValueKind::Map;
     return RuntimeValueKind::Fact;
@@ -25,8 +33,20 @@ RuntimeValueKind runtimeValueKind(const VmValue& value) noexcept {
 VmDegree::VmDegree(double value) : value(value) {
     if (!std::isfinite(value) || value < 0.0 || value > 1.0) throw IrError("Degree must be finite and within [0,1]");
 }
+#endif
 namespace {
 
+#ifndef NDEBUG
+bool vmTraceEnabled() {
+    static const bool enabled = [] {
+        const auto* value = std::getenv("FELIDAE_TRACE");
+        return value != nullptr && *value != '\0' && std::string_view(value) != "0";
+    }();
+    return enabled;
+}
+#endif
+
+#ifdef FELIDAE_IR_VERIFIER_ONLY
 constexpr std::size_t kMaximumIrWords = 1'000'000;
 constexpr std::size_t kMaximumRegisters = 65'536;
 constexpr std::size_t kMaximumIrTableEntries = 1'000'000;
@@ -70,14 +90,19 @@ std::size_t widthFor(IrOpcode op) {
     case IrOpcode::JumpIfFalse: case IrOpcode::CallNative:
     case IrOpcode::MakeFact: case IrOpcode::Return: return 3;
     case IrOpcode::ForEachFact: return 4;
-    case IrOpcode::Call: case IrOpcode::CallNamed: case IrOpcode::SemanticEval: case IrOpcode::SsmProcess:
+    case IrOpcode::Call: case IrOpcode::CallNamed: case IrOpcode::SemanticEval:
         return 0; // validated below from explicit argument count
     case IrOpcode::MakeArray: return 0; // destination, explicit item count, registers
     case IrOpcode::MakeMap: return 0; // destination, explicit entry count, symbol/register pairs
     case IrOpcode::Add: case IrOpcode::Sub: case IrOpcode::Mul: case IrOpcode::Div: case IrOpcode::Mod:
-    case IrOpcode::GetField: case IrOpcode::SetField: case IrOpcode::Similarity: return 4;
+    case IrOpcode::GetField: case IrOpcode::SetField: case IrOpcode::Similarity:
+    case IrOpcode::HierarchyIsA:
+    case IrOpcode::HierarchyCommonAncestors:
+    case IrOpcode::HierarchyLeastCommonAncestors:
+    case IrOpcode::HierarchyMostGeneralAncestors: case IrOpcode::TemporalRank: return 4;
     case IrOpcode::Membership: return 6;
     case IrOpcode::Compare: return 5;
+    case IrOpcode::Count: break;
     }
     throw IrError("IR contains an invalid opcode");
 }
@@ -85,14 +110,14 @@ std::size_t widthFor(IrOpcode op) {
 void requireFlowRead(const std::vector<bool>& initialized, IrWord registerId) {
     if (!initialized[registerId]) throw IrError("IR control-flow path reads an uninitialized register");
 }
-
+#else
 bool vmValuesEqual(const VmValue& left, const VmValue& right) {
     if (left.index() != right.index()) return false;
     if (std::holds_alternative<VmNil>(left)) return true;
-    if (const auto* value = std::get_if<bool>(&left)) return *value == std::get<bool>(right);
     if (const auto* value = std::get_if<double>(&left)) return *value == std::get<double>(right);
     if (const auto* value = std::get_if<VmDegree>(&left)) return *value == std::get<VmDegree>(right);
     if (const auto* value = std::get_if<VmText>(&left)) return *value == std::get<VmText>(right);
+    if (const auto* value = std::get_if<VmSymbol>(&left)) return *value == std::get<VmSymbol>(right);
     if (const auto* leftArray = std::get_if<VmArrayPtr>(&left)) {
         const auto& rightArray = std::get<VmArrayPtr>(right);
         if (!*leftArray || !rightArray) return *leftArray == rightArray;
@@ -128,7 +153,6 @@ bool vmValuesEqual(const VmValue& left, const VmValue& right) {
 }
 
 double similarityDegree(const VmValue& left, const VmValue& right) {
-    const auto clamp = [](double value) { return std::clamp(value, 0.0, 1.0); };
     if (const auto a = std::get_if<double>(&left)) {
         if (const auto b = std::get_if<double>(&right)) return 1.0 / (1.0 + std::abs(*a - *b));
     }
@@ -136,13 +160,10 @@ double similarityDegree(const VmValue& left, const VmValue& right) {
         if (const auto b = std::get_if<VmDegree>(&right)) return 1.0 - std::abs(a->value - b->value);
     }
     if (const auto a = std::get_if<VmText>(&left)) {
-        if (const auto b = std::get_if<VmText>(&right)) {
-            const auto limit = std::max(a->pieces.size(), b->pieces.size());
-            if (limit == 0) return 1.0;
-            std::size_t same = 0;
-            for (const auto piece : a->pieces) if (std::find(b->pieces.begin(), b->pieces.end(), piece) != b->pieces.end()) ++same;
-            return static_cast<double>(same) / static_cast<double>(limit);
-        }
+        if (const auto b = std::get_if<VmText>(&right)) return a->value == b->value ? 1.0 : 0.0;
+    }
+    if (const auto a = std::get_if<VmSymbol>(&left)) {
+        if (const auto b = std::get_if<VmSymbol>(&right)) return a->value == b->value ? 1.0 : 0.0;
     }
     if (const auto a = std::get_if<VmArrayPtr>(&left)) {
         if (const auto b = std::get_if<VmArrayPtr>(&right)) {
@@ -178,6 +199,7 @@ double similarityDegree(const VmValue& left, const VmValue& right) {
 bool validVmValue(const VmValue& value, std::size_t depth = 0) {
     constexpr std::size_t kMaximumValueDepth = 256;
     if (depth > kMaximumValueDepth) return false;
+    if (const auto number = std::get_if<double>(&value)) return std::isfinite(*number);
     if (const auto degree = std::get_if<VmDegree>(&value)) return std::isfinite(degree->value) && degree->value >= 0.0 && degree->value <= 1.0;
     if (const auto* array = std::get_if<VmArrayPtr>(&value)) {
         if (!*array) return false;
@@ -197,6 +219,44 @@ bool validVmValue(const VmValue& value, std::size_t depth = 0) {
     return true;
 }
 
+bool validSemanticInputs(std::uint16_t operation,
+                         std::span<const VmValue> inputs) {
+    if (!semanticOperationAcceptsArity(operation, inputs.size()) ||
+        !validVmValue(inputs.front())) return false;
+    switch (static_cast<SemanticOperationId>(operation)) {
+    case SemanticOperationId::Identity:
+        return true;
+    case SemanticOperationId::SelectFact:
+    case SemanticOperationId::DeriveFact: {
+        const auto fact = std::get_if<VmFactPtr>(&inputs.front());
+        return fact && static_cast<bool>(*fact);
+    }
+    case SemanticOperationId::EvaluateDegree:
+        return std::holds_alternative<double>(inputs.front()) ||
+               std::holds_alternative<VmDegree>(inputs.front());
+    }
+    return false;
+}
+
+bool validSemanticOutput(std::uint16_t operation,
+                         std::span<const VmValue> inputs,
+                         const VmValue& output) {
+    if (!validVmValue(output)) return false;
+    switch (static_cast<SemanticOperationId>(operation)) {
+    case SemanticOperationId::Identity:
+        return runtimeValueKind(output) == runtimeValueKind(inputs.front());
+    case SemanticOperationId::SelectFact:
+    case SemanticOperationId::DeriveFact:
+        return std::holds_alternative<VmNil>(output) ||
+               std::holds_alternative<VmFactPtr>(output);
+    case SemanticOperationId::EvaluateDegree:
+        return std::holds_alternative<VmDegree>(output);
+    }
+    return false;
+}
+#endif
+
+#ifdef FELIDAE_IR_VERIFIER_ONLY
 void verifyControlFlowInitialization(const FelidaeIr& ir,
                                      const std::unordered_set<std::size_t>& boundaries) {
     std::vector<std::optional<std::vector<bool>>> incoming(ir.words.size());
@@ -229,23 +289,28 @@ void verifyControlFlowInitialization(const FelidaeIr& ir,
         pending.pop_front();
         auto state = *incoming[pc];
         const auto op = static_cast<IrOpcode>(ir.words[pc]);
-        const auto next = pc + (op == IrOpcode::Call || op == IrOpcode::SemanticEval || op == IrOpcode::SsmProcess || op == IrOpcode::MakeArray
+        const auto next = pc + (op == IrOpcode::Call || op == IrOpcode::SemanticEval || op == IrOpcode::MakeArray
             ? dynamicWidth(ir, pc, 1)
             : op == IrOpcode::CallNamed || op == IrOpcode::MakeMap ? dynamicWidth(ir, pc, 2) : widthFor(op));
         auto write = [&](IrWord target) { state[target] = true; };
         switch (op) {
-        case IrOpcode::LoadConst: case IrOpcode::LoadSymbol: case IrOpcode::ForEachFact: write(ir.words[pc + 1]); break;
+        case IrOpcode::LoadConst: case IrOpcode::LoadSymbol: case IrOpcode::ForEachFact:
+        case IrOpcode::TemporalRank: write(ir.words[pc + 1]); break;
         case IrOpcode::StoreSymbol: requireFlowRead(state, ir.words[pc + 2]); break;
         case IrOpcode::Move: requireFlowRead(state, ir.words[pc + 2]); write(ir.words[pc + 1]); break;
         case IrOpcode::Add: case IrOpcode::Sub: case IrOpcode::Mul: case IrOpcode::Div: case IrOpcode::Mod:
         case IrOpcode::Similarity: case IrOpcode::Membership:
+        case IrOpcode::HierarchyIsA:
+        case IrOpcode::HierarchyCommonAncestors:
+        case IrOpcode::HierarchyLeastCommonAncestors:
+        case IrOpcode::HierarchyMostGeneralAncestors:
         case IrOpcode::Compare:
             requireFlowRead(state, ir.words[pc + 2]); requireFlowRead(state, ir.words[pc + 3]); write(ir.words[pc + 1]); break;
         case IrOpcode::JumpIfFalse: requireFlowRead(state, ir.words[pc + 1]); break;
         case IrOpcode::Call:
             for (std::size_t i = 0; i < ir.words[pc + 3]; ++i) requireFlowRead(state, ir.words[pc + 4 + i]);
             write(ir.words[pc + 1]); break;
-        case IrOpcode::SemanticEval: case IrOpcode::SsmProcess:
+        case IrOpcode::SemanticEval:
             for (std::size_t i = 0; i < ir.words[pc + 3]; ++i) requireFlowRead(state, ir.words[pc + 4 + i]);
             write(ir.words[pc + 1]); break;
         case IrOpcode::CallNamed:
@@ -262,6 +327,7 @@ void verifyControlFlowInitialization(const FelidaeIr& ir,
         case IrOpcode::Return: requireFlowRead(state, ir.words[pc + 1]); break;
         case IrOpcode::CallNative: case IrOpcode::MakeFact: write(ir.words[pc + 1]); break;
         case IrOpcode::End: case IrOpcode::Jump: break;
+        case IrOpcode::Count: throw IrError("IR control-flow scan found an invalid opcode");
         }
         if (op == IrOpcode::End || op == IrOpcode::Return) continue;
         if (op == IrOpcode::Jump) {
@@ -274,13 +340,14 @@ void verifyControlFlowInitialization(const FelidaeIr& ir,
         }
     }
 }
+#endif
 
 } // namespace
 
+#ifndef FELIDAE_IR_VERIFIER_ONLY
 std::string vmValueToDisplayString(const VmValue& value, const VmDisplayContext& context) {
     const auto render = [&](const auto& self, const VmValue& item) -> std::string {
         if (std::holds_alternative<VmNil>(item)) return "nil";
-        if (const auto boolean = std::get_if<bool>(&item)) return *boolean ? "true" : "false";
         if (const auto number = std::get_if<double>(&item)) {
             std::ostringstream out;
             out.precision(15);
@@ -293,9 +360,10 @@ std::string vmValueToDisplayString(const VmValue& value, const VmDisplayContext&
             out << degree->value;
             return out.str();
         }
-        if (const auto text = std::get_if<VmText>(&item)) {
-            if (!context.textDecoder) throw IrError("VM text display requires an injected SentencePiece decoder");
-            return context.textDecoder(text->pieces);
+        if (const auto text = std::get_if<VmText>(&item)) return text->value;
+        if (const auto symbol = std::get_if<VmSymbol>(&item)) {
+            auto name=context.symbolDecoder?context.symbolDecoder(symbol->value):std::string{};
+            return name.empty()?"#"+std::to_string(symbol->value):name;
         }
         if (const auto array = std::get_if<VmArrayPtr>(&item)) {
             if (!*array) throw IrError("VM display received an invalid array value");
@@ -479,7 +547,7 @@ std::vector<VmRankedFact> VmFactStore::rankByTimeAndPriority(IrSymbolRef effecti
     };
     std::vector<VmRankedFact> ranked;
     ranked.reserve(facts_.size());
-    for (const auto& fact : facts_) ranked.push_back({fact, numberField(fact, effectiveAtField, "fx.observed_at"), numberField(fact, priorityField, "priority")});
+    for (const auto& fact : facts_) ranked.push_back({fact, numberField(fact, effectiveAtField, "effective-at"), numberField(fact, priorityField, "priority")});
     std::sort(ranked.begin(), ranked.end(), [](const auto& left, const auto& right) {
         if (left.effectiveAt != right.effectiveAt) return left.effectiveAt > right.effectiveAt;
         if (left.priority != right.priority) return left.priority > right.priority;
@@ -567,49 +635,15 @@ double VmFactStore::gaussianMembership(double value, const VmGaussianProfile& pr
     return std::exp(-0.5 * z * z);
 }
 
-namespace {
-std::uint64_t moduleFingerprint(const IrModule& module) {
-    std::uint64_t hash = 14695981039346656037ull;
-    const auto add = [&](std::uint64_t word) { hash ^= word; hash *= 1099511628211ull; };
-    add(module.entryProcedure);
-    for (const auto word : module.ir.words) add(word);
-    for (std::size_t index = 0; index < module.ir.constants.size(); ++index) {
-        add(module.ir.constants[index]);
-        add(module.ir.constantKinds.empty() ? 0 : static_cast<std::uint64_t>(module.ir.constantKinds[index]) + 1);
-    }
-    for (const auto& text : module.ir.texts) for (const auto piece : text) add(piece);
-    for (const auto symbol : module.ir.symbols) add(symbol);
-    std::vector<IrSymbolRef> symbols;
-    symbols.reserve(module.procedures.size());
-    for (const auto& [symbol, _] : module.procedures) symbols.push_back(symbol);
-    std::sort(symbols.begin(), symbols.end());
-    for (const auto symbol : symbols) {
-        add(symbol);
-        const auto& procedure = module.procedures.at(symbol);
-        for (const auto word : procedure.ir.words) add(word);
-        for (const auto word : procedure.ir.constants) add(word);
-        for (const auto symbolRef : procedure.ir.symbols) add(symbolRef);
-    }
-    for (const auto& type : module.factTypes) {
-        add(type.symbol);
-        for (const auto parent : type.parents) add(parent);
-    }
-    return hash == 0 ? 1 : hash;
-}
-}
-
-FelidaeKnowledgeRuntime::FelidaeKnowledgeRuntime(std::unordered_map<IrSymbolRef, IrProcedure> procedures,
-                                 RuntimeStateModel* semanticModel,
+FelidaeKnowledgeRuntime::FelidaeKnowledgeRuntime(RuntimeStateModel* semanticModel,
                                  std::size_t maximumSemanticSteps,
                                  std::size_t maximumCallDepth,
                                  std::shared_ptr<VmFactStore> factStore)
-    : semanticModel_(semanticModel),
-      factStore_(factStore ? std::move(factStore) : std::make_shared<VmFactStore>()),
+    : factStore_(factStore ? std::move(factStore) : std::make_shared<VmFactStore>()),
+      semanticModel_(semanticModel),
       maximumSemanticSteps_(maximumSemanticSteps), maximumCallDepth_(maximumCallDepth) {
     if (maximumSemanticSteps_ == 0) throw IrError("direct VM semantic step limit must be positive");
     if (maximumCallDepth_ == 0) throw IrError("direct VM call depth limit must be positive");
-    for (const auto& [_, procedure] : procedures) IrVerifier::verify(procedure.ir);
-    if (!procedures.empty()) modules_.emplace(0, VmModuleState{{}, std::move(procedures)});
 }
 
 void FelidaeKnowledgeRuntime::retainFact(const VmFactPtr& fact) {
@@ -629,14 +663,44 @@ std::vector<VmFactPtr> FelidaeKnowledgeRuntime::snapshotFacts(IrSymbolRef type) 
     return factStore_->snapshotAssignableTo(type);
 }
 
-void FelidaeKnowledgeRuntime::installModule(const IrModule& module) {
-    // RegisterVm::executeMain verifies the complete module before calling this
-    // hook. Keeping registration independent of BinaryIr.cpp lets the Form
-    // VM remain linkable for direct verified-IR tests and embedded hosts.
-    const auto moduleKey = moduleFingerprint(module);
-    if (!modules_.contains(moduleKey)) modules_.emplace(moduleKey, VmModuleState{{}, module.procedures});
+std::vector<IrSymbolRef> FelidaeKnowledgeRuntime::hierarchyProof(IrSymbolRef child,IrSymbolRef ancestor){return factStore_->hierarchyProof(child,ancestor);}
+std::vector<IrSymbolRef> FelidaeKnowledgeRuntime::commonAncestors(IrSymbolRef left,IrSymbolRef right){return factStore_->commonAncestors(left,right);}
+std::vector<IrSymbolRef> FelidaeKnowledgeRuntime::leastCommonAncestors(IrSymbolRef left,IrSymbolRef right){return factStore_->leastCommonAncestors(left,right);}
+std::vector<IrSymbolRef> FelidaeKnowledgeRuntime::mostGeneralCommonAncestors(IrSymbolRef left,IrSymbolRef right){return factStore_->mostGeneralCommonAncestors(left,right);}
+std::vector<VmRankedFact> FelidaeKnowledgeRuntime::rankFacts(IrSymbolRef effectiveAtField,IrSymbolRef priorityField){return factStore_->rankByTimeAndPriority(effectiveAtField,priorityField);}
+
+void FelidaeKnowledgeRuntime::installIsaModule(const IsaModule& module) {
+    std::uint64_t hash = 14695981039346656037ull;
+    const auto add = [&](std::uint64_t word) { hash ^= word; hash *= 1099511628211ull; };
+    add(module.isaVersion); add(module.entryProcedure);
+    for (const auto word : module.initializer.code.words) add(word);
+    for (const auto& procedure : module.procedures) for (const auto word : procedure.program.code.words) add(word);
+    for (const auto symbol : module.procedureSymbols) add(symbol);
+    const auto moduleKey = hash == 0 ? 1 : hash;
+    if (!modules_.contains(moduleKey)) modules_.emplace(moduleKey, VmModuleState{});
     activeModule_ = moduleKey;
     recordTrace(VmTraceKind::ModuleInstalled, moduleKey);
+}
+
+void FelidaeKnowledgeRuntime::enterProcedure(IrSymbolRef procedure,
+                                             std::span<const IrSymbolRef> parameters,
+                                             std::span<const VmValue> arguments) {
+    if (parameters.size() != arguments.size()) throw IrError("ISA procedure received the wrong number of arguments");
+    if (procedureDepth_ >= maximumCallDepth_) throw IrError("ISA procedure call depth exceeds its limit");
+    ++procedureDepth_;
+    recordTrace(VmTraceKind::ProcedureCall, procedure);
+    VmCallFrame frame; frame.procedure = procedure;
+    for (std::size_t index=0;index<parameters.size();++index) {
+        if (!frame.locals.emplace(parameters[index],arguments[index]).second) {
+            --procedureDepth_; throw IrError("ISA procedure parameter metadata is duplicated");
+        }
+    }
+    callFrames_.push_back(std::move(frame));
+}
+
+void FelidaeKnowledgeRuntime::leaveProcedure() noexcept {
+    if (!callFrames_.empty()) callFrames_.pop_back();
+    if (procedureDepth_ != 0) --procedureDepth_;
 }
 
 void FelidaeKnowledgeRuntime::recordTrace(VmTraceKind kind, IrSymbolRef symbol, IrFactRef fact) {
@@ -693,7 +757,7 @@ void FelidaeKnowledgeRuntime::endExecution() noexcept {
     }
 }
 
-RuntimeContext FelidaeKnowledgeRuntime::makeRuntimeContext(const FelidaeIr&, const VmValue&) const {
+RuntimeContext FelidaeKnowledgeRuntime::makeIsaRuntimeContext(const VmValue&) const {
     RuntimeContext context;
     context.maximumSemanticSteps = maximumSemanticSteps_;
     context.executionState = executionState_;
@@ -705,71 +769,7 @@ RuntimeContext FelidaeKnowledgeRuntime::makeRuntimeContext(const FelidaeIr&, con
 void FelidaeKnowledgeRuntime::refreshRuntimeContext(RuntimeContext& context) const {
     context.knowledge = factStore_->knowledgeSnapshot();
 }
-
-VmValue FelidaeKnowledgeRuntime::callSymbol(IrSymbolRef symbol, std::span<const VmValue> arguments) {
-    const auto& procedures = modules_.at(activeModule_).procedures;
-    const auto procedure = procedures.find(symbol);
-    if (procedure == procedures.end()) throw IrError("direct VM runtime calls an unregistered procedure");
-    if (arguments.size() != procedure->second.positionalParameters.size()) {
-        throw IrError("direct VM procedure received the wrong number of arguments");
-    }
-    if (procedureDepth_ >= maximumCallDepth_) throw IrError("direct VM procedure call depth exceeds its limit");
-    ++procedureDepth_;
-    recordTrace(VmTraceKind::ProcedureCall, symbol);
-    VmCallFrame frame;
-    frame.procedure = symbol;
-    for (std::size_t index = 0; index < arguments.size(); ++index) {
-        frame.locals.emplace(procedure->second.positionalParameters[index], arguments[index]);
-    }
-    callFrames_.push_back(std::move(frame));
-    try {
-        RegisterVm nestedVm;
-        auto result = nestedVm.execute(procedure->second.ir, *this, VmNil{});
-        callFrames_.pop_back();
-        --procedureDepth_;
-        return result;
-    } catch (...) {
-        callFrames_.pop_back();
-        --procedureDepth_;
-        throw;
-    }
-}
-
-VmValue FelidaeKnowledgeRuntime::callSymbolNamed(IrSymbolRef symbol,
-                                         std::span<const VmCallArgument> arguments) {
-    const auto& procedures = modules_.at(activeModule_).procedures;
-    const auto procedure = procedures.find(symbol);
-    if (procedure == procedures.end()) throw IrError("direct VM runtime calls an unregistered procedure");
-    const auto& positionalParameters = procedure->second.positionalParameters;
-    const auto& namedParameters = procedure->second.namedParameters;
-    if (positionalParameters.size() != namedParameters.size()) {
-        throw IrError("direct VM procedure has inconsistent parameter metadata");
-    }
-    std::vector<std::optional<VmValue>> mapped(positionalParameters.size());
-    std::size_t nextPositional = 0;
-    for (const auto& argument : arguments) {
-        std::size_t index = 0;
-        if (argument.name) {
-            const auto found = std::find(namedParameters.begin(), namedParameters.end(), *argument.name);
-            if (found == namedParameters.end()) throw IrError("direct VM call has an unknown named argument");
-            index = static_cast<std::size_t>(found - namedParameters.begin());
-        } else {
-            while (nextPositional < mapped.size() && mapped[nextPositional]) ++nextPositional;
-            if (nextPositional >= mapped.size()) throw IrError("direct VM call has too many positional arguments");
-            index = nextPositional++;
-        }
-        if (mapped[index]) throw IrError("direct VM call assigns a parameter more than once");
-        mapped[index] = argument.value;
-    }
-    std::vector<VmValue> ordered;
-    ordered.reserve(mapped.size());
-    for (const auto& value : mapped) {
-        if (!value) throw IrError("direct VM call is missing a required parameter");
-        ordered.push_back(*value);
-    }
-    return callSymbol(symbol, ordered);
-}
-
+#else
 void IrVerifier::verify(const FelidaeIr& ir) {
     if (ir.words.empty()) throw IrError("IR is empty");
     if (ir.words.size() > kMaximumIrWords) throw IrError("IR exceeds its word limit");
@@ -779,10 +779,10 @@ void IrVerifier::verify(const FelidaeIr& ir) {
         ir.sourceMap.size() > kMaximumIrTableEntries) {
         throw IrError("IR side table exceeds its entry limit");
     }
-    std::size_t textWords = 0;
+    std::size_t textBytes = 0;
     for (const auto& text : ir.texts) {
-        if (text.size() > kMaximumTextBytes / sizeof(std::uint32_t) - textWords) throw IrError("IR text table exceeds its word limit");
-        textWords += text.size();
+        if (text.size() > kMaximumTextBytes - textBytes) throw IrError("IR text table exceeds its byte limit");
+        textBytes += text.size();
     }
     if (!ir.constantKinds.empty() && ir.constantKinds.size() != ir.constants.size()) {
         throw IrError("IR constant kinds do not match its constant table");
@@ -792,7 +792,7 @@ void IrVerifier::verify(const FelidaeIr& ir) {
     for (std::size_t scan = 0; scan < ir.words.size();) {
         boundaries.insert(scan);
         const auto opcode = opcodeAt(ir, scan);
-        const auto width = (opcode == IrOpcode::Call || opcode == IrOpcode::SemanticEval || opcode == IrOpcode::SsmProcess || opcode == IrOpcode::MakeArray)
+        const auto width = (opcode == IrOpcode::Call || opcode == IrOpcode::SemanticEval || opcode == IrOpcode::MakeArray)
             ? dynamicWidth(ir, scan, 1)
             : opcode == IrOpcode::CallNamed || opcode == IrOpcode::MakeMap
                 ? dynamicWidth(ir, scan, 2)
@@ -873,10 +873,24 @@ void IrVerifier::verify(const FelidaeIr& ir) {
                 pc += 4;
                 break;
             case IrOpcode::Similarity:
+            case IrOpcode::HierarchyIsA:
+            case IrOpcode::HierarchyCommonAncestors:
+            case IrOpcode::HierarchyLeastCommonAncestors:
+            case IrOpcode::HierarchyMostGeneralAncestors:
                 requireWords(ir, pc, 4);
                 requireRegister(ir, ir.words[pc + 1]); requireRegister(ir, ir.words[pc + 2]); requireRegister(ir, ir.words[pc + 3]);
                 requireInitialized(initialized, ir.words[pc + 2]); requireInitialized(initialized, ir.words[pc + 3]);
                 initialized[ir.words[pc + 1]] = true; pc += 4; break;
+            case IrOpcode::TemporalRank:
+                requireWords(ir, pc, 4);
+                requireRegister(ir, ir.words[pc + 1]);
+                if (ir.words[pc + 2] >= ir.symbols.size() ||
+                    ir.words[pc + 3] >= ir.symbols.size()) {
+                    throw IrError("IR temporal rank references an invalid field symbol");
+                }
+                initialized[ir.words[pc + 1]] = true;
+                pc += 4;
+                break;
             case IrOpcode::Membership:
                 requireWords(ir, pc, 6);
                 for (std::size_t i = 1; i < 6; ++i) { requireRegister(ir, ir.words[pc + i]); if (i > 1) requireInitialized(initialized, ir.words[pc + i]); }
@@ -927,11 +941,18 @@ void IrVerifier::verify(const FelidaeIr& ir) {
                 pc += width;
                 break;
             }
-            case IrOpcode::SemanticEval: case IrOpcode::SsmProcess: {
+            case IrOpcode::SemanticEval: {
                 requireWords(ir, pc, 4);
                 requireRegister(ir, ir.words[pc + 1]);
-                if (ir.words[pc + 2] >= ir.symbols.size()) throw IrError("IR semantic operation references an invalid symbol");
+                if (ir.words[pc + 2] > std::numeric_limits<std::uint16_t>::max() ||
+                    !isKnownSemanticOperation(static_cast<std::uint16_t>(ir.words[pc + 2]))) {
+                    throw IrError("compiler IR semantic operation ID is invalid");
+                }
                 const auto count = ir.words[pc + 3];
+                if (!semanticOperationAcceptsArity(
+                        static_cast<std::uint16_t>(ir.words[pc + 2]), count)) {
+                    throw IrError("compiler IR semantic operation arity is invalid");
+                }
                 const auto width = dynamicWidth(ir, pc, 1);
                 for (std::size_t index = 0; index < count; ++index) {
                     requireRegister(ir, ir.words[pc + 4 + index]);
@@ -1027,7 +1048,9 @@ void IrVerifier::verify(const FelidaeIr& ir) {
     if (!ended) throw IrError("IR is missing END");
     verifyControlFlowInitialization(ir, boundaries);
 }
+#endif
 
+#ifndef FELIDAE_IR_VERIFIER_ONLY
 IrWord encodeIrNumber(double value) noexcept {
     if constexpr (sizeof(IrWord) == sizeof(std::uint64_t)) {
         return static_cast<IrWord>(std::bit_cast<std::uint64_t>(value));
@@ -1048,8 +1071,12 @@ double decodeIrNumber(IrWord word) noexcept {
 
 bool VmRuntime::shouldBranchFalse(const VmValue& value) const {
     if (std::holds_alternative<VmNil>(value)) return true;
-    if (const auto* boolean = std::get_if<bool>(&value)) return !*boolean;
-    return false;
+    if (const auto* control = std::get_if<double>(&value)) {
+        if (*control == 0.0) return true;
+        if (*control == 1.0) return false;
+        throw IrError("VM control value must be exactly 0.0 or 1.0");
+    }
+    throw IrError("VM branch requires a numeric 0.0 or 1.0 control value");
 }
 
 VmValue VmRuntime::loadSymbol(IrSymbolRef) {
@@ -1060,16 +1087,8 @@ void VmRuntime::storeSymbol(IrSymbolRef, const VmValue&) {
     throw IrError("IR symbol storage is unavailable in this runtime");
 }
 
-VmValue VmRuntime::callSymbol(IrSymbolRef, std::span<const VmValue>) {
-    throw IrError("IR calls are unavailable in this runtime");
-}
-
-VmValue VmRuntime::callSymbolNamed(IrSymbolRef, std::span<const VmCallArgument>) {
-    throw IrError("IR named calls are unavailable in this runtime");
-}
-
-VmValue VmRuntime::callNativeSymbol(IrSymbolRef symbol) {
-    return callSymbol(symbol, {});
+VmValue VmRuntime::callNativeSymbol(IrSymbolRef) {
+    throw IrError("ISA native call is unavailable in this runtime");
 }
 
 void VmRuntime::retainFact(const VmFactPtr&) {}
@@ -1088,7 +1107,20 @@ std::vector<VmFactPtr> VmRuntime::snapshotFacts(IrSymbolRef) {
     throw IrError("IR fact iteration is unavailable in this runtime");
 }
 
-void VmRuntime::installModule(const IrModule&) {}
+std::vector<IrSymbolRef> VmRuntime::hierarchyProof(IrSymbolRef,IrSymbolRef){throw IrError("ISA hierarchy is unavailable in this runtime");}
+std::vector<IrSymbolRef> VmRuntime::commonAncestors(IrSymbolRef,IrSymbolRef){throw IrError("ISA hierarchy is unavailable in this runtime");}
+std::vector<IrSymbolRef> VmRuntime::leastCommonAncestors(IrSymbolRef,IrSymbolRef){throw IrError("ISA hierarchy is unavailable in this runtime");}
+std::vector<IrSymbolRef> VmRuntime::mostGeneralCommonAncestors(IrSymbolRef,IrSymbolRef){throw IrError("ISA hierarchy is unavailable in this runtime");}
+std::vector<VmRankedFact> VmRuntime::rankFacts(IrSymbolRef,IrSymbolRef){throw IrError("ISA temporal ranking is unavailable in this runtime");}
+
+void VmRuntime::installIsaModule(const IsaModule&) {}
+
+void VmRuntime::enterProcedure(IrSymbolRef, std::span<const IrSymbolRef> parameters,
+                               std::span<const VmValue> arguments) {
+    if (parameters.size()!=arguments.size()) throw IrError("ISA procedure received the wrong number of arguments");
+}
+
+void VmRuntime::leaveProcedure() noexcept {}
 
 void VmRuntime::recordTrace(VmTraceKind, IrSymbolRef, IrFactRef) {}
 
@@ -1098,9 +1130,7 @@ void VmRuntime::beginExecution() {}
 
 void VmRuntime::endExecution() noexcept {}
 
-RuntimeContext VmRuntime::makeRuntimeContext(const FelidaeIr&, const VmValue&) const {
-    return {};
-}
+RuntimeContext VmRuntime::makeIsaRuntimeContext(const VmValue&) const { return {}; }
 
 void VmRuntime::refreshRuntimeContext(RuntimeContext&) const {}
 
@@ -1108,286 +1138,119 @@ bool VmRuntime::validateSemanticResult(const VmValue& value, const RuntimeContex
     return validVmValue(value);
 }
 
-VmValue RegisterVm::execute(const FelidaeIr& ir, VmRuntime& runtime, VmValue systemInput) {
-    IrVerifier::verify(ir);
-    runtime.beginExecution();
-    struct ExecutionScope {
-        VmRuntime& runtime;
-        ~ExecutionScope() { runtime.endExecution(); }
-    } executionScope{runtime};
-    // Registers are execution-local. RegisterVm is therefore reusable across
-    // requests without carrying one invocation's register contents into the
-    // next; concurrency still requires distinct runtime instances.
-    std::vector<VmValue> registers_(ir.registerCount, VmNil{});
-    auto semanticContext = runtime.makeRuntimeContext(ir, systemInput);
-    for (std::size_t pc = 0; pc < ir.words.size();) {
-        const auto op = static_cast<IrOpcode>(ir.words[pc]);
-        switch (op) {
-            case IrOpcode::End:
-                throw IrError("IR program completed without a result");
-            case IrOpcode::LoadConst:
-                {
-                    const auto constant = ir.words.at(pc + 2);
-                    const auto kind = ir.constantKinds.empty() ? IrConstantKind::Number
-                        : ir.constantKinds.at(constant);
-                    if (kind == IrConstantKind::Number) {
-                        registers_.at(ir.words.at(pc + 1)) = decodeIrNumber(ir.constants.at(constant));
-                    } else if (kind == IrConstantKind::Boolean) {
-                        registers_.at(ir.words.at(pc + 1)) = ir.constants.at(constant) != 0;
-                    } else if (kind == IrConstantKind::Nil) {
-                        registers_.at(ir.words.at(pc + 1)) = VmNil{};
-                    } else {
-                        if (ir.constants.at(constant) >= ir.texts.size()) {
-                            throw IrError("IR text constant reference is invalid");
-                        }
-                        registers_.at(ir.words.at(pc + 1)) = VmText{ir.texts.at(ir.constants.at(constant))};
-                    }
-                }
-                pc += 3;
-                break;
-            case IrOpcode::LoadSymbol:
-                registers_.at(ir.words.at(pc + 1)) = runtime.loadSymbol(
-                    ir.symbols.at(ir.words.at(pc + 2)));
-                pc += 3;
-                break;
-            case IrOpcode::StoreSymbol:
-                runtime.storeSymbol(ir.symbols.at(ir.words.at(pc + 1)),
-                                    registers_.at(ir.words.at(pc + 2)));
-                pc += 3;
-                break;
-            case IrOpcode::CallNative:
-                registers_.at(ir.words.at(pc + 1)) = runtime.callNativeSymbol(
-                    ir.symbols.at(ir.words.at(pc + 2)));
-                pc += 3;
-                break;
-            case IrOpcode::Call: {
-                const auto destination = ir.words.at(pc + 1);
-                const auto symbol = ir.symbols.at(ir.words.at(pc + 2));
-                const auto count = ir.words.at(pc + 3);
-                std::vector<VmValue> arguments;
-                arguments.reserve(count);
-                for (std::size_t index = 0; index < count; ++index) {
-                    arguments.push_back(registers_.at(ir.words.at(pc + 4 + index)));
-                }
-                registers_.at(destination) = runtime.callSymbol(symbol, arguments);
-                pc += 4 + count;
-                break;
-            }
-            case IrOpcode::SemanticEval: case IrOpcode::SsmProcess: {
-                runtime.refreshRuntimeContext(semanticContext);
-                const auto semanticSteps = semanticContext.sharedSemanticSteps
-                    ? *semanticContext.sharedSemanticSteps : semanticContext.semanticSteps;
-                if (semanticSteps >= semanticContext.maximumSemanticSteps) {
-                    throw IrError("IR semantic operation exceeds execution state limit");
-                }
-                auto* model = runtime.runtimeStateModel();
-                if (!model) throw IrError("IR semantic operation requires a RuntimeStateModel");
-                const auto destination = ir.words.at(pc + 1);
-                const auto symbol = ir.symbols.at(ir.words.at(pc + 2));
-                const auto count = ir.words.at(pc + 3);
-                std::vector<VmValue> inputs;
-                inputs.reserve(count);
-                for (std::size_t index = 0; index < count; ++index) {
-                    inputs.push_back(registers_.at(ir.words.at(pc + 4 + index)));
-                }
-                if (semanticContext.sharedSemanticSteps) {
-                    semanticContext.semanticSteps = ++*semanticContext.sharedSemanticSteps;
-                } else {
-                    ++semanticContext.semanticSteps;
-                }
-                auto result = model->evaluate(RuntimeOperation{symbol}, inputs, semanticContext);
-                if (!runtime.validateSemanticResult(result, semanticContext)) {
-                    throw IrError("RuntimeStateModel returned an invalid runtime value");
-                }
-                if (const auto fact = std::get_if<VmFactPtr>(&result); fact && *fact) {
-                    (*fact)->origin = VmFact::Origin::Derived;
-                    runtime.retainFact(*fact);
-                }
-                runtime.recordTrace(VmTraceKind::SsmProposal, symbol);
-                registers_.at(destination) = std::move(result);
-                pc += 4 + count;
-                break;
-            }
-            case IrOpcode::CallNamed: {
-                const auto destination = ir.words.at(pc + 1);
-                const auto symbol = ir.symbols.at(ir.words.at(pc + 2));
-                const auto count = ir.words.at(pc + 3);
-                std::vector<VmCallArgument> arguments;
-                arguments.reserve(count);
-                for (std::size_t index = 0; index < count; ++index) {
-                    const auto encodedName = ir.words.at(pc + 4 + 2 * index);
-                    arguments.push_back(VmCallArgument{
-                        encodedName == 0 ? std::nullopt : std::optional<IrSymbolRef>(
-                            ir.symbols.at(encodedName - 1)),
-                        registers_.at(ir.words.at(pc + 5 + 2 * index))});
-                }
-                registers_.at(destination) = runtime.callSymbolNamed(symbol, arguments);
-                pc += dynamicWidth(ir, pc, 2);
-                break;
-            }
-            case IrOpcode::MakeArray: {
-                const auto destination = ir.words.at(pc + 1);
-                const auto count = ir.words.at(pc + 3);
-                auto array = std::make_shared<VmArray>();
-                array->values.reserve(count);
-                for (std::size_t index = 0; index < count; ++index) {
-                    array->values.push_back(registers_.at(ir.words.at(pc + 4 + index)));
-                }
-                registers_.at(destination) = std::move(array);
-                pc += 4 + count;
-                break;
-            }
-            case IrOpcode::MakeMap: {
-                const auto destination = ir.words.at(pc + 1);
-                const auto count = ir.words.at(pc + 3);
-                auto map = std::make_shared<VmMap>();
-                map->entries.reserve(count);
-                for (std::size_t index = 0; index < count; ++index) {
-                    const auto symbol = ir.symbols.at(ir.words.at(pc + 4 + 2 * index));
-                    map->entries.emplace_back(symbol, registers_.at(ir.words.at(pc + 5 + 2 * index)));
-                }
-                registers_.at(destination) = std::move(map);
-                pc += 4 + 2 * count;
-                break;
-            }
-            case IrOpcode::MakeFact: {
-                auto fact = std::make_shared<VmFact>();
-                fact->type = ir.symbols.at(ir.words.at(pc + 2));
-                runtime.retainFact(fact);
-                registers_.at(ir.words.at(pc + 1)) = std::move(fact);
-                pc += 3;
-                break;
-            }
-            case IrOpcode::GetField: {
-                const auto destination = ir.words.at(pc + 1);
-                const auto target = ir.words.at(pc + 2);
-                const auto field = ir.symbols.at(ir.words.at(pc + 3));
-                const auto read = [&](const auto& entries) -> VmValue {
-                    for (const auto& [existingField, existingValue] : entries) {
-                        if (existingField == field) return existingValue;
-                    }
-                    throw IrError("IR field is not present on this value");
-                };
-                if (const auto fact = std::get_if<VmFactPtr>(&registers_.at(target)); fact && *fact) {
-                    registers_.at(destination) = read((*fact)->fields);
-                } else if (const auto map = std::get_if<VmMapPtr>(&registers_.at(target)); map && *map) {
-                    registers_.at(destination) = read((*map)->entries);
-                } else {
-                    throw IrError("IR field access requires a fact or map value");
-                }
-                pc += 4;
-                break;
-            }
-            case IrOpcode::SetField: {
-                const auto object = ir.words.at(pc + 1);
-                const auto field = ir.symbols.at(ir.words.at(pc + 2));
-                const auto value = registers_.at(ir.words.at(pc + 3));
-                const auto assign = [&](auto& entries) {
-                    for (auto& [existingField, existingValue] : entries) {
-                        if (existingField == field) {
-                            existingValue = value;
-                            return;
-                        }
-                    }
-                    entries.emplace_back(field, value);
-                };
-                if (const auto fact = std::get_if<VmFactPtr>(&registers_.at(object)); fact && *fact) {
-                    runtime.mutateFact(*fact, field, value);
-                } else if (const auto map = std::get_if<VmMapPtr>(&registers_.at(object)); map && *map) {
-                    assign((*map)->entries);
-                } else {
-                    throw IrError("IR field assignment requires a fact or map value");
-                }
-                pc += 4;
-                break;
-            }
-            case IrOpcode::Move:
-                registers_.at(ir.words.at(pc + 1)) = registers_.at(ir.words.at(pc + 2));
-                pc += 3;
-                break;
-            case IrOpcode::ForEachFact: {
-                const auto type = ir.symbols.at(ir.words.at(pc + 2));
-                const auto callback = ir.symbols.at(ir.words.at(pc + 3));
-                const auto snapshot = runtime.snapshotFacts(type);
-                auto results = std::make_shared<VmArray>();
-                results->values.reserve(snapshot.size());
-                for (const auto& fact : snapshot) {
-                    const VmValue argument = fact;
-                    results->values.push_back(runtime.callSymbol(callback, std::span<const VmValue>(&argument, 1)));
-                }
-                registers_.at(ir.words.at(pc + 1)) = std::move(results);
-                pc += 4;
-                break;
-            }
-            case IrOpcode::Add: case IrOpcode::Sub: case IrOpcode::Mul: case IrOpcode::Div: case IrOpcode::Mod: {
-                const auto lhs = std::get_if<double>(&registers_.at(ir.words.at(pc + 2)));
-                const auto rhs = std::get_if<double>(&registers_.at(ir.words.at(pc + 3)));
-                if (!lhs || !rhs) throw IrError("IR arithmetic operands must be numbers");
-                double value = 0.0;
-                if (op == IrOpcode::Add) value = *lhs + *rhs;
-                else if (op == IrOpcode::Sub) value = *lhs - *rhs;
-                else if (op == IrOpcode::Mul) value = *lhs * *rhs;
-                else if (op == IrOpcode::Div) { if (*rhs == 0.0) throw IrError("IR division by zero"); value = *lhs / *rhs; }
-                else { if (*rhs == 0.0) throw IrError("IR modulo by zero"); value = std::fmod(*lhs, *rhs); }
-                registers_.at(ir.words.at(pc + 1)) = value;
-                pc += 4;
-                break;
-            }
-            case IrOpcode::Similarity:
-                registers_.at(ir.words.at(pc + 1)) = VmDegree(similarityDegree(registers_.at(ir.words.at(pc + 2)), registers_.at(ir.words.at(pc + 3))));
-                pc += 4;
-                break;
-            case IrOpcode::Membership: {
-                const auto number = [&](std::size_t offset) {
-                    const auto result = std::get_if<double>(&registers_.at(ir.words.at(pc + offset)));
-                    if (!result) throw IrError("IR membership operands must be numbers");
-                    return *result;
-                };
-                registers_.at(ir.words.at(pc + 1)) = VmDegree(VmFactStore::gaussianMembership(number(2), {number(3), number(4), number(5)}));
-                pc += 6;
-                break;
-            }
-            case IrOpcode::Compare:
-                {
-                    const auto& lhs = registers_.at(ir.words.at(pc + 2));
-                    const auto& rhs = registers_.at(ir.words.at(pc + 3));
-                    const auto kind = static_cast<IrComparison>(ir.words.at(pc + 4));
-                    bool result = false;
-                    if (kind == IrComparison::Equal || kind == IrComparison::NotEqual) {
-                        result = vmValuesEqual(lhs, rhs);
-                        if (kind == IrComparison::NotEqual) result = !result;
-                    } else {
-                        const auto numeric = [](const VmValue& value) -> std::optional<double> {
-                            if (const auto number = std::get_if<double>(&value)) return *number;
-                            if (const auto degree = std::get_if<VmDegree>(&value)) return degree->value;
-                            return std::nullopt;
-                        };
-                        const auto leftNumber = numeric(lhs); const auto rightNumber = numeric(rhs);
-                        if (!leftNumber || !rightNumber) throw IrError("ordered IR comparison operands must be numbers or Degrees");
-                        if (kind == IrComparison::Less) result = *leftNumber < *rightNumber;
-                        else if (kind == IrComparison::LessEqual) result = *leftNumber <= *rightNumber;
-                        else if (kind == IrComparison::Greater) result = *leftNumber > *rightNumber;
-                        else result = *leftNumber >= *rightNumber;
-                    }
-                    registers_.at(ir.words.at(pc + 1)) = result;
-                }
-                pc += 5;
-                break;
-            case IrOpcode::Jump:
-                pc = ir.words.at(pc + 1);
-                break;
-            case IrOpcode::JumpIfFalse: {
-                pc = runtime.shouldBranchFalse(registers_.at(ir.words.at(pc + 1)))
-                    ? ir.words.at(pc + 2) : pc + 3;
-                break;
-            }
-            case IrOpcode::Return:
-                return registers_.at(ir.words.at(pc + 1));
-            default:
-                throw IrError("IR opcode is not executable by this VM build");
-        }
+VmValue RegisterVm::executeIsaMain(const IsaModule& module, VmRuntime& runtime,
+                                   VmValue systemInput) {
+    verifyIsaModule(module);
+#ifndef NDEBUG
+    if (vmTraceEnabled()) {
+        std::clog << "[felidae.vm] action=execute_verified_module isa_version="
+                  << module.isaVersion << " procedures=" << module.procedures.size()
+                  << " entry_index=" << module.entryProcedure << '\n';
     }
-    throw IrError("IR ended unexpectedly");
+#endif
+    runtime.installIsaModule(module);
+    for (const auto& type : module.factTypes) runtime.registerFactType(type.symbol, type.parents);
+    runtime.beginExecution();
+    struct Scope { VmRuntime& runtime; ~Scope(){runtime.endExecution();} } scope{runtime};
+    return executeIsaProgram(module,module.initializer,runtime,std::move(systemInput),0);
 }
+
+VmValue RegisterVm::executeIsaProgram(const IsaModule& module, const IsaProgram& program,
+                                      VmRuntime& runtime, VmValue systemInput,
+                                      std::size_t callDepth) {
+    if(callDepth>256)throw IrError("ISA procedure call depth exceeds VM limit");
+    IsaVerifier::verify(program.code,{program.constants.size(),program.symbols.size(),module.procedures.size()});
+    std::vector<VmValue> registers(program.code.registerCount,VmNil{});
+    auto semanticContext = runtime.makeIsaRuntimeContext(systemInput);
+    const auto symbol=[&](std::size_t index){return program.symbols.at(index);};
+    const auto argumentRegister=[&](std::size_t pc,std::size_t index){return static_cast<std::uint8_t>((program.code.words.at(pc+2+index/4)>>((index%4)*8u))&0xffu);};
+    const auto typeSymbol=[&](const VmValue& value)->IrSymbolRef{if(const auto item=std::get_if<VmSymbol>(&value)){if(item->value==0)throw IrError("ISA hierarchy received an invalid symbol");return item->value;}if(const auto fact=std::get_if<VmFactPtr>(&value);fact&&*fact)return(*fact)->type;throw IrError("ISA hierarchy operands must be symbols or facts");};
+    const auto symbolArray=[](const std::vector<IrSymbolRef>& symbols){auto result=std::make_shared<VmArray>();result->values.reserve(symbols.size());for(const auto value:symbols)result->values.push_back(VmSymbol{value});return result;};
+    const auto invoke=[&](std::uint16_t procedureIndex,std::vector<VmValue> arguments)->VmValue{
+        const auto& procedure=module.procedures.at(procedureIndex);
+        runtime.enterProcedure(module.procedureSymbols.at(procedureIndex),procedure.positionalParameters,arguments);
+        struct FrameScope{VmRuntime& runtime;~FrameScope(){runtime.leaveProcedure();}} frame{runtime};
+        return executeIsaProgram(module,procedure.program,runtime,VmNil{},callDepth+1);
+    };
+    for(std::size_t pc=0;pc<program.code.words.size();){
+        const auto d=decodeIsaWord(program.code.words[pc]);
+        const auto instructionWidth=isaInstructionWidth(program.code.words,pc);
+#ifndef NDEBUG
+        if(vmTraceEnabled()){
+            std::clog<<"[felidae.vm] action=dispatch depth="<<callDepth<<" pc="<<pc
+                     <<" opcode=0x"<<std::hex<<std::setw(2)<<std::setfill('0')
+                     <<static_cast<unsigned>(d.opcode)<<std::dec<<std::setfill(' ')
+                     <<" width="<<instructionWidth<<'\n';
+        }
+#endif
+        switch(d.opcode){
+        case IsaOpcode::Halt:
+            // Compiler END lowers to HALT as an unreachable structural
+            // terminator after Return. Reaching it means lowering produced no
+            // program result; never report that defect as a successful nil.
+            throw IrError("ISA halted without returning a value");
+        case IsaOpcode::LoadConstant:{
+            const auto index=d.bx;const auto kind=program.constantKinds.empty()?IrConstantKind::Number:program.constantKinds.at(index);
+            if(kind==IrConstantKind::Number)registers[d.a]=decodeIrNumber(program.constants.at(index));
+            else if(kind==IrConstantKind::Boolean)registers[d.a]=program.constants.at(index)!=0?1.0:0.0;
+            else if(kind==IrConstantKind::Nil)registers[d.a]=VmNil{};
+            else registers[d.a]=VmText{program.texts.at(program.constants.at(index))};
+            break;}
+        case IsaOpcode::LoadGlobal:registers[d.a]=runtime.loadSymbol(symbol(d.bx));break;
+        case IsaOpcode::StoreGlobal:runtime.storeSymbol(symbol(d.bx),registers[d.a]);break;
+        case IsaOpcode::Move:registers[d.a]=registers[d.b];break;
+        case IsaOpcode::Add:case IsaOpcode::Subtract:case IsaOpcode::Multiply:case IsaOpcode::Divide:case IsaOpcode::Modulo:{
+            const auto lhs=std::get_if<double>(&registers[d.b]);const auto rhs=std::get_if<double>(&registers[d.c]);if(!lhs||!rhs)throw IrError("ISA arithmetic operands must be numbers");double value=0;
+            if(d.opcode==IsaOpcode::Add)value=*lhs+*rhs;else if(d.opcode==IsaOpcode::Subtract)value=*lhs-*rhs;else if(d.opcode==IsaOpcode::Multiply)value=*lhs**rhs;else if(d.opcode==IsaOpcode::Divide){if(*rhs==0)throw IrError("ISA division by zero");value=*lhs / *rhs;}else{if(*rhs==0)throw IrError("ISA modulo by zero");value=std::fmod(*lhs,*rhs);}registers[d.a]=value;break;}
+        case IsaOpcode::CompareEqual:case IsaOpcode::CompareNotEqual:case IsaOpcode::CompareLess:case IsaOpcode::CompareLessEqual:case IsaOpcode::CompareGreater:case IsaOpcode::CompareGreaterEqual:{
+            bool value=false;if(d.opcode==IsaOpcode::CompareEqual||d.opcode==IsaOpcode::CompareNotEqual){value=vmValuesEqual(registers[d.b],registers[d.c]);if(d.opcode==IsaOpcode::CompareNotEqual)value=!value;}else{const auto numeric=[](const VmValue& v)->std::optional<double>{if(const auto n=std::get_if<double>(&v))return *n;if(const auto n=std::get_if<VmDegree>(&v))return n->value;return std::nullopt;};const auto l=numeric(registers[d.b]),r=numeric(registers[d.c]);if(!l||!r)throw IrError("ISA ordered comparison requires numeric operands");if(d.opcode==IsaOpcode::CompareLess)value=*l<*r;else if(d.opcode==IsaOpcode::CompareLessEqual)value=*l<=*r;else if(d.opcode==IsaOpcode::CompareGreater)value=*l>*r;else value=*l>=*r;}registers[d.a]=value?1.0:0.0;break;}
+        case IsaOpcode::BooleanNot:{const auto value=std::get_if<double>(&registers[d.b]);if(!value||(*value!=0.0&&*value!=1.0))throw IrError("ISA boolean NOT requires 0.0 or 1.0");registers[d.a]=*value==0.0?1.0:0.0;break;}
+        case IsaOpcode::BooleanAnd:case IsaOpcode::BooleanOr:{const auto l=std::get_if<double>(&registers[d.b]),r=std::get_if<double>(&registers[d.c]);if(!l||!r||(*l!=0.0&&*l!=1.0)||(*r!=0.0&&*r!=1.0))throw IrError("ISA boolean logic requires 0.0 or 1.0");registers[d.a]=(d.opcode==IsaOpcode::BooleanAnd?(*l==1.0&&*r==1.0):(*l==1.0||*r==1.0))?1.0:0.0;break;}
+        case IsaOpcode::Jump:pc=d.ax;continue;
+        case IsaOpcode::JumpIfFalse:if(runtime.shouldBranchFalse(registers[d.a])){pc=d.bx;continue;}break;
+        case IsaOpcode::Call:{std::vector<VmValue> args;args.reserve(d.b);for(std::size_t i=0;i<d.b;++i)args.push_back(registers[argumentRegister(pc,i)]);registers[d.a]=invoke(static_cast<std::uint16_t>(program.code.words[pc+1]),std::move(args));break;}
+        case IsaOpcode::CallNamed:{
+            const auto procedureIndex=static_cast<std::uint16_t>(program.code.words[pc+1]);const auto& procedure=module.procedures.at(procedureIndex);std::vector<std::optional<VmValue>> mapped(procedure.positionalParameters.size());std::size_t next=0;
+            for(std::size_t i=0;i<d.b;++i){const auto encoded=program.code.words[pc+2+i];const auto name=static_cast<std::uint16_t>(encoded);std::size_t targetIndex=0;if(name==0xffffu){while(next<mapped.size()&&mapped[next])++next;if(next==mapped.size())throw IrError("ISA named call has too many positional arguments");targetIndex=next++;}else{const auto spelling=symbol(name);const auto found=std::find(procedure.namedParameters.begin(),procedure.namedParameters.end(),spelling);if(found==procedure.namedParameters.end())throw IrError("ISA named call has an unknown argument");targetIndex=static_cast<std::size_t>(found-procedure.namedParameters.begin());}if(mapped[targetIndex])throw IrError("ISA named call duplicates an argument");mapped[targetIndex]=registers[static_cast<std::uint8_t>(encoded>>16u)];}
+            std::vector<VmValue> args;for(auto& value:mapped){if(!value)throw IrError("ISA named call omits an argument");args.push_back(std::move(*value));}registers[d.a]=invoke(procedureIndex,std::move(args));break;}
+        case IsaOpcode::CallNative:registers[d.a]=runtime.callNativeSymbol(symbol(d.bx));break;
+        case IsaOpcode::Return:return registers[d.a];
+        case IsaOpcode::MakeFact:{auto fact=std::make_shared<VmFact>();fact->type=symbol(d.bx);runtime.retainFact(fact);registers[d.a]=std::move(fact);break;}
+        case IsaOpcode::GetField:{const auto field=symbol(program.code.words[pc+1]);const auto read=[&](const auto& entries)->VmValue{for(const auto& [key,value]:entries)if(key==field)return value;throw IrError("ISA field is absent");};if(const auto fact=std::get_if<VmFactPtr>(&registers[d.b]);fact&&*fact)registers[d.a]=read((*fact)->fields);else if(const auto map=std::get_if<VmMapPtr>(&registers[d.b]);map&&*map)registers[d.a]=read((*map)->entries);else throw IrError("ISA field access requires a fact or map");break;}
+        case IsaOpcode::SetField:{const auto field=symbol(program.code.words[pc+1]);const auto value=registers[d.b];if(const auto fact=std::get_if<VmFactPtr>(&registers[d.a]);fact&&*fact)runtime.mutateFact(*fact,field,value);else if(const auto map=std::get_if<VmMapPtr>(&registers[d.a]);map&&*map){auto found=std::find_if((*map)->entries.begin(),(*map)->entries.end(),[&](const auto& e){return e.first==field;});if(found==(*map)->entries.end())(*map)->entries.emplace_back(field,value);else found->second=value;}else throw IrError("ISA field assignment requires a fact or map");break;}
+        case IsaOpcode::QueryFacts:{const auto extension=program.code.words[pc+1];const auto facts=runtime.snapshotFacts(symbol(extension&0xffffu));auto values=std::make_shared<VmArray>();for(const auto& fact:facts)values->values.push_back(invoke(static_cast<std::uint16_t>(extension>>16u),{VmValue{fact}}));registers[d.a]=std::move(values);break;}
+        case IsaOpcode::MakeArray:{auto array=std::make_shared<VmArray>();for(std::size_t i=0;i<d.b;++i)array->values.push_back(registers[static_cast<std::uint8_t>((program.code.words[pc+1+i/4]>>((i%4)*8u))&0xffu)]);registers[d.a]=std::move(array);break;}
+        case IsaOpcode::MakeMap:{auto map=std::make_shared<VmMap>();for(std::size_t i=0;i<d.b;++i){const auto entry=program.code.words[pc+1+i];map->entries.emplace_back(symbol(entry&0xffffu),registers[static_cast<std::uint8_t>(entry>>16u)]);}registers[d.a]=std::move(map);break;}
+        case IsaOpcode::Similarity:registers[d.a]=VmDegree(similarityDegree(registers[d.b],registers[d.c]));break;
+        case IsaOpcode::Membership:{const auto tail=program.code.words[pc+1];const auto number=[&](std::uint8_t r){const auto n=std::get_if<double>(&registers[r]);if(!n)throw IrError("ISA membership operands must be numbers");return *n;};registers[d.a]=VmDegree(VmFactStore::gaussianMembership(number(d.b),{number(d.c),number(static_cast<std::uint8_t>(tail)),number(static_cast<std::uint8_t>(tail>>8u))}));break;}
+        case IsaOpcode::SemanticEval:{
+            const auto operation=static_cast<std::uint16_t>(program.code.words[pc+1]);
+            auto* model=runtime.runtimeStateModel();
+            if(!model)throw IrError("ISA SemanticEval requires a RuntimeStateModel");
+            runtime.refreshRuntimeContext(semanticContext);
+            const auto steps=semanticContext.sharedSemanticSteps?*semanticContext.sharedSemanticSteps:semanticContext.semanticSteps;
+            if(steps>=semanticContext.maximumSemanticSteps)throw IrError("ISA semantic operation exceeds execution state limit");
+            std::vector<VmValue> inputs;
+            for(std::size_t i=0;i<d.b;++i)inputs.push_back(registers[argumentRegister(pc,i)]);
+            if(!validSemanticInputs(operation,inputs))throw IrError("ISA SemanticEval input contract is invalid");
+            if(semanticContext.sharedSemanticSteps)semanticContext.semanticSteps=++*semanticContext.sharedSemanticSteps;
+            else ++semanticContext.semanticSteps;
+            auto value=model->evaluate(RuntimeOperation{operation},inputs,semanticContext);
+            if(!validSemanticOutput(operation,inputs,value)||!runtime.validateSemanticResult(value,semanticContext))throw IrError("RuntimeStateModel returned an invalid typed result");
+            if(const auto fact=std::get_if<VmFactPtr>(&value);fact&&*fact){(*fact)->origin=VmFact::Origin::Derived;runtime.retainFact(*fact);}
+            runtime.recordTrace(VmTraceKind::SsmProposal,operation);
+            registers[d.a]=std::move(value);
+            break;}
+        case IsaOpcode::HierarchyIsA:registers[d.a]=runtime.hierarchyProof(typeSymbol(registers[d.b]),typeSymbol(registers[d.c])).empty()?0.0:1.0;break;
+        case IsaOpcode::HierarchyCommonAncestors:registers[d.a]=symbolArray(runtime.commonAncestors(typeSymbol(registers[d.b]),typeSymbol(registers[d.c])));break;
+        case IsaOpcode::HierarchyLeastCommonAncestors:registers[d.a]=symbolArray(runtime.leastCommonAncestors(typeSymbol(registers[d.b]),typeSymbol(registers[d.c])));break;
+        case IsaOpcode::HierarchyMostGeneralAncestors:registers[d.a]=symbolArray(runtime.mostGeneralCommonAncestors(typeSymbol(registers[d.b]),typeSymbol(registers[d.c])));break;
+        case IsaOpcode::TemporalRank:{const auto fields=program.code.words[pc+1];const auto ranked=runtime.rankFacts(symbol(fields&0xffffu),symbol(fields>>16u));auto values=std::make_shared<VmArray>();values->values.reserve(ranked.size());for(const auto& item:ranked)values->values.push_back(item.fact);registers[d.a]=std::move(values);break;}
+        }
+        pc+=instructionWidth;
+    }
+    throw IrError("ISA program ended without Return or Halt");
+}
+#endif
 
 } // namespace Felidae

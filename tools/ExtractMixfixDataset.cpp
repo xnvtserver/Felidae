@@ -4,6 +4,8 @@
 #include "IrCodeGenerator.h"
 #include "MixfixStateModel.h"
 #include "SentencePieceModel.h"
+#include "form/FelidaeIsa.h"
+#include "form/IsaLowerer.h"
 #include "form/RegisterVm.h"
 
 #include <nlohmann/json.hpp>
@@ -40,7 +42,10 @@ std::vector<SentencePieceId> spanIds(const IntegerTokenList& tokens, const Sourc
     const auto last = byteOffset(tokens.source(), span.endLine, span.endColumn);
     std::vector<SentencePieceId> result;
     for (const auto& entry : tokens.entries()) {
-        if (entry.end > first && entry.begin < last) result.push_back(entry.id);
+        if (entry.id < 0) throw std::runtime_error("SentencePiece produced a negative token ID");
+        if (entry.end > first && entry.begin < last) {
+            result.push_back(static_cast<SentencePieceId>(entry.id));
+        }
     }
     if (result.empty()) throw std::runtime_error("mixfix AST span has no SentencePiece IDs");
     return result;
@@ -59,6 +64,7 @@ MixfixVocabularyId token(const MixfixContext& context, MixfixIrTokenKind kind, I
 std::vector<MixfixVocabularyId> encodeTeacher(const FelidaeIr& ir) {
     const auto context = makeMixfixContext(ir);
     std::vector<MixfixVocabularyId> result;
+    result.push_back(token(context, MixfixIrTokenKind::Accept, 0));
     const auto raw = [&](IrWord value) { result.push_back(token(context, MixfixIrTokenKind::Register, value)); };
     const auto reg = raw;
     const auto constant = [&](IrWord value) { result.push_back(token(context, MixfixIrTokenKind::ConstantReference, value)); };
@@ -84,16 +90,24 @@ std::vector<MixfixVocabularyId> encodeTeacher(const FelidaeIr& ir) {
             require(3); reg(ir.words[pc + 1]); raw(ir.words[pc + 2]); pc += 3; break;
         case IrOpcode::Add: case IrOpcode::Sub: case IrOpcode::Mul: case IrOpcode::Div: case IrOpcode::Mod:
         case IrOpcode::GetField: case IrOpcode::SetField: case IrOpcode::Similarity: case IrOpcode::ForEachFact:
+        case IrOpcode::HierarchyIsA: case IrOpcode::HierarchyCommonAncestors: case IrOpcode::HierarchyLeastCommonAncestors:
+        case IrOpcode::HierarchyMostGeneralAncestors:
             require(4); reg(ir.words[pc + 1]); raw(ir.words[pc + 2]); raw(ir.words[pc + 3]); pc += 4; break;
+        case IrOpcode::TemporalRank:
+            require(4); reg(ir.words[pc + 1]); symbol(ir.words[pc + 2]); symbol(ir.words[pc + 3]); pc += 4; break;
         case IrOpcode::Compare:
             require(5); reg(ir.words[pc + 1]); raw(ir.words[pc + 2]); raw(ir.words[pc + 3]); raw(ir.words[pc + 4]); pc += 5; break;
         case IrOpcode::Membership:
             require(6); for (std::size_t index = 1; index < 6; ++index) raw(ir.words[pc + index]); pc += 6; break;
-        case IrOpcode::Call: case IrOpcode::SemanticEval: case IrOpcode::SsmProcess: case IrOpcode::MakeArray: {
+        case IrOpcode::Call: case IrOpcode::SemanticEval: case IrOpcode::MakeArray: {
             require(4); reg(ir.words[pc + 1]);
-            if (opcode == IrOpcode::Call || opcode == IrOpcode::SemanticEval || opcode == IrOpcode::SsmProcess) symbol(ir.words[pc + 2]); else raw(ir.words[pc + 2]);
+            if (opcode == IrOpcode::Call) symbol(ir.words[pc + 2]); else raw(ir.words[pc + 2]);
             const auto count = ir.words[pc + 3]; raw(count); require(4 + count);
-            for (std::size_t index = 0; index < count; ++index) raw(ir.words[pc + 4 + index]); pc += 4 + count; break;
+            for (std::size_t index = 0; index < count; ++index) {
+                raw(ir.words[pc + 4 + index]);
+            }
+            pc += 4 + count;
+            break;
         }
         case IrOpcode::CallNamed: case IrOpcode::MakeMap: {
             require(4); reg(ir.words[pc + 1]);
@@ -170,7 +184,10 @@ std::vector<std::filesystem::path> sources(const std::vector<std::filesystem::pa
 std::vector<SentencePieceId> sourceIds(const IntegerTokenList& tokens) {
     std::vector<SentencePieceId> result;
     result.reserve(tokens.entries().size());
-    for (const auto& entry : tokens.entries()) result.push_back(entry.id);
+    for (const auto& entry : tokens.entries()) {
+        if (entry.id < 0) throw std::runtime_error("SentencePiece produced a negative token ID");
+        result.push_back(static_cast<SentencePieceId>(entry.id));
+    }
     if (result.empty()) throw std::runtime_error("source has no SentencePiece IDs");
     return result;
 }
@@ -253,6 +270,7 @@ int main(int argc, char** argv) {
         }
         if (roots.empty()) throw std::runtime_error("mixfix dataset requires at least one example root");
         std::vector<nlohmann::json> records;
+        const auto sentencePieceHash = felidaeSentencePieceModelHash();
         std::set<std::pair<std::vector<SentencePieceId>, std::vector<MixfixVocabularyId>>> unique;
         std::size_t boundedOut = 0;
         std::size_t rejectedSources = 0;
@@ -280,10 +298,14 @@ int main(int argc, char** argv) {
             }
             if (!operations.empty()) std::cerr << "found " << operations.size() << " custom mixfix expressions in " << label << '\n';
             for (const auto& operation : operations) {
+                const auto input = spanIds(tokens, operation->sourceSpan);
                 try {
-                    const auto input = spanIds(tokens, operation->sourceSpan);
                     const auto target = encodeTeacher(IntegerParser::compileAstExpressionIr(operation));
-                    if (unique.emplace(input, target).second) records.push_back({{"schema_version", 1}, {"input_ids", input}, {"target_ids", target}});
+                    if (unique.emplace(input, target).second) records.push_back({{"schema_version", 2},
+                        {"sentencepiece_model_hash", sentencePieceHash},
+                        {"compiler_ir_vocabulary", kMixfixIrVocabularyVersion},
+                        {"input_ids", input}, {"target_ids", target},
+                        {"decision", "ACCEPT"}});
                 } catch (const std::runtime_error& error) {
                     const std::string_view message(error.what());
                     if (message.find("cannot be represented by the fixed vocabulary") != std::string_view::npos) {
@@ -291,8 +313,17 @@ int main(int argc, char** argv) {
                         std::cerr << "skipping bounded-out mixfix teacher in " << label << ": " << message << '\n';
                     } else if (message.find("requires verified model target selection") != std::string_view::npos ||
                                message.find("has no direct IR lowering") != std::string_view::npos) {
-                        ++boundedOut;
-                        std::cerr << "skipping non-deterministic mixfix teacher in " << label << ": " << message << '\n';
+                        const auto context = makeMixfixContext(FelidaeIr{});
+                        const std::vector<MixfixVocabularyId> target{
+                            token(context, MixfixIrTokenKind::Abstain, 0)};
+                        if (unique.emplace(input, target).second) {
+                            records.push_back({{"schema_version", 2},
+                                {"sentencepiece_model_hash", sentencePieceHash},
+                                {"compiler_ir_vocabulary", kMixfixIrVocabularyVersion},
+                                {"input_ids", input}, {"target_ids", target},
+                                {"decision", "ABSTAIN"}});
+                        }
+                        std::cerr << "recording ABSTAIN mixfix teacher in " << label << ": " << message << '\n';
                     } else {
                         throw;
                     }
@@ -313,9 +344,10 @@ int main(int argc, char** argv) {
                     try {
                         const auto module = IrCodeGenerator{}.compile(program);
                         try {
-                            FelidaeKnowledgeRuntime runtime(module.procedures);
+                            const auto isaModule = IsaLowerer::lowerModule(module);
+                            FelidaeKnowledgeRuntime runtime;
                             RegisterVm vm;
-                            (void)vm.executeMain(module, runtime);
+                            (void)vm.executeIsaMain(isaModule, runtime);
                         } catch (const std::exception&) {
                             stage = 3; // Verified VM/runtime rejection.
                         }
@@ -333,7 +365,14 @@ int main(int argc, char** argv) {
                     std::cerr << "excluding stale invalid fixture that executed successfully: " << path.string() << '\n';
                     continue;
                 }
-                rejections.push_back({{"schema_version", 1}, {"input_ids", sourceIds(tokens)}, {"rejection_stage", stage}});
+                const auto context = makeMixfixContext(FelidaeIr{});
+                const auto reject = token(context, MixfixIrTokenKind::Reject, 0);
+                rejections.push_back({{"schema_version", 2},
+                                      {"sentencepiece_model_hash", sentencePieceHash},
+                                      {"compiler_ir_vocabulary", kMixfixIrVocabularyVersion},
+                                      {"input_ids", sourceIds(tokens)},
+                                      {"target_ids", std::vector<MixfixVocabularyId>{reject}},
+                                      {"decision", "REJECT"}, {"rejection_stage", stage}});
             }
             rejectionRecords = rejections.size();
         }
@@ -341,7 +380,14 @@ int main(int argc, char** argv) {
         // corpus is replaced, so a failed input cannot leave a mixed run.
         writeJsonl(output, records);
         if (rejectionOutput) writeJsonl(*rejectionOutput, rejections);
-        std::cout << records.size() << " deterministic mixfix records written to " << output.string()
+        const auto abstentionRecords = static_cast<std::size_t>(std::count_if(
+            records.begin(), records.end(), [](const nlohmann::json& record) {
+                return record.value("decision", std::string{}) == "ABSTAIN";
+            }));
+        const auto acceptanceRecords = records.size() - abstentionRecords;
+        std::cout << records.size() << " compiler mixfix records written to " << output.string()
+                  << " (ACCEPT=" << acceptanceRecords
+                  << ", ABSTAIN=" << abstentionRecords << ")"
                   << "; " << boundedOut << " expressions exceeded fixed structural bounds; "
                   << rejectedSources << " valid-root sources were rejected by the current parser; "
                   << rejectionRecords << " invalid rejection-evaluation records written; "

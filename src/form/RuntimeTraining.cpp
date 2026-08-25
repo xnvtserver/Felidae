@@ -1,4 +1,5 @@
 #include "RuntimeTraining.h"
+#include "FelidaeIsa.h"
 
 #include <nlohmann/json.hpp>
 
@@ -36,7 +37,7 @@ template <typename T> T bounded(std::uint64_t value, const char* name) {
 }
 
 RuntimeValueKind valueKind(std::uint64_t value, const char* name) {
-    if (value < static_cast<std::uint64_t>(RuntimeValueKind::Nil) || value > static_cast<std::uint64_t>(RuntimeValueKind::Fact)) {
+    if (value < static_cast<std::uint64_t>(RuntimeValueKind::Nil) || value > static_cast<std::uint64_t>(RuntimeValueKind::Symbol)) {
         throw IrError(std::string("runtime JSONL has an invalid ") + name);
     }
     return static_cast<RuntimeValueKind>(value);
@@ -44,10 +45,62 @@ RuntimeValueKind valueKind(std::uint64_t value, const char* name) {
 
 RuntimeTrainingTargetKind targetKind(std::uint64_t value) {
     if (value < static_cast<std::uint64_t>(RuntimeTrainingTargetKind::InputReference) ||
-        value > static_cast<std::uint64_t>(RuntimeTrainingTargetKind::Boolean)) {
+        value > static_cast<std::uint64_t>(RuntimeTrainingTargetKind::NumericTruth)) {
         throw IrError("runtime JSONL has an invalid target kind");
     }
     return static_cast<RuntimeTrainingTargetKind>(value);
+}
+
+RuntimeValueKind targetValueKind(const RuntimeTrainingRecord& record) {
+    switch (record.targetKind) {
+    case RuntimeTrainingTargetKind::InputReference:
+        if (record.targetValue >= record.inputKinds.size()) {
+            throw IrError("runtime JSONL input-reference target is unavailable");
+        }
+        return record.inputKinds[record.targetValue];
+    case RuntimeTrainingTargetKind::FactFromInput:
+        if (record.targetValue >= record.inputKinds.size() ||
+            record.inputKinds[record.targetValue] != RuntimeValueKind::Fact) {
+            throw IrError("runtime JSONL fact target does not reference a fact input");
+        }
+        return RuntimeValueKind::Fact;
+    case RuntimeTrainingTargetKind::DegreeMilli:
+        return RuntimeValueKind::Degree;
+    case RuntimeTrainingTargetKind::Nil:
+        return RuntimeValueKind::Nil;
+    case RuntimeTrainingTargetKind::NumericTruth:
+        return RuntimeValueKind::Number;
+    }
+    throw IrError("runtime JSONL target kind is invalid");
+}
+
+void validateTrainingContract(const RuntimeTrainingRecord& record) {
+    if (!isKnownSemanticOperation(record.operationId) ||
+        !semanticOperationAcceptsArity(record.operationId,
+                                       record.inputKinds.size())) {
+        throw IrError("runtime JSONL semantic operation contract is invalid");
+    }
+    const auto input = record.inputKinds.front();
+    const auto output = targetValueKind(record);
+    switch (static_cast<SemanticOperationId>(record.operationId)) {
+    case SemanticOperationId::Identity:
+        if (output != input) throw IrError("runtime Identity teacher changes value kind");
+        return;
+    case SemanticOperationId::SelectFact:
+    case SemanticOperationId::DeriveFact:
+        if (input != RuntimeValueKind::Fact ||
+            (output != RuntimeValueKind::Fact && output != RuntimeValueKind::Nil)) {
+            throw IrError("runtime fact-operation teacher has invalid kinds");
+        }
+        return;
+    case SemanticOperationId::EvaluateDegree:
+        if ((input != RuntimeValueKind::Number && input != RuntimeValueKind::Degree) ||
+            output != RuntimeValueKind::Degree) {
+            throw IrError("runtime degree-operation teacher has invalid kinds");
+        }
+        return;
+    }
+    throw IrError("runtime JSONL semantic operation ID is invalid");
 }
 
 template <typename T> std::vector<T> ids(const Json& object, const char* name) {
@@ -100,6 +153,10 @@ std::vector<std::pair<IrSymbolRef, std::uint32_t>> factTypeCounts(const Json& ob
 }
 } // namespace
 
+void verifyRuntimeTrainingRecord(const RuntimeTrainingRecord& record) {
+    validateTrainingContract(record);
+}
+
 void writeRuntimeTrainingDataset(const std::filesystem::path& path, std::span<const RuntimeTrainingRecord> records) {
     requireJsonlPath(path);
     if (records.size() > kMaximumRecords) throw IrError("runtime dataset has too many records");
@@ -107,7 +164,9 @@ void writeRuntimeTrainingDataset(const std::filesystem::path& path, std::span<co
     std::ofstream output(temporary, std::ios::trunc);
     if (!output) throw IrError("cannot write runtime JSONL dataset");
     for (const auto& record : records) {
-        if (record.operationSymbol == 0 || record.inputKinds.size() > kMaximumItems ||
+        if (!isKnownSemanticOperation(record.operationId) ||
+            !semanticOperationAcceptsArity(record.operationId, record.inputKinds.size()) ||
+            record.inputKinds.size() > kMaximumItems ||
             record.factTypes.size() > kMaximumItems || record.factTypeCounts.size() > kMaximumItems ||
             record.hierarchyEdges.size() > kMaximumItems) throw IrError("runtime JSONL record is invalid or too large");
         for (const auto kind : record.inputKinds) (void)valueKind(static_cast<std::uint64_t>(kind), "input value kind");
@@ -124,10 +183,11 @@ void writeRuntimeTrainingDataset(const std::filesystem::path& path, std::span<co
             if (child == 0 || parent == 0) throw IrError("runtime JSONL hierarchy edge is invalid");
         }
         const auto target = targetKind(static_cast<std::uint64_t>(record.targetKind));
-        if ((target == RuntimeTrainingTargetKind::Boolean && record.targetValue > 1) ||
+        if ((target == RuntimeTrainingTargetKind::NumericTruth && record.targetValue > 1) ||
             (target == RuntimeTrainingTargetKind::DegreeMilli && record.targetValue > 1000)) {
             throw IrError("runtime JSONL target value is invalid");
         }
+        verifyRuntimeTrainingRecord(record);
         Json inputKinds = Json::array();
         for (const auto kind : record.inputKinds) inputKinds.push_back(static_cast<std::uint8_t>(kind));
         Json factTypes = Json::array();
@@ -136,7 +196,7 @@ void writeRuntimeTrainingDataset(const std::filesystem::path& path, std::span<co
         for (const auto& [type, count] : record.factTypeCounts) typeCounts.push_back({type, count});
         Json edges = Json::array();
         for (const auto& [child, parent] : record.hierarchyEdges) edges.push_back({child, parent});
-        output << Json{{"schema_version", kRuntimeTrainingSchemaVersion}, {"operation_symbol", record.operationSymbol},
+        output << Json{{"schema_version", kRuntimeTrainingSchemaVersion}, {"operation_id", record.operationId},
                        {"input_kinds", std::move(inputKinds)}, {"fact_types", std::move(factTypes)},
                        {"fact_type_counts", std::move(typeCounts)},
                        {"hierarchy_edges", std::move(edges)}, {"target_kind", static_cast<std::uint8_t>(target)},
@@ -169,20 +229,27 @@ std::vector<RuntimeTrainingRecord> loadRuntimeTrainingDataset(const std::filesys
             if (!object.is_object()) throw IrError("record must be an object");
             if (member(object, "schema_version") != kRuntimeTrainingSchemaVersion) throw IrError("schema version is incompatible");
             RuntimeTrainingRecord record;
-            record.operationSymbol = bounded<IrSymbolRef>(member(object, "operation_symbol"), "operation_symbol");
-            if (record.operationSymbol == 0) throw IrError("operation symbol is invalid");
+            record.operationId = bounded<std::uint16_t>(member(object, "operation_id"), "operation_id");
+            if (!isKnownSemanticOperation(record.operationId)) {
+                throw IrError("semantic operation ID is invalid");
+            }
             const auto rawInputKinds = ids<std::uint8_t>(object, "input_kinds");
             for (const auto kind : rawInputKinds) record.inputKinds.push_back(valueKind(kind, "input value kind"));
+            if (!semanticOperationAcceptsArity(record.operationId,
+                                               record.inputKinds.size())) {
+                throw IrError("semantic operation arity is invalid");
+            }
             record.factTypes = ids<IrSymbolRef>(object, "fact_types");
             for (const auto type : record.factTypes) if (type == 0) throw IrError("fact type is invalid");
             record.factTypeCounts = factTypeCounts(object);
             record.hierarchyEdges = hierarchyEdges(object);
             record.targetKind = targetKind(member(object, "target_kind"));
             record.targetValue = bounded<std::uint32_t>(member(object, "target_value"), "target_value");
-            if ((record.targetKind == RuntimeTrainingTargetKind::Boolean && record.targetValue > 1) ||
+            if ((record.targetKind == RuntimeTrainingTargetKind::NumericTruth && record.targetValue > 1) ||
                 (record.targetKind == RuntimeTrainingTargetKind::DegreeMilli && record.targetValue > 1000)) {
                 throw IrError("target value is invalid");
             }
+            verifyRuntimeTrainingRecord(record);
             records.push_back(std::move(record));
             if (records.size() > kMaximumRecords) throw IrError("runtime dataset has too many records");
         } catch (const nlohmann::json::exception& error) {

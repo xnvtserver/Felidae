@@ -3,9 +3,11 @@
 #include "IntegerParser.h"
 #include "OperatorAnnotation.h"
 #include "Symbol.h"
+#include "form/SemanticOperation.h"
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <unordered_set>
 
 namespace Felidae {
@@ -14,7 +16,16 @@ namespace {
 struct DirectCompileContext {
     const std::unordered_set<SymbolId>& procedures;
     const std::unordered_set<SymbolId>& factTypes;
+    const std::unordered_map<SymbolId, SymbolId>& factDesignations;
 };
+
+std::optional<SemanticOperationId> semanticOperation(SymbolId name) {
+    if (name == symbolIdForName("semantic_identity")) return SemanticOperationId::Identity;
+    if (name == symbolIdForName("semantic_select_fact")) return SemanticOperationId::SelectFact;
+    if (name == symbolIdForName("semantic_derive_fact")) return SemanticOperationId::DeriveFact;
+    if (name == symbolIdForName("semantic_evaluate_degree")) return SemanticOperationId::EvaluateDegree;
+    return std::nullopt;
+}
 
 // The integer parser preserves a dotted identifier as one symbol because the
 // same SentencePiece sequence is also used for qualified calls and `fx.`
@@ -162,6 +173,15 @@ bool isDirectDeterministicExpression(const std::shared_ptr<Expr>& expression,
         return isDirectDeterministicExpression(access->target, definedSymbols, context);
     }
     if (const auto operation = std::dynamic_pointer_cast<OperatorExpression>(expression)) {
+        if (operation->coreOperator == CoreOperator::Then) {
+            if (operation->captureCount() != 2 ||
+                !isDirectDeterministicExpression(operation->capture(0), definedSymbols, context)) {
+                return false;
+            }
+            auto pipelineSymbols = definedSymbols;
+            pipelineSymbols.insert(symbolIdForName("system.result"));
+            return isDirectDeterministicExpression(operation->capture(1), pipelineSymbols, context);
+        }
         if (operation->coreOperator == CoreOperator::Unknown &&
             (operation->resolvedMethodId == 0 ||
              !context.procedures.contains(operation->resolvedMethodId))) return false;
@@ -174,18 +194,39 @@ bool isDirectDeterministicExpression(const std::shared_ptr<Expr>& expression,
         return definedSymbols.contains(variable->nameId);
     }
     if (const auto term = std::dynamic_pointer_cast<TermExpr>(expression)) {
-        const bool fuzzyIntrinsic = term->nameId == symbolIdForName("similarity") || term->nameId == symbolIdForName("membership");
+        if (semanticOperation(term->nameId)) {
+            return term->args.size() <= 255 &&
+                std::all_of(term->args.begin(), term->args.end(), [&](const Arg& argument) {
+                    return isDirectDeterministicExpression(argument.value, definedSymbols, context);
+                });
+        }
+        const bool fuzzyIntrinsic = term->nameId == symbolIdForName("similarity") ||
+            term->nameId == symbolIdForName("membership") ||
+            term->nameId == symbolIdForName("isA") ||
+            term->nameId == symbolIdForName("commonAncestors") ||
+            term->nameId == symbolIdForName("lowestCommonAncestor") ||
+            term->nameId == symbolIdForName("highestCommonAncestor");
         if (fuzzyIntrinsic) {
             const auto expected = term->nameId == symbolIdForName("similarity") ? 2u : 2u;
             return term->args.size() == expected && std::all_of(term->args.begin(), term->args.end(), [&](const Arg& argument) {
                 return isDirectDeterministicExpression(argument.value, definedSymbols, context);
             });
         }
+        if (term->nameId == symbolIdForName("temporalRank")) {
+            return term->args.size() == 2 &&
+                std::all_of(term->args.begin(), term->args.end(), [](const Arg& argument) {
+                    if (std::dynamic_pointer_cast<VarExpr>(argument.value)) return true;
+                    const auto access = std::dynamic_pointer_cast<AccessExpr>(argument.value);
+                    return access && static_cast<bool>(std::dynamic_pointer_cast<VarExpr>(access->target));
+                });
+        }
         if (term->nameId == symbolIdForName("for_each_fact")) {
             if (term->args.size() != 2) return false;
             const auto type = std::dynamic_pointer_cast<VarExpr>(term->args[0].value);
             const auto callback = std::dynamic_pointer_cast<VarExpr>(term->args[1].value);
-            return type && callback && context.factTypes.contains(type->nameId) &&
+            const bool declaredType = type && context.factTypes.contains(type->nameId);
+            const bool declaredDesignation = type && context.factDesignations.contains(type->nameId);
+            return (declaredType || declaredDesignation) && callback &&
                 context.procedures.contains(callback->nameId);
         }
         const bool hasNamedFields = !term->args.empty() && std::all_of(term->args.begin(), term->args.end(),
@@ -195,7 +236,7 @@ bool isDirectDeterministicExpression(const std::shared_ptr<Expr>& expression,
         // distinction in TermExpr::isCapitalized; it is not a string heuristic
         // or an alternate source parser.
         const bool isFactValue = context.factTypes.contains(term->nameId) ||
-            (term->isCapitalized && hasNamedFields);
+            (term->isCapitalized && term->name.find('.') == std::string::npos && hasNamedFields);
         const bool isProcedure = context.procedures.contains(term->nameId);
         return (isProcedure || isFactValue) &&
             std::all_of(term->args.begin(), term->args.end(), [&](const Arg& argument) {
@@ -226,6 +267,17 @@ const SourceSpan& firstUnsupportedExpression(const std::shared_ptr<Expr>& expres
         if (!isDirectDeterministicExpression(access->target, definedSymbols, context))
             return firstUnsupportedExpression(access->target, definedSymbols, context);
     } else if (const auto operation = std::dynamic_pointer_cast<OperatorExpression>(expression)) {
+        if (operation->coreOperator == CoreOperator::Then && operation->captureCount() == 2) {
+            if (!isDirectDeterministicExpression(operation->capture(0), definedSymbols, context)) {
+                return firstUnsupportedExpression(operation->capture(0), definedSymbols, context);
+            }
+            auto pipelineSymbols = definedSymbols;
+            pipelineSymbols.insert(symbolIdForName("system.result"));
+            if (!isDirectDeterministicExpression(operation->capture(1), pipelineSymbols, context)) {
+                return firstUnsupportedExpression(operation->capture(1), pipelineSymbols, context);
+            }
+            return expression->sourceSpan;
+        }
         if (operation->coreOperator == CoreOperator::Unknown &&
             (operation->resolvedMethodId == 0 ||
              !context.procedures.contains(operation->resolvedMethodId))) return expression->sourceSpan;
@@ -235,12 +287,27 @@ const SourceSpan& firstUnsupportedExpression(const std::shared_ptr<Expr>& expres
                 return firstUnsupportedExpression(captured, definedSymbols, context);
         }
     } else if (const auto term = std::dynamic_pointer_cast<TermExpr>(expression)) {
-        if ((term->nameId == symbolIdForName("similarity") || term->nameId == symbolIdForName("membership")) &&
+        if (semanticOperation(term->nameId)) {
+            for (const auto& argument : term->args) {
+                if (!isDirectDeterministicExpression(argument.value, definedSymbols, context))
+                    return firstUnsupportedExpression(argument.value, definedSymbols, context);
+            }
+            return expression->sourceSpan;
+        }
+        if ((term->nameId == symbolIdForName("similarity") || term->nameId == symbolIdForName("membership") ||
+             term->nameId == symbolIdForName("isA") ||
+             term->nameId == symbolIdForName("commonAncestors") ||
+             term->nameId == symbolIdForName("lowestCommonAncestor") ||
+             term->nameId == symbolIdForName("highestCommonAncestor")) &&
             term->args.size() == 2) {
             for (const auto& argument : term->args) {
                 if (!isDirectDeterministicExpression(argument.value, definedSymbols, context))
                     return firstUnsupportedExpression(argument.value, definedSymbols, context);
             }
+            return expression->sourceSpan;
+        }
+        if (term->nameId == symbolIdForName("temporalRank") && term->args.size() == 2 &&
+            isDirectDeterministicExpression(expression, definedSymbols, context)) {
             return expression->sourceSpan;
         }
         if (term->nameId == symbolIdForName("for_each_fact") && term->args.size() == 2 &&
@@ -428,9 +495,19 @@ void appendFragment(FelidaeIr& target, FelidaeIr fragment, bool dropTerminalRetu
         case IrOpcode::Return: reg(fragment.words[pc + 1]); width = 3; break;
         case IrOpcode::Add: case IrOpcode::Sub: case IrOpcode::Mul: case IrOpcode::Div: case IrOpcode::Mod:
         case IrOpcode::Similarity:
+        case IrOpcode::HierarchyIsA:
+        case IrOpcode::HierarchyCommonAncestors:
+        case IrOpcode::HierarchyLeastCommonAncestors:
+        case IrOpcode::HierarchyMostGeneralAncestors:
             reg(fragment.words[pc + 1]); reg(fragment.words[pc + 2]); reg(fragment.words[pc + 3]); width = 4; break;
+        case IrOpcode::TemporalRank:
+            reg(fragment.words[pc + 1]); symbol(fragment.words[pc + 2]); symbol(fragment.words[pc + 3]); width = 4; break;
         case IrOpcode::Membership:
-            for (std::size_t index = 1; index < 6; ++index) reg(fragment.words[pc + index]); width = 6; break;
+            for (std::size_t index = 1; index < 6; ++index) {
+                reg(fragment.words[pc + index]);
+            }
+            width = 6;
+            break;
         case IrOpcode::Compare:
             reg(fragment.words[pc + 1]); reg(fragment.words[pc + 2]); reg(fragment.words[pc + 3]); width = 5; break;
         case IrOpcode::GetField:
@@ -439,9 +516,9 @@ void appendFragment(FelidaeIr& target, FelidaeIr fragment, bool dropTerminalRetu
             reg(fragment.words[pc + 1]); symbol(fragment.words[pc + 2]); reg(fragment.words[pc + 3]); width = 4; break;
         case IrOpcode::ForEachFact:
             reg(fragment.words[pc + 1]); symbol(fragment.words[pc + 2]); symbol(fragment.words[pc + 3]); width = 4; break;
-        case IrOpcode::Call: case IrOpcode::SemanticEval: case IrOpcode::SsmProcess: case IrOpcode::MakeArray: {
+        case IrOpcode::Call: case IrOpcode::SemanticEval: case IrOpcode::MakeArray: {
             reg(fragment.words[pc + 1]);
-            if (opcode != IrOpcode::MakeArray) symbol(fragment.words[pc + 2]);
+            if (opcode == IrOpcode::Call) symbol(fragment.words[pc + 2]);
             const auto count = fragment.words[pc + 3];
             for (std::size_t index = 0; index < count; ++index) reg(fragment.words[pc + 4 + index]);
             width = 4 + count;
@@ -485,16 +562,18 @@ CoreOperator directConditionOperator(TokenId::Id token) {
 }
 
 FelidaeIr compileDirectProcedure(const ClauseStmt& method,
-                                 const std::unordered_set<SymbolId>& factTypes);
+                                 const std::unordered_set<SymbolId>& factTypes,
+                                 const std::unordered_map<SymbolId, SymbolId>& factDesignations);
 
 FelidaeIr compileDirectConditionalEntry(const ClauseStmt& method,
-                                        const std::unordered_set<SymbolId>& factTypes) {
+                                        const std::unordered_set<SymbolId>& factTypes,
+                                        const std::unordered_map<SymbolId, SymbolId>& factDesignations) {
     const auto conditional = std::dynamic_pointer_cast<IfGoal>(method.body.front());
     const auto comparison = std::dynamic_pointer_cast<BinaryGoal>(conditional->condition);
     auto expression = std::make_shared<OperatorExpression>(directConditionOperator(comparison->op),
                                                             comparison->left, comparison->right);
     expression->sourceSpan = comparison->sourceSpan;
-    auto conditionIr = IntegerParser::compileAstExpressionIr(expression, factTypes);
+    auto conditionIr = IntegerParser::compileAstExpressionIr(expression, factTypes, factDesignations);
     const auto conditionRegister = conditionIr.words.at(conditionIr.words.size() - 3);
     FelidaeIr result;
     appendFragment(result, std::move(conditionIr), true);
@@ -502,12 +581,12 @@ FelidaeIr compileDirectConditionalEntry(const ClauseStmt& method,
     result.words.insert(result.words.end(), {static_cast<IrWord>(IrOpcode::JumpIfFalse),
                                              conditionRegister, 0});
     ClauseStmt thenMethod(method.head, conditional->thenBranch);
-    appendFragment(result, compileDirectProcedure(thenMethod, factTypes), false, true);
+    appendFragment(result, compileDirectProcedure(thenMethod, factTypes, factDesignations), false, true);
     const auto endJump = result.words.size();
     result.words.insert(result.words.end(), {static_cast<IrWord>(IrOpcode::Jump), 0});
     const auto elseTarget = result.words.size();
     ClauseStmt elseMethod(method.head, conditional->elseBranch);
-    appendFragment(result, compileDirectProcedure(elseMethod, factTypes), false);
+    appendFragment(result, compileDirectProcedure(elseMethod, factTypes, factDesignations), false);
     result.words[elseJump + 2] = elseTarget;
     result.words[endJump + 1] = result.words.size() - 1; // the final END boundary
     IrVerifier::verify(result);
@@ -515,29 +594,33 @@ FelidaeIr compileDirectConditionalEntry(const ClauseStmt& method,
 }
 
 FelidaeIr compileDirectSequentialEntry(const ClauseStmt& method,
-                                       const std::unordered_set<SymbolId>& factTypes) {
+                                       const std::unordered_set<SymbolId>& factTypes,
+                                       const std::unordered_map<SymbolId, SymbolId>& factDesignations) {
     FelidaeIr result;
     for (std::size_t index = 0; index + 1 < method.body.size(); ++index) {
         const auto assignment = std::dynamic_pointer_cast<AssignGoal>(method.body[index]);
         GlobalBindingStmt binding(assignment->name, assignment->expr);
         binding.sourceSpan = assignment->sourceSpan;
-        appendFragment(result, IntegerParser::compileAstGlobalBindingIr(binding, factTypes), true);
+        appendFragment(result, IntegerParser::compileAstGlobalBindingIr(
+            binding, factTypes, factDesignations), true);
     }
     ClauseStmt returned(method.head, {method.body.back()});
-    appendFragment(result, IntegerParser::compileAstEntryMethodIr(returned, factTypes), false);
+    appendFragment(result, IntegerParser::compileAstEntryMethodIr(
+        returned, factTypes, factDesignations), false);
     IrVerifier::verify(result);
     return result;
 }
 
 FelidaeIr compileDirectProcedure(const ClauseStmt& method,
-                                 const std::unordered_set<SymbolId>& factTypes) {
+                                 const std::unordered_set<SymbolId>& factTypes,
+                                 const std::unordered_map<SymbolId, SymbolId>& factDesignations) {
     if (method.body.size() == 1) {
         if (std::dynamic_pointer_cast<IfGoal>(method.body.front())) {
-            return compileDirectConditionalEntry(method, factTypes);
+            return compileDirectConditionalEntry(method, factTypes, factDesignations);
         }
-        return IntegerParser::compileAstEntryMethodIr(method, factTypes);
+        return IntegerParser::compileAstEntryMethodIr(method, factTypes, factDesignations);
     }
-    return compileDirectSequentialEntry(method, factTypes);
+    return compileDirectSequentialEntry(method, factTypes, factDesignations);
 }
 
 } // namespace
@@ -552,13 +635,31 @@ IrModule IrCodeGenerator::compile(Program program) const {
     std::unordered_set<SymbolId> factTypes;
     for (const auto& clause : program.clauses) {
         if (!clause) continue;
-        auto& declarations = clause->isFact() ? factTypes : procedureSymbols;
-        if (!declarations.insert(clause->head.nameId).second ||
-            (clause->isFact() ? procedureSymbols.contains(clause->head.nameId)
-                              : factTypes.contains(clause->head.nameId))) {
+        const bool conflict = clause->isFact()
+            ? procedureSymbols.contains(clause->head.nameId)
+            : factTypes.contains(clause->head.nameId) ||
+              !procedureSymbols.insert(clause->head.nameId).second;
+        if (conflict) {
             throw IntegerParserError("not yet lowered to IR: duplicate procedure declaration at " +
                 std::to_string(clause->sourceSpan.startLine) + ":" +
                 std::to_string(clause->sourceSpan.startColumn));
+        }
+        // A fact predicate is a table and therefore may have any number of
+        // source rows. Only callable procedures are single declarations.
+        if (clause->isFact()) factTypes.insert(clause->head.nameId);
+    }
+    for (const auto& clause : program.clauses) {
+        if (!clause) continue;
+        for (const auto& annotation : clause->annotations) {
+            const bool operatorAnnotation =
+                annotation.builtinId == BuiltinId::OverloadAnnotation ||
+                annotation.builtinId == BuiltinId::MixfixAnnotation ||
+                annotation.builtinId == BuiltinId::MatcherAnnotation;
+            if (!operatorAnnotation && !procedureSymbols.contains(annotation.nameId)) {
+                throw IntegerParserError("unknown annotation '" + annotation.name + "' at " +
+                    std::to_string(annotation.sourceSpan.startLine) + ":" +
+                    std::to_string(annotation.sourceSpan.startColumn));
+            }
         }
     }
     // Module bindings form one immutable namespace.  Reject collisions before
@@ -594,11 +695,20 @@ IrModule IrCodeGenerator::compile(Program program) const {
         for (const auto parameter : procedureParameters(*clause)) visible.insert(parameter);
         resolveScopedAccessesInGoals(clause->body, std::move(visible));
     }
-    const DirectCompileContext context{procedureSymbols, factTypes};
+    std::unordered_map<SymbolId, SymbolId> factDesignations;
+    std::unordered_map<IrSymbolRef, std::size_t> factTypeIndexes;
     for (const auto& clause : program.clauses) {
         if (!clause || !clause->isFact()) continue;
-        IrFactType type;
-        type.symbol = clause->head.nameId;
+        for (const auto designation : clause->designationIds) {
+            const auto [existingDesignation, insertedDesignation] =
+                factDesignations.emplace(designation, clause->head.nameId);
+            if (!insertedDesignation && existingDesignation->second != clause->head.nameId) {
+                throw IntegerParserError("fact designation cannot name unrelated fact types at " +
+                    std::to_string(clause->sourceSpan.startLine) + ":" +
+                    std::to_string(clause->sourceSpan.startColumn));
+            }
+        }
+        std::vector<IrSymbolRef> parents;
         for (const auto& parent : clause->parentNames) {
             const auto parentSymbol = symbolIdForName(parent);
             if (!factTypes.contains(parentSymbol)) {
@@ -606,12 +716,21 @@ IrModule IrCodeGenerator::compile(Program program) const {
                     std::to_string(clause->sourceSpan.startLine) + ":" +
                     std::to_string(clause->sourceSpan.startColumn));
             }
-            type.parents.push_back(parentSymbol);
+            parents.push_back(parentSymbol);
         }
-        type.sourceSpan = {clause->sourceSpan.startLine, clause->sourceSpan.startColumn,
-                           clause->sourceSpan.endLine, clause->sourceSpan.endColumn};
-        module.factTypes.push_back(std::move(type));
+        const auto existing = factTypeIndexes.find(clause->head.nameId);
+        if (existing == factTypeIndexes.end()) {
+            factTypeIndexes.emplace(clause->head.nameId, module.factTypes.size());
+            module.factTypes.push_back({clause->head.nameId, std::move(parents),
+                {clause->sourceSpan.startLine, clause->sourceSpan.startColumn,
+                 clause->sourceSpan.endLine, clause->sourceSpan.endColumn}});
+        } else if (module.factTypes[existing->second].parents != parents) {
+            throw IntegerParserError("not yet lowered to IR: inconsistent fact hierarchy at " +
+                std::to_string(clause->sourceSpan.startLine) + ":" +
+                std::to_string(clause->sourceSpan.startColumn));
+        }
     }
+    const DirectCompileContext context{procedureSymbols, factTypes, factDesignations};
     bool directGlobals = program.imports.empty() && !program.clauses.empty();
     for (const auto& binding : program.globals) {
         if (!binding || !isDirectDeterministicExpression(binding->expr, directSymbols, context)) {
@@ -630,8 +749,23 @@ IrModule IrCodeGenerator::compile(Program program) const {
         });
     if (directGlobals && main != program.clauses.end() && eligibleMethods &&
         isDirectEntry(**main, directSymbols, context)) {
+        for (const auto& clause : program.clauses) {
+            if (!clause || !clause->isFact() || clause->emptyDeclaration) continue;
+            auto fact = std::make_shared<TermExpr>(clause->head.name, clause->head.nameId,
+                clause->head.args, clause->head.builtinId, true);
+            fact->sourceSpan = clause->sourceSpan;
+            if (!isDirectDeterministicExpression(fact, directSymbols, context)) {
+                throw IntegerParserError("not yet lowered to IR: non-deterministic fact row at " +
+                    std::to_string(clause->sourceSpan.startLine) + ":" +
+                    std::to_string(clause->sourceSpan.startColumn));
+            }
+            appendFragment(module.ir,
+                IntegerParser::compileAstExpressionIr(
+                    std::move(fact), factTypes, factDesignations), true);
+        }
         for (const auto& binding : program.globals) {
-            appendFragment(module.ir, IntegerParser::compileAstGlobalBindingIr(*binding, factTypes), true);
+            appendFragment(module.ir, IntegerParser::compileAstGlobalBindingIr(
+                *binding, factTypes, factDesignations), true);
         }
         for (const auto& clause : program.clauses) {
                 if (clause->isFact()) continue;
@@ -645,7 +779,7 @@ IrModule IrCodeGenerator::compile(Program program) const {
                     irParameters.push_back(static_cast<IrSymbolRef>(parameter));
                 }
                 const auto [_, inserted] = module.procedures.emplace(clause->head.nameId, IrProcedure{
-                    compileDirectProcedure(*clause, factTypes), irParameters, irParameters,
+                    compileDirectProcedure(*clause, factTypes, factDesignations), irParameters, irParameters,
                     {clause->sourceSpan.startLine, clause->sourceSpan.startColumn,
                      clause->sourceSpan.endLine, clause->sourceSpan.endColumn}});
                 if (!inserted) throw IntegerParserError("duplicate direct IR procedure");

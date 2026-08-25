@@ -5,7 +5,8 @@
 #include "ModelStore.h"
 #include "SentencePieceModel.h"
 #include "Version.h"
-#include "form/BinaryIr.h"
+#include "form/BinaryIsa.h"
+#include "form/IsaLowerer.h"
 
 #include <filesystem>
 #include <fstream>
@@ -54,8 +55,8 @@ void printHelp() {
     std::cout << LANGUAGE_NAME << " compiler v" << LANGUAGE_VERSION << "\n\n"
               << "Usage: felidae_compiler [--mixfix-model models/mixfix] program.fx\n"
               << "       felidae_compiler --tokenize input.fx\n"
-              << "       felidae_compiler --train datasets/compiler/mixfix-v1.jsonl --store-model build|dist [--epochs N] [--learning-rate R]\n"
-              << "Writes verified binary IR to the compiler build directory.\n";
+              << "       felidae_compiler --train 'datasets/compiler/*.jsonl' --store-model build|dist [--epochs N] [--learning-rate R]\n"
+              << "Writes verified Felidae ISA to the compiler directory.\n";
 }
 
 std::string readSourceFile(const fs::path& source) {
@@ -135,17 +136,17 @@ int main(int argc, char** argv) {
 #endif
         const auto module = compileProgramFileToIr(source, compilerOptions);
         verifyIrModule(module);
+        const auto isaModule = IsaLowerer::lowerModule(module);
+        verifyIsaModule(isaModule);
         // Build artifacts never modify example/source directories or a staged
         // distribution. The caller's existing build/ directory is the one
         // canonical artifact location for both a developer build and the
         // portable compiler.
-        const auto workingDirectory = fs::current_path().lexically_normal();
-        const auto outputDirectory = workingDirectory.filename() == "build"
-            ? workingDirectory : (workingDirectory / "build");
+        const auto outputDirectory = fs::absolute(fs::path(argv[0])).lexically_normal().parent_path();
         fs::create_directories(outputDirectory);
         auto output = outputDirectory / source.filename();
-        output.replace_extension(kBinaryIrExtension);
-        writeBinaryIr(output, module);
+        output.replace_extension(kFelidaeBinaryExtension);
+        writeBinaryIsa(output, isaModule);
         std::cout << output.string() << "\n";
         return 0;
     } catch (const std::exception& error) {

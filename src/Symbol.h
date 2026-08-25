@@ -51,7 +51,8 @@ inline std::string internalSymbolString(InternalSymbolKind kind) {
 
 // Source symbols use deterministic 63-bit FNV-1a IDs. The compiler retains
 // spellings only while compiling to detect the astronomically unlikely hash
-// collision; binary IR and the VM carry IDs only.
+// collision. Executable ISA carries IDs and bounded pool indexes; FELBIN may
+// additionally retain verified non-executable spellings for clean display.
 class SymbolInterner {
 public:
     static constexpr SymbolId GeneratedIdBase = SymbolId{1} << 63U;
@@ -108,7 +109,11 @@ private:
     }
     static SymbolId deterministicId(std::string_view name) noexcept {
         SymbolId value = 1469598103934665603ull;
-        for (const unsigned char byte : name) { value ^= byte; value *= 1099511628211ull; }
+        for (const char character : name) {
+            const auto byte = static_cast<unsigned char>(character);
+            value ^= byte;
+            value *= 1099511628211ull;
+        }
         value &= ~(SymbolId{1} << 63U);
         value |= SymbolId{1} << 62U;
         return value;

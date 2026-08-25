@@ -1,0 +1,120 @@
+# Felidae reasoning and robustness benchmark
+
+This benchmark does **not** assign an IQ number. IQ tests are calibrated for
+people and would produce a misleading score for a compiler and virtual
+machine. The benchmark instead reports concrete capabilities that can be
+reproduced from source.
+
+The initial domains are a
+[coffee vending controller](../v2_examples/coffee_vending_theorem_solver.fx)
+and an
+[air-conditioner controller](../v2_examples/air_conditioner_theorem_solver.fx).
+The expected cases are versioned in
+[`felidae-reasoning-v1.jsonl`](../datasets/benchmarks/felidae-reasoning-v1.jsonl).
+
+## What the examples prove
+
+Both programs use hierarchical facts, explicit structural predicates,
+numeric truth, theorem-like mixfix expressions, and ordered alternative
+proofs. A failed candidate falls through to another proof, so the examples
+exercise bounded backtracking. Invalid HVAC sensor evidence reaches a safe
+lockout and missing coffee resources reach a refund instead of an unsafe
+action.
+
+This is deliberately narrower than Prolog. Felidae currently has no native
+logic variables, occurs check, automatic unification, choice-point stack,
+cut, or exhaustive search engine. The `requestUnifies` and
+`observationUnifies` predicates are explicit domain unifiers, and the choice
+procedures define a finite search order. Calling this full Prolog
+backtracking would overstate the implementation.
+
+## Reproducible scoring
+
+Build commands can take time and must be run by the developer. Keep every
+artifact below `build/debug`:
+
+```bash
+cmake --build build/debug --target felidae_compiler felidae_vm --parallel 1
+
+./build/debug/felidae_compiler v2_examples/coffee_vending_theorem_solver.fx
+./build/debug/felidae_vm build/debug/coffee_vending_theorem_solver.bin
+
+./build/debug/felidae_compiler v2_examples/air_conditioner_theorem_solver.fx
+./build/debug/felidae_vm build/debug/air_conditioner_theorem_solver.bin
+```
+
+The native benchmark target runs the same source-to-verified-ISA path in one
+process and emits one JSON result. Build it explicitly, then supply expected
+action text from the versioned manifest:
+
+```bash
+cmake --build build/debug --target felidae_reasoning_benchmark --parallel 1
+
+./build/debug/felidae_reasoning_benchmark --iterations 100 \
+  v2_examples/coffee_vending_theorem_solver.fx \
+  --expect dispense_coffee --expect refund
+
+./build/debug/felidae_reasoning_benchmark --iterations 100 \
+  v2_examples/air_conditioner_theorem_solver.fx \
+  --expect cool --expect ventilate --expect fault_lockout
+```
+
+The JSON uses numeric `1.0` and `0.0` for determinism and expectation status.
+The iteration limit is 10,000; no benchmark or training runs implicitly.
+
+Record these metrics rather than one opaque score:
+
+| Metric | Measurement |
+|---|---|
+| Proof accuracy | Expected actions matched / five manifest cases |
+| Safe-failure rate | Safe fallback reached / two injected fault cases |
+| Hierarchy accuracy | Correct `isA` results / hierarchy assertions |
+| Determinism | Identical output over 100 repeated VM executions |
+| Compile rejection | Invalid programs rejected with a diagnostic / invalid programs |
+| Compile latency | Median and p95 compiler wall time after five warmups |
+| VM latency | Median and p95 VM wall time after five warmups |
+| Generalization | Held-out programs compiled and executed correctly without adding them to training |
+
+Do not count a crash, hang, `nil`, or silent halt as a correct rejection. For
+fault tolerance, add cases for invalid sensor truth, missing resources,
+unknown fact fields, malformed source, corrupted FELBIN bytes, and recursion
+depth exhaustion. The compiler or verifier must reject malformed artifacts;
+the domain policy must return a documented safe action for valid but adverse
+inputs.
+
+## Learning and out-of-box evaluation
+
+Felidae code supplies executable rules; merely reading a new `.fx` file is
+not model training. The compiler SSM learns mixfix target selection, while
+the runtime SSM learns operation selection. Neither model may invent new
+language semantics or bypass IR/ISA verification.
+
+Use three disjoint sets when evaluating learning:
+
+1. **Train** contains examples used by `felidae_compiler --train` or
+   `felidae_vm --train`.
+2. **Validation** selects checkpoints and thresholds.
+3. **Held-out transfer** contains new operator wording, hierarchy depth, fact
+   ordering, and fault combinations never present in the first two sets.
+
+Report out-of-box accuracy before training, held-out accuracy after training,
+the difference, and regression accuracy on the original suite. Never train
+on the five benchmark answers and then report those same rows as evidence of
+generalization. Save the exact dataset hash, seed, model hash, build type,
+CPU, and command line with every result.
+
+## Current strengths and weaknesses
+
+Felidae is stronger than a hand-written finite-state table when policies are
+shared across many hierarchical fact types, explanations and proof scores
+matter, or new combinations of known facts must be evaluated. Verified ISA,
+bounded indexes, deterministic lowering, and numeric truth also give a useful
+safety boundary.
+
+A conventional finite-state machine remains stronger for tiny controllers
+that require certified hard real-time bounds, minimal memory, and an obvious
+enumeration of every transition. Felidae's explicit finite alternatives can
+grow combinatorially, its learned selectors require held-out validation, and
+it does not yet provide a complete logical theorem prover. Physical coffee or
+HVAC control additionally needs a trusted I/O layer, actuator interlocks,
+timeouts, and independent safety limits outside the reasoning program.

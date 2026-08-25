@@ -8,7 +8,6 @@
 #include <sentencepiece.pb.h>
 
 #include <cassert>
-#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -45,16 +44,30 @@ int main() {
     assert(training && training->dataset == std::filesystem::path(dataset));
     assert(training->store == std::filesystem::path(build));
     assert(training->epochs == 12 && training->learningRate == 0.01);
+    const auto rejectsTrainingOptions = [](int count, char** arguments) {
+        try { (void)Felidae::parseModelTrainingOptions(count, arguments); }
+        catch (const std::runtime_error&) { return true; }
+        return false;
+    };
+    char malformedRate[] = "0.01junk";
+    char* malformedRateArguments[]{nullptr, train, dataset, store, build, rate, malformedRate};
+    assert(rejectsTrainingOptions(static_cast<int>(std::size(malformedRateArguments)),
+                                  malformedRateArguments));
+    char* duplicateEpochArguments[]{nullptr, train, dataset, store, build,
+                                    epochs, twelve, epochs, twelve};
+    assert(rejectsTrainingOptions(static_cast<int>(std::size(duplicateEpochArguments)),
+                                  duplicateEpochArguments));
     const auto buildModel = Felidae::modelStoreDirectory("build", "mixfix-gru");
     const auto distModel = Felidae::modelStoreDirectory("dist", "runtime-gru");
     assert(buildModel.filename() == "mixfix-gru" && buildModel.parent_path().filename() == "build");
     assert(distModel.filename() == "runtime-gru" && distModel.parent_path().filename() == "models");
 
-    // Expansion occurs in the executable, not in the user's shell.  Use an
-    // isolated temporary directory so this remains a unit test and does not
-    // introduce a generated dataset into the repository.
-    const auto datasetTestDirectory = std::filesystem::temp_directory_path() /
-        ("felidae-model-store-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    // Expansion occurs in the executable, not in the user's shell. Keep the
+    // isolated fixture in the configured build/test-artifacts directory; no
+    // test may create a random system-temporary build tree.
+    const std::filesystem::path datasetTestDirectory(FELIDAE_TEST_OUTPUT_DIR);
+    std::error_code ignored;
+    std::filesystem::remove_all(datasetTestDirectory, ignored);
     std::filesystem::create_directories(datasetTestDirectory);
     {
         std::ofstream(datasetTestDirectory / "mixfix-v1.jsonl") << "{}\n";
@@ -70,6 +83,25 @@ int main() {
     sentencepiece::SentencePieceProcessor model;
     const auto loaded = model.Load(FELIDAE_SENTENCEPIECE_MODEL_PATH);
     assert(loaded.ok());
+    assert(Felidae::kFelidaeTokenizerDatasetSchemaVersion == 1);
+    assert(Felidae::kFelidaeTokenizerDatasetHash != 0);
+    assert(Felidae::kFelidaeTokenizerDatasetRecordCount == 32);
+    assert(Felidae::kFelidaeSentencePieceVocabularySize ==
+           static_cast<std::uint32_t>(model.GetPieceSize()));
+    assert(Felidae::kFelidaeSentencePieceModelHash != 0);
+    assert(model.GetPieceSize() <= 1024 && model.GetPieceSize() > 512);
+
+    // Corpus-covered identifiers should use learned pieces rather than one
+    // byte token per source byte. This is a stable detection-efficiency gate,
+    // while byte fallback below remains the robustness gate for unseen UTF-8.
+    const std::string corpusVocabulary =
+        "semantic_identity effective_at commonAncestors for_each_fact RatingProfile";
+    sentencepiece::SentencePieceText corpusEncoding;
+    assert(model.Encode(corpusVocabulary, &corpusEncoding).ok());
+    assert(corpusEncoding.pieces_size() < static_cast<int>(corpusVocabulary.size() / 2));
+    for (const auto& piece : corpusEncoding.pieces()) {
+        assert(piece.id() != Felidae::TokenId::UNKNOWN);
+    }
 
     for (std::size_t index = 0; index < std::size(Felidae::kBuiltinTokens); ++index) {
         const auto spelling = Felidae::kBuiltinTokens[index].spelling;
