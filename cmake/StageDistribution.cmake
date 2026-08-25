@@ -4,8 +4,8 @@ if(NOT DEFINED FELIDAE_DIST_DIR OR NOT DEFINED FELIDAE_DIST_BUILD_DIR OR
     message(FATAL_ERROR "distribution staging paths are incomplete")
 endif()
 
-# This directory is generated only by the explicit felidae_dist target. It is
-# never a build tree and is safe to replace wholesale after successful builds.
+# This directory is generated only by the explicit felidae_dist target inside
+# the active build tree and is safe to replace wholesale after successful builds.
 file(REMOVE_RECURSE "${FELIDAE_DIST_DIR}")
 file(MAKE_DIRECTORY "${FELIDAE_DIST_DIR}")
 file(MAKE_DIRECTORY "${FELIDAE_DIST_DIR}/models")

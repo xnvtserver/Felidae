@@ -451,14 +451,14 @@ ctest --test-dir build -R 'felidae_(sentencepiece_model|sentencepiece_pipeline|m
 Create a portable shipment only after a successful build:
 
 ```powershell
-# Builds, runs focused tests, stages dist/, starts the staged executables,
+# Builds, runs focused tests, stages <build-directory>/dist/, starts the staged executables,
 # and compiles/runs the nested-mixfix smoke program through them.
 cmake --build build --target felidae_beta
 # equivalent wrapper:
 .\build.ps1 -Beta
 ```
 
-`dist/` contains the two executables, models, and required LibTorch DLLs; it
+`<build-directory>/dist/` contains the two executables, models, and required LibTorch DLLs; it
 does not contain source or CMake build state. The staged package writes
 `SHA256SUMS.txt`; verify it before uploading the beta.
 
@@ -469,10 +469,10 @@ does not contain source or CMake build state. The staged package writes
 2. Configure a Release LibTorch build, then run `cmake --build build --target
    felidae_beta`.
 3. Confirm the gate reports the compiler and VM version
-   `0.2.3-beta.1`, all focused tests pass, and `dist/` contains only the
+   `0.2.3-beta.1`, all focused tests pass, and the build-local `dist/` contains only the
    approved executables, models, runtime DLLs, `README.txt`, and
    `SHA256SUMS.txt`.
-4. Copy `dist/` to a clean Windows machine, verify checksums, compile a `.fx`
+4. Copy `<build-directory>/dist/` to a clean Windows machine, verify checksums, compile a `.fx`
    file, and run its generated `.bin` using only the copied folder.
 5. Tag and publish the exact revision only after that clean-machine smoke
    succeeds. Do not publish files directly from `build/`.

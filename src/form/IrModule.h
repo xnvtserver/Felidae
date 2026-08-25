@@ -22,6 +22,9 @@ struct IrModule {
     IrSymbolRef entryProcedure = 0;
 };
 
+// Authoritative decoder for compiler-only IR. It validates both fixed and
+// variable-width instructions before returning their encoded word count.
+std::size_t compilerInstructionWidth(const FelidaeIr& ir, std::size_t pc);
 void verifyIrModule(const IrModule& module);
 
 } // namespace Felidae

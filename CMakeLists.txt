@@ -359,9 +359,9 @@ if(FELIDAE_ENABLE_LIBTORCH)
     target_link_libraries(felidae_vm PRIVATE ${TORCH_LIBRARIES})
 endif()
 
-# Portable shipping folder. Build with: cmake --build build --target felidae_dist
-# It intentionally stages outside build/ so build remains build products only.
-set(FELIDAE_DIST_DIR "${CMAKE_SOURCE_DIR}/dist")
+# Portable shipping folder. Release staging is a build product and therefore
+# remains inside the selected build tree instead of modifying the source tree.
+set(FELIDAE_DIST_DIR "${CMAKE_BINARY_DIR}/dist")
 set(FELIDAE_DIST_COMMAND
     "${CMAKE_COMMAND}"
     "-DFELIDAE_DIST_DIR=${FELIDAE_DIST_DIR}"
@@ -377,7 +377,7 @@ list(APPEND FELIDAE_DIST_COMMAND "-P" "${CMAKE_SOURCE_DIR}/cmake/StageDistributi
 add_custom_target(felidae_dist
     COMMAND ${FELIDAE_DIST_COMMAND}
     DEPENDS felidae_compiler felidae_vm felidae_sentencepiece_model
-    COMMENT "Staging portable Felidae distribution in dist/")
+    COMMENT "Staging portable Felidae distribution in ${FELIDAE_DIST_DIR}")
 
 # Explicit runtime-corpus boundary. The tool accepts only verified .bin input
 # and emits a unary fixed-ID Identity teacher for its typed result. It never

@@ -1,11 +1,10 @@
 # Build outputs
 build/
+/dist/
 models/*.model
 models/FelidaeSentencePieceIds.h
 models/**/*.pt
 models/**/manifest.txt
-build-sentencepiece/
-build-clang/
 *.exe
 *.obj
 # Native module linker export files (including nested package folders)

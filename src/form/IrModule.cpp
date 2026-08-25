@@ -4,7 +4,6 @@
 #include <unordered_set>
 
 namespace Felidae {
-namespace {
 
 std::size_t compilerInstructionWidth(const FelidaeIr& ir,std::size_t pc){
     if(pc>=ir.words.size()||ir.words[pc]>=kIrOpcodeCount)throw IrError("compiler IR contains an invalid opcode");
@@ -20,8 +19,6 @@ std::size_t compilerInstructionWidth(const FelidaeIr& ir,std::size_t pc){
     case IrOpcode::Count:break;
     }throw IrError("compiler IR contains an invalid opcode");
 }
-
-} // namespace
 
 void verifyIrModule(const IrModule& module){
     IrVerifier::verify(module.ir);
