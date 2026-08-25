@@ -276,21 +276,29 @@ std::vector<MixfixVocabularyId> GruMixfixStateModel::transform(
         }
         ids.push_back(static_cast<std::int64_t>(id));
     }
-    torch::NoGradGuard guard;
-    auto inputIds = torch::tensor(ids, torch::TensorOptions().dtype(torch::kInt64)).reshape({-1, 1});
-    auto decoderInput = torch::full({1, 1}, configuration_.beginToken, torch::TensorOptions().dtype(torch::kInt64));
+    torch::InferenceMode guard;
+    const auto inputIds = torch::tensor(ids, torch::TensorOptions().dtype(torch::kInt64)).reshape({-1, 1});
     std::vector<MixfixVocabularyId> tokens;
     const auto limit = std::min(configuration_.maximumDecodeSteps, context.maximumOutputWords);
+    std::vector<std::int64_t> decoderIds{configuration_.beginToken};
+    decoderIds.reserve(limit + 1);
+    torch::Tensor decoderHidden;
+    if (!implementation_->production) {
+        decoderHidden = std::get<1>(implementation_->network->encoder->forward(
+            implementation_->network->embedding->forward(inputIds)));
+    }
     for (std::size_t step = 0; step < limit; ++step) {
         torch::Tensor logits;
         if (implementation_->production) {
+            const auto decoderInput = torch::tensor(
+                decoderIds, torch::TensorOptions().dtype(torch::kInt64)).reshape({-1, 1});
             logits = implementation_->production->forward({inputIds, decoderInput}).toTensor();
         } else {
-            auto encoderResult = implementation_->network->encoder->forward(
-                implementation_->network->embedding->forward(inputIds));
+            const auto decoderInput = torch::tensor(
+                {decoderIds.back()}, torch::TensorOptions().dtype(torch::kInt64)).reshape({1, 1});
             auto decoderResult = implementation_->network->decoder->forward(
-                implementation_->network->decoderEmbedding->forward(decoderInput),
-                std::get<1>(encoderResult));
+                implementation_->network->decoderEmbedding->forward(decoderInput), decoderHidden);
+            decoderHidden = std::get<1>(decoderResult);
             logits = implementation_->network->projection->forward(std::get<0>(decoderResult));
         }
         const auto tokenId = logits.select(0, logits.size(0) - 1).select(0, 0).argmax().item<std::int64_t>();
@@ -302,8 +310,7 @@ std::vector<MixfixVocabularyId> GruMixfixStateModel::transform(
         const auto kind = context.outputVocabulary[vocabularyId].kind;
         if (kind == MixfixIrTokenKind::End || kind == MixfixIrTokenKind::Reject ||
             kind == MixfixIrTokenKind::Abstain) break;
-        decoderInput = torch::cat({decoderInput, torch::full({1, 1}, tokenId,
-            torch::TensorOptions().dtype(torch::kInt64))}, 0);
+        decoderIds.push_back(tokenId);
     }
     return tokens;
 #else

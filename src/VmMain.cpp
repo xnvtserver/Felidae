@@ -46,7 +46,7 @@ void printHelp() {
 }
 
 int trainRuntimeModel(const ModelTrainingOptions& training) {
-#ifdef FELIDAE_HAS_TORCH
+#ifdef FELIDAE_HAS_TRAINING
     if (training.dataset.extension() != ".jsonl") {
         throw std::runtime_error("--train requires one VM .jsonl dataset");
     }
@@ -60,7 +60,7 @@ int trainRuntimeModel(const ModelTrainingOptions& training) {
     return runRuntimeGruTraining(static_cast<int>(rawArguments.size()), rawArguments.data());
 #else
     (void)training;
-    throw std::runtime_error("this VM build has no LibTorch training support");
+    throw std::runtime_error("this VM build has training disabled; configure FELIDAE_ENABLE_TRAINING=ON");
 #endif
 }
 

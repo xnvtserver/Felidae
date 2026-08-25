@@ -76,7 +76,7 @@ int tokenizeSource(const fs::path& input) {
 }
 
 int trainMixfixModel(const ModelTrainingOptions& training) {
-#ifdef FELIDAE_HAS_TORCH
+#ifdef FELIDAE_HAS_TRAINING
     const auto datasets = expandJsonlDatasetPaths(training.dataset);
     const auto output = modelStoreDirectory(training.store, "mixfix-gru");
     const auto inputVocabulary = std::to_string(felidaeSentencePieceModel().GetPieceSize());
@@ -90,7 +90,7 @@ int trainMixfixModel(const ModelTrainingOptions& training) {
     return runMixfixGruTraining(static_cast<int>(rawArguments.size()), rawArguments.data());
 #else
     (void)training;
-    throw std::runtime_error("this compiler build has no LibTorch training support");
+    throw std::runtime_error("this compiler build has training disabled; configure FELIDAE_ENABLE_TRAINING=ON");
 #endif
 }
 } // namespace

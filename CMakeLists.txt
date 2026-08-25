@@ -26,8 +26,15 @@ option(FELIDAE_ENABLE_STRICT_WARNINGS
 option(FELIDAE_ENABLE_MSVC_STATIC_ANALYSIS
     "Enable MSVC /analyze on compiler and Form VM targets" OFF)
 option(FELIDAE_ENABLE_LIBTORCH "Enable the C++ LibTorch neural mixfix backend" OFF)
+option(FELIDAE_ENABLE_TRAINING
+    "Build explicit compiler and VM C++ model-training commands" OFF)
 option(FELIDAE_BUILD_NATIVE_MODULES
     "Build retired native-extension DLLs (not used by the compiler/Form VM)" OFF)
+
+if(FELIDAE_ENABLE_TRAINING AND NOT FELIDAE_ENABLE_LIBTORCH)
+    message(FATAL_ERROR
+        "FELIDAE_ENABLE_TRAINING requires FELIDAE_ENABLE_LIBTORCH=ON")
+endif()
 
 # Keep the lexical model native and reproducible: SentencePiece is pinned as a
 # git submodule instead of being found from an arbitrary system installation.
@@ -117,9 +124,10 @@ if(FELIDAE_ENABLE_LIBTORCH)
     # that includes SentencePiece's generated Protobuf classes. The backend
     # communicates with the compiler through integer IDs and typed model
     # interfaces, so it can be compiled as a clean dependency island.
-    add_library(felidae_mixfix_torch STATIC
-        src/MixfixStateModel.cpp
-        tools/TrainMixfixGru.cpp)
+    add_library(felidae_mixfix_torch STATIC src/MixfixStateModel.cpp)
+    if(FELIDAE_ENABLE_TRAINING)
+        target_sources(felidae_mixfix_torch PRIVATE tools/TrainMixfixGru.cpp)
+    endif()
     target_include_directories(felidae_mixfix_torch PRIVATE src)
     target_include_directories(felidae_mixfix_torch SYSTEM PRIVATE
         third_party
@@ -353,7 +361,11 @@ felidae_enable_static_analysis(felidae_vm)
 if(FELIDAE_ENABLE_LIBTORCH)
     # The daemon owns an optional runtime-only GRU. Form itself remains free
     # of LibTorch and all compiler/parser dependencies.
-    target_sources(felidae_vm PRIVATE src/form/RuntimeStateModel.cpp tools/TrainRuntimeGru.cpp)
+    target_sources(felidae_vm PRIVATE src/form/RuntimeStateModel.cpp)
+    if(FELIDAE_ENABLE_TRAINING)
+        target_sources(felidae_vm PRIVATE tools/TrainRuntimeGru.cpp)
+        target_compile_definitions(felidae_vm PRIVATE FELIDAE_HAS_TRAINING=1)
+    endif()
     target_compile_definitions(felidae_vm PRIVATE FELIDAE_HAS_TORCH=1)
     target_include_directories(felidae_vm SYSTEM PRIVATE ${TORCH_INCLUDE_DIRS})
     target_link_libraries(felidae_vm PRIVATE ${TORCH_LIBRARIES})
@@ -366,6 +378,8 @@ set(FELIDAE_DIST_COMMAND
     "${CMAKE_COMMAND}"
     "-DFELIDAE_DIST_DIR=${FELIDAE_DIST_DIR}"
     "-DFELIDAE_DIST_BUILD_DIR=${CMAKE_BINARY_DIR}"
+    "-DFELIDAE_DIST_CONFIG=$<CONFIG>"
+    "-DFELIDAE_DIST_EXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}"
     "-DFELIDAE_DIST_MODEL_DIR=${CMAKE_SOURCE_DIR}/models"
     "-DFELIDAE_DIST_VERSION=0.2.3-beta.1")
 if(WIN32 AND FELIDAE_ENABLE_LIBTORCH)
@@ -427,6 +441,9 @@ felidae_enable_msvc_exceptions(felidae_compiler)
 target_link_libraries(felidae_compiler PRIVATE felidae_lowerer sentencepiece nlohmann_json::nlohmann_json)
 if(FELIDAE_ENABLE_LIBTORCH)
     target_compile_definitions(felidae_compiler PRIVATE FELIDAE_HAS_TORCH=1)
+    if(FELIDAE_ENABLE_TRAINING)
+        target_compile_definitions(felidae_compiler PRIVATE FELIDAE_HAS_TRAINING=1)
+    endif()
     target_link_libraries(felidae_compiler PRIVATE felidae_mixfix_torch)
     # Training is an explicit subcommand of felidae_compiler/felidae_vm.  Do
     # not create separate trainer executables in build/.
