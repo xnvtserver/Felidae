@@ -24,39 +24,6 @@ std::uint16_t narrowIndex(IrWord value, const char* kind) {
     return static_cast<std::uint16_t>(value);
 }
 
-std::size_t irWidth(const FelidaeIr& ir, std::size_t pc) {
-    if (pc >= ir.words.size() || ir.words[pc] >= kIrOpcodeCount) throw IrError("compiler IR contains an unknown opcode");
-    const auto fixed = [&](std::size_t width) {
-        if (width > ir.words.size() - pc) throw IrError("compiler IR instruction is incomplete");
-        return width;
-    };
-    const auto op = static_cast<IrOpcode>(ir.words[pc]);
-    switch (op) {
-    case IrOpcode::End: return fixed(1);
-    case IrOpcode::Jump: return fixed(2);
-    case IrOpcode::LoadConst: case IrOpcode::LoadSymbol: case IrOpcode::StoreSymbol:
-    case IrOpcode::Move: case IrOpcode::JumpIfFalse: case IrOpcode::CallNative:
-    case IrOpcode::MakeFact: case IrOpcode::Return: return fixed(3);
-    case IrOpcode::ForEachFact: case IrOpcode::Add: case IrOpcode::Sub: case IrOpcode::Mul:
-    case IrOpcode::Div: case IrOpcode::Mod: case IrOpcode::GetField: case IrOpcode::SetField:
-    case IrOpcode::Similarity: case IrOpcode::HierarchyIsA: case IrOpcode::HierarchyCommonAncestors:
-    case IrOpcode::HierarchyLeastCommonAncestors:
-    case IrOpcode::HierarchyMostGeneralAncestors: case IrOpcode::TemporalRank: return fixed(4);
-    case IrOpcode::Compare: return fixed(5);
-    case IrOpcode::Membership: return fixed(6);
-    case IrOpcode::Call: case IrOpcode::SemanticEval:
-    case IrOpcode::MakeArray: case IrOpcode::CallNamed: case IrOpcode::MakeMap: {
-        fixed(4);
-        const auto count = ir.words[pc + 3];
-        const auto stride = op == IrOpcode::CallNamed || op == IrOpcode::MakeMap ? 2u : 1u;
-        if (count > (ir.words.size() - pc - 4) / stride) throw IrError("compiler IR dynamic instruction is incomplete");
-        return 4 + count * stride;
-    }
-    case IrOpcode::Count: break;
-    }
-    throw IrError("compiler IR contains an unknown opcode");
-}
-
 IsaOpcode comparisonOpcode(IrWord comparison) {
     switch (static_cast<IrComparison>(comparison)) {
     case IrComparison::Equal: return IsaOpcode::CompareEqual;
@@ -390,7 +357,7 @@ IsaBlock IsaLowerer::lower(const FelidaeIr& ir,
     FelidaeAssembler assembler;
     std::unordered_map<std::size_t,std::size_t> isaOffsets;
     std::unordered_map<std::size_t,FelidaeAssembler::Label> labels;
-    for(std::size_t irPc=0;irPc<ir.words.size();irPc+=irWidth(ir,irPc))labels.emplace(irPc,assembler.createLabel());
+    for(std::size_t irPc=0;irPc<ir.words.size();irPc+=compilerInstructionWidth(ir,irPc))labels.emplace(irPc,assembler.createLabel());
     labels.emplace(ir.words.size(),assembler.createLabel());
     const auto target=[&](IrWord value){const auto found=labels.find(value);if(found==labels.end())throw IrError("compiler IR branch target is not an instruction boundary");return found->second;};
     for (std::size_t pc = 0; pc < ir.words.size();) {
@@ -481,7 +448,7 @@ IsaBlock IsaLowerer::lower(const FelidaeIr& ir,
         }
         case IrOpcode::Count: throw IrError("compiler IR contains an unknown opcode");
         }
-        pc += irWidth(ir, pc);
+        pc += compilerInstructionWidth(ir, pc);
     }
     assembler.bind(labels.at(ir.words.size()));
     isaOffsets.emplace(ir.words.size(),assembler.wordOffset());
