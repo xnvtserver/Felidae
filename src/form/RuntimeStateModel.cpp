@@ -152,10 +152,43 @@ public:
     };
     struct ExecutionState { torch::Tensor hidden; };
     explicit Implementation(const Configuration& c, const std::filesystem::path& artifact) {
-        if (artifact.empty() && c.allowRandomInitialization) { network=std::make_shared<Network>(c);network->eval();return; }
-        if (artifact.empty() || !std::filesystem::is_regular_file(artifact)) throw IrError("runtime GRU artifact is unavailable: " + artifact.string());
-        try { production=torch::jit::load(artifact.string());production->eval(); }
-        catch(const c10::Error& error){throw IrError("runtime production artifact is not valid TorchScript: "+std::string(error.what_without_backtrace()));}
+        if (c.inputVocabularySize <= 16 || c.outputVocabularySize <= 0 ||
+            c.embeddingSize <= 0 || c.hiddenSize <= 0 || c.layerCount <= 0) {
+            throw IrError("runtime GRU configuration is invalid");
+        }
+        if (artifact.empty() && c.allowRandomInitialization) {
+            network = std::make_shared<Network>(c);
+            network->eval();
+            return;
+        }
+        if (artifact.empty() || !std::filesystem::is_regular_file(artifact)) {
+            throw IrError("runtime GRU artifact is unavailable: " + artifact.string());
+        }
+        if (artifact.extension() != ".pt") {
+            throw IrError("runtime production artifact must be a .pt TorchScript module");
+        }
+        try {
+            production = torch::jit::load(artifact.string());
+            production->eval();
+            torch::InferenceMode guard;
+            const auto input = torch::zeros(
+                {1, 1}, torch::TensorOptions().dtype(torch::kInt64));
+            const auto hidden = torch::zeros({c.layerCount, 1, c.hiddenSize});
+            const auto output = production->forward({input, hidden}).toTuple();
+            if (output->elements().size() != 2) {
+                throw IrError("runtime production artifact has an incompatible forward contract");
+            }
+            const auto logits = output->elements()[0].toTensor();
+            const auto nextHidden = output->elements()[1].toTensor();
+            if (logits.dim() != 1 || logits.size(0) != c.outputVocabularySize ||
+                nextHidden.dim() != 3 || nextHidden.size(0) != c.layerCount ||
+                nextHidden.size(1) != 1 || nextHidden.size(2) != c.hiddenSize) {
+                throw IrError("runtime production artifact has an incompatible forward contract");
+            }
+        } catch (const c10::Error& error) {
+            throw IrError("runtime production artifact is not valid TorchScript: " +
+                          std::string(error.what_without_backtrace()));
+        }
     }
     std::shared_ptr<Network> network;
     std::optional<torch::jit::Module> production;
@@ -262,6 +295,7 @@ double GruRuntimeStateModel::trainTeacherForced(const RuntimeTrainingRecord& rec
 
 std::size_t GruRuntimeStateModel::predictTeacherToken(const RuntimeTrainingRecord& record) const {
 #ifdef FELIDAE_HAS_TORCH
+    if (!implementation_->network) throw IrError("runtime teacher prediction requires a training model");
     verifyRuntimeTrainingRecord(record);
     const auto ids = runtimeInputIds(record.operationId, record.inputKinds, record.factTypes, record.factTypeCounts,
                                      record.hierarchyEdges, configuration_.inputVocabularySize);
@@ -281,7 +315,14 @@ std::size_t GruRuntimeStateModel::predictTeacherToken(const RuntimeTrainingRecor
 
 void GruRuntimeStateModel::saveCheckpoint(const std::filesystem::path& artifactPath) const {
 #ifdef FELIDAE_HAS_TORCH
-    if(!implementation_->network)throw IrError("runtime checkpoint export requires a training model");if(artifactPath.empty())throw IrError("runtime GRU checkpoint path is empty");const auto parent=artifactPath.parent_path();if(!parent.empty())std::filesystem::create_directories(parent);torch::save(implementation_->network,artifactPath.string());
+    if (!implementation_->network) throw IrError("runtime checkpoint export requires a training model");
+    if (artifactPath.empty()) throw IrError("runtime GRU checkpoint path is empty");
+    if (artifactPath.extension() != ".ckpt") {
+        throw IrError("runtime training checkpoint must use the .ckpt extension");
+    }
+    const auto parent = artifactPath.parent_path();
+    if (!parent.empty()) std::filesystem::create_directories(parent);
+    torch::save(implementation_->network, artifactPath.string());
 #else
     (void)artifactPath;throw IrError("runtime GRU checkpoint export requires FELIDAE_ENABLE_LIBTORCH=ON");
 #endif
@@ -289,7 +330,13 @@ void GruRuntimeStateModel::saveCheckpoint(const std::filesystem::path& artifactP
 
 void GruRuntimeStateModel::exportTorchScript(const std::filesystem::path& artifactPath) const {
 #ifdef FELIDAE_HAS_TORCH
-    if(!implementation_->network)throw IrError("runtime TorchScript export requires a training model");if(artifactPath.empty())throw IrError("runtime TorchScript artifact path is empty");const auto parent=artifactPath.parent_path();if(!parent.empty())std::filesystem::create_directories(parent);
+    if (!implementation_->network) throw IrError("runtime TorchScript export requires a training model");
+    if (artifactPath.empty()) throw IrError("runtime TorchScript artifact path is empty");
+    if (artifactPath.extension() != ".pt") {
+        throw IrError("runtime TorchScript artifact must use the .pt extension");
+    }
+    const auto parent = artifactPath.parent_path();
+    if (!parent.empty()) std::filesystem::create_directories(parent);
     torch::jit::Module module("FelidaeRuntimeGru");module.register_parameter("embedding",implementation_->network->embedding->weight.detach().clone(),false);module.register_parameter("projection_weight",implementation_->network->projection->weight.detach().clone(),false);module.register_parameter("projection_bias",implementation_->network->projection->bias.detach().clone(),false);
     std::ostringstream parameters;bool first=true;for(const auto& parameter:implementation_->network->recurrent->named_parameters(false)){const auto name="recurrent_"+parameter.key();module.register_parameter(name,parameter.value().detach().clone(),false);if(!first)parameters<<", ";parameters<<"self."<<name;first=false;}
     std::ostringstream source;source<<"def forward(self, input_ids: Tensor, hidden: Tensor) -> Tuple[Tensor, Tensor]:\n"<<"    embedded = torch.embedding(self.embedding, input_ids)\n"<<"    recurrent = torch.gru(embedded, hidden, ["<<parameters.str()<<"], True, "<<configuration_.layerCount<<", 0.0, False, False, False)\n"<<"    logits = torch.linear(recurrent[0][-1][0], self.projection_weight, self.projection_bias)\n"<<"    return logits, recurrent[1]\n";module.define(source.str());module.eval();module.save(artifactPath.string());

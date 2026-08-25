@@ -2,8 +2,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <bit>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -143,6 +145,11 @@ public:
     std::vector<VmFactMutation> mutations() const;
     std::vector<VmFactProvenance> provenance() const;
     VmKnowledgeSnapshot knowledgeSnapshot() const;
+    // Rebuilds `snapshot` only when fact/type state changed. Runtime SSM
+    // dispatch uses this to avoid sorting the same knowledge graph on every
+    // SemanticEval instruction.
+    void refreshKnowledgeSnapshot(std::uint64_t& knownRevision,
+                                  VmKnowledgeSnapshot& snapshot) const;
     std::size_t size() const;
 
     // A Gaussian tail reaches 1% at each fade boundary.  Degenerate edge
@@ -193,6 +200,7 @@ struct RuntimeContext {
     // integer IDs, so a runtime model observes the current fact/hierarchy
     // state without source parsing or text search.
     VmKnowledgeSnapshot knowledge;
+    std::uint64_t knowledgeRevision = std::numeric_limits<std::uint64_t>::max();
 };
 
 class RuntimeStateModel {
@@ -304,7 +312,7 @@ private:
     // Registers, call frames and recurrent state are deliberately excluded.
     std::unordered_map<std::uint64_t, VmModuleState> modules_;
     std::uint64_t activeModule_ = 0;
-    std::vector<VmExecutionTrace> traces_;
+    std::deque<VmExecutionTrace> traces_;
     std::uint64_t nextTraceSequence_ = 1;
     std::size_t maximumTraceEntries_ = 65'536;
     std::shared_ptr<VmFactStore> factStore_;
@@ -319,13 +327,16 @@ private:
 
 class RegisterVm {
 public:
+    explicit RegisterVm(std::size_t maximumInstructionSteps = 10'000'000);
     VmValue executeIsaMain(const IsaModule& module, VmRuntime& runtime,
                            VmValue systemInput = VmNil{});
 
 private:
     VmValue executeIsaProgram(const IsaModule& module, const IsaProgram& program,
                               VmRuntime& runtime, VmValue systemInput,
-                              std::size_t callDepth);
+                              std::size_t callDepth,
+                              std::size_t& instructionSteps);
+    std::size_t maximumInstructionSteps_;
 };
 
 } // namespace Felidae

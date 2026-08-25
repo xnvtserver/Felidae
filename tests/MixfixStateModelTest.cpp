@@ -348,10 +348,21 @@ int main() {
     gruModel.exportTorchScript(mixfixArtifact);
     GruMixfixStateModel loadedMixfix(gruConfiguration, mixfixArtifact);
     assert((loadedMixfix.transform(input, gruContext) == std::vector<MixfixVocabularyId>{0}));
+    bool productionCheckpointRejected = false;
+    try { loadedMixfix.saveCheckpoint(artifactRoot / "production.ckpt"); }
+    catch (const IrError&) { productionCheckpointRejected = true; }
+    assert(productionCheckpointRejected);
     bool nativeMixfixRejected = false;
     try { GruMixfixStateModel invalidProduction(gruConfiguration, mixfixCheckpoint); }
     catch (const IrError&) { nativeMixfixRejected = true; }
     assert(nativeMixfixRejected);
+    const auto renamedMixfixCheckpoint = artifactRoot / "renamed-mixfix.pt";
+    std::filesystem::copy_file(mixfixCheckpoint, renamedMixfixCheckpoint,
+                               std::filesystem::copy_options::overwrite_existing);
+    bool renamedMixfixRejected = false;
+    try { GruMixfixStateModel invalidProduction(gruConfiguration, renamedMixfixCheckpoint); }
+    catch (const IrError&) { renamedMixfixRejected = true; }
+    assert(renamedMixfixRejected);
 
     const auto runtimeArtifact = artifactRoot / "runtime-gru.pt";
     const auto runtimeCheckpoint = artifactRoot / "runtime-gru.ckpt";
@@ -368,6 +379,14 @@ int main() {
         {{RuntimeOutputTokenKind::InputReference, 0}}, runtimeCheckpoint); }
     catch (const IrError&) { nativeRuntimeRejected = true; }
     assert(nativeRuntimeRejected);
+    const auto renamedRuntimeCheckpoint = artifactRoot / "renamed-runtime.pt";
+    std::filesystem::copy_file(runtimeCheckpoint, renamedRuntimeCheckpoint,
+                               std::filesystem::copy_options::overwrite_existing);
+    bool renamedRuntimeRejected = false;
+    try { GruRuntimeStateModel invalidProduction(runtimeGruConfiguration,
+        {{RuntimeOutputTokenKind::InputReference, 0}}, renamedRuntimeCheckpoint); }
+    catch (const IrError&) { renamedRuntimeRejected = true; }
+    assert(renamedRuntimeRejected);
     std::filesystem::remove_all(artifactRoot);
 
     // Real compiler-produced SemanticEval -> verified FELBIN -> trained C++

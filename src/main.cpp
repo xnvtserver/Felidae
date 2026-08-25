@@ -59,18 +59,13 @@ void printHelp() {
               << "Writes verified Felidae ISA to the compiler directory.\n";
 }
 
-std::string readSourceFile(const fs::path& source) {
-    std::ifstream input(source, std::ios::binary);
-    if (!input) throw std::runtime_error("cannot open source file: " + source.string());
-    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
-}
-
 int tokenizeSource(const fs::path& input) {
     const auto source = resolveProgramEntryPath(input);
     if (source.extension() != FILE_EXTENSION) {
         throw std::runtime_error("--tokenize accepts only .fx source files");
     }
-    const IntegerTokenList tokens(felidaeSentencePieceModel(), readSourceFile(source));
+    const IntegerTokenList tokens(felidaeSentencePieceModel(),
+                                  Felidae::readSourceFile(source));
     std::cout << '[';
     for (std::size_t index = 0; index < tokens.entries().size(); ++index) {
         if (index != 0) std::cout << ',';

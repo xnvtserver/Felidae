@@ -111,7 +111,13 @@ void requireFlowRead(const std::vector<bool>& initialized, IrWord registerId) {
     if (!initialized[registerId]) throw IrError("IR control-flow path reads an uninitialized register");
 }
 #else
-bool vmValuesEqual(const VmValue& left, const VmValue& right) {
+constexpr std::size_t kMaximumVmValueDepth = 256;
+
+bool vmValuesEqualAtDepth(const VmValue& left, const VmValue& right,
+                          std::size_t depth) {
+    if (depth > kMaximumVmValueDepth) {
+        throw IrError("VM value comparison exceeds its nesting limit");
+    }
     if (left.index() != right.index()) return false;
     if (std::holds_alternative<VmNil>(left)) return true;
     if (const auto* value = std::get_if<double>(&left)) return *value == std::get<double>(right);
@@ -123,7 +129,7 @@ bool vmValuesEqual(const VmValue& left, const VmValue& right) {
         if (!*leftArray || !rightArray) return *leftArray == rightArray;
         if ((*leftArray)->values.size() != rightArray->values.size()) return false;
         for (std::size_t index = 0; index < (*leftArray)->values.size(); ++index) {
-            if (!vmValuesEqual((*leftArray)->values[index], rightArray->values[index])) return false;
+            if (!vmValuesEqualAtDepth((*leftArray)->values[index], rightArray->values[index], depth + 1)) return false;
         }
         return true;
     }
@@ -134,7 +140,7 @@ bool vmValuesEqual(const VmValue& left, const VmValue& right) {
         for (std::size_t index = 0; index < (*leftMap)->entries.size(); ++index) {
             const auto& [leftKey, leftValue] = (*leftMap)->entries[index];
             const auto& [rightKey, rightValue] = rightMap->entries[index];
-            if (leftKey != rightKey || !vmValuesEqual(leftValue, rightValue)) return false;
+            if (leftKey != rightKey || !vmValuesEqualAtDepth(leftValue, rightValue, depth + 1)) return false;
         }
         return true;
     }
@@ -145,14 +151,22 @@ bool vmValuesEqual(const VmValue& left, const VmValue& right) {
         for (std::size_t index = 0; index < (*leftFact)->fields.size(); ++index) {
             const auto& [leftKey, leftValue] = (*leftFact)->fields[index];
             const auto& [rightKey, rightValue] = rightFact->fields[index];
-            if (leftKey != rightKey || !vmValuesEqual(leftValue, rightValue)) return false;
+            if (leftKey != rightKey || !vmValuesEqualAtDepth(leftValue, rightValue, depth + 1)) return false;
         }
         return true;
     }
     throw IrError("VM equality received an unsupported value variant");
 }
 
-double similarityDegree(const VmValue& left, const VmValue& right) {
+bool vmValuesEqual(const VmValue& left, const VmValue& right) {
+    return vmValuesEqualAtDepth(left, right, 0);
+}
+
+double similarityDegreeAtDepth(const VmValue& left, const VmValue& right,
+                               std::size_t depth) {
+    if (depth > kMaximumVmValueDepth) {
+        throw IrError("VM similarity exceeds its nesting limit");
+    }
     if (const auto a = std::get_if<double>(&left)) {
         if (const auto b = std::get_if<double>(&right)) return 1.0 / (1.0 + std::abs(*a - *b));
     }
@@ -171,7 +185,7 @@ double similarityDegree(const VmValue& left, const VmValue& right) {
             const auto limit = std::max((*a)->values.size(), (*b)->values.size());
             if (limit == 0) return 1.0;
             double sum = 0.0;
-            for (std::size_t i = 0; i < std::min((*a)->values.size(), (*b)->values.size()); ++i) sum += similarityDegree((*a)->values[i], (*b)->values[i]);
+            for (std::size_t i = 0; i < std::min((*a)->values.size(), (*b)->values.size()); ++i) sum += similarityDegreeAtDepth((*a)->values[i], (*b)->values[i], depth + 1);
             return sum / static_cast<double>(limit);
         }
     }
@@ -181,7 +195,7 @@ double similarityDegree(const VmValue& left, const VmValue& right) {
             const auto limit = std::max((*a)->entries.size(), (*b)->entries.size());
             if (limit == 0) return 1.0;
             double sum = 0.0;
-            for (const auto& [key, value] : (*a)->entries) for (const auto& [otherKey, otherValue] : (*b)->entries) if (key == otherKey) { sum += similarityDegree(value, otherValue); break; }
+            for (const auto& [key, value] : (*a)->entries) for (const auto& [otherKey, otherValue] : (*b)->entries) if (key == otherKey) { sum += similarityDegreeAtDepth(value, otherValue, depth + 1); break; }
             return sum / static_cast<double>(limit);
         }
     }
@@ -190,10 +204,14 @@ double similarityDegree(const VmValue& left, const VmValue& right) {
             if (!*a || !*b) return *a == *b ? 1.0 : 0.0;
             const double type = (*a)->type == (*b)->type ? 1.0 : 0.0;
             VmMap leftMap{(*a)->fields}; VmMap rightMap{(*b)->fields};
-            return 0.25 * type + 0.75 * similarityDegree(VmMapPtr(&leftMap, [](VmMap*){}), VmMapPtr(&rightMap, [](VmMap*){}));
+            return 0.25 * type + 0.75 * similarityDegreeAtDepth(VmMapPtr(&leftMap, [](VmMap*){}), VmMapPtr(&rightMap, [](VmMap*){}), depth + 1);
         }
     }
-    return vmValuesEqual(left, right) ? 1.0 : 0.0;
+    return vmValuesEqualAtDepth(left, right, depth) ? 1.0 : 0.0;
+}
+
+double similarityDegree(const VmValue& left, const VmValue& right) {
+    return similarityDegreeAtDepth(left, right, 0);
 }
 
 bool validVmValue(const VmValue& value, std::size_t depth = 0) {
@@ -594,8 +612,17 @@ std::vector<VmFactMutation> VmFactStore::mutations() const { std::lock_guard loc
 std::vector<VmFactProvenance> VmFactStore::provenance() const { std::lock_guard lock(mutex_); return provenance_; }
 
 VmKnowledgeSnapshot VmFactStore::knowledgeSnapshot() const {
-    std::lock_guard lock(mutex_);
+    std::uint64_t revision = std::numeric_limits<std::uint64_t>::max();
     VmKnowledgeSnapshot result;
+    refreshKnowledgeSnapshot(revision, result);
+    return result;
+}
+
+void VmFactStore::refreshKnowledgeSnapshot(
+    std::uint64_t& knownRevision, VmKnowledgeSnapshot& result) const {
+    std::lock_guard lock(mutex_);
+    if (knownRevision == revision_) return;
+    result = {};
     result.factTypes.reserve(byType_.size());
     result.factTypeCounts.reserve(byType_.size());
     for (const auto& [type, facts] : byType_) {
@@ -609,7 +636,7 @@ VmKnowledgeSnapshot VmFactStore::knowledgeSnapshot() const {
         for (const auto parent : parents) result.hierarchyEdges.emplace_back(child, parent);
     }
     std::sort(result.hierarchyEdges.begin(), result.hierarchyEdges.end());
-    return result;
+    knownRevision = revision_;
 }
 
 std::size_t VmFactStore::size() const {
@@ -672,10 +699,43 @@ std::vector<VmRankedFact> FelidaeKnowledgeRuntime::rankFacts(IrSymbolRef effecti
 void FelidaeKnowledgeRuntime::installIsaModule(const IsaModule& module) {
     std::uint64_t hash = 14695981039346656037ull;
     const auto add = [&](std::uint64_t word) { hash ^= word; hash *= 1099511628211ull; };
+    const auto addText = [&](std::string_view text) {
+        add(text.size());
+        for (const unsigned char byte : text) add(byte);
+    };
+    const auto addProgram = [&](const IsaProgram& program) {
+        add(program.code.registerCount);
+        add(program.code.words.size());
+        for (const auto word : program.code.words) add(word);
+        add(program.constants.size());
+        for (std::size_t index = 0; index < program.constants.size(); ++index) {
+            add(program.constants[index]);
+            add(static_cast<std::uint8_t>(program.constantKinds.empty()
+                ? IrConstantKind::Number : program.constantKinds[index]));
+        }
+        add(program.texts.size());
+        for (const auto& text : program.texts) addText(text);
+        add(program.symbols.size());
+        for (const auto symbol : program.symbols) add(symbol);
+    };
     add(module.isaVersion); add(module.entryProcedure);
-    for (const auto word : module.initializer.code.words) add(word);
-    for (const auto& procedure : module.procedures) for (const auto word : procedure.program.code.words) add(word);
-    for (const auto symbol : module.procedureSymbols) add(symbol);
+    addProgram(module.initializer);
+    add(module.procedures.size());
+    for (std::size_t index = 0; index < module.procedures.size(); ++index) {
+        add(module.procedureSymbols[index]);
+        const auto& procedure = module.procedures[index];
+        addProgram(procedure.program);
+        add(procedure.positionalParameters.size());
+        for (const auto parameter : procedure.positionalParameters) add(parameter);
+        add(procedure.namedParameters.size());
+        for (const auto parameter : procedure.namedParameters) add(parameter);
+    }
+    add(module.factTypes.size());
+    for (const auto& type : module.factTypes) {
+        add(type.symbol);
+        add(type.parents.size());
+        for (const auto parent : type.parents) add(parent);
+    }
     const auto moduleKey = hash == 0 ? 1 : hash;
     if (!modules_.contains(moduleKey)) modules_.emplace(moduleKey, VmModuleState{});
     activeModule_ = moduleKey;
@@ -704,11 +764,13 @@ void FelidaeKnowledgeRuntime::leaveProcedure() noexcept {
 }
 
 void FelidaeKnowledgeRuntime::recordTrace(VmTraceKind kind, IrSymbolRef symbol, IrFactRef fact) {
-    if (traces_.size() == maximumTraceEntries_) traces_.erase(traces_.begin());
+    if (traces_.size() == maximumTraceEntries_) traces_.pop_front();
     traces_.push_back(VmExecutionTrace{nextTraceSequence_++, kind, symbol, fact, procedureDepth_});
 }
 
-std::vector<VmExecutionTrace> FelidaeKnowledgeRuntime::executionTraces() const { return traces_; }
+std::vector<VmExecutionTrace> FelidaeKnowledgeRuntime::executionTraces() const {
+    return {traces_.begin(), traces_.end()};
+}
 
 VmValue FelidaeKnowledgeRuntime::loadSymbol(IrSymbolRef symbol) {
     // Procedures are lexically isolated: a callee may read its own parameters
@@ -762,12 +824,14 @@ RuntimeContext FelidaeKnowledgeRuntime::makeIsaRuntimeContext(const VmValue&) co
     context.maximumSemanticSteps = maximumSemanticSteps_;
     context.executionState = executionState_;
     context.sharedSemanticSteps = sharedSemanticSteps_;
-    context.knowledge = factStore_->knowledgeSnapshot();
+    factStore_->refreshKnowledgeSnapshot(context.knowledgeRevision,
+                                         context.knowledge);
     return context;
 }
 
 void FelidaeKnowledgeRuntime::refreshRuntimeContext(RuntimeContext& context) const {
-    context.knowledge = factStore_->knowledgeSnapshot();
+    factStore_->refreshKnowledgeSnapshot(context.knowledgeRevision,
+                                         context.knowledge);
 }
 #else
 void IrVerifier::verify(const FelidaeIr& ir) {
@@ -1138,6 +1202,13 @@ bool VmRuntime::validateSemanticResult(const VmValue& value, const RuntimeContex
     return validVmValue(value);
 }
 
+RegisterVm::RegisterVm(std::size_t maximumInstructionSteps)
+    : maximumInstructionSteps_(maximumInstructionSteps) {
+    if (maximumInstructionSteps_ == 0) {
+        throw IrError("ISA instruction-step limit must be positive");
+    }
+}
+
 VmValue RegisterVm::executeIsaMain(const IsaModule& module, VmRuntime& runtime,
                                    VmValue systemInput) {
     verifyIsaModule(module);
@@ -1152,14 +1223,19 @@ VmValue RegisterVm::executeIsaMain(const IsaModule& module, VmRuntime& runtime,
     for (const auto& type : module.factTypes) runtime.registerFactType(type.symbol, type.parents);
     runtime.beginExecution();
     struct Scope { VmRuntime& runtime; ~Scope(){runtime.endExecution();} } scope{runtime};
-    return executeIsaProgram(module,module.initializer,runtime,std::move(systemInput),0);
+    std::size_t instructionSteps = 0;
+    return executeIsaProgram(module,module.initializer,runtime,std::move(systemInput),0,
+                             instructionSteps);
 }
 
 VmValue RegisterVm::executeIsaProgram(const IsaModule& module, const IsaProgram& program,
                                       VmRuntime& runtime, VmValue systemInput,
-                                      std::size_t callDepth) {
+                                      std::size_t callDepth,
+                                      std::size_t& instructionSteps) {
     if(callDepth>256)throw IrError("ISA procedure call depth exceeds VM limit");
-    IsaVerifier::verify(program.code,{program.constants.size(),program.symbols.size(),module.procedures.size()});
+    // executeIsaMain verified the complete module, including every procedure,
+    // before dispatch. Re-verifying here would make each call scan and run
+    // dataflow analysis over the same immutable block again.
     std::vector<VmValue> registers(program.code.registerCount,VmNil{});
     auto semanticContext = runtime.makeIsaRuntimeContext(systemInput);
     const auto symbol=[&](std::size_t index){return program.symbols.at(index);};
@@ -1170,9 +1246,14 @@ VmValue RegisterVm::executeIsaProgram(const IsaModule& module, const IsaProgram&
         const auto& procedure=module.procedures.at(procedureIndex);
         runtime.enterProcedure(module.procedureSymbols.at(procedureIndex),procedure.positionalParameters,arguments);
         struct FrameScope{VmRuntime& runtime;~FrameScope(){runtime.leaveProcedure();}} frame{runtime};
-        return executeIsaProgram(module,procedure.program,runtime,VmNil{},callDepth+1);
+        return executeIsaProgram(module,procedure.program,runtime,VmNil{},callDepth+1,
+                                 instructionSteps);
     };
     for(std::size_t pc=0;pc<program.code.words.size();){
+        if (instructionSteps >= maximumInstructionSteps_) {
+            throw IrError("ISA execution exceeds its instruction-step limit");
+        }
+        ++instructionSteps;
         const auto d=decodeIsaWord(program.code.words[pc]);
         const auto instructionWidth=isaInstructionWidth(program.code.words,pc);
 #ifndef NDEBUG
