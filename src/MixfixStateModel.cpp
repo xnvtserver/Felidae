@@ -186,9 +186,22 @@ public:
         if (artifact.empty() || !std::filesystem::is_regular_file(artifact)) {
             throw IrError("mixfix GRU artifact is unavailable: " + artifact.string());
         }
+        if (artifact.extension() != ".pt") {
+            throw IrError("mixfix production artifact must be a .pt TorchScript module");
+        }
         try {
             production = torch::jit::load(artifact.string());
             production->eval();
+            torch::InferenceMode guard;
+            const auto inputIds = torch::zeros(
+                {1, 1}, torch::TensorOptions().dtype(torch::kInt64));
+            const auto decoderIds = torch::full(
+                {1, 1}, c.beginToken, torch::TensorOptions().dtype(torch::kInt64));
+            const auto output = production->forward({inputIds, decoderIds}).toTensor();
+            if (output.dim() != 3 || output.size(0) != 1 || output.size(1) != 1 ||
+                output.size(2) != c.outputVocabularySize) {
+                throw IrError("mixfix production artifact has an incompatible forward contract");
+            }
         } catch (const c10::Error& error) {
             throw IrError("mixfix production artifact is not valid TorchScript: " +
                           std::string(error.what_without_backtrace()));
@@ -358,6 +371,9 @@ double GruMixfixStateModel::evaluateTeacherForced(
         throw IrError("mixfix GRU validation batch is invalid");
     }
 #ifdef FELIDAE_HAS_TORCH
+    if (!implementation_->network) {
+        throw IrError("mixfix teacher-forced validation requires a training model");
+    }
     std::vector<std::int64_t> encoderIds;
     encoderIds.reserve(input.size());
     for (const auto id : input) {
@@ -394,7 +410,9 @@ double GruMixfixStateModel::evaluateTeacherForced(
 
 void GruMixfixStateModel::saveCheckpoint(const std::filesystem::path& artifactPath) const {
 #ifdef FELIDAE_HAS_TORCH
+    if (!implementation_->network) throw IrError("mixfix checkpoint export requires a training model");
     if (artifactPath.empty()) throw IrError("mixfix GRU artifact path is empty");
+    if (artifactPath.extension() != ".ckpt") throw IrError("mixfix training checkpoint must use the .ckpt extension");
     const auto parent = artifactPath.parent_path();
     if (!parent.empty()) std::filesystem::create_directories(parent);
     torch::save(implementation_->network, artifactPath.string());
@@ -408,6 +426,7 @@ void GruMixfixStateModel::exportTorchScript(const std::filesystem::path& artifac
 #ifdef FELIDAE_HAS_TORCH
     if (!implementation_->network) throw IrError("mixfix TorchScript export requires a training model");
     if (artifactPath.empty()) throw IrError("mixfix TorchScript artifact path is empty");
+    if (artifactPath.extension() != ".pt") throw IrError("mixfix TorchScript artifact must use the .pt extension");
     const auto parent = artifactPath.parent_path();
     if (!parent.empty()) std::filesystem::create_directories(parent);
     torch::jit::Module module("FelidaeMixfixGru");

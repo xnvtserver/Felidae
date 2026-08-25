@@ -145,6 +145,14 @@ int main() {
     auto forgedDisplayModule = isaModule;
     forgedDisplayModule.symbolNames = {{mainSymbol, "misleading-name"}};
     assert(rejects([&] { verifyIsaModule(forgedDisplayModule); }));
+    auto mismatchedKindsModule = isaModule;
+    mismatchedKindsModule.procedures[0].program.constantKinds.push_back(IrConstantKind::Number);
+    assert(rejects([&] { verifyIsaModule(mismatchedKindsModule); }));
+    auto invalidTextModule = isaModule;
+    invalidTextModule.procedures[0].program.constantKinds = {IrConstantKind::Text};
+    invalidTextModule.procedures[0].program.constants = {0};
+    invalidTextModule.procedures[0].program.texts.clear();
+    assert(rejects([&] { verifyIsaModule(invalidTextModule); }));
     FelidaeKnowledgeRuntime runtime;
     RegisterVm vm;
     assert(std::get<double>(vm.executeIsaMain(isaModule, runtime)) == 42.0);
@@ -157,7 +165,48 @@ int main() {
     assert(loaded.isaVersion==kFelidaeIsaVersion);
     FelidaeKnowledgeRuntime loadedRuntime;
     assert(std::get<double>(vm.executeIsaMain(loaded,loadedRuntime))==42.0);
+    auto differentConstantsModule = loaded;
+    differentConstantsModule.procedures[0].program.constants[0] = encodeIrNumber(43.0);
+    loadedRuntime.installIsaModule(differentConstantsModule);
+    assert(loadedRuntime.installedModuleCount() == 2);
     std::error_code ignored;std::filesystem::remove(binary,ignored);
+
+    auto loopingModule = isaModule;
+    loopingModule.initializer.code = {{encodeIsaAx(IsaOpcode::Jump, 0),
+                                       encodeIsaABC(IsaOpcode::Halt)}, 1};
+    verifyIsaModule(loopingModule);
+    FelidaeKnowledgeRuntime loopingRuntime;
+    assert(rejects([&] {
+        (void)RegisterVm{16}.executeIsaMain(loopingModule, loopingRuntime);
+    }));
+
+    class CyclicValueRuntime final : public VmRuntime {
+    public:
+        CyclicValueRuntime() {
+            auto map = std::make_shared<VmMap>();
+            value = map;
+            map->entries.emplace_back(1, value);
+        }
+        VmValue loadSymbol(IrSymbolRef) override { return value; }
+        VmValue value;
+    } cyclicRuntime;
+    auto cyclicModule = isaModule;
+    FelidaeAssembler cyclicAssembler;
+    cyclicAssembler.loadGlobal(0, 0);
+    cyclicAssembler.loadGlobal(1, 0);
+    cyclicAssembler.binary(IsaOpcode::CompareEqual, 2, 0, 1);
+    cyclicAssembler.returnValue(2);
+    cyclicModule.procedures[0].program.code = {
+        std::move(cyclicAssembler).finish(), 3};
+    cyclicModule.procedures[0].program.constants.clear();
+    cyclicModule.procedures[0].program.constantKinds.clear();
+    cyclicModule.procedures[0].program.texts.clear();
+    cyclicModule.procedures[0].program.symbols = {mainSymbol};
+    cyclicModule.procedures[0].program.sourceMap.clear();
+    verifyIsaModule(cyclicModule);
+    assert(rejects([&] {
+        (void)RegisterVm{}.executeIsaMain(cyclicModule, cyclicRuntime);
+    }));
 
     IrModule booleanModule;
     booleanModule.entryProcedure=mainSymbol;

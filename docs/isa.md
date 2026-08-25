@@ -114,6 +114,13 @@ Verification also performs control-flow dataflow analysis. Every reachable
 register read must be definitely initialized on all incoming paths, and a
 reachable path may not fall through the end of an instruction block.
 
+Verified loops remain legal, but execution is resource-bounded. `RegisterVm`
+uses one instruction-step budget across the initializer and all nested calls
+(10,000,000 instructions by default); exceeding it is a controlled VM error.
+Hosts may supply a smaller positive budget. Structural value traversal,
+procedure depth, semantic steps, and trace retention are bounded separately so
+cyclic or adversarial values cannot hang the process.
+
 The compiler's learned structural decision is explicit: `ACCEPT` permits the
 already-verified compiler IR to proceed to deterministic lowering;
 `REJECT` and `ABSTAIN` stop compilation. Model output can never become an

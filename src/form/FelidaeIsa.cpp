@@ -327,6 +327,30 @@ void verifyIsaModule(const IsaModule& module) {
         module.entryProcedure>=module.procedures.size()) throw IrError("ISA procedure metadata is invalid");
     std::unordered_set<IrSymbolRef> symbols;
     const auto verifyProgram = [&](const IsaProgram& program) {
+        if (!program.constantKinds.empty() &&
+            program.constantKinds.size() != program.constants.size()) {
+            throw IrError("ISA constant kinds do not match its constant pool");
+        }
+        for (std::size_t index = 0; index < program.constants.size(); ++index) {
+            const auto kind = program.constantKinds.empty()
+                ? IrConstantKind::Number : program.constantKinds[index];
+            if (kind > IrConstantKind::Text) {
+                throw IrError("ISA constant kind is invalid");
+            }
+            if (kind == IrConstantKind::Text &&
+                program.constants[index] >= program.texts.size()) {
+                throw IrError("ISA text constant index is invalid");
+            }
+            if (kind == IrConstantKind::Boolean && program.constants[index] > 1) {
+                throw IrError("ISA boolean constant must be numeric 0.0 or 1.0");
+            }
+            if (kind == IrConstantKind::Nil && program.constants[index] != 0) {
+                throw IrError("ISA nil constant payload must be zero");
+            }
+        }
+        for (const auto symbol : program.symbols) {
+            if (symbol == 0) throw IrError("ISA symbol pool contains an invalid symbol");
+        }
         IsaVerifier::verify(program.code,{program.constants.size(),program.symbols.size(),module.procedures.size()});
         std::unordered_set<std::size_t> boundaries;
         for(std::size_t pc=0;pc<program.code.words.size();pc+=isaInstructionWidth(program.code.words,pc))boundaries.insert(pc);

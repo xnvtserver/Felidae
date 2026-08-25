@@ -167,7 +167,12 @@ add_custom_target(felidae_sentencepiece_model
 
 function(felidae_use_sentencepiece_model target)
     add_dependencies(${target} felidae_sentencepiece_model)
+    # SentencePiece's checked-in generated protobuf classes must see the
+    # matching pinned protobuf API before LibTorch's bundled protobuf headers.
+    # A normal -I path precedes every -isystem path on GCC/Clang, including
+    # /opt/libtorch, while remaining scoped to SentencePiece consumers.
     target_include_directories(${target} BEFORE PRIVATE
+        "${CMAKE_SOURCE_DIR}/third_party/protobuf/src"
         "${FELIDAE_SENTENCEPIECE_GENERATED_DIR}")
     target_compile_definitions(${target} PRIVATE
         FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
@@ -510,7 +515,10 @@ if(FELIDAE_BUILD_TESTS)
         $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
         $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
     felidae_enable_msvc_exceptions(felidae_sentencepiece_model_test)
-    target_link_libraries(felidae_sentencepiece_model_test PRIVATE felidae_form sentencepiece)
+    # This frontend regression compiles structured compiler IR and therefore
+    # needs the compiler-only verifier/lowering boundary. It must not expect
+    # IrVerifier symbols from the runtime-only felidae_form library.
+    target_link_libraries(felidae_sentencepiece_model_test PRIVATE felidae_lowerer sentencepiece)
     felidae_use_sentencepiece_model(felidae_sentencepiece_model_test)
     if(TARGET OpenMP::OpenMP_CXX)
         target_link_libraries(felidae_sentencepiece_model_test PRIVATE OpenMP::OpenMP_CXX)
