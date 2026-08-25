@@ -331,7 +331,10 @@ set(FELIDAE_DEBUG_SOURCES
     src/BuiltinRegistry.cpp
 )
 
-add_executable(felidae_debug ${FELIDAE_DEBUG_SOURCES})
+# The source debugger is an explicit developer tool.  Leaving it out of ALL
+# prevents a normal Debug/RelWithDebInfo build from compiling a second copy of
+# the compiler frontend.
+add_executable(felidae_debug EXCLUDE_FROM_ALL ${FELIDAE_DEBUG_SOURCES})
 target_include_directories(felidae_debug PRIVATE src)
 target_include_directories(felidae_debug BEFORE PRIVATE
     third_party/sentencepiece
@@ -380,6 +383,16 @@ if(FELIDAE_BUILD_TESTS)
         target_link_libraries(felidae_sentencepiece_model_test PRIVATE OpenMP::OpenMP_CXX)
     endif()
     add_test(NAME felidae_sentencepiece_model COMMAND felidae_sentencepiece_model_test)
+
+    # The tokenizer is a production compiler command, not a helper executable.
+    # Assert its machine-readable, integer-only output at the CLI boundary.
+    add_test(NAME felidae_compiler_tokenize_cli
+        COMMAND $<TARGET_FILE:felidae_compiler> --tokenize
+                ${CMAKE_SOURCE_DIR}/v2_examples/mixfix_nested_expression.fx)
+    set_tests_properties(felidae_compiler_tokenize_cli PROPERTIES
+        TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "^\\[[0-9,]+\\]"
+        ENVIRONMENT "PATH=${TORCH_INSTALL_PREFIX}/lib;$ENV{PATH}")
 
     add_executable(felidae_sentencepiece_pipeline_test
         tests/SentencePiecePipelineTest.cpp
@@ -469,6 +482,23 @@ if(FELIDAE_BUILD_TESTS)
     felidae_enable_msvc_exceptions(felidae_form_isolation_test)
     add_test(NAME felidae_form_isolation COMMAND felidae_form_isolation_test)
     set_tests_properties(felidae_form_isolation PROPERTIES TIMEOUT 30)
+
+    # Tests are deliberately opt-in at build time.  A normal IDE build should
+    # compile only the two production executables and their required
+    # dependencies; `--target felidae_tests` builds the complete test suite.
+    set(FELIDAE_TEST_TARGETS
+        felidae_sentencepiece_model_test
+        felidae_sentencepiece_pipeline_test
+        felidae_mixfix_state_model_test
+        felidae_form_binary_test
+        felidae_form_isolation_test)
+    if(TARGET felidae_libtorch_smoke_test)
+        list(APPEND FELIDAE_TEST_TARGETS felidae_libtorch_smoke_test)
+    endif()
+    foreach(test_target IN LISTS FELIDAE_TEST_TARGETS)
+        set_property(TARGET ${test_target} PROPERTY EXCLUDE_FROM_ALL TRUE)
+    endforeach()
+    add_custom_target(felidae_tests DEPENDS ${FELIDAE_TEST_TARGETS})
 endif()
 
 # Form executes verified integer IR and has no production native-extension
@@ -582,8 +612,13 @@ felidae_native_manifest(gtk gtk GTK)
 felidae_native_manifest(qt qt QT)
 endif()
 
-find_package(Eigen3 QUIET)
-if(Eigen3_FOUND)
+if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/Eigen/Eigen/Core")
+    # Eigen is header-only.  Expose the pinned submodule through the canonical
+    # target without configuring Eigen's upstream test/probe project.
+    add_library(felidae_eigen INTERFACE)
+    target_include_directories(felidae_eigen INTERFACE
+        "${CMAKE_SOURCE_DIR}/third_party/Eigen")
+    add_library(Eigen3::Eigen ALIAS felidae_eigen)
     target_compile_definitions(felidae_compiler PRIVATE FELIDAE_HAS_EIGEN=1)
     target_link_libraries(felidae_compiler PRIVATE Eigen3::Eigen)
 endif()

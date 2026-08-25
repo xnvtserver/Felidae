@@ -20,9 +20,31 @@ it never stores source syntax, pointers, or AST objects.
 SentencePiece and LibTorch are C++ dependencies. No Python or deprecated
 visualizer runtime is required.
 
+Clone with the pinned third-party sources, or initialize them after cloning:
+
 ```powershell
-cmake -S . -B build
+git clone --recurse-submodules <repository-url>
+# existing checkout:
+git submodule update --init --recursive
+```
+
+`third_party/` is tracked exclusively through Git submodules, including
+SentencePiece, nlohmann/json, Abseil, Protobuf, Eigen, cpp-httplib, and
+rapidcsv.
+
+```powershell
+cmake -S . -B build -A x64 -DFELIDAE_ENABLE_LIBTORCH=ON -DCMAKE_PREFIX_PATH=C:\libtorch
 cmake --build build --config Debug --target felidae_compiler felidae_vm
+```
+
+The default IDE/Debug build contains only the production compiler and VM plus
+their required dependencies. Build the optional debugger or complete unit
+suite explicitly when needed:
+
+```powershell
+cmake --build build --config Debug --target felidae_debug
+cmake --build build --config Debug --target felidae_tests
+ctest --test-dir build -C Debug --output-on-failure
 ```
 
 Both executables are written directly to `build/`:
@@ -95,10 +117,12 @@ Its output is verifier-gated; missing models, invalid output, or malformed
 spans are compile errors and never fall back to AST execution. No trained
 mixfix artifact is currently shipped.
 
-The reusable deterministic corpus is generated explicitly from examples:
+Train the compiler mixfix GRU from the reusable JSONL corpus. Windows shells
+pass the wildcard literally; the compiler expands it itself and treats invalid
+records as rejection cases rather than positive targets:
 
 ```powershell
-build\felidae_extract_mixfix_dataset.exe datasets\compiler\mixfix-v1.jsonl v2_examples
+build\felidae_compiler.exe --train 'datasets\compiler\*.jsonl' --store-model build
 ```
 
 The VM has a different optional recurrent model for `SemanticEval`/future
@@ -112,11 +136,9 @@ operation teachers from verified examples, while binaries with
 `SemanticEval`/`SsmProcess` still require explicit teachers rather than false
 whole-program labels.
 
-Prepare the reusable VM baseline from verified build artifacts, then train a
-non-shipping probe explicitly (both commands are C++/LibTorch only):
+Train the reusable VM GRU JSONL baseline explicitly (C++/LibTorch only):
 
 ```powershell
-build\felidae_build_runtime_dataset.exe datasets\vm\runtime-context-v1.jsonl build\form_core_concepts.bin build\degree_profiles.bin
 build\felidae_vm.exe --train datasets\vm\runtime-context-v1.jsonl --store-model build
 ```
 

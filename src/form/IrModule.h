@@ -49,7 +49,7 @@ struct LinkedIrModule {
     std::vector<IrWord> constants;
     std::vector<IrConstantKind> constantKinds;
     std::vector<std::vector<std::uint32_t>> texts;
-    std::vector<IrWord> symbols;
+    std::vector<IrSymbolRef> symbols;
     std::vector<IrWord> programs;
     std::vector<IrSourceMapEntry> sourceMap;
     IrProcedureMetadata initializer;
