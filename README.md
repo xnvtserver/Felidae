@@ -1,8 +1,8 @@
 # Felidae
 
 Felidae compiles `.fx` source into verified, integer-only `.bin` artifacts.
-`.bin` uses the incompatible **FELBIN v8** container; legacy `FELIR`/`.fir`
-artifacts are rejected and their `.fx` sources must be recompiled.
+`.bin` uses the beta **FELBIN v10** container. During beta, binaries must be
+rebuilt whenever the current container or ISA version changes.
 The compiler and VM are separate C++ executables:
 
 ```text
@@ -10,10 +10,272 @@ source.fx -> SentencePiece IDs -> IntegerParser -> AST compiler -> verified .bin
 program.bin -> binary loader -> verifier -> Form register VM
 ```
 
-The Form VM executes IR only. It does not link the parser, AST, Interpreter,
-or legacy AST runtime. `.bin` stores integer opcodes, registers, symbol IDs,
-SentencePiece text IDs, constants, source-map spans, and procedure metadata;
+Compiler IR is internal. Before binary emission it is verified and lowered
+deterministically to the fixed 32-bit [Felidae ISA v1](docs/isa.md); the VM
+accepts only verified ISA instructions. SentencePiece IDs remain inside the
+frontend, while runtime text is stored as UTF-8 constant-pool data.
+
+The Form VM executes verified ISA only. It does not link the parser, AST, or
+Interpreter. `.bin` stores fixed numeric ISA opcodes, registers, symbol IDs,
+UTF-8 text pools and their bounded indexes, numeric constants, source-map spans, and procedure metadata;
 it never stores source syntax, pointers, or AST objects.
+
+For intelligence-style evaluation, use the reproducible
+[reasoning and robustness benchmark](docs/reasoning_benchmark.md). It includes
+coffee-vending and HVAC examples using hierarchy, explicit unification
+predicates, theorem-like mixfix statements, bounded alternative proofs, and
+safe failure cases. The benchmark reports proof accuracy, fault tolerance,
+determinism, latency, and held-out learning separately; it does not claim a
+human IQ score or native Prolog backtracking.
+
+## Build and debug on Linux or WSL
+
+Felidae requires CMake 3.21 or newer, a C++20 compiler (GCC 8+ or Clang 7+),
+and the pinned Git submodules. Ninja and GDB are recommended for fast builds
+and native debugging. Python and LibTorch are not required for the normal
+compiler and VM.
+
+Clone the repository with its submodules, or initialize them in an existing
+checkout:
+
+```bash
+git clone --recurse-submodules <repository-url>
+# existing checkout:
+git submodule update --init --recursive
+```
+
+Keep Debug, sanitizer, and Release configuration state in separate build
+directories. A conservative Debug build suitable for machines with limited
+memory is:
+
+```bash
+cmake -S . -B build/debug -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DFELIDAE_ENABLE_LIBTORCH=OFF \
+  -DFELIDAE_BUILD_TESTS=ON
+
+cmake --build build/debug \
+  --target felidae_compiler felidae_vm felidae_debug felidae_tests \
+  --parallel 1
+```
+
+Run the complete test suite before debugging or changing the compiler/VM:
+
+```bash
+ctest --test-dir build/debug --output-on-failure
+```
+
+Compile and execute a working example:
+
+```bash
+./build/debug/felidae_compiler v2_examples/form_core_concepts.fx
+./build/debug/felidae_vm build/debug/form_core_concepts.bin
+```
+
+The compiler writes the generated `.bin` into its own executable directory,
+not beside the source. The VM verifies the binary before executing it.
+Test binaries and model fixtures use deterministic subdirectories below
+`build/<configuration>/test-artifacts/` and `build/<configuration>/model-tests/`;
+tests do not create random build directories in the system temporary folder.
+
+Use GDB to debug either side of the compiler/VM boundary:
+
+```bash
+gdb --args ./build/debug/felidae_compiler v2_examples/form_core_concepts.fx
+gdb --args ./build/debug/felidae_vm build/debug/form_core_concepts.bin
+```
+
+Debug builds also provide an opt-in action trace. `FELIDAE_TRACE=1` writes
+parser and verified-ISA dispatch details to `stderr`; normal program results
+remain on `stdout`. The trace code is guarded by `#ifndef NDEBUG` and is absent
+from Release builds:
+
+```bash
+FELIDAE_TRACE=1 ./build/debug/felidae_compiler v2_examples/form_core_concepts.fx
+FELIDAE_TRACE=1 ./build/debug/felidae_vm build/debug/form_core_concepts.bin
+```
+
+Parser lines report source bytes, SentencePiece token count, the single encode
+pass, statement completion, compiler-SSM spans, and verified compiler-IR
+sizes. VM lines report the verified module version followed by call depth,
+instruction PC, fixed opcode ID, and decoded instruction width.
+
+The repository's `.vscode/launch.json` contains Linux GDB profiles. Build
+first, then adjust their executable paths from `build/` to `build/debug/` when
+using the separate directory above. The current default VS Code build task is
+Windows-specific and should not be used unchanged on Linux or WSL.
+
+`felidae_debug` is a non-executing source-analysis tool rather than the Form
+register VM. It can emit human-readable or structured diagnostics:
+
+```bash
+./build/debug/felidae_debug v2_examples/form_core_concepts.fx --check
+./build/debug/felidae_debug v2_examples/form_core_concepts.fx --check-json
+```
+
+For memory errors and undefined behavior, create a separate sanitizer build:
+
+```bash
+cmake -S . -B build/asan -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DFELIDAE_ENABLE_SANITIZERS=ON \
+  -DFELIDAE_ENABLE_LIBTORCH=OFF \
+  -DFELIDAE_BUILD_TESTS=ON
+
+cmake --build build/asan --target felidae_tests --parallel 1
+ctest --test-dir build/asan --output-on-failure
+```
+
+Check `git status --short` before and after builds. Build products belong in
+their build directories, while the reproducible SentencePiece step can create
+generated files under `models/`; review those files before committing. Model
+training and beta packaging are explicit workflows and should not be run as
+part of routine setup. Increase `--parallel` only when the machine has enough
+available memory.
+
+### Fixed tokenizer corpus
+
+The compiler's fixed SentencePiece model is generated in pure C++ from
+[`datasets/tokenizer/felidae-tokenizer-v1.jsonl`](datasets/tokenizer/felidae-tokenizer-v1.jsonl).
+The versioned corpus currently covers 32 representative programs across 19
+syntax families, including facts, hierarchy, methods, control flow, operators,
+queries, mixfix forms, semantic intrinsics, Unicode, strings, temporal fields,
+and Prolog-style fact iteration. Each JSONL row has exactly
+`schema_version`, `id`, `family`, and `source`; duplicate IDs, oversized rows,
+unknown fields, or insufficient family coverage stop model generation.
+
+Grammar spellings remain pinned SentencePiece user-defined symbols. The model
+uses identity normalization, a bounded 1024-piece vocabulary, deterministic
+single-threaded training, and byte fallback for unseen UTF-8. Generated token
+IDs record the corpus schema, record count, and dataset hash. Tokenizer IDs
+remain frontend-only and never become ISA opcodes or runtime semantics.
+
+
+For your Debian + C++20 Felidae build, install the official **Linux LibTorch C++ package** rather than `pip install torch`. PyTorch’s LibTorch distribution includes the C++ headers, shared libraries, and CMake config files needed by `find_package(Torch)`. ([PyTorch Docs][1])
+
+Start with the basic packages:
+
+```bash
+sudo apt update
+
+sudo apt install -y \
+  build-essential \
+  cmake \
+  ninja-build \
+  wget \
+  unzip \
+  ca-certificates
+```
+
+For a CPU-only machine, download the official CPU LibTorch archive. PyTorch documents this CPU-only package directly: ([PyTorch Docs][1])
+
+```bash
+cd ~/Downloads
+
+wget https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.13.0%2Bcpu.zip
+
+unzip libtorch-cxx11-abi-shared-with-deps-latest.zip
+```
+
+Remember, **`cxx11-abi` does not mean C++11 language mode**. Your Felidae project can remain C++20; this refers to GCC/libstdc++ ABI compatibility. Current LibTorch C++11-ABI builds require GCC 9+ and glibc 2.29+, which modern Debian satisfies. ([PyTorch Docs][1])
+
+I recommend installing it under `/opt`:
+
+```bash
+sudo mv libtorch /opt/libtorch
+```
+
+Verify:
+
+```bash
+ls /opt/libtorch/share/cmake/Torch/TorchConfig.cmake
+```
+
+and:
+
+```bash
+ls /opt/libtorch/lib/libtorch.so
+ls /opt/libtorch/lib/libtorch_cpu.so
+ls /opt/libtorch/lib/libc10.so
+```
+
+Then configure Felidae with LibTorch enabled:
+
+```bash
+cd /home/vishal/Felidae
+
+rm -rf build/debug
+
+cmake -S . -B build/debug -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DFELIDAE_ENABLE_LIBTORCH=ON \
+  -DFELIDAE_BUILD_TESTS=ON \
+  -DCMAKE_PREFIX_PATH=/opt/libtorch
+```
+
+Build:
+
+```bash
+cmake --build build/debug \
+  --target felidae_compiler felidae_vm felidae_debug felidae_tests \
+  --parallel 1
+```
+
+You can confirm CMake actually enabled it with:
+
+```bash
+grep FELIDAE_ENABLE_LIBTORCH build/debug/CMakeCache.txt
+```
+
+Expected:
+
+```text
+FELIDAE_ENABLE_LIBTORCH:BOOL=ON
+```
+
+Also check Torch discovery:
+
+```bash
+grep -E 'Torch_DIR|CMAKE_PREFIX_PATH' build/debug/CMakeCache.txt
+```
+
+You should see something similar to:
+
+```text
+Torch_DIR=/opt/libtorch/share/cmake/Torch
+```
+
+If the executable later complains that `libtorch.so` or `libc10.so` cannot be found, test with:
+
+```bash
+export LD_LIBRARY_PATH=/opt/libtorch/lib:$LD_LIBRARY_PATH
+```
+
+Then:
+
+```bash
+ldd build/debug/felidae_vm | grep -E 'torch|c10'
+```
+
+For a permanent development-machine setup, you can register LibTorch with the Linux dynamic linker:
+
+```bash
+echo "/opt/libtorch/lib" | sudo tee /etc/ld.so.conf.d/libtorch.conf
+sudo ldconfig
+```
+
+Then verify:
+
+```bash
+ldconfig -p | grep -E 'libtorch|libc10'
+```
+
+That is preferable to setting `LD_LIBRARY_PATH` on every shell.
+
+One thing I would **not** do is install a Debian `libtorch-dev` package for this project if you want the same controlled LibTorch version across Windows and Linux. Pinning an official LibTorch distribution under `/opt/libtorch` makes your Felidae CMake environment much more reproducible.
+
+[1]: https://docs.pytorch.org/cppdocs/installing.html?utm_source=chatgpt.com "Installing C++ Distributions of PyTorch — PyTorch main documentation"
+
 
 ## Build on Windows
 
@@ -33,8 +295,8 @@ SentencePiece, nlohmann/json, Abseil, Protobuf, Eigen, cpp-httplib, and
 rapidcsv.
 
 ```powershell
-cmake -S . -B build -A x64 -DFELIDAE_ENABLE_LIBTORCH=ON -DCMAKE_PREFIX_PATH=C:\libtorch
-cmake --build build --config Debug --target felidae_compiler felidae_vm
+cmake -S . -B build/debug -A x64 -DFELIDAE_ENABLE_LIBTORCH=ON -DCMAKE_PREFIX_PATH=C:\libtorch
+cmake --build build/debug --config Debug --target felidae_compiler felidae_vm
 ```
 
 The default IDE/Debug build contains only the production compiler and VM plus
@@ -42,16 +304,16 @@ their required dependencies. Build the optional debugger or complete unit
 suite explicitly when needed:
 
 ```powershell
-cmake --build build --config Debug --target felidae_debug
-cmake --build build --config Debug --target felidae_tests
-ctest --test-dir build -C Debug --output-on-failure
+cmake --build build/debug --config Debug --target felidae_debug
+cmake --build build/debug --config Debug --target felidae_tests
+ctest --test-dir build/debug -C Debug --output-on-failure
 ```
 
-Both executables are written directly to `build/`:
+Both executables are written directly to `build/debug/`:
 
 ```text
-build/felidae_compiler.exe
-build/felidae_vm.exe
+build/debug/felidae_compiler.exe
+build/debug/felidae_vm.exe
 ```
 
 When LibTorch DLLs are not already on `PATH`, add them before running either
@@ -67,8 +329,8 @@ The compiler writes the binary beside its executable, so source folders stay
 unchanged:
 
 ```powershell
-build\felidae_compiler.exe v2_examples\form_core_concepts.fx
-build\felidae_vm.exe build\form_core_concepts.bin
+build\debug\felidae_compiler.exe v2_examples\form_core_concepts.fx
+build\debug\felidae_vm.exe build\debug\form_core_concepts.bin
 ```
 
 The VM verifies the binary again before execution. A malformed, truncated, or
@@ -77,7 +339,7 @@ unverified `.bin` fails before it can run.
 For the long-lived Form daemon mode:
 
 ```powershell
-build\felidae_vm.exe --serve build\form_core_concepts.bin
+build\debug\felidae_vm.exe --serve build\debug\form_core_concepts.bin
 # stdin commands: run, facts [type-id], field <symbol-id>, history,
 # proof <child-type-id> <ancestor-type-id>, load <other.bin>, modules, quit
 ```
@@ -85,7 +347,7 @@ build\felidae_vm.exe --serve build\form_core_concepts.bin
 ## Working examples
 
 These examples use the current compiler/VM pipeline and produce `.bin` files
-in `build/`.
+in `build/debug/`.
 
 | Example | Covers |
 | --- | --- |
@@ -99,48 +361,83 @@ in `build/`.
 For example:
 
 ```powershell
-build\felidae_compiler.exe v2_examples\mixfix_deep_ir_nesting.fx
-build\felidae_vm.exe build\mixfix_deep_ir_nesting.bin
+build\debug\felidae_compiler.exe v2_examples\mixfix_deep_ir_nesting.fx
+build\debug\felidae_vm.exe build\debug\mixfix_deep_ir_nesting.bin
 # {#...: 9, #...: 36, #...: 756}
 ```
 
 Fact keys and type names display as numeric symbol IDs by design. VM text is
-stored as SentencePiece IDs and is decoded only for display; symbol spelling is
-not serialized into `.bin`.
+stored as UTF-8 text-pool data; SentencePiece IDs stop at the compiler
+frontend and are never serialized as executable data or semantics. Symbol
+spelling is not serialized into `.bin`.
+
+Fact designations participate in typed hierarchical queries. For example,
+`Animal(...) as animals` lets source use
+`for_each_fact(animals, callback)`; the compiler emits `QueryFacts` against
+the `Animal` type, and the VM includes `Animal` plus all registered descendant
+types. `as` remains compiler metadata—it is not a fact field or inheritance
+edge. See `v2_examples/hierarchical_designation_filter.fx`.
 
 ## Mixfix and recurrent models
 
 Normal syntax and uniquely resolved annotated mixfix stay deterministic and
-compile directly to the same register IR. The compiler-side `MixfixStateModel`
+compile directly to the same internal compiler IR. The compiler-side `MixfixStateModel`
 uses a C++ LibTorch GRU and accepts only a finite structural IR vocabulary.
 Its output is verifier-gated; missing models, invalid output, or malformed
 spans are compile errors and never fall back to AST execution. No trained
 mixfix artifact is currently shipped.
+
+Training and production artifacts are deliberately separate. Native LibTorch
+state is written only to `mixfix-gru.ckpt`; inference loads the C++-exported
+TorchScript module `mixfix-gru.pt`. The project does not use Python for model
+training, export, loading, or inference.
 
 Train the compiler mixfix GRU from the reusable JSONL corpus. Windows shells
 pass the wildcard literally; the compiler expands it itself and treats invalid
 records as rejection cases rather than positive targets:
 
 ```powershell
-build\felidae_compiler.exe --train 'datasets\compiler\*.jsonl' --store-model build
+build\debug\felidae_compiler.exe --train 'datasets\compiler\*.jsonl' --store-model build --epochs 8 --learning-rate 0.001
 ```
 
-The VM has a different optional recurrent model for `SemanticEval`/future
-`SSM_PROCESS` work. It is built from `src/form/RuntimeStateModel.cpp` and uses
-a finite, typed result vocabulary (nil, boolean, a bounded Degree lattice, a
+After changing `datasets/tokenizer/` or regenerating `models/felidae.model`,
+regenerate both compiler corpora together. Schema-v2 records carry the exact
+SentencePiece model hash and compiler-IR vocabulary version, and training
+rejects stale tokenizer or target IDs:
+
+```bash
+cmake --build build/debug --target felidae_extract_mixfix_dataset --parallel 1
+./build/debug/felidae_extract_mixfix_dataset \
+  datasets/compiler/mixfix-v1.jsonl examples v2_examples \
+  --rejections datasets/compiler/mixfix-invalid-v1.jsonl
+```
+
+The VM has a different optional recurrent model exclusively for explicit
+`SemanticEval` ISA operations. It is built from
+`src/form/RuntimeStateModel.cpp` and uses
+a finite, typed result vocabulary (nil, numeric `0.0`/`1.0` truth values, a bounded Degree lattice, a
 validated bounded input reference, or a fact derived from a validated input), never implicit
 truthiness. No runtime artifact is shipped until it has been trained and
-validated against FELBIN v8. No runtime artifact is currently shipped. The
-dataset tool can prepare deterministic identity and fact/hierarchy-context
-operation teachers from verified examples, while binaries with
-`SemanticEval`/`SsmProcess` still require explicit teachers rather than false
-whole-program labels.
+validated against FELBIN v10 and ISA v1. No runtime artifact is currently shipped. The
+dataset tool can prepare deterministic unary Identity teachers from verified
+examples. Every record carries the permanent semantic operation ID `0x0001`;
+source-name hashes are forbidden. Binaries with `SemanticEval` still require
+explicit operation-level teachers rather than false whole-program labels.
+
+The runtime trainer likewise keeps native state in `runtime-gru.ckpt` and
+exports the production `runtime-gru.pt` as TorchScript. The VM rejects native
+training archives at its production model boundary.
 
 Train the reusable VM GRU JSONL baseline explicitly (C++/LibTorch only):
 
 ```powershell
-build\felidae_vm.exe --train datasets\vm\runtime-context-v1.jsonl --store-model build
+build\debug\felidae_vm.exe --train datasets\vm\runtime-context-v1.jsonl --store-model build --epochs 8 --learning-rate 0.001
 ```
+
+Both commands print held-out structural-family metrics, elapsed epoch seconds,
+and training samples per second. These measurements are reported for review;
+the README does not label a configuration efficient until a Release run has
+been tested on the target machine.
 
 ## Validation
 

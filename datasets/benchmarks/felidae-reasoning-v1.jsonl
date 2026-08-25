@@ -1,0 +1,5 @@
+{"schema_version":1,"id":"coffee-normal","domain":"coffee","source":"v2_examples/coffee_vending_theorem_solver.fx","scenario":"normal","expected_action":"dispense_coffee","expected_truth":1.0,"category":"in_distribution"}
+{"schema_version":1,"id":"coffee-resource-failure","domain":"coffee","source":"v2_examples/coffee_vending_theorem_solver.fx","scenario":"degraded","expected_action":"refund","expected_truth":0.0,"category":"fault_tolerance"}
+{"schema_version":1,"id":"hvac-occupied-hot","domain":"hvac","source":"v2_examples/air_conditioner_theorem_solver.fx","scenario":"occupied_hot","expected_action":"cool","expected_truth":1.0,"category":"in_distribution"}
+{"schema_version":1,"id":"hvac-empty-humid","domain":"hvac","source":"v2_examples/air_conditioner_theorem_solver.fx","scenario":"empty_humid","expected_action":"ventilate","expected_truth":1.0,"category":"alternative_proof"}
+{"schema_version":1,"id":"hvac-invalid-sensor","domain":"hvac","source":"v2_examples/air_conditioner_theorem_solver.fx","scenario":"invalid_sensor","expected_action":"fault_lockout","expected_truth":0.0,"category":"fault_tolerance"}

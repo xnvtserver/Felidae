@@ -5,7 +5,7 @@
       "name": "Windows: Debug Felidae Compiler (MSVC)",
       "type": "cppvsdbg",
       "request": "launch",
-      "program": "${workspaceFolder}/build/felidae_compiler.exe",
+      "program": "${workspaceFolder}/build/debug/felidae_compiler.exe",
       "args": ["${file}"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
@@ -20,9 +20,9 @@
       "name": "Windows: Debug Form VM (MSVC)",
       "type": "cppvsdbg",
       "request": "launch",
-      "program": "${workspaceFolder}/build/felidae_vm.exe",
+      "program": "${workspaceFolder}/build/debug/felidae_vm.exe",
       "args": [
-        "${workspaceFolder}/build/${fileBasenameNoExtension}.bin"
+        "${workspaceFolder}/build/debug/${fileBasenameNoExtension}.bin"
       ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
@@ -37,7 +37,7 @@
       "name": "Linux: Debug Felidae Compiler (GCC or Clang)",
       "type": "cppdbg",
       "request": "launch",
-      "program": "${workspaceFolder}/build/felidae_compiler",
+      "program": "${workspaceFolder}/build/debug/felidae_compiler",
       "args": ["${file}"],
       "cwd": "${workspaceFolder}",
       "MIMode": "gdb",
@@ -49,9 +49,9 @@
       "name": "Linux: Debug Form VM (GCC or Clang)",
       "type": "cppdbg",
       "request": "launch",
-      "program": "${workspaceFolder}/build/felidae_vm",
+      "program": "${workspaceFolder}/build/debug/felidae_vm",
       "args": [
-        "${workspaceFolder}/build/${fileBasenameNoExtension}.bin"
+        "${workspaceFolder}/build/debug/${fileBasenameNoExtension}.bin"
       ],
       "cwd": "${workspaceFolder}",
       "MIMode": "gdb",
@@ -63,7 +63,7 @@
       "name": "macOS: Debug Felidae Compiler (Clang)",
       "type": "lldb",
       "request": "launch",
-      "program": "${workspaceFolder}/build/felidae_compiler",
+      "program": "${workspaceFolder}/build/debug/felidae_compiler",
       "args": ["${file}"],
       "cwd": "${workspaceFolder}"
     },
@@ -71,9 +71,9 @@
       "name": "macOS: Debug Form VM (Clang)",
       "type": "lldb",
       "request": "launch",
-      "program": "${workspaceFolder}/build/felidae_vm",
+      "program": "${workspaceFolder}/build/debug/felidae_vm",
       "args": [
-        "${workspaceFolder}/build/${fileBasenameNoExtension}.bin"
+        "${workspaceFolder}/build/debug/${fileBasenameNoExtension}.bin"
       ],
       "cwd": "${workspaceFolder}"
     }

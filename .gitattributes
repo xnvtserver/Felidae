@@ -32,6 +32,8 @@ vs-code-extension/node_modules/** linguist-vendored=true
 *.fx linguist-generated=false
 *.fx linguist-vendored=false
 *.fx text eol=lf
+datasets/**/*.jsonl text eol=lf
+models/*.model binary
 
 examples/data/converted_*.fx linguist-detectable=false
 
