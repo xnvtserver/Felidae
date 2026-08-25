@@ -1,4 +1,6 @@
-if(NOT DEFINED FELIDAE_DIST_DIR OR NOT DEFINED FELIDAE_DIST_BUILD_DIR OR NOT DEFINED FELIDAE_DIST_MODEL_DIR OR NOT DEFINED FELIDAE_DIST_VERSION)
+if(NOT DEFINED FELIDAE_DIST_DIR OR NOT DEFINED FELIDAE_DIST_BUILD_DIR OR
+   NOT DEFINED FELIDAE_DIST_MODEL_DIR OR NOT DEFINED FELIDAE_DIST_VERSION OR
+   NOT DEFINED FELIDAE_DIST_HAS_LIBTORCH)
     message(FATAL_ERROR "distribution staging paths are incomplete")
 endif()
 
@@ -22,26 +24,41 @@ endif()
 file(COPY "${FELIDAE_DIST_MODEL_DIR}/" DESTINATION "${FELIDAE_DIST_DIR}/models"
      FILES_MATCHING PATTERN "*.model" PATTERN "*.pt" PATTERN "*.txt")
 
-# Windows resolves DLLs beside the executable. These are the native C++
-# LibTorch dependencies reported by dumpbin for c10/torch_cpu; deliberately
-# exclude torch_python, shm and distributed-only helper DLLs.
-if(DEFINED FELIDAE_DIST_TORCH_LIB_DIR AND EXISTS "${FELIDAE_DIST_TORCH_LIB_DIR}")
-    foreach(runtime_dll c10.dll torch_cpu.dll libiomp5md.dll uv.dll)
-        set(source_dll "${FELIDAE_DIST_TORCH_LIB_DIR}/${runtime_dll}")
-        if(NOT EXISTS "${source_dll}")
-            message(FATAL_ERROR "required LibTorch runtime DLL is unavailable: ${source_dll}")
+# Post-build runtime discovery records the exact dependency closure for each
+# executable. Never glob the build directory: it may also contain unrelated
+# plugins or stale DLLs that are not part of the portable runtime contract.
+set(runtime_names)
+if(FELIDAE_DIST_HAS_LIBTORCH)
+    foreach(executable felidae_compiler felidae_vm)
+        set(runtime_manifest
+            "${FELIDAE_DIST_BUILD_DIR}/felidae-torch-runtime-${executable}.txt")
+        if(NOT EXISTS "${runtime_manifest}")
+            message(FATAL_ERROR "LibTorch runtime manifest is unavailable: ${runtime_manifest}")
         endif()
-        file(COPY_FILE "${source_dll}" "${FELIDAE_DIST_DIR}/${runtime_dll}" ONLY_IF_DIFFERENT)
+        file(STRINGS "${runtime_manifest}" executable_runtime_names)
+        list(APPEND runtime_names ${executable_runtime_names})
+    endforeach()
+    list(REMOVE_DUPLICATES runtime_names)
+    list(SORT runtime_names)
+    foreach(runtime_name IN LISTS runtime_names)
+        if(NOT runtime_name MATCHES "^[A-Za-z0-9_.+-]+\\.dll$")
+            message(FATAL_ERROR "invalid LibTorch runtime manifest entry: ${runtime_name}")
+        endif()
+        set(source_dll "${FELIDAE_DIST_BUILD_DIR}/${runtime_name}")
+        if(NOT EXISTS "${source_dll}")
+            message(FATAL_ERROR "resolved LibTorch runtime DLL is unavailable: ${source_dll}")
+        endif()
+        file(COPY_FILE "${source_dll}" "${FELIDAE_DIST_DIR}/${runtime_name}" ONLY_IF_DIFFERENT)
     endforeach()
 endif()
 
 file(WRITE "${FELIDAE_DIST_DIR}/README.txt"
-"Felidae ${FELIDAE_DIST_VERSION} beta portable distribution\n\nRun from this directory:\n  felidae_compiler.exe program.fx\n  felidae_vm.exe program.bin\n\nThe compiler writes .bin next to itself; use a disposable working copy or move the artifact after compilation.\nFELBIN v8 is incompatible with legacy FELIR/.fir artifacts; recompile the .fx source.\nmodels/felidae.model is required for SentencePiece encoding/decoding.\nLibTorch DLLs are staged beside the executables when this distribution was built with runtime SSM support.\nVerify shipped files with SHA256SUMS.txt before publishing.\n")
+"Felidae ${FELIDAE_DIST_VERSION} beta portable distribution\n\nRun from this directory:\n  felidae_compiler.exe program.fx\n  felidae_vm.exe program.bin\n\nThe compiler writes .bin next to itself; use a disposable working copy or move the artifact after compilation.\nFELBIN v10 is the current beta container; recompile source after beta format changes.\nmodels/felidae.model is required for SentencePiece encoding.\nLibTorch DLLs are staged beside the executables when this distribution was built with runtime SSM support.\nVerify shipped files with SHA256SUMS.txt before publishing.\n")
 
 set(release_files felidae_compiler.exe felidae_vm.exe README.txt)
-if(DEFINED FELIDAE_DIST_TORCH_LIB_DIR AND EXISTS "${FELIDAE_DIST_TORCH_LIB_DIR}")
-    list(APPEND release_files c10.dll torch_cpu.dll libiomp5md.dll uv.dll)
-endif()
+foreach(runtime_name IN LISTS runtime_names)
+    list(APPEND release_files "${runtime_name}")
+endforeach()
 # All copied model artifacts, including nested GRU checkpoints and manifests,
 # are part of the release integrity boundary rather than an unchecked sidecar.
 file(GLOB_RECURSE staged_model_entries RELATIVE "${FELIDAE_DIST_DIR}"

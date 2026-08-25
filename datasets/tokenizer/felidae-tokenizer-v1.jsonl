@@ -1,0 +1,32 @@
+{"schema_version":1,"id":"facts-basic","family":"facts","source":"Person(name: \"Ada\", age: 32, active: true)\nPerson(name: \"Grace\", age: 37, active: false)"}
+{"schema_version":1,"id":"facts-nested","family":"facts","source":"Employee(name: \"Lin\", address: {city: \"Delhi\", zip: 110001}, skills: [compiler, vm, isa])"}
+{"schema_version":1,"id":"facts-hierarchy","family":"hierarchy","source":"Animal(name: \"root\")\nMammal extend Animal(name: \"mammal\")\nCat extend Mammal(name: \"felidae\")"}
+{"schema_version":1,"id":"facts-multiple-parents","family":"hierarchy","source":"Engineer extend Employee, TechnicalPerson(name: \"Ada\", level: 5)\nmain() => return commonAncestors(left: Engineer(name: \"Ada\"), right: TechnicalPerson(name: \"Lin\"))"}
+{"schema_version":1,"id":"method-return","family":"methods","source":"add(left: number, right: number) =>\n    return left + right"}
+{"schema_version":1,"id":"method-named-call","family":"methods","source":"main() =>\n    answer := add(left: 19, right: 23)\n    return {answer: answer}"}
+{"schema_version":1,"id":"conditional","family":"control-flow","source":"classify(score: number) =>\n    if score >= 80 then\n        return \"high\"\n    else\n        return \"low\""}
+{"schema_version":1,"id":"where-fallback","family":"control-flow","source":"adult(person: Person) =>\n    where person.age >= 18\n    return true\nelse\n    return false"}
+{"schema_version":1,"id":"boolean-logic","family":"operators","source":"main() => return {both: true and not false, either: false or true, exact: 4 == 4}"}
+{"schema_version":1,"id":"arithmetic","family":"operators","source":"main() => return {add: 6 + 7, sub: 20 - 3, mul: 6 * 7, div: 84 / 2, mod: 17 % 5}"}
+{"schema_version":1,"id":"comparisons","family":"operators","source":"main() => return [1 < 2, 2 <= 2, 4 > 3, 5 >= 5, 6 != 7]"}
+{"schema_version":1,"id":"arrays-maps","family":"collections","source":"Values := [1, 2, 3, {name: \"four\", value: 4}]\nmain() => return {values: Values, count: count(Values)}"}
+{"schema_version":1,"id":"field-access","family":"collections","source":"main() =>\n    record := {profile: {name: \"Ada\", score: 0.95}}\n    return record.profile.name"}
+{"schema_version":1,"id":"lambda-query","family":"queries","source":"main() =>\n    engineers := lambda(Employee, employee => employee.role == \"engineer\")\n    return engineers"}
+{"schema_version":1,"id":"fact-loop","family":"queries","source":"degreeFor(profile: RatingProfile) => return membership(68, profile)\nmain() => return for_each_fact(RatingProfile, degreeFor)"}
+{"schema_version":1,"id":"fuzzy-membership","family":"fuzzy","source":"main() => return membership(68, {peak: 75, fades_in: 50, fades_out: 90})"}
+{"schema_version":1,"id":"fuzzy-similarity","family":"fuzzy","source":"main() => return {text: similarity(\"cat\", \"cats\"), number: similarity(9, 10)}"}
+{"schema_version":1,"id":"semantic-intrinsics","family":"semantic","source":"main() => return {identity: semantic_identity(42), degree: semantic_evaluate_degree(0.75)}"}
+{"schema_version":1,"id":"semantic-facts","family":"semantic","source":"main() =>\n    selected := semantic_select_fact(Candidate(name: \"Ada\"))\n    return semantic_derive_fact(selected)"}
+{"schema_version":1,"id":"mixfix-annotation","family":"mixfix","source":"@mixfix(pattern: \"between {value:number} and {limit:number}\", precedence: 40, associativity: \"left\")\nbetweenRange() => return value <= limit"}
+{"schema_version":1,"id":"mixfix-usage","family":"mixfix","source":"main() => return {accepted: between 5 and 10, rejected: between 12 and 10}"}
+{"schema_version":1,"id":"imports","family":"modules","source":"import (\"math\", \"str\", \"array\")\nmain() => return math:sqrt(value: 81)"}
+{"schema_version":1,"id":"qualified-calls","family":"modules","source":"main() => return {length: array.len(data: [1, 2, 3]), text: str:upper(data: \"felidae\")}"}
+{"schema_version":1,"id":"strings-escapes","family":"strings","source":"main() => return {quote: \"say \\\"hello\\\"\", path: \"build/debug/program.bin\", newline: \"a\\nb\"}"}
+{"schema_version":1,"id":"unicode-identifiers","family":"unicode","source":"Café(name: \"東京\", note: \"naïve façade λ calculus 🐈\")\nmain() => return Café(name: \"München\")"}
+{"schema_version":1,"id":"comments","family":"comments","source":"# deterministic compiler comment\nmain() => return 42 # trailing explanation"}
+{"schema_version":1,"id":"numbers","family":"literals","source":"main() => return [0, 1, -1, 3.1415926535, 0.001, 1000000, 6.02]"}
+{"schema_version":1,"id":"nil-truth","family":"literals","source":"main() => return {missing: nil, false_value: false, true_value: true, numeric_false: 0.0, numeric_true: 1.0}"}
+{"schema_version":1,"id":"recursive-call","family":"recursion","source":"factorial(n: number) =>\n    if n == 0 then\n        return 1\n    else\n        return n * factorial(n: n - 1)\nmain() => return factorial(n: 6)"}
+{"schema_version":1,"id":"prolog-style","family":"logic","source":"Parent(parent: \"alice\", child: \"bob\")\nParent(parent: \"bob\", child: \"carol\")\nancestor(edge: Parent) => return edge.parent == \"alice\"\nmain() => return for_each_fact(Parent, ancestor)"}
+{"schema_version":1,"id":"temporal-facts","family":"temporal","source":"Event(name: \"deploy\", effective_at: 1724544000, priority: 10)\nEvent(name: \"review\", effective_at: 1724630400, priority: 5)"}
+{"schema_version":1,"id":"multiline-layout","family":"layout","source":"main() =>\n\tvalue := 21 * 2\r\n\treturn (\r\n\t\tanswer: value,\r\n\t\tready: true\r\n\t)"}
