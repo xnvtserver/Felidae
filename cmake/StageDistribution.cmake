@@ -1,7 +1,14 @@
 if(NOT DEFINED FELIDAE_DIST_DIR OR NOT DEFINED FELIDAE_DIST_BUILD_DIR OR
+   NOT DEFINED FELIDAE_DIST_CONFIG OR
+   NOT DEFINED FELIDAE_DIST_EXECUTABLE_SUFFIX OR
    NOT DEFINED FELIDAE_DIST_MODEL_DIR OR NOT DEFINED FELIDAE_DIST_VERSION OR
    NOT DEFINED FELIDAE_DIST_HAS_LIBTORCH)
     message(FATAL_ERROR "distribution staging paths are incomplete")
+endif()
+
+if(NOT FELIDAE_DIST_CONFIG STREQUAL "Release")
+    message(FATAL_ERROR
+        "felidae_dist requires a Release configuration; received '${FELIDAE_DIST_CONFIG}'")
 endif()
 
 # This directory is generated only by the explicit felidae_dist target inside
@@ -11,11 +18,12 @@ file(MAKE_DIRECTORY "${FELIDAE_DIST_DIR}")
 file(MAKE_DIRECTORY "${FELIDAE_DIST_DIR}/models")
 
 foreach(executable felidae_compiler felidae_vm)
-    set(source "${FELIDAE_DIST_BUILD_DIR}/${executable}.exe")
+    set(executable_name "${executable}${FELIDAE_DIST_EXECUTABLE_SUFFIX}")
+    set(source "${FELIDAE_DIST_BUILD_DIR}/${executable_name}")
     if(NOT EXISTS "${source}")
         message(FATAL_ERROR "distribution executable is unavailable: ${source}")
     endif()
-    file(COPY_FILE "${source}" "${FELIDAE_DIST_DIR}/${executable}.exe" ONLY_IF_DIFFERENT)
+    file(COPY_FILE "${source}" "${FELIDAE_DIST_DIR}/${executable_name}" ONLY_IF_DIFFERENT)
 endforeach()
 
 if(NOT EXISTS "${FELIDAE_DIST_MODEL_DIR}/felidae.model")
@@ -53,9 +61,12 @@ if(FELIDAE_DIST_HAS_LIBTORCH)
 endif()
 
 file(WRITE "${FELIDAE_DIST_DIR}/README.txt"
-"Felidae ${FELIDAE_DIST_VERSION} beta portable distribution\n\nRun from this directory:\n  felidae_compiler.exe program.fx\n  felidae_vm.exe program.bin\n\nThe compiler writes .bin next to itself; use a disposable working copy or move the artifact after compilation.\nFELBIN v10 is the current beta container; recompile source after beta format changes.\nmodels/felidae.model is required for SentencePiece encoding.\nLibTorch DLLs are staged beside the executables when this distribution was built with runtime SSM support.\nVerify shipped files with SHA256SUMS.txt before publishing.\n")
+"Felidae ${FELIDAE_DIST_VERSION} beta portable distribution\n\nRun from this directory:\n  felidae_compiler${FELIDAE_DIST_EXECUTABLE_SUFFIX} program.fx\n  felidae_vm${FELIDAE_DIST_EXECUTABLE_SUFFIX} program.bin\n\nThe compiler writes .bin next to itself; use a disposable working copy or move the artifact after compilation.\nFELBIN v10 is the current beta container; recompile source after beta format changes.\nmodels/felidae.model is required for SentencePiece encoding.\nLibTorch DLLs are staged beside the executables when this distribution was built with runtime SSM support.\nVerify shipped files with SHA256SUMS.txt before publishing.\n")
 
-set(release_files felidae_compiler.exe felidae_vm.exe README.txt)
+set(release_files
+    "felidae_compiler${FELIDAE_DIST_EXECUTABLE_SUFFIX}"
+    "felidae_vm${FELIDAE_DIST_EXECUTABLE_SUFFIX}"
+    README.txt)
 foreach(runtime_name IN LISTS runtime_names)
     list(APPEND release_files "${runtime_name}")
 endforeach()

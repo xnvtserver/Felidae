@@ -7,7 +7,8 @@ source.fx -> felidae_compiler -> verified FELBIN v10 / Felidae ISA v1 .bin -> fe
 ```
 
 Build artifacts are created only in `build/`; the portable package is generated
-by the `felidae_dist` CMake target in `<build-directory>/dist/`. Use the repository
+only from a Release configuration by the `felidae_dist` CMake target in
+`<build-directory>/dist/`. Use the repository
 [`README.md`](../README.md) for build, compiler, VM, binary-format, mixfix,
 and SSM guidance.
 

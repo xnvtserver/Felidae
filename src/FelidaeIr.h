@@ -3,12 +3,13 @@
 // Internal compiler IR. Runtime entry points include RegisterVm.h or
 // BinaryIsa.h and never accept these instruction words.
 #include <cstddef>
+#include <cstdint>
 namespace Felidae { using SentencePieceId = std::size_t; }
 #include "form/RegisterVm.h"
 
 namespace Felidae {
 
-enum class IrOpcode : IrWord {
+enum class IrOpcode : std::uint8_t {
     End = 0,
     LoadConst,
     LoadSymbol,
@@ -45,8 +46,8 @@ enum class IrOpcode : IrWord {
 
 inline constexpr IrWord kIrOpcodeCount = static_cast<IrWord>(IrOpcode::Count);
 
-enum class IrOperandKind : IrWord { Register = 1, Constant, Symbol, Fact, Jump, Program };
-enum class IrComparison : IrWord { Equal = 0, NotEqual, Less, LessEqual, Greater, GreaterEqual };
+enum class IrOperandKind : std::uint8_t { Register = 1, Constant, Symbol, Fact, Jump, Program };
+enum class IrComparison : std::uint8_t { Equal = 0, NotEqual, Less, LessEqual, Greater, GreaterEqual };
 
 struct FelidaeIr {
     std::vector<IrWord> words;

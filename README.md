@@ -45,8 +45,44 @@ git submodule update --init --recursive
 ```
 
 Keep Debug, sanitizer, and Release configuration state in separate build
-directories. A conservative Debug build suitable for machines with limited
-memory is:
+directories. The portable `build.sh` exposes its normal controls at the top:
+
+```bash
+MODE="test"          # test or release
+ENABLE_TRAINING="OFF" # ON requires LibTorch
+ENABLE_LIBTORCH="OFF"
+```
+
+Test mode configures `build/test`, builds the compiler, VM, and tests, then
+runs CTest. Release mode configures `build/release`, builds optimized binaries,
+and dynamically generates `build/release/dist/`; `dist/` is never a static
+source folder.
+
+```bash
+./build.sh --mode test
+./build.sh --mode test --libtorch ON --training ON
+./build.sh --mode release --libtorch ON --training OFF
+```
+
+Linux x86-64 and ARM use native CMake when run on that architecture. macOS
+supports Intel and Apple Silicon, and Android uses the official NDK toolchain:
+
+```bash
+./build.sh --platform macos --arch arm64 --mode release --libtorch OFF
+
+ANDROID_NDK_HOME=/opt/android-ndk \
+  ./build.sh --platform android --arch arm64 --android-api 24 \
+  --mode release --libtorch OFF
+```
+
+For another OS or cross-compiler, use `--platform generic` and set
+`FELIDAE_TOOLCHAIN_FILE`. Cross-platform
+LibTorch builds must also set `FELIDAE_LIBTORCH_PATH` to a package built for
+the target architecture. Android tests are compiled but not executed on the
+host. Training is compiled into the compiler and VM only when both training
+and LibTorch are enabled; it is never started by `build.sh`.
+
+A conservative manual Debug build suitable for machines with limited memory is:
 
 ```bash
 cmake -S . -B build/debug -G Ninja \
@@ -448,7 +484,8 @@ $env:PATH = 'C:\libtorch\lib;' + $env:PATH
 ctest --test-dir build -R 'felidae_(sentencepiece_model|sentencepiece_pipeline|mixfix_state_model|form_binary)' --output-on-failure
 ```
 
-Create a portable shipment only after a successful build:
+Create a portable shipment only after a successful Release build. The target
+refuses Debug and other non-Release configurations:
 
 ```powershell
 # Builds, runs focused tests, stages <build-directory>/dist/, starts the staged executables,
