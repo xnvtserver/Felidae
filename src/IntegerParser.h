@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <memory>
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace Felidae {
@@ -49,16 +50,19 @@ public:
     // always produces typed canonical IR and never carries an AST into VM
     // registers. Statement/module lowering builds on this same seam.
     static FelidaeIr compileAstExpressionIr(const std::shared_ptr<Expr>& expression,
-                                            const std::unordered_set<SymbolId>& factTypes = {});
+                                            const std::unordered_set<SymbolId>& factTypes = {},
+                                            const std::unordered_map<SymbolId, SymbolId>& factDesignations = {});
     // Initial statement compiler slice. It deliberately reuses expression
     // lowering and emits StoreSymbol; no statement AST survives in the IR.
     static FelidaeIr compileAstGlobalBindingIr(const GlobalBindingStmt& binding,
-                                               const std::unordered_set<SymbolId>& factTypes = {});
+                                               const std::unordered_set<SymbolId>& factTypes = {},
+                                               const std::unordered_map<SymbolId, SymbolId>& factDesignations = {});
     // Initial routine slice for a deterministic zero-argument entry method.
     // More complex goal lists are intentionally rejected until frame/local
     // lowering is available, rather than being handed to an AST executor.
     static FelidaeIr compileAstEntryMethodIr(const ClauseStmt& method,
-                                             const std::unordered_set<SymbolId>& factTypes = {});
+                                             const std::unordered_set<SymbolId>& factTypes = {},
+                                             const std::unordered_map<SymbolId, SymbolId>& factDesignations = {});
     // Compiler-SSM entry point. The caller selects an existing SentencePiece
     // span; this method never retokenizes source text and always verifies the
     // finite-vocabulary model output before returning IR.

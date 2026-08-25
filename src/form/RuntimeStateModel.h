@@ -18,7 +18,7 @@ enum class RuntimeOutputTokenKind : std::uint8_t {
     FactFromInput,
     DegreeMilli,
     Nil,
-    Boolean,
+    NumericTruth,
 };
 
 struct RuntimeOutputToken {
@@ -66,7 +66,8 @@ public:
     // Deterministic validation path for a persisted JSONL record. It returns
     // a finite vocabulary index without constructing a runtime VmValue.
     std::size_t predictTeacherToken(const RuntimeTrainingRecord& record) const;
-    void saveArtifact(const std::filesystem::path& artifactPath) const;
+    void saveCheckpoint(const std::filesystem::path& checkpointPath) const;
+    void exportTorchScript(const std::filesystem::path& artifactPath) const;
 
 private:
     class Implementation;

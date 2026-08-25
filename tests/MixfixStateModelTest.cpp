@@ -1,11 +1,59 @@
 #include "MixfixStateModel.h"
+#include "CompilerFrontend.h"
+#include "SentencePieceModel.h"
+#include "form/BinaryIsa.h"
+#include "form/FelidaeIsa.h"
+#include "form/IsaLowerer.h"
 #include "form/RuntimeStateModel.h"
+#include "form/RuntimeTraining.h"
 
+#include <algorithm>
 #include <cassert>
+#include <array>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
+
+#include <sentencepiece_processor.h>
+
+namespace {
+
+template <typename Action>
+bool rejects(Action&& action) {
+    try { std::forward<Action>(action)(); }
+    catch (const Felidae::IrError&) { return true; }
+    return false;
+}
+
+Felidae::VmValue executeThroughIsa(
+    const Felidae::FelidaeIr& program, Felidae::VmRuntime& runtime,
+    std::unordered_map<Felidae::IrSymbolRef, Felidae::IrProcedure> procedures = {}) {
+    constexpr Felidae::IrSymbolRef kTestEntry = 0xf11da00000000001ull;
+    if (procedures.contains(kTestEntry)) throw Felidae::IrError("test procedure ID collision");
+    Felidae::IrModule module;
+    module.entryProcedure = kTestEntry;
+    module.ir.registerCount = 1;
+    module.ir.symbols = {kTestEntry};
+    module.ir.words = {
+        static_cast<Felidae::IrWord>(Felidae::IrOpcode::Call), 0, 0, 0,
+        static_cast<Felidae::IrWord>(Felidae::IrOpcode::Return), 0, 0,
+        static_cast<Felidae::IrWord>(Felidae::IrOpcode::End),
+    };
+    module.procedures = std::move(procedures);
+    module.procedures.emplace(kTestEntry, Felidae::IrProcedure{program, {}, {}, {}});
+    return Felidae::RegisterVm{}.executeIsaMain(Felidae::IsaLowerer::lowerModule(module), runtime);
+}
+
+bool rejectsBranchValue(Felidae::VmRuntime& runtime, const Felidae::VmValue& value) {
+    try { (void)runtime.shouldBranchFalse(value); }
+    catch (const Felidae::IrError&) { return true; }
+    return false;
+}
+
+} // namespace
 
 int main() {
     using namespace Felidae;
@@ -14,21 +62,21 @@ int main() {
     public:
         std::vector<MixfixVocabularyId> transform(std::span<const SentencePieceId>,
                                                   const MixfixContext&) override {
-            return {0, 1, 2, 3};
+            return {0, 1, 2, 3, 4};
         }
     };
     class InvalidModel final : public MixfixStateModel {
     public:
         std::vector<MixfixVocabularyId> transform(std::span<const SentencePieceId>,
                                                   const MixfixContext&) override {
-            return {4, 1, 2, 3};
+            return {0, 5, 2, 3, 4};
         }
     };
     class OversizedModel final : public MixfixStateModel {
     public:
         std::vector<MixfixVocabularyId> transform(std::span<const SentencePieceId>,
                                                   const MixfixContext&) override {
-            return {0, 1, 2, 3};
+            return {0, 1, 2, 3, 4};
         }
     };
     class UnknownVocabularyModel final : public MixfixStateModel {
@@ -42,12 +90,14 @@ int main() {
     MixfixContext context;
     context.constantReferences = {0};
     context.outputVocabulary = {
+        {MixfixIrTokenKind::Accept, 0},
         {MixfixIrTokenKind::Opcode, static_cast<IrWord>(IrOpcode::LoadConst)},
         {MixfixIrTokenKind::Register, 0},
         {MixfixIrTokenKind::ConstantReference, 0},
         {MixfixIrTokenKind::End, 0},
     };
     const std::vector<MixfixIrToken> valid = {
+        {MixfixIrTokenKind::Accept, 0},
         {MixfixIrTokenKind::Opcode, static_cast<IrWord>(IrOpcode::LoadConst)},
         {MixfixIrTokenKind::Register, 0},
         {MixfixIrTokenKind::ConstantReference, 0},
@@ -56,6 +106,8 @@ int main() {
     const auto words = resolveMixfixIrTokens(valid, context);
     assert((words == std::vector<IrWord>{static_cast<IrWord>(IrOpcode::LoadConst), 0, 0,
                                          static_cast<IrWord>(IrOpcode::End)}));
+    assert(rejects([&]{const std::array<MixfixIrToken,1> decision{{{MixfixIrTokenKind::Reject,0}}};(void)resolveMixfixIrTokens(decision,context);}));
+    assert(rejects([&]{const std::array<MixfixIrToken,1> decision{{{MixfixIrTokenKind::Abstain,0}}};(void)resolveMixfixIrTokens(decision,context);}));
 
     FelidaeIr ir;
     ir.words = words;
@@ -98,6 +150,129 @@ int main() {
     assert(vocabularyRejected);
 
 #ifdef FELIDAE_HAS_TORCH
+    // Capture the parser-bounded input and a verifier-safe structured teacher
+    // from one genuinely unresolved source expression. The trained GRU must
+    // later reproduce this sequence itself; the teacher is not used during
+    // the production compilation below.
+    class CapturingCompilerTeacher final : public MixfixStateModel {
+    public:
+        std::vector<SentencePieceId> boundedInput;
+        std::vector<MixfixVocabularyId> target;
+
+        std::vector<MixfixVocabularyId> transform(
+            std::span<const SentencePieceId> inputIds,
+            const MixfixContext& compilerContext) override {
+            boundedInput.assign(inputIds.begin(), inputIds.end());
+            const auto token = [&](MixfixIrTokenKind kind, IrWord value = 0) {
+                const auto found = std::find_if(compilerContext.outputVocabulary.begin(),
+                    compilerContext.outputVocabulary.end(), [&](const MixfixIrToken& candidate) {
+                        return candidate.kind == kind && candidate.value == value;
+                    });
+                if (found == compilerContext.outputVocabulary.end()) {
+                    throw IrError("compiler E2E teacher token is outside the bounded vocabulary");
+                }
+                return static_cast<MixfixVocabularyId>(
+                    found - compilerContext.outputVocabulary.begin());
+            };
+            target = {
+                token(MixfixIrTokenKind::Accept),
+                token(MixfixIrTokenKind::Opcode, static_cast<IrWord>(IrOpcode::LoadSymbol)),
+                token(MixfixIrTokenKind::Register, 1),
+                token(MixfixIrTokenKind::SymbolReference, 0),
+                token(MixfixIrTokenKind::Opcode, static_cast<IrWord>(IrOpcode::Call)),
+                token(MixfixIrTokenKind::Register, 0),
+                token(MixfixIrTokenKind::SymbolReference, 1),
+                token(MixfixIrTokenKind::Register, 1),
+                token(MixfixIrTokenKind::Register, 1),
+                token(MixfixIrTokenKind::Opcode, static_cast<IrWord>(IrOpcode::Return)),
+                token(MixfixIrTokenKind::Register, 0),
+                token(MixfixIrTokenKind::Register, 0),
+                token(MixfixIrTokenKind::End),
+            };
+            return target;
+        }
+    } compilerTeacher;
+    const std::string compilerE2eSource =
+        "@overload(\n"
+        "    operator: pickValue,\n"
+        "    pattern: \"pick {value}\",\n"
+        "    type: prefix,\n"
+        "    captures: {value: number},\n"
+        "    result: number,\n"
+        "    precedence: prefix,\n"
+        "    associativity: right,\n"
+        "    cardinality: one,\n"
+        "    effects: pure,\n"
+        "    visibility: private\n"
+        ")\n"
+        "pickNumber() => return value\n"
+        "@overload(\n"
+        "    operator: pickValue,\n"
+        "    pattern: \"pick {value}\",\n"
+        "    type: prefix,\n"
+        "    captures: {value: string},\n"
+        "    result: number,\n"
+        "    precedence: prefix,\n"
+        "    associativity: right,\n"
+        "    cardinality: one,\n"
+        "    effects: pure,\n"
+        "    visibility: private\n"
+        ")\n"
+        "pickString() => return 0\n"
+        "route(value: any) => return pick value\n"
+        "main() => return route(value: 42)\n";
+    CompilerOptions teacherOptions;
+    teacherOptions.mixfixModel = &compilerTeacher;
+    (void)compileProgramTextToIr(compilerE2eSource, teacherOptions);
+    assert(!compilerTeacher.boundedInput.empty() && !compilerTeacher.target.empty());
+
+    GruMixfixStateModel::Configuration trainedCompilerConfiguration;
+    trainedCompilerConfiguration.inputVocabularySize = felidaeSentencePieceModel().GetPieceSize();
+    trainedCompilerConfiguration.outputVocabularySize =
+        static_cast<std::int64_t>(kMixfixStructuralVocabularySize);
+    trainedCompilerConfiguration.embeddingSize = 16;
+    trainedCompilerConfiguration.hiddenSize = 24;
+    trainedCompilerConfiguration.layerCount = 1;
+    trainedCompilerConfiguration.beginToken = 0;
+    trainedCompilerConfiguration.maximumDecodeSteps = compilerTeacher.target.size() + 2;
+    trainedCompilerConfiguration.allowRandomInitialization = true;
+    GruMixfixStateModel trainedCompiler(trainedCompilerConfiguration, {});
+    std::vector<std::int64_t> compilerTarget(compilerTeacher.target.begin(),
+                                             compilerTeacher.target.end());
+    bool compilerSequenceLearned = false;
+    for (std::size_t step = 0; step < 512 && !compilerSequenceLearned; ++step) {
+        (void)trainedCompiler.trainTeacherForced(compilerTeacher.boundedInput,
+                                                 compilerTarget, 0.02);
+        try {
+            const auto decoded = trainedCompiler.transform(
+                compilerTeacher.boundedInput, makeMixfixContext(FelidaeIr{}));
+            compilerSequenceLearned = decoded == compilerTeacher.target;
+        } catch (const IrError&) {
+            // Early autoregressive outputs are expected to be structurally
+            // invalid until this one bounded teacher sequence is learned.
+        }
+    }
+    assert(compilerSequenceLearned);
+    const auto trainedCompilerArtifact = std::filesystem::path(
+        FELIDAE_MODEL_TEST_OUTPUT_DIR) / "compiler-ssm-e2e.pt";
+    trainedCompiler.exportTorchScript(trainedCompilerArtifact);
+    GruMixfixStateModel reloadedCompiler(trainedCompilerConfiguration,
+                                         trainedCompilerArtifact);
+    CompilerOptions productionCompilerOptions;
+    productionCompilerOptions.mixfixModel = &reloadedCompiler;
+    const auto trainedCompilerIr = compileProgramTextToIr(
+        compilerE2eSource, productionCompilerOptions);
+    const auto trainedCompilerIsa = IsaLowerer::lowerModule(trainedCompilerIr);
+    const auto trainedCompilerBinary = std::filesystem::path(
+        FELIDAE_MODEL_TEST_OUTPUT_DIR) / "compiler-ssm-e2e.bin";
+    writeBinaryIsa(trainedCompilerBinary, trainedCompilerIsa);
+    const auto loadedCompilerBinary = loadBinaryIsa(trainedCompilerBinary);
+    FelidaeKnowledgeRuntime compilerE2eRuntime;
+    const auto compilerE2eResult = RegisterVm{}.executeIsaMain(
+        loadedCompilerBinary, compilerE2eRuntime);
+    assert(std::holds_alternative<double>(compilerE2eResult));
+    assert(std::get<double>(compilerE2eResult) == 42.0);
+
     // A one-entry finite vocabulary makes autoregressive GRU decoding
     // deterministic while still exercising the actual LibTorch encoder,
     // recurrent state transfer, decoder, and projection path.
@@ -113,7 +288,7 @@ int main() {
     GruMixfixStateModel gruModel(gruConfiguration, {});
     MixfixContext gruContext;
     gruContext.maximumOutputWords = 2;
-    gruContext.outputVocabulary = {{MixfixIrTokenKind::End, 0}};
+    gruContext.outputVocabulary = {{MixfixIrTokenKind::Reject, 0}};
     const auto gruTokens = gruModel.transform(input, gruContext);
     assert((gruTokens == std::vector<MixfixVocabularyId>{0}));
 
@@ -143,21 +318,125 @@ int main() {
                                     {{RuntimeOutputTokenKind::InputReference, 0}});
     RuntimeContext runtimeGruContext;
     runtimeGruContext.executionState = runtimeGru.createExecutionState();
-    const VmValue runtimeText = VmText{{17, 23, 41}};
-    assert(std::get<VmText>(runtimeGru.evaluate(RuntimeOperation{1}, {&runtimeText, 1},
-                                                runtimeGruContext)).pieces ==
-           std::vector<std::uint32_t>({17, 23, 41}));
+    const VmValue runtimeText = VmText{"runtime text"};
+    assert(std::get<VmText>(runtimeGru.evaluate(RuntimeOperation{static_cast<std::uint16_t>(SemanticOperationId::Identity)}, {&runtimeText, 1},
+                                                runtimeGruContext)).value == "runtime text");
     auto runtimeFact = std::make_shared<VmFact>();
     runtimeFact->type = 42;
     const VmValue runtimeFactValue = runtimeFact;
-    assert(std::get<VmFactPtr>(runtimeGru.evaluate(RuntimeOperation{2}, {&runtimeFactValue, 1},
+    assert(std::get<VmFactPtr>(runtimeGru.evaluate(RuntimeOperation{static_cast<std::uint16_t>(SemanticOperationId::SelectFact)}, {&runtimeFactValue, 1},
                                                     runtimeGruContext))->type == 42);
     GruRuntimeStateModel softRuntimeGru(runtimeGruConfiguration,
                                         {{RuntimeOutputTokenKind::DegreeMilli, 725}});
     RuntimeContext softRuntimeContext;
     softRuntimeContext.executionState = softRuntimeGru.createExecutionState();
-    const auto softResult = softRuntimeGru.evaluate(RuntimeOperation{3}, {}, softRuntimeContext);
+    const VmValue degreeInput = 0.5;
+    const auto softResult = softRuntimeGru.evaluate(
+        RuntimeOperation{static_cast<std::uint16_t>(SemanticOperationId::EvaluateDegree)},
+        {&degreeInput, 1}, softRuntimeContext);
     assert(std::get<VmDegree>(softResult).value == 0.725);
+
+    // Production artifacts are genuine TorchScript modules. Native training
+    // checkpoints remain separate and must not load through the inference
+    // constructor.
+    const auto artifactRoot = std::filesystem::path(FELIDAE_MODEL_TEST_OUTPUT_DIR) /
+        "artifact-contract";
+    std::filesystem::create_directories(artifactRoot);
+    const auto mixfixArtifact = artifactRoot / "mixfix-gru.pt";
+    const auto mixfixCheckpoint = artifactRoot / "mixfix-gru.ckpt";
+    gruModel.saveCheckpoint(mixfixCheckpoint);
+    gruModel.exportTorchScript(mixfixArtifact);
+    GruMixfixStateModel loadedMixfix(gruConfiguration, mixfixArtifact);
+    assert((loadedMixfix.transform(input, gruContext) == std::vector<MixfixVocabularyId>{0}));
+    bool nativeMixfixRejected = false;
+    try { GruMixfixStateModel invalidProduction(gruConfiguration, mixfixCheckpoint); }
+    catch (const IrError&) { nativeMixfixRejected = true; }
+    assert(nativeMixfixRejected);
+
+    const auto runtimeArtifact = artifactRoot / "runtime-gru.pt";
+    const auto runtimeCheckpoint = artifactRoot / "runtime-gru.ckpt";
+    runtimeGru.saveCheckpoint(runtimeCheckpoint);
+    runtimeGru.exportTorchScript(runtimeArtifact);
+    GruRuntimeStateModel loadedRuntime(runtimeGruConfiguration,
+        {{RuntimeOutputTokenKind::InputReference, 0}}, runtimeArtifact);
+    RuntimeContext loadedRuntimeContext;
+    loadedRuntimeContext.executionState = loadedRuntime.createExecutionState();
+    assert(std::get<VmText>(loadedRuntime.evaluate(RuntimeOperation{static_cast<std::uint16_t>(SemanticOperationId::Identity)}, {&runtimeText, 1},
+                                                   loadedRuntimeContext)).value == "runtime text");
+    bool nativeRuntimeRejected = false;
+    try { GruRuntimeStateModel invalidProduction(runtimeGruConfiguration,
+        {{RuntimeOutputTokenKind::InputReference, 0}}, runtimeCheckpoint); }
+    catch (const IrError&) { nativeRuntimeRejected = true; }
+    assert(nativeRuntimeRejected);
+    std::filesystem::remove_all(artifactRoot);
+
+    // Real compiler-produced SemanticEval -> verified FELBIN -> trained C++
+    // runtime GRU -> TorchScript export/reload -> ISA-only register VM. This
+    // uses the full production output vocabulary and requires the optimizer
+    // to learn InputReference(0); it is not a one-class random-model shortcut.
+    const auto trainedRuntimeVocabulary = defaultRuntimeOutputVocabulary();
+    const auto trainedTarget = static_cast<std::size_t>(std::find_if(
+        trainedRuntimeVocabulary.begin(), trainedRuntimeVocabulary.end(),
+        [](const RuntimeOutputToken& token) {
+            return token.kind == RuntimeOutputTokenKind::InputReference &&
+                   token.value == 0;
+        }) - trainedRuntimeVocabulary.begin());
+    assert(trainedTarget < trainedRuntimeVocabulary.size());
+    GruRuntimeStateModel::Configuration trainedRuntimeConfiguration;
+    trainedRuntimeConfiguration.inputVocabularySize = 4096;
+    trainedRuntimeConfiguration.outputVocabularySize =
+        static_cast<std::int64_t>(trainedRuntimeVocabulary.size());
+    trainedRuntimeConfiguration.embeddingSize = 8;
+    trainedRuntimeConfiguration.hiddenSize = 8;
+    trainedRuntimeConfiguration.layerCount = 1;
+    trainedRuntimeConfiguration.allowRandomInitialization = true;
+    GruRuntimeStateModel trainedRuntime(trainedRuntimeConfiguration,
+                                        trainedRuntimeVocabulary);
+    RuntimeTrainingRecord identityTeacher;
+    identityTeacher.operationId =
+        static_cast<std::uint16_t>(SemanticOperationId::Identity);
+    identityTeacher.inputKinds = {RuntimeValueKind::Number};
+    identityTeacher.targetKind = RuntimeTrainingTargetKind::InputReference;
+    identityTeacher.targetValue = 0;
+    verifyRuntimeTrainingRecord(identityTeacher);
+    auto invalidTeacher = identityTeacher;
+    invalidTeacher.operationId = 0xffffu;
+    bool invalidTeacherRejected = false;
+    try { verifyRuntimeTrainingRecord(invalidTeacher); }
+    catch (const IrError&) { invalidTeacherRejected = true; }
+    assert(invalidTeacherRejected);
+    invalidTeacher = identityTeacher;
+    invalidTeacher.inputKinds.clear();
+    bool invalidTeacherArityRejected = false;
+    try { verifyRuntimeTrainingRecord(invalidTeacher); }
+    catch (const IrError&) { invalidTeacherArityRejected = true; }
+    assert(invalidTeacherArityRejected);
+    (void)trainedRuntime.trainTeacherForced(identityTeacher, trainedTarget,
+                                            0.01);
+    for (std::size_t step = 1;
+         step < 128 &&
+         trainedRuntime.predictTeacherToken(identityTeacher) != trainedTarget;
+         ++step) {
+        (void)trainedRuntime.trainTeacherForced(identityTeacher, trainedTarget,
+                                                0.01);
+    }
+    assert(trainedRuntime.predictTeacherToken(identityTeacher) == trainedTarget);
+    const std::filesystem::path trainedArtifactDirectory(
+        FELIDAE_MODEL_TEST_OUTPUT_DIR);
+    std::filesystem::create_directories(trainedArtifactDirectory);
+    const auto trainedArtifact = trainedArtifactDirectory /
+        "runtime-ssm-e2e.pt";
+    trainedRuntime.exportTorchScript(trainedArtifact);
+    GruRuntimeStateModel reloadedTrainedRuntime(trainedRuntimeConfiguration,
+        trainedRuntimeVocabulary, trainedArtifact);
+    const auto trainedRuntimeModule = loadBinaryIsa(
+        FELIDAE_RUNTIME_SSM_E2E_BINARY);
+    assert(containsRuntimeSemanticOperation(trainedRuntimeModule));
+    FelidaeKnowledgeRuntime trainedKnowledgeRuntime(&reloadedTrainedRuntime);
+    const auto trainedResult = RegisterVm{}.executeIsaMain(
+        trainedRuntimeModule, trainedKnowledgeRuntime);
+    assert(std::holds_alternative<double>(trainedResult));
+    assert(std::get<double>(trainedResult) == 42.0);
 #endif
 
     FelidaeIr arithmetic;
@@ -174,21 +453,20 @@ int main() {
     public:
         VmValue callNativeSymbol(IrSymbolRef symbol) override { return static_cast<double>(symbol); }
     } noRuntime;
-    RegisterVm nativeVm;
-    const auto arithmeticResult = nativeVm.execute(arithmetic, noRuntime, VmNil{});
+    const auto arithmeticResult = executeThroughIsa(arithmetic, noRuntime);
     assert(std::get<double>(arithmeticResult) == 42.0);
     // The branch protocol is deliberately narrower than host-language
     // truthiness. Every non-boolean VM type remains usable data and must not
     // become an implicit control decision.
     assert(noRuntime.shouldBranchFalse(VmNil{}));
-    assert(noRuntime.shouldBranchFalse(false));
-    assert(!noRuntime.shouldBranchFalse(true));
-    assert(!noRuntime.shouldBranchFalse(0.0));
-    assert(!noRuntime.shouldBranchFalse(VmDegree(0.0)));
-    assert(!noRuntime.shouldBranchFalse(VmText{{1, 2}}));
-    assert(!noRuntime.shouldBranchFalse(std::make_shared<VmArray>()));
-    assert(!noRuntime.shouldBranchFalse(std::make_shared<VmMap>()));
-    assert(!noRuntime.shouldBranchFalse(std::make_shared<VmFact>()));
+    assert(noRuntime.shouldBranchFalse(0.0));
+    assert(!noRuntime.shouldBranchFalse(1.0));
+    assert(rejectsBranchValue(noRuntime, 2.0));
+    assert(rejectsBranchValue(noRuntime, VmDegree(0.0)));
+    assert(rejectsBranchValue(noRuntime, VmText{"text"}));
+    assert(rejectsBranchValue(noRuntime, std::make_shared<VmArray>()));
+    assert(rejectsBranchValue(noRuntime, std::make_shared<VmMap>()));
+    assert(rejectsBranchValue(noRuntime, std::make_shared<VmFact>()));
 
     FelidaeIr factProgram;
     factProgram.registerCount = 2;
@@ -201,7 +479,7 @@ int main() {
         static_cast<IrWord>(IrOpcode::Return), 0, 0,
         static_cast<IrWord>(IrOpcode::End),
     };
-    const auto factValue = nativeVm.execute(factProgram, noRuntime, VmNil{});
+    const auto factValue = executeThroughIsa(factProgram, noRuntime);
     const auto fact = std::get<VmFactPtr>(factValue);
     assert(fact->type == 50 && fact->fields.size() == 1);
     assert(fact->fields.front().first == 51);
@@ -215,7 +493,7 @@ int main() {
         static_cast<IrWord>(IrOpcode::Return), 0, 0,
         static_cast<IrWord>(IrOpcode::End),
     };
-    assert(std::get<double>(nativeVm.execute(nativeCall, noRuntime, VmNil{})) == 12.0);
+    assert(std::get<double>(executeThroughIsa(nativeCall, noRuntime)) == 12.0);
 
     class SymbolRuntime final : public VmRuntime {
     public:
@@ -234,7 +512,7 @@ int main() {
         static_cast<IrWord>(IrOpcode::Return), 0, 0,
         static_cast<IrWord>(IrOpcode::End),
     };
-    assert(std::get<double>(nativeVm.execute(symbolStore, symbolRuntime, VmNil{})) == 9.0);
+    assert(std::get<double>(executeThroughIsa(symbolStore, symbolRuntime)) == 9.0);
 
     FelidaeIr directProcedure;
     directProcedure.registerCount = 1;
@@ -252,8 +530,9 @@ int main() {
         static_cast<IrWord>(IrOpcode::Return), 0, 0,
         static_cast<IrWord>(IrOpcode::End),
     };
-    FelidaeKnowledgeRuntime procedureRuntime({{99, IrProcedure{directProcedure, {}, {}, {}}}});
-    assert(std::get<double>(nativeVm.execute(directCaller, procedureRuntime, VmNil{})) == 7.0);
+    FelidaeKnowledgeRuntime procedureRuntime;
+    assert(std::get<double>(executeThroughIsa(directCaller, procedureRuntime,
+        {{99, IrProcedure{directProcedure, {}, {}, {}}}})) == 7.0);
     FelidaeIr recursiveProcedure;
     recursiveProcedure.registerCount = 1;
     recursiveProcedure.symbols = {77};
@@ -264,11 +543,11 @@ int main() {
     };
     FelidaeIr recursiveCaller = directCaller;
     recursiveCaller.symbols = {77};
-    FelidaeKnowledgeRuntime boundedRecursionRuntime({{77, IrProcedure{recursiveProcedure, {}, {}, {}}}},
-                                             nullptr, 1024, 2);
+    FelidaeKnowledgeRuntime boundedRecursionRuntime(nullptr, 1024, 2);
     bool recursionRejected = false;
     try {
-        (void)nativeVm.execute(recursiveCaller, boundedRecursionRuntime, VmNil{});
+        (void)executeThroughIsa(recursiveCaller, boundedRecursionRuntime,
+            {{77, IrProcedure{recursiveProcedure, {}, {}, {}}}});
     } catch (const IrError&) {
         recursionRejected = true;
     }
@@ -281,7 +560,7 @@ int main() {
         }
         VmValue evaluate(const RuntimeOperation& operation, std::span<const VmValue> inputs,
                          RuntimeContext& context) override {
-            assert(operation.symbol == 99 && inputs.size() == 1);
+            assert(operation.id == static_cast<std::uint16_t>(SemanticOperationId::Identity) && inputs.size() == 1);
             auto state = std::static_pointer_cast<std::size_t>(context.executionState);
             // Generic test runtimes may not opt into the production lifecycle;
             // they still receive an execution-local context and never persist
@@ -298,7 +577,7 @@ int main() {
     public:
         explicit SemanticRuntime(RuntimeStateModel& model) : model_(model) {}
         RuntimeStateModel* runtimeStateModel() override { return &model_; }
-        RuntimeContext makeRuntimeContext(const FelidaeIr&, const VmValue&) const override {
+        RuntimeContext makeIsaRuntimeContext(const VmValue&) const override {
             RuntimeContext context;
             context.maximumSemanticSteps = 2;
             return context;
@@ -308,24 +587,20 @@ int main() {
     } semanticRuntime(semanticModel);
     FelidaeIr semanticProgram;
     semanticProgram.registerCount = 2;
-    semanticProgram.symbols = {99};
     semanticProgram.constants = {encodeIrNumber(4.0)};
     semanticProgram.words = {
         static_cast<IrWord>(IrOpcode::LoadConst), 0, 0,
-        static_cast<IrWord>(IrOpcode::SemanticEval), 1, 0, 1, 0,
+        static_cast<IrWord>(IrOpcode::SemanticEval), 1,
+            static_cast<IrWord>(SemanticOperationId::Identity), 1, 0,
         static_cast<IrWord>(IrOpcode::Return), 1, 0,
         static_cast<IrWord>(IrOpcode::End),
     };
-    assert(std::get<double>(nativeVm.execute(semanticProgram, semanticRuntime, VmNil{})) == 5.0);
-    FelidaeIr ssmProgram = semanticProgram;
-    ssmProgram.words[3] = static_cast<IrWord>(IrOpcode::SsmProcess);
-    IrVerifier::verify(ssmProgram);
-    assert(std::get<double>(nativeVm.execute(ssmProgram, semanticRuntime, VmNil{})) == 5.0);
+    assert(std::get<double>(executeThroughIsa(semanticProgram, semanticRuntime)) == 5.0);
     // A new VM execution owns a new RuntimeContext; recurrent state cannot
     // leak across requests even when the backend instance is reused.
-    assert(std::get<double>(nativeVm.execute(semanticProgram, semanticRuntime, VmNil{})) == 5.0);
-    FelidaeKnowledgeRuntime directSemanticRuntime({}, &semanticModel);
-    assert(std::get<double>(nativeVm.execute(semanticProgram, directSemanticRuntime, VmNil{})) == 5.0);
+    assert(std::get<double>(executeThroughIsa(semanticProgram, semanticRuntime)) == 5.0);
+    FelidaeKnowledgeRuntime directSemanticRuntime(&semanticModel);
+    assert(std::get<double>(executeThroughIsa(semanticProgram, directSemanticRuntime)) == 5.0);
     // Facts asserted earlier in the same VM program are refreshed into the
     // learned-operation context; a model never trains on a snapshot it cannot
     // observe during production execution.
@@ -333,7 +608,7 @@ int main() {
     public:
         VmValue evaluate(const RuntimeOperation& operation, std::span<const VmValue> inputs,
                          RuntimeContext& context) override {
-            assert(operation.symbol == 99 && inputs.size() == 1);
+            assert(operation.id == static_cast<std::uint16_t>(SemanticOperationId::Identity) && inputs.size() == 1);
             assert(context.knowledge.factTypes.size() == 1 && context.knowledge.factTypes[0] == 77);
             assert(context.knowledge.factTypeCounts.size() == 1 &&
                    context.knowledge.factTypeCounts[0].first == 77 &&
@@ -344,15 +619,16 @@ int main() {
     } knowledgeModel;
     FelidaeIr knowledgeProgram;
     knowledgeProgram.registerCount = 2;
-    knowledgeProgram.symbols = {77, 99};
+    knowledgeProgram.symbols = {77};
     knowledgeProgram.words = {
         static_cast<IrWord>(IrOpcode::MakeFact), 0, 0,
-        static_cast<IrWord>(IrOpcode::SsmProcess), 1, 1, 1, 0,
+        static_cast<IrWord>(IrOpcode::SemanticEval), 1,
+            static_cast<IrWord>(SemanticOperationId::Identity), 1, 0,
         static_cast<IrWord>(IrOpcode::Return), 1, 0,
         static_cast<IrWord>(IrOpcode::End),
     };
-    FelidaeKnowledgeRuntime knowledgeRuntime({}, &knowledgeModel);
-    assert(std::holds_alternative<VmFactPtr>(nativeVm.execute(knowledgeProgram, knowledgeRuntime, VmNil{})));
+    FelidaeKnowledgeRuntime knowledgeRuntime(&knowledgeModel);
+    assert(std::holds_alternative<VmFactPtr>(executeThroughIsa(knowledgeProgram, knowledgeRuntime)));
     // Nested calls are part of one top-level execution: the SSM state and
     // semantic budget are shared across their fresh register frames.
     FelidaeIr semanticCaller;
@@ -364,39 +640,38 @@ int main() {
         static_cast<IrWord>(IrOpcode::Return), 1, 0,
         static_cast<IrWord>(IrOpcode::End),
     };
-    FelidaeKnowledgeRuntime nestedSemanticRuntime({{99, IrProcedure{semanticProgram, {}, {}, {}}}},
-                                          &semanticModel, 2);
-    assert(std::get<double>(nativeVm.execute(semanticCaller, nestedSemanticRuntime, VmNil{})) == 6.0);
+    FelidaeKnowledgeRuntime nestedSemanticRuntime(&semanticModel, 2);
+    assert(std::get<double>(executeThroughIsa(semanticCaller, nestedSemanticRuntime,
+        {{99, IrProcedure{semanticProgram, {}, {}, {}}}})) == 6.0);
     FelidaeIr overLimitSemanticProgram;
     overLimitSemanticProgram.registerCount = 4;
-    overLimitSemanticProgram.symbols = {99};
     overLimitSemanticProgram.constants = {encodeIrNumber(1.0)};
     overLimitSemanticProgram.words = {
         static_cast<IrWord>(IrOpcode::LoadConst), 0, 0,
-        static_cast<IrWord>(IrOpcode::SemanticEval), 1, 0, 1, 0,
-        static_cast<IrWord>(IrOpcode::SemanticEval), 2, 0, 1, 1,
-        static_cast<IrWord>(IrOpcode::SemanticEval), 3, 0, 1, 2,
+        static_cast<IrWord>(IrOpcode::SemanticEval), 1, static_cast<IrWord>(SemanticOperationId::Identity), 1, 0,
+        static_cast<IrWord>(IrOpcode::SemanticEval), 2, static_cast<IrWord>(SemanticOperationId::Identity), 1, 1,
+        static_cast<IrWord>(IrOpcode::SemanticEval), 3, static_cast<IrWord>(SemanticOperationId::Identity), 1, 2,
         static_cast<IrWord>(IrOpcode::Return), 3, 0,
         static_cast<IrWord>(IrOpcode::End),
     };
     bool semanticLimitRejected = false;
     try {
-        (void)nativeVm.execute(overLimitSemanticProgram, semanticRuntime, VmNil{});
+        (void)executeThroughIsa(overLimitSemanticProgram, semanticRuntime);
     } catch (const IrError&) {
         semanticLimitRejected = true;
     }
     assert(semanticLimitRejected);
-    FelidaeKnowledgeRuntime oneStepSemanticRuntime({}, &semanticModel, 1);
+    FelidaeKnowledgeRuntime oneStepSemanticRuntime(&semanticModel, 1);
     bool directSemanticLimitRejected = false;
     try {
-        (void)nativeVm.execute(overLimitSemanticProgram, oneStepSemanticRuntime, VmNil{});
+        (void)executeThroughIsa(overLimitSemanticProgram, oneStepSemanticRuntime);
     } catch (const IrError&) {
         directSemanticLimitRejected = true;
     }
     assert(directSemanticLimitRejected);
     bool unavailableSemanticRejected = false;
     try {
-        (void)nativeVm.execute(semanticProgram, noRuntime, VmNil{});
+        (void)executeThroughIsa(semanticProgram, noRuntime);
     } catch (const IrError&) {
         unavailableSemanticRejected = true;
     }
@@ -410,11 +685,26 @@ int main() {
     SemanticRuntime invalidSemanticRuntime(invalidSemanticModel);
     bool invalidSemanticRejected = false;
     try {
-        (void)nativeVm.execute(semanticProgram, invalidSemanticRuntime, VmNil{});
+        (void)executeThroughIsa(semanticProgram, invalidSemanticRuntime);
     } catch (const IrError&) {
         invalidSemanticRejected = true;
     }
     assert(invalidSemanticRejected);
+    class WrongIdentityTypeModel final : public RuntimeStateModel {
+    public:
+        VmValue evaluate(const RuntimeOperation&, std::span<const VmValue>,
+                         RuntimeContext&) override {
+            return VmText{"wrong identity type"};
+        }
+    } wrongIdentityTypeModel;
+    SemanticRuntime wrongIdentityRuntime(wrongIdentityTypeModel);
+    bool wrongIdentityTypeRejected = false;
+    try {
+        (void)executeThroughIsa(semanticProgram, wrongIdentityRuntime);
+    } catch (const IrError&) {
+        wrongIdentityTypeRejected = true;
+    }
+    assert(wrongIdentityTypeRejected);
 
     FelidaeIr branchSkipsInitialization;
     branchSkipsInitialization.registerCount = 2;
@@ -451,7 +741,7 @@ int main() {
     FelidaeIr invalidSemanticOperation;
     invalidSemanticOperation.registerCount = 1;
     invalidSemanticOperation.words = {
-        static_cast<IrWord>(IrOpcode::SemanticEval), 0, 0, 0,
+        static_cast<IrWord>(IrOpcode::SemanticEval), 0, 0xffffu, 0,
         static_cast<IrWord>(IrOpcode::Return), 0, 0,
         static_cast<IrWord>(IrOpcode::End),
     };

@@ -1,15 +1,18 @@
 #include "MixfixStateModel.h"
 
-#include "form/BinaryIr.h"
+#include "form/BinaryIsa.h"
 
 #include <algorithm>
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <utility>
 
 #ifdef FELIDAE_HAS_TORCH
+#include <torch/csrc/jit/api/module.h>
+#include <torch/csrc/jit/serialization/import.h>
 #include <torch/torch.h>
 #endif
 
@@ -54,6 +57,9 @@ IrWord resolveReference(IrWord index, const std::vector<IrWord>& table,
 MixfixContext makeMixfixContext(const FelidaeIr& shell) {
     MixfixContext context;
     context.maximumOutputWords = 4096;
+    context.outputVocabulary.push_back({MixfixIrTokenKind::Accept, 0});
+    context.outputVocabulary.push_back({MixfixIrTokenKind::Reject, 0});
+    context.outputVocabulary.push_back({MixfixIrTokenKind::Abstain, 0});
     context.outputVocabulary.push_back({MixfixIrTokenKind::End, 0});
     for (IrWord opcode = 1; opcode < kIrOpcodeCount; ++opcode) {
         context.outputVocabulary.push_back({MixfixIrTokenKind::Opcode, opcode});
@@ -81,9 +87,13 @@ MixfixContext makeMixfixContext(const FelidaeIr& shell) {
 std::vector<IrWord> resolveMixfixIrTokens(
     std::span<const MixfixIrToken> tokens, const MixfixContext& context) {
     if (context.maximumOutputWords == 0) throw IrError("mixfix IR output limit is zero");
+    if (tokens.empty()) throw IrError("mixfix model emitted no ACCEPT, REJECT, or ABSTAIN decision");
+    if (tokens.front().kind == MixfixIrTokenKind::Reject) throw IrError("mixfix model rejected the compiler span");
+    if (tokens.front().kind == MixfixIrTokenKind::Abstain) throw IrError("mixfix model abstained from the compiler span");
+    if (tokens.front().kind != MixfixIrTokenKind::Accept) throw IrError("mixfix model output must begin with ACCEPT, REJECT, or ABSTAIN");
     std::vector<IrWord> words;
     words.reserve(std::min(tokens.size(), context.maximumOutputWords));
-    for (const auto& token : tokens) {
+    for (const auto& token : tokens.subspan(1)) {
         if (token.kind == MixfixIrTokenKind::End) {
             words.push_back(static_cast<IrWord>(IrOpcode::End));
             return words;
@@ -92,6 +102,8 @@ std::vector<IrWord> resolveMixfixIrTokens(
             throw IrError("mixfix GRU exceeded its bounded decoder output");
         }
         switch (token.kind) {
+        case MixfixIrTokenKind::Accept: case MixfixIrTokenKind::Reject: case MixfixIrTokenKind::Abstain:
+            throw IrError("mixfix model emitted a decision token inside compiler IR");
         case MixfixIrTokenKind::Opcode:
             if (token.value >= kIrOpcodeCount) {
                 throw IrError("mixfix GRU emitted invalid IR opcode");
@@ -161,26 +173,34 @@ public:
         torch::nn::Linear projection{nullptr};
     };
 
-    Implementation(const Configuration& c, const std::filesystem::path& artifact) : network(std::make_shared<Network>(c)) {
+    Implementation(const Configuration& c, const std::filesystem::path& artifact) {
         if (c.inputVocabularySize <= 0 || c.outputVocabularySize <= 0 || c.embeddingSize <= 0 ||
             c.hiddenSize <= 0 || c.layerCount <= 0 || c.beginToken < 0 || c.beginToken >= c.outputVocabularySize) {
             throw IrError("mixfix GRU configuration is invalid");
         }
         if (artifact.empty() && c.allowRandomInitialization) {
+            network = std::make_shared<Network>(c);
             network->eval();
             return;
         }
         if (artifact.empty() || !std::filesystem::is_regular_file(artifact)) {
             throw IrError("mixfix GRU artifact is unavailable: " + artifact.string());
         }
-        torch::load(network, artifact.string());
-        network->eval();
+        try {
+            production = torch::jit::load(artifact.string());
+            production->eval();
+        } catch (const c10::Error& error) {
+            throw IrError("mixfix production artifact is not valid TorchScript: " +
+                          std::string(error.what_without_backtrace()));
+        }
     }
     std::shared_ptr<Network> network;
+    std::optional<torch::jit::Module> production;
     std::unique_ptr<torch::optim::Adam> optimizer;
     double optimizerLearningRate = 0.0;
 
     void prepareOptimizer(double learningRate) {
+        if (!network) throw IrError("TorchScript inference artifact cannot be used as a training checkpoint");
         if (!optimizer || optimizerLearningRate != learningRate) {
             optimizer = std::make_unique<torch::optim::Adam>(
                 network->parameters(), torch::optim::AdamOptions(learningRate));
@@ -204,7 +224,7 @@ GruMixfixStateModel GruMixfixStateModel::loadVersioned(
     Configuration configuration, const std::filesystem::path& artifactDirectory,
     std::string_view expectedSentencePieceHash, std::string_view expectedIrVocabularyVersion) {
     const auto manifest = artifactDirectory / "manifest.txt";
-    if (manifestValue(manifest, "backend") != "libtorch-gru") {
+    if (manifestValue(manifest, "backend") != "torchscript-gru") {
         throw IrError("mixfix model manifest backend is incompatible");
     }
     if (manifestValue(manifest, "ir_vocabulary_version") != expectedIrVocabularyVersion) {
@@ -245,22 +265,32 @@ std::vector<MixfixVocabularyId> GruMixfixStateModel::transform(
     }
     torch::NoGradGuard guard;
     auto inputIds = torch::tensor(ids, torch::TensorOptions().dtype(torch::kInt64)).reshape({-1, 1});
-    auto encoderResult = implementation_->network->encoder->forward(implementation_->network->embedding->forward(inputIds));
-    auto state = std::get<1>(encoderResult);
     auto decoderInput = torch::full({1, 1}, configuration_.beginToken, torch::TensorOptions().dtype(torch::kInt64));
     std::vector<MixfixVocabularyId> tokens;
     const auto limit = std::min(configuration_.maximumDecodeSteps, context.maximumOutputWords);
     for (std::size_t step = 0; step < limit; ++step) {
-        auto decoderResult = implementation_->network->decoder->forward(implementation_->network->decoderEmbedding->forward(decoderInput), state);
-        state = std::get<1>(decoderResult);
-        const auto tokenId = implementation_->network->projection->forward(std::get<0>(decoderResult).select(0, 0).select(0, 0)).argmax().item<std::int64_t>();
+        torch::Tensor logits;
+        if (implementation_->production) {
+            logits = implementation_->production->forward({inputIds, decoderInput}).toTensor();
+        } else {
+            auto encoderResult = implementation_->network->encoder->forward(
+                implementation_->network->embedding->forward(inputIds));
+            auto decoderResult = implementation_->network->decoder->forward(
+                implementation_->network->decoderEmbedding->forward(decoderInput),
+                std::get<1>(encoderResult));
+            logits = implementation_->network->projection->forward(std::get<0>(decoderResult));
+        }
+        const auto tokenId = logits.select(0, logits.size(0) - 1).select(0, 0).argmax().item<std::int64_t>();
         if (tokenId < 0 || static_cast<std::size_t>(tokenId) >= context.outputVocabulary.size()) {
             throw IrError("mixfix GRU emitted token outside finite vocabulary");
         }
         const auto vocabularyId = static_cast<MixfixVocabularyId>(tokenId);
         tokens.push_back(vocabularyId);
-        if (context.outputVocabulary[vocabularyId].kind == MixfixIrTokenKind::End) break;
-        decoderInput.fill_(tokenId);
+        const auto kind = context.outputVocabulary[vocabularyId].kind;
+        if (kind == MixfixIrTokenKind::End || kind == MixfixIrTokenKind::Reject ||
+            kind == MixfixIrTokenKind::Abstain) break;
+        decoderInput = torch::cat({decoderInput, torch::full({1, 1}, tokenId,
+            torch::TensorOptions().dtype(torch::kInt64))}, 0);
     }
     return tokens;
 #else
@@ -362,12 +392,56 @@ double GruMixfixStateModel::evaluateTeacherForced(
 #endif
 }
 
-void GruMixfixStateModel::saveArtifact(const std::filesystem::path& artifactPath) const {
+void GruMixfixStateModel::saveCheckpoint(const std::filesystem::path& artifactPath) const {
 #ifdef FELIDAE_HAS_TORCH
     if (artifactPath.empty()) throw IrError("mixfix GRU artifact path is empty");
     const auto parent = artifactPath.parent_path();
     if (!parent.empty()) std::filesystem::create_directories(parent);
     torch::save(implementation_->network, artifactPath.string());
+#else
+    (void)artifactPath;
+    throw IrError("mixfix GRU export requires FELIDAE_ENABLE_LIBTORCH=ON");
+#endif
+}
+
+void GruMixfixStateModel::exportTorchScript(const std::filesystem::path& artifactPath) const {
+#ifdef FELIDAE_HAS_TORCH
+    if (!implementation_->network) throw IrError("mixfix TorchScript export requires a training model");
+    if (artifactPath.empty()) throw IrError("mixfix TorchScript artifact path is empty");
+    const auto parent = artifactPath.parent_path();
+    if (!parent.empty()) std::filesystem::create_directories(parent);
+    torch::jit::Module module("FelidaeMixfixGru");
+    module.register_parameter("encoder_embedding", implementation_->network->embedding->weight.detach().clone(), false);
+    module.register_parameter("decoder_embedding", implementation_->network->decoderEmbedding->weight.detach().clone(), false);
+    module.register_parameter("projection_weight", implementation_->network->projection->weight.detach().clone(), false);
+    module.register_parameter("projection_bias", implementation_->network->projection->bias.detach().clone(), false);
+    std::ostringstream encoderParameters, decoderParameters;
+    const auto registerGru = [&](const auto& gru, const char* prefix, std::ostringstream& names) {
+        bool first = true;
+        for (const auto& parameter : gru->named_parameters(false)) {
+            const auto name = std::string(prefix) + "_" + parameter.key();
+            module.register_parameter(name, parameter.value().detach().clone(), false);
+            if (!first) names << ", ";
+            names << "self." << name;
+            first = false;
+        }
+    };
+    registerGru(implementation_->network->encoder, "encoder", encoderParameters);
+    registerGru(implementation_->network->decoder, "decoder", decoderParameters);
+    std::ostringstream source;
+    source << "def forward(self, input_ids: Tensor, decoder_ids: Tensor) -> Tensor:\n"
+           << "    encoded_input = torch.embedding(self.encoder_embedding, input_ids)\n"
+           << "    encoder_hidden = torch.zeros([" << configuration_.layerCount
+           << ", input_ids.size(1), " << configuration_.hiddenSize << "], dtype=encoded_input.dtype)\n"
+           << "    encoded = torch.gru(encoded_input, encoder_hidden, [" << encoderParameters.str()
+           << "], True, " << configuration_.layerCount << ", 0.0, False, False, False)\n"
+           << "    decoded_input = torch.embedding(self.decoder_embedding, decoder_ids)\n"
+           << "    decoded = torch.gru(decoded_input, encoded[1], [" << decoderParameters.str()
+           << "], True, " << configuration_.layerCount << ", 0.0, False, False, False)\n"
+           << "    return torch.linear(decoded[0], self.projection_weight, self.projection_bias)\n";
+    module.define(source.str());
+    module.eval();
+    module.save(artifactPath.string());
 #else
     (void)artifactPath;
     throw IrError("mixfix GRU export requires FELIDAE_ENABLE_LIBTORCH=ON");

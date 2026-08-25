@@ -1,13 +1,16 @@
 #include "RuntimeStateModel.h"
 
-#include "BinaryIr.h"
+#include "BinaryIsa.h"
 #include "RuntimeTraining.h"
 
 #include <fstream>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 
 #ifdef FELIDAE_HAS_TORCH
+#include <torch/csrc/jit/api/module.h>
+#include <torch/csrc/jit/serialization/import.h>
 #include <torch/torch.h>
 #endif
 
@@ -36,7 +39,7 @@ std::int64_t runtimeInputToken(IrSymbolRef operation, RuntimeValueKind kind,
                                std::int64_t vocabularySize) {
     constexpr std::int64_t kReservedTokens = 16;
     if (vocabularySize <= kReservedTokens) throw IrError("runtime GRU input vocabulary is invalid");
-    if (kind < RuntimeValueKind::Nil || kind > RuntimeValueKind::Fact) {
+    if (kind < RuntimeValueKind::Nil || kind > RuntimeValueKind::Symbol) {
         throw IrError("runtime GRU input value kind is invalid");
     }
     // Operation IDs occupy the model's dynamic range; stable value-kind IDs
@@ -45,7 +48,7 @@ std::int64_t runtimeInputToken(IrSymbolRef operation, RuntimeValueKind kind,
 }
 
 std::vector<std::int64_t> runtimeInputIds(
-    IrSymbolRef operation, std::span<const RuntimeValueKind> inputKinds,
+    std::uint16_t operation, std::span<const RuntimeValueKind> inputKinds,
     std::span<const IrSymbolRef> factTypes,
     std::span<const std::pair<IrSymbolRef, std::uint32_t>> factTypeCounts,
     std::span<const std::pair<IrSymbolRef, IrSymbolRef>> hierarchyEdges,
@@ -54,10 +57,29 @@ std::vector<std::int64_t> runtimeInputIds(
     constexpr std::int64_t kFactTypesMarker = 9;
     constexpr std::int64_t kHierarchyMarker = 10;
     constexpr std::int64_t kInputsMarker = 11;
-    if (operation == 0 || inputKinds.size() > kMaximumContextItems ||
+    if (!isKnownSemanticOperation(operation) ||
+        !semanticOperationAcceptsArity(operation, inputKinds.size()) ||
+        inputKinds.size() > kMaximumContextItems ||
         factTypes.size() > kMaximumContextItems || factTypeCounts.size() > kMaximumContextItems ||
         hierarchyEdges.size() > kMaximumContextItems) {
         throw IrError("runtime GRU operation context is invalid or too large");
+    }
+    const auto inputKind = inputKinds.front();
+    switch (static_cast<SemanticOperationId>(operation)) {
+    case SemanticOperationId::Identity:
+        break;
+    case SemanticOperationId::SelectFact:
+    case SemanticOperationId::DeriveFact:
+        if (inputKind != RuntimeValueKind::Fact) {
+            throw IrError("runtime GRU fact operation requires a fact input");
+        }
+        break;
+    case SemanticOperationId::EvaluateDegree:
+        if (inputKind != RuntimeValueKind::Number &&
+            inputKind != RuntimeValueKind::Degree) {
+            throw IrError("runtime GRU degree operation requires a numeric input");
+        }
+        break;
     }
     std::vector<std::int64_t> ids;
     ids.reserve(2 + inputKinds.size() + factTypes.size() + 2 * factTypeCounts.size() + 2 * hierarchyEdges.size());
@@ -87,7 +109,7 @@ std::vector<std::int64_t> runtimeInputIds(
     }
     ids.push_back(kInputsMarker);
     for (const auto kind : inputKinds) {
-        if (kind < RuntimeValueKind::Nil || kind > RuntimeValueKind::Fact) {
+        if (kind < RuntimeValueKind::Nil || kind > RuntimeValueKind::Symbol) {
             throw IrError("runtime GRU input value kind is invalid");
         }
         ids.push_back(static_cast<std::int64_t>(kind));
@@ -100,8 +122,8 @@ std::vector<RuntimeOutputToken> defaultRuntimeOutputVocabulary() {
     std::vector<RuntimeOutputToken> vocabulary;
     vocabulary.reserve(3 + 2 * kRuntimeModelReferenceLimit + 5);
     vocabulary.push_back({RuntimeOutputTokenKind::Nil, 0});
-    vocabulary.push_back({RuntimeOutputTokenKind::Boolean, 0});
-    vocabulary.push_back({RuntimeOutputTokenKind::Boolean, 1});
+    vocabulary.push_back({RuntimeOutputTokenKind::NumericTruth, 0});
+    vocabulary.push_back({RuntimeOutputTokenKind::NumericTruth, 1});
     for (std::size_t index = 0; index < kRuntimeModelReferenceLimit; ++index) {
         vocabulary.push_back({RuntimeOutputTokenKind::InputReference, index});
     }
@@ -129,16 +151,19 @@ public:
         torch::nn::Embedding embedding{nullptr}; torch::nn::GRU recurrent{nullptr}; torch::nn::Linear projection{nullptr};
     };
     struct ExecutionState { torch::Tensor hidden; };
-    explicit Implementation(const Configuration& c, const std::filesystem::path& artifact) : network(std::make_shared<Network>(c)) {
-        if (artifact.empty() && c.allowRandomInitialization) { network->eval(); return; }
+    explicit Implementation(const Configuration& c, const std::filesystem::path& artifact) {
+        if (artifact.empty() && c.allowRandomInitialization) { network=std::make_shared<Network>(c);network->eval();return; }
         if (artifact.empty() || !std::filesystem::is_regular_file(artifact)) throw IrError("runtime GRU artifact is unavailable: " + artifact.string());
-        torch::load(network, artifact.string()); network->eval();
+        try { production=torch::jit::load(artifact.string());production->eval(); }
+        catch(const c10::Error& error){throw IrError("runtime production artifact is not valid TorchScript: "+std::string(error.what_without_backtrace()));}
     }
     std::shared_ptr<Network> network;
+    std::optional<torch::jit::Module> production;
     std::unique_ptr<torch::optim::Adam> optimizer;
     double optimizerLearningRate = 0.0;
 
     void prepareOptimizer(double learningRate) {
+        if(!network)throw IrError("TorchScript inference artifact cannot be used as a training checkpoint");
         if (!optimizer || optimizerLearningRate != learningRate) {
             optimizer = std::make_unique<torch::optim::Adam>(
                 network->parameters(), torch::optim::AdamOptions(learningRate));
@@ -156,7 +181,7 @@ GruRuntimeStateModel::GruRuntimeStateModel(Configuration c, std::vector<RuntimeO
     if (configuration_.inputVocabularySize <= 16 || configuration_.outputVocabularySize <= 0 || configuration_.embeddingSize <= 0 ||
         configuration_.hiddenSize <= 0 || configuration_.layerCount <= 0 || outputVocabulary_.size() != static_cast<std::size_t>(configuration_.outputVocabularySize))
         throw IrError("runtime GRU configuration or finite output vocabulary is invalid");
-    for (const auto& token : outputVocabulary_) if ((token.kind == RuntimeOutputTokenKind::Boolean && token.value > 1) ||
+    for (const auto& token : outputVocabulary_) if ((token.kind == RuntimeOutputTokenKind::NumericTruth && token.value > 1) ||
         (token.kind == RuntimeOutputTokenKind::DegreeMilli && token.value > 1000)) throw IrError("runtime GRU output token is invalid");
 }
 GruRuntimeStateModel::~GruRuntimeStateModel() = default;
@@ -167,9 +192,9 @@ GruRuntimeStateModel GruRuntimeStateModel::loadVersioned(Configuration c, std::v
                                                          const std::filesystem::path& directory) {
     const auto manifest = directory / "runtime-manifest.txt";
     const auto expect = [&](const char* key, const char* value) { if (manifestValue(manifest, key) != value) throw IrError(std::string("runtime SSM manifest is incompatible: ") + key); };
-    expect("model_version", "runtime-gru-v1"); expect("backend", "libtorch-gru"); expect("opcode_vocabulary_version", "felidae-form-opcode-v1");
-    expect("symbol_encoding", "felidae-fnv1a63-v1"); expect("architecture", "gru-runtime-v1"); expect("training_schema", "felidae-runtime-operation-v6");
-    if (std::stoull(manifestValue(manifest, "ir_binary_version")) != kBinaryIrVersion ||
+    expect("model_version", "runtime-gru-v1"); expect("backend", "torchscript-gru"); expect("opcode_vocabulary_version", "felidae-isa-v1");
+    expect("symbol_encoding", "felidae-fnv1a63-v1"); expect("architecture", "gru-runtime-v1"); expect("training_schema", "felidae-runtime-operation-v7");
+    if (std::stoull(manifestValue(manifest, "ir_binary_version")) != kFelidaeBinaryVersion ||
         std::stoll(manifestValue(manifest, "input_vocabulary")) != c.inputVocabularySize || std::stoll(manifestValue(manifest, "output_vocabulary")) != c.outputVocabularySize ||
         std::stoll(manifestValue(manifest, "embedding_size")) != c.embeddingSize || std::stoll(manifestValue(manifest, "hidden_size")) != c.hiddenSize ||
         std::stoll(manifestValue(manifest, "layer_count")) != c.layerCount) throw IrError("runtime SSM manifest configuration is incompatible");
@@ -193,20 +218,20 @@ Value GruRuntimeStateModel::evaluate(const RuntimeOperation& operation, std::spa
     std::vector<RuntimeValueKind> inputKinds;
     inputKinds.reserve(inputs.size());
     for (const auto& input : inputs) inputKinds.push_back(runtimeValueKind(input));
-    const auto ids = runtimeInputIds(operation.symbol, inputKinds, context.knowledge.factTypes, context.knowledge.factTypeCounts,
+    const auto ids = runtimeInputIds(operation.id, inputKinds, context.knowledge.factTypes, context.knowledge.factTypeCounts,
                                      context.knowledge.hierarchyEdges, configuration_.inputVocabularySize);
-    torch::InferenceMode guard; const auto input = torch::tensor(ids, torch::TensorOptions().dtype(torch::kInt64)).reshape({-1, 1});
-    const auto result = state->hidden.defined() ? implementation_->network->recurrent->forward(implementation_->network->embedding->forward(input), state->hidden)
-                                                  : implementation_->network->recurrent->forward(implementation_->network->embedding->forward(input));
-    state->hidden = std::get<1>(result).detach();
-    const auto outputId = implementation_->network->projection->forward(std::get<0>(result).select(0, std::get<0>(result).size(0) - 1).select(0, 0)).argmax().item<std::int64_t>();
+    torch::InferenceMode guard;const auto input=torch::tensor(ids,torch::TensorOptions().dtype(torch::kInt64)).reshape({-1,1});
+    torch::Tensor logits;
+    if(implementation_->production){if(!state->hidden.defined())state->hidden=torch::zeros({configuration_.layerCount,1,configuration_.hiddenSize});auto output=implementation_->production->forward({input,state->hidden}).toTuple();logits=output->elements().at(0).toTensor();state->hidden=output->elements().at(1).toTensor().detach();}
+    else{const auto result=state->hidden.defined()?implementation_->network->recurrent->forward(implementation_->network->embedding->forward(input),state->hidden):implementation_->network->recurrent->forward(implementation_->network->embedding->forward(input));state->hidden=std::get<1>(result).detach();logits=implementation_->network->projection->forward(std::get<0>(result).select(0,std::get<0>(result).size(0)-1).select(0,0));}
+    const auto outputId=logits.argmax().item<std::int64_t>();
     if (outputId < 0 || static_cast<std::size_t>(outputId) >= outputVocabulary_.size()) throw IrError("runtime GRU emitted a token outside its finite output vocabulary");
     const auto& token = outputVocabulary_[static_cast<std::size_t>(outputId)];
     switch (token.kind) {
     case RuntimeOutputTokenKind::InputReference: if (token.value >= inputs.size()) throw IrError("runtime GRU emitted an unavailable input reference"); return inputs[token.value];
     case RuntimeOutputTokenKind::FactFromInput: { if (token.value >= inputs.size()) throw IrError("runtime GRU emitted an unavailable fact input reference"); const auto fact = std::get_if<VmFactPtr>(&inputs[token.value]); if (!fact || !*fact) throw IrError("runtime GRU fact action requires a fact input"); auto inferred = std::make_shared<VmFact>(**fact); inferred->id = 0; return inferred; }
     case RuntimeOutputTokenKind::DegreeMilli: return VmDegree(static_cast<double>(token.value) / 1000.0);
-    case RuntimeOutputTokenKind::Nil: return VmNil{}; case RuntimeOutputTokenKind::Boolean: return token.value != 0;
+    case RuntimeOutputTokenKind::Nil: return VmNil{}; case RuntimeOutputTokenKind::NumericTruth: return token.value != 0 ? 1.0 : 0.0;
     }
     throw IrError("runtime GRU emitted an invalid output token");
 #else
@@ -216,8 +241,9 @@ Value GruRuntimeStateModel::evaluate(const RuntimeOperation& operation, std::spa
 
 double GruRuntimeStateModel::trainTeacherForced(const RuntimeTrainingRecord& record, std::size_t targetToken, double learningRate) {
 #ifdef FELIDAE_HAS_TORCH
+    verifyRuntimeTrainingRecord(record);
     if (targetToken >= outputVocabulary_.size() || learningRate <= 0.0) throw IrError("runtime GRU training target or learning rate is invalid");
-    const auto ids = runtimeInputIds(record.operationSymbol, record.inputKinds, record.factTypes, record.factTypeCounts,
+    const auto ids = runtimeInputIds(record.operationId, record.inputKinds, record.factTypes, record.factTypeCounts,
                                      record.hierarchyEdges, configuration_.inputVocabularySize);
     if (ids.size() > 4096) throw IrError("runtime GRU training record is too large");
     implementation_->prepareOptimizer(learningRate);
@@ -236,7 +262,8 @@ double GruRuntimeStateModel::trainTeacherForced(const RuntimeTrainingRecord& rec
 
 std::size_t GruRuntimeStateModel::predictTeacherToken(const RuntimeTrainingRecord& record) const {
 #ifdef FELIDAE_HAS_TORCH
-    const auto ids = runtimeInputIds(record.operationSymbol, record.inputKinds, record.factTypes, record.factTypeCounts,
+    verifyRuntimeTrainingRecord(record);
+    const auto ids = runtimeInputIds(record.operationId, record.inputKinds, record.factTypes, record.factTypeCounts,
                                      record.hierarchyEdges, configuration_.inputVocabularySize);
     torch::InferenceMode guard;
     const auto input = torch::tensor(ids, torch::TensorOptions().dtype(torch::kInt64)).reshape({-1, 1});
@@ -252,13 +279,23 @@ std::size_t GruRuntimeStateModel::predictTeacherToken(const RuntimeTrainingRecor
 #endif
 }
 
-void GruRuntimeStateModel::saveArtifact(const std::filesystem::path& artifactPath) const {
+void GruRuntimeStateModel::saveCheckpoint(const std::filesystem::path& artifactPath) const {
 #ifdef FELIDAE_HAS_TORCH
-    if (artifactPath.empty()) throw IrError("runtime GRU artifact path is empty"); const auto parent = artifactPath.parent_path(); if (!parent.empty()) std::filesystem::create_directories(parent); torch::save(implementation_->network, artifactPath.string());
-    std::ofstream manifest(parent / "runtime-manifest.txt", std::ios::trunc); if (!manifest) throw IrError("cannot write runtime SSM manifest");
-    manifest << "model_version=runtime-gru-v1\nbackend=libtorch-gru\nir_binary_version=" << kBinaryIrVersion << "\nopcode_vocabulary_version=felidae-form-opcode-v1\nsymbol_encoding=felidae-fnv1a63-v1\narchitecture=gru-runtime-v1\ntraining_schema=felidae-runtime-operation-v6\ninput_vocabulary=" << configuration_.inputVocabularySize << "\noutput_vocabulary=" << configuration_.outputVocabularySize << "\nembedding_size=" << configuration_.embeddingSize << "\nhidden_size=" << configuration_.hiddenSize << "\nlayer_count=" << configuration_.layerCount << "\nartifact_hash=fnv1a64:" << std::hex << fnv1a(artifactPath) << "\n";
+    if(!implementation_->network)throw IrError("runtime checkpoint export requires a training model");if(artifactPath.empty())throw IrError("runtime GRU checkpoint path is empty");const auto parent=artifactPath.parent_path();if(!parent.empty())std::filesystem::create_directories(parent);torch::save(implementation_->network,artifactPath.string());
 #else
-    (void)artifactPath; throw IrError("runtime GRU export requires FELIDAE_ENABLE_LIBTORCH=ON");
+    (void)artifactPath;throw IrError("runtime GRU checkpoint export requires FELIDAE_ENABLE_LIBTORCH=ON");
+#endif
+}
+
+void GruRuntimeStateModel::exportTorchScript(const std::filesystem::path& artifactPath) const {
+#ifdef FELIDAE_HAS_TORCH
+    if(!implementation_->network)throw IrError("runtime TorchScript export requires a training model");if(artifactPath.empty())throw IrError("runtime TorchScript artifact path is empty");const auto parent=artifactPath.parent_path();if(!parent.empty())std::filesystem::create_directories(parent);
+    torch::jit::Module module("FelidaeRuntimeGru");module.register_parameter("embedding",implementation_->network->embedding->weight.detach().clone(),false);module.register_parameter("projection_weight",implementation_->network->projection->weight.detach().clone(),false);module.register_parameter("projection_bias",implementation_->network->projection->bias.detach().clone(),false);
+    std::ostringstream parameters;bool first=true;for(const auto& parameter:implementation_->network->recurrent->named_parameters(false)){const auto name="recurrent_"+parameter.key();module.register_parameter(name,parameter.value().detach().clone(),false);if(!first)parameters<<", ";parameters<<"self."<<name;first=false;}
+    std::ostringstream source;source<<"def forward(self, input_ids: Tensor, hidden: Tensor) -> Tuple[Tensor, Tensor]:\n"<<"    embedded = torch.embedding(self.embedding, input_ids)\n"<<"    recurrent = torch.gru(embedded, hidden, ["<<parameters.str()<<"], True, "<<configuration_.layerCount<<", 0.0, False, False, False)\n"<<"    logits = torch.linear(recurrent[0][-1][0], self.projection_weight, self.projection_bias)\n"<<"    return logits, recurrent[1]\n";module.define(source.str());module.eval();module.save(artifactPath.string());
+    std::ofstream manifest(parent/"runtime-manifest.txt",std::ios::trunc);if(!manifest)throw IrError("cannot write runtime SSM manifest");manifest<<"model_version=runtime-gru-v1\nbackend=torchscript-gru\nir_binary_version="<<kFelidaeBinaryVersion<<"\nopcode_vocabulary_version=felidae-isa-v1\nsymbol_encoding=felidae-fnv1a63-v1\narchitecture=gru-runtime-v1\ntraining_schema=felidae-runtime-operation-v7\ninput_vocabulary="<<configuration_.inputVocabularySize<<"\noutput_vocabulary="<<configuration_.outputVocabularySize<<"\nembedding_size="<<configuration_.embeddingSize<<"\nhidden_size="<<configuration_.hiddenSize<<"\nlayer_count="<<configuration_.layerCount<<"\nartifact_hash=fnv1a64:"<<std::hex<<fnv1a(artifactPath)<<"\n";
+#else
+    (void)artifactPath;throw IrError("runtime GRU TorchScript export requires FELIDAE_ENABLE_LIBTORCH=ON");
 #endif
 }
 } // namespace Felidae

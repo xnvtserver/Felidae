@@ -20,7 +20,18 @@ inline std::filesystem::path modelStoreDirectory(const std::filesystem::path& re
                                                  std::string_view modelName) {
     namespace fs = std::filesystem;
     const auto current = fs::current_path().lexically_normal();
-    const auto root = current.filename() == "build" ? current.parent_path() : current;
+    auto root = current;
+    // Training is commonly launched either from the repository root or from
+    // build/<configuration>. Resolve the existing source root without
+    // creating another nested build directory.
+    for (auto candidate = current;; candidate = candidate.parent_path()) {
+        if (fs::is_regular_file(candidate / "CMakeLists.txt") &&
+            fs::is_directory(candidate / "build")) {
+            root = candidate;
+            break;
+        }
+        if (candidate == candidate.root_path() || candidate.parent_path() == candidate) break;
+    }
     const auto build = (root / "build").lexically_normal();
     const auto dist = (root / "dist").lexically_normal();
     const auto selected = (requested.is_absolute() ? requested : (root / requested)).lexically_normal();
@@ -104,7 +115,24 @@ inline std::optional<ModelTrainingOptions> parseModelTrainingOptions(int argc, c
     if (argc < 4) throw std::runtime_error("--train requires a dataset and --store-model build|dist");
     ModelTrainingOptions options;
     options.dataset = argv[2];
-    bool haveStore = false;
+    bool haveStore = false, haveEpochs = false, haveLearningRate = false;
+    const auto positiveSize = [](std::string_view text, const char* option) {
+        if (text.empty() || text.front() == '-') throw std::runtime_error(std::string(option) + " requires a positive integer");
+        std::size_t consumed = 0;
+        const auto value = std::stoull(std::string(text), &consumed);
+        if (consumed != text.size() || value == 0 || value > std::numeric_limits<std::size_t>::max()) {
+            throw std::runtime_error(std::string(option) + " requires a positive integer in range");
+        }
+        return static_cast<std::size_t>(value);
+    };
+    const auto positiveReal = [](std::string_view text, const char* option) {
+        std::size_t consumed = 0;
+        const auto value = std::stod(std::string(text), &consumed);
+        if (consumed != text.size() || !std::isfinite(value) || value <= 0.0) {
+            throw std::runtime_error(std::string(option) + " requires a positive finite number");
+        }
+        return value;
+    };
     for (int index = 3; index < argc; ++index) {
         const std::string_view flag(argv[index]);
         if (flag == "--store-model") {
@@ -112,20 +140,18 @@ inline std::optional<ModelTrainingOptions> parseModelTrainingOptions(int argc, c
             options.store = argv[index];
             haveStore = true;
         } else if (flag == "--epochs") {
-            if (++index == argc) throw std::runtime_error("--epochs requires a positive integer");
-            const auto epochs = std::stoull(argv[index]);
-            if (epochs > std::numeric_limits<std::size_t>::max()) {
-                throw std::runtime_error("--epochs exceeds this build's range");
-            }
-            options.epochs = static_cast<std::size_t>(epochs);
+            if (haveEpochs || ++index == argc) throw std::runtime_error("--epochs requires one positive integer");
+            options.epochs = positiveSize(argv[index], "--epochs");
+            haveEpochs = true;
         } else if (flag == "--learning-rate") {
-            if (++index == argc) throw std::runtime_error("--learning-rate requires a positive number");
-            options.learningRate = std::stod(argv[index]);
+            if (haveLearningRate || ++index == argc) throw std::runtime_error("--learning-rate requires one positive number");
+            options.learningRate = positiveReal(argv[index], "--learning-rate");
+            haveLearningRate = true;
         } else {
             throw std::runtime_error("unknown training option: " + std::string(flag));
         }
     }
-    if (!haveStore || options.epochs == 0 || !std::isfinite(options.learningRate) || options.learningRate <= 0.0) {
+    if (!haveStore) {
         throw std::runtime_error("training options are invalid");
     }
     return options;

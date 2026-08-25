@@ -7,4 +7,4 @@ Countdown(value: number) =>
         return 1 + Countdown(value: value - 1)
 
 main() =>
-    return Countdown(value: 100)
+    return Countdown(value: 1000)

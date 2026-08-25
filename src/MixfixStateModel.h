@@ -21,6 +21,9 @@ using MixfixVocabularyId = std::uint32_t;
 // indices into the parser-owned tables below and are resolved only after the
 // finite-vocabulary decoder has stopped.
 enum class MixfixIrTokenKind : std::uint8_t {
+    Accept,
+    Reject,
+    Abstain,
     End,
     Opcode,
     Register,
@@ -51,10 +54,11 @@ struct MixfixContext {
 // Dynamic constants and symbols remain context-table references.
 inline constexpr std::size_t kMaximumMixfixRegisters = 64;
 inline constexpr std::size_t kMaximumMixfixReferences = 64;
-// End plus every real opcode, fixed registers, and four bounded reference
+inline constexpr std::string_view kMixfixIrVocabularyVersion = "felidae-compiler-ir-v2";
+// Three decisions, End, every real opcode, fixed registers, and four bounded reference
 // classes. Training artifacts must use this exact parser-owned vocabulary.
 inline constexpr std::size_t kMixfixStructuralVocabularySize =
-    static_cast<std::size_t>(kIrOpcodeCount) + kMaximumMixfixRegisters + 4 * kMaximumMixfixReferences;
+    3 + static_cast<std::size_t>(kIrOpcodeCount) + kMaximumMixfixRegisters + 4 * kMaximumMixfixReferences;
 MixfixContext makeMixfixContext(const FelidaeIr& shell);
 
 class MixfixStateModel {
@@ -84,8 +88,9 @@ public:
         bool allowRandomInitialization = false;
     };
 
-    // artifactPath is a LibTorch C++ archive created with torch::save; model
-    // training/export is C++-only.  Constructing this backend in a build
+    // artifactPath is a production TorchScript module. Native C++ archives
+    // are training checkpoints only and are never accepted for inference.
+    // Constructing this backend in a build
     // without FELIDAE_ENABLE_LIBTORCH gives a clear runtime error.
     GruMixfixStateModel(Configuration configuration,
                         const std::filesystem::path& artifactPath);
@@ -104,7 +109,7 @@ public:
     static GruMixfixStateModel loadVersioned(
         Configuration configuration, const std::filesystem::path& artifactDirectory,
         std::string_view expectedSentencePieceHash,
-        std::string_view expectedIrVocabularyVersion = "felidae-ir-v8");
+        std::string_view expectedIrVocabularyVersion = kMixfixIrVocabularyVersion);
 
     // One C++ LibTorch teacher-forcing optimization step. targetTokenIds must
     // contain the terminating IR_END vocabulary token.  This intentionally is
@@ -118,7 +123,8 @@ public:
     double evaluateTeacherForced(std::span<const SentencePieceId> input,
                                  std::span<const std::int64_t> targetTokenIds);
 
-    void saveArtifact(const std::filesystem::path& artifactPath) const;
+    void saveCheckpoint(const std::filesystem::path& checkpointPath) const;
+    void exportTorchScript(const std::filesystem::path& artifactPath) const;
 
 private:
     class Implementation;

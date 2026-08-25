@@ -3,6 +3,8 @@
 #include "IntegerTokenList.h"
 #include "Operator.h"
 #include "SentencePieceModel.h"
+#include "form/FelidaeIsa.h"
+#include "form/IsaLowerer.h"
 
 #include <chrono>
 #include <fstream>
@@ -28,8 +30,20 @@ int main(int argc, char** argv) {
         const auto verified = std::chrono::steady_clock::now();
         class NoRuntime final : public Felidae::VmRuntime {
         } runtime;
+        constexpr Felidae::IrSymbolRef entry = 0xf11da00000000001ull;
+        Felidae::IrModule module;
+        module.entryProcedure = entry;
+        module.ir.registerCount = 1;
+        module.ir.symbols = {entry};
+        module.ir.words = {
+            static_cast<Felidae::IrWord>(Felidae::IrOpcode::Call), 0, 0, 0,
+            static_cast<Felidae::IrWord>(Felidae::IrOpcode::Return), 0, 0,
+            static_cast<Felidae::IrWord>(Felidae::IrOpcode::End),
+        };
+        module.procedures.emplace(entry, Felidae::IrProcedure{ir, {}, {}, {}});
+        const auto isa = Felidae::IsaLowerer::lowerModule(module);
         Felidae::RegisterVm vm;
-        (void)vm.execute(ir, runtime, Felidae::VmNil{});
+        (void)vm.executeIsaMain(isa, runtime, Felidae::VmNil{});
         const auto executed = std::chrono::steady_clock::now();
         const auto micros = [](auto begin, auto end) {
             return std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();

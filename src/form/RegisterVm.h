@@ -16,7 +16,8 @@
 
 namespace Felidae {
 
-struct IrModule;
+struct IsaModule;
+struct IsaProgram;
 
 // Instruction operands are verifier-bounded host indices. Symbol values are
 // deliberately separate: source SymbolId values are always 64-bit and must
@@ -27,74 +28,11 @@ using IrConstantId = std::size_t;
 using IrSymbolRef = std::uint64_t;
 using IrFactRef = std::size_t;
 
-enum class IrOpcode : IrWord {
-    End = 0,
-    LoadConst,
-    LoadSymbol,
-    StoreSymbol,
-    Move,
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Mod,
-    Compare,
-    Jump,
-    JumpIfFalse,
-    Call,
-    CallNamed,
-    CallNative,
-    SemanticEval,
-    // destination, model-operation symbol, input count, input registers.
-    // This explicit recurrent/SSM operation keeps the binary operand schema
-    // stable while using the typed runtime-state-model boundary.
-    SsmProcess,
-    MakeFact,
-    MakeArray,
-    MakeMap,
-    GetField,
-    SetField,
-    // Deterministic fuzzy primitives. They produce VmDegree, never bool.
-    Similarity,
-    // destination, value, peak, fades-in, fades-out registers.
-    Membership,
-    // destination, fact-type symbol, deterministic callback symbol.
-    ForEachFact,
-    Return,
-    Count
-};
-
-constexpr IrWord kIrOpcodeCount = static_cast<IrWord>(IrOpcode::Count);
-
-enum class IrOperandKind : IrWord { Register = 1, Constant, Symbol, Fact, Jump, Program };
 enum class IrConstantKind : std::uint8_t { Number, Boolean, Nil, Text };
-enum class IrComparison : IrWord { Equal = 0, NotEqual, Less, LessEqual, Greater, GreaterEqual };
 
 struct IrSourceMapEntry {
     std::size_t instructionWord = 0;
     struct Span { int startLine = 1; int startColumn = 1; int endLine = 1; int endColumn = 1; } sourceSpan;
-};
-
-struct FelidaeIr {
-    std::vector<IrWord> words;
-    std::vector<IrWord> constants;
-    std::vector<IrConstantKind> constantKinds;
-    // Text is a dedicated side table: integer IR words carry only its bounded
-    // index, never a pointer or unrestricted string payload.
-    // Every text constant is a SentencePiece ID sequence. Raw UTF-8 never
-    // enters .bin or the VM's persistent state.
-    std::vector<std::vector<std::uint32_t>> texts;
-    std::vector<IrSymbolRef> symbols;
-    std::vector<IrWord> programs;
-    std::vector<IrSourceMapEntry> sourceMap;
-    std::size_t registerCount = 0;
-};
-
-struct IrProcedure {
-    FelidaeIr ir;
-    std::vector<IrSymbolRef> positionalParameters;
-    std::vector<IrSymbolRef> namedParameters;
-    IrSourceMapEntry::Span sourceSpan;
 };
 
 class IrError : public std::runtime_error {
@@ -102,24 +40,20 @@ public:
     explicit IrError(const std::string& message) : std::runtime_error(message) {}
 };
 
-class IrVerifier {
-public:
-    static void verify(const FelidaeIr& ir);
-};
-
-// Constants are stored as machine words in canonical IR.  Numeric constants
-// use these helpers rather than host string parsing or pointer payloads.
+// Constant-pool numbers use a canonical bit representation shared by the
+// compiler lowerer, FELBIN loader, and ISA VM.
 IrWord encodeIrNumber(double value) noexcept;
 double decodeIrNumber(IrWord word) noexcept;
 
 struct VmNil { bool operator==(const VmNil&) const = default; };
+struct VmSymbol { IrSymbolRef value = 0; bool operator==(const VmSymbol&) const = default; };
 struct VmDegree {
     double value = 0.0;
     explicit VmDegree(double value);
     bool operator==(const VmDegree&) const = default;
 };
 struct VmText {
-    std::vector<std::uint32_t> pieces;
+    std::string value;
     bool operator==(const VmText&) const = default;
 };
 struct VmArray;
@@ -128,7 +62,7 @@ struct VmMap;
 using VmMapPtr = std::shared_ptr<VmMap>;
 struct VmFact;
 using VmFactPtr = std::shared_ptr<VmFact>;
-using VmValue = std::variant<VmNil, bool, double, VmDegree, VmText, VmArrayPtr, VmMapPtr, VmFactPtr>;
+using VmValue = std::variant<VmNil, double, VmDegree, VmText, VmSymbol, VmArrayPtr, VmMapPtr, VmFactPtr>;
 // Public runtime spelling for canonical VM values.
 using Value = VmValue;
 
@@ -137,21 +71,19 @@ using Value = VmValue;
 // model artifact.
 enum class RuntimeValueKind : std::uint8_t {
     Nil = 1,
-    Boolean = 2,
-    Number = 3,
-    Degree = 4,
-    Text = 5,
-    Array = 6,
-    Map = 7,
-    Fact = 8,
+    Number = 2,
+    Degree = 3,
+    Text = 4,
+    Array = 5,
+    Map = 6,
+    Fact = 7,
+    Symbol = 8,
 };
 RuntimeValueKind runtimeValueKind(const VmValue& value) noexcept;
-using VmTextDecoder = std::function<std::string(std::span<const std::uint32_t>)>;
 using VmSymbolDecoder = std::function<std::string(IrSymbolRef)>;
 // Rendering is an adapter boundary, not VM state. Form consumes only IDs and
 // typed values; callers may inject SentencePiece and symbol decoders for UI.
 struct VmDisplayContext {
-    VmTextDecoder textDecoder;
     VmSymbolDecoder symbolDecoder;
 };
 std::string vmValueToDisplayString(const VmValue& value,
@@ -231,18 +163,10 @@ private:
     mutable std::unordered_map<IrSymbolRef, std::pair<std::uint64_t, std::vector<VmFactPtr>>> assignableCache_;
     std::uint64_t revision_ = 0;
 };
-struct VmCallArgument {
-    // Empty means positional. A non-empty value is a parser-owned symbol
-    // reference from the IR symbol table.
-    std::optional<IrSymbolRef> name;
-    VmValue value;
-};
-
-// A semantic operation is deliberately a symbol-table reference plus typed
-// VM values. It never serializes facts or other runtime data back through
-// text/SentencePiece merely to invoke a learned runtime backend.
+// A semantic operation is a permanent ISA ID plus typed VM values. It never
+// uses a source symbol, text, or SentencePiece token as executable semantics.
 struct RuntimeOperation {
-    IrSymbolRef symbol = 0;
+    std::uint16_t id = 0;
 };
 
 // A compact, integer-only record of behavior observed while verified IR runs.
@@ -288,25 +212,32 @@ public:
     virtual ~VmRuntime() = default;
     virtual VmValue loadSymbol(IrSymbolRef symbol);
     virtual void storeSymbol(IrSymbolRef symbol, const VmValue& value);
-    virtual VmValue callSymbol(IrSymbolRef symbol, std::span<const VmValue> arguments);
-    virtual VmValue callSymbolNamed(IrSymbolRef symbol, std::span<const VmCallArgument> arguments);
     virtual VmValue callNativeSymbol(IrSymbolRef symbol);
     virtual void retainFact(const VmFactPtr& fact);
     virtual void mutateFact(const VmFactPtr& fact, IrSymbolRef field, const VmValue& value);
     virtual void registerFactType(IrSymbolRef type, std::vector<IrSymbolRef> parents);
     virtual std::vector<VmFactPtr> snapshotFacts(IrSymbolRef type);
+    virtual std::vector<IrSymbolRef> hierarchyProof(IrSymbolRef child, IrSymbolRef ancestor);
+    virtual std::vector<IrSymbolRef> commonAncestors(IrSymbolRef left, IrSymbolRef right);
+    virtual std::vector<IrSymbolRef> leastCommonAncestors(IrSymbolRef left, IrSymbolRef right);
+    virtual std::vector<IrSymbolRef> mostGeneralCommonAncestors(IrSymbolRef left, IrSymbolRef right);
+    virtual std::vector<VmRankedFact> rankFacts(IrSymbolRef effectiveAtField,
+                                                IrSymbolRef priorityField);
     // Modules are independently verified before this hook. A long-lived
     // runtime may retain their procedure metadata for later calls; the base
     // runtime remains intentionally stateless.
-    virtual void installModule(const IrModule& module);
+    virtual void installIsaModule(const IsaModule& module);
+    virtual void enterProcedure(IrSymbolRef procedure,
+                                std::span<const IrSymbolRef> parameters,
+                                std::span<const VmValue> arguments);
+    virtual void leaveProcedure() noexcept;
     virtual void recordTrace(VmTraceKind kind, IrSymbolRef symbol = 0, IrFactRef fact = 0);
-    // Null means this execution has no learned semantic backend. Semantic IR
+    // Null means this execution has no learned semantic backend. SemanticEval
     // then fails in a controlled manner; exact opcodes never use this hook.
     virtual RuntimeStateModel* runtimeStateModel();
     virtual void beginExecution();
     virtual void endExecution() noexcept;
-    virtual RuntimeContext makeRuntimeContext(const FelidaeIr& ir,
-                                              const VmValue& systemInput) const;
+    virtual RuntimeContext makeIsaRuntimeContext(const VmValue& systemInput) const;
     // A long-lived runtime updates operation context at the semantic boundary;
     // the base runtime has no knowledge state to add.
     virtual void refreshRuntimeContext(RuntimeContext& context) const;
@@ -315,38 +246,43 @@ public:
     // admits only structurally valid VM values.
     virtual bool validateSemanticResult(const VmValue& value,
                                         const RuntimeContext& context) const;
-    // Branch protocol, not generic truthiness.  The VM never coerces facts,
-    // numbers, text, arrays, or opaque runtime values into booleans.  The
-    // default branches only for explicit nil/false; a runtime may implement
-    // its own control-value protocol without changing VM value support.
+    // Branch protocol, not generic truthiness. The only truth values are the
+    // doubles 0.0 and 1.0; facts, text, containers, and other numbers are not
+    // coerced. Nil and 0.0 take the false branch, while 1.0 continues.
     virtual bool shouldBranchFalse(const VmValue& value) const;
 };
 
-// Runtime used for closed, directly lowered programs.  Its sole purpose is
-// to make the IR/VM boundary explicit: an instruction which needs legacy
-// program services is rejected instead of implicitly reaching Interpreter.
+// Knowledge services used by verified ISA programs. The VM boundary stays
+// explicit: ISA operations reach only this typed runtime contract and never
+// implicitly enter the parser or Interpreter.
 class FelidaeKnowledgeRuntime final : public VmRuntime {
 public:
-    explicit FelidaeKnowledgeRuntime(std::unordered_map<IrSymbolRef, IrProcedure> procedures = {},
-                             RuntimeStateModel* semanticModel = nullptr,
+    explicit FelidaeKnowledgeRuntime(RuntimeStateModel* semanticModel = nullptr,
                              std::size_t maximumSemanticSteps = 1024,
                              std::size_t maximumCallDepth = 256,
                              std::shared_ptr<VmFactStore> factStore = {});
     VmValue loadSymbol(IrSymbolRef symbol) override;
     void storeSymbol(IrSymbolRef symbol, const VmValue& value) override;
-    VmValue callSymbol(IrSymbolRef symbol, std::span<const VmValue> arguments) override;
-    VmValue callSymbolNamed(IrSymbolRef symbol, std::span<const VmCallArgument> arguments) override;
     void retainFact(const VmFactPtr& fact) override;
     void mutateFact(const VmFactPtr& fact, IrSymbolRef field, const VmValue& value) override;
     void registerFactType(IrSymbolRef type, std::vector<IrSymbolRef> parents) override;
     std::vector<VmFactPtr> snapshotFacts(IrSymbolRef type) override;
-    void installModule(const IrModule& module) override;
+    std::vector<IrSymbolRef> hierarchyProof(IrSymbolRef child, IrSymbolRef ancestor) override;
+    std::vector<IrSymbolRef> commonAncestors(IrSymbolRef left, IrSymbolRef right) override;
+    std::vector<IrSymbolRef> leastCommonAncestors(IrSymbolRef left, IrSymbolRef right) override;
+    std::vector<IrSymbolRef> mostGeneralCommonAncestors(IrSymbolRef left, IrSymbolRef right) override;
+    std::vector<VmRankedFact> rankFacts(IrSymbolRef effectiveAtField,
+                                        IrSymbolRef priorityField) override;
+    void installIsaModule(const IsaModule& module) override;
+    void enterProcedure(IrSymbolRef procedure,
+                        std::span<const IrSymbolRef> parameters,
+                        std::span<const VmValue> arguments) override;
+    void leaveProcedure() noexcept override;
     void recordTrace(VmTraceKind kind, IrSymbolRef symbol = 0, IrFactRef fact = 0) override;
     RuntimeStateModel* runtimeStateModel() override;
     void beginExecution() override;
     void endExecution() noexcept override;
-    RuntimeContext makeRuntimeContext(const FelidaeIr& ir,
-                                      const VmValue& systemInput) const override;
+    RuntimeContext makeIsaRuntimeContext(const VmValue& systemInput) const override;
     void refreshRuntimeContext(RuntimeContext& context) const override;
     const std::shared_ptr<VmFactStore>& factStore() const noexcept { return factStore_; }
     std::vector<VmExecutionTrace> executionTraces() const;
@@ -363,7 +299,6 @@ private:
     std::vector<VmCallFrame> callFrames_;
     struct VmModuleState {
         std::unordered_map<IrSymbolRef, VmValue> globals;
-        std::unordered_map<IrSymbolRef, IrProcedure> procedures;
     };
     // Registry and traces are process-resident knowledge-runtime state.
     // Registers, call frames and recurrent state are deliberately excluded.
@@ -384,11 +319,13 @@ private:
 
 class RegisterVm {
 public:
-    VmValue execute(const FelidaeIr& ir, VmRuntime& runtime, VmValue systemInput);
-    // Canonical module entry point. The initializer owns global setup and
-    // dispatches the declared entry procedure through ordinary verified IR.
-    VmValue executeMain(const IrModule& module, VmRuntime& runtime,
-                        VmValue systemInput = VmNil{});
+    VmValue executeIsaMain(const IsaModule& module, VmRuntime& runtime,
+                           VmValue systemInput = VmNil{});
+
+private:
+    VmValue executeIsaProgram(const IsaModule& module, const IsaProgram& program,
+                              VmRuntime& runtime, VmValue systemInput,
+                              std::size_t callDepth);
 };
 
 } // namespace Felidae
