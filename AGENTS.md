@@ -18,3 +18,25 @@
 - Keep compiler, VM, model training, checkpointing, and TorchScript export in
   C++. Do not introduce Python scripts or Python subprocesses into the build,
   training, inference, testing, or model-export pipeline.
+- Before adding a helper, representation, parser path, validation, or other
+  logic, search for an existing implementation and reuse or simplify it.
+  Prefer correcting and consolidating existing code over creating parallel
+  mechanisms.
+- Avoid speculative abstractions, duplicate checks, and defensive validation
+  inside already verified or type-safe code. Validate once at genuine trust
+  boundaries, then rely on the established invariant unless evidence requires
+  another check.
+- Optimize first for clear, maintainable, correct code. Add complexity or
+  performance-specific logic only when a measured requirement justifies it.
+- Keep contracts unambiguous and stable: document non-obvious identity,
+  ownership, lifetime, binary-format, and model-input invariants beside their
+  authoritative types or functions. Do not implement behavior from intuition
+  when a contract can be stated and tested.
+- Apply DRY to behavior, not merely syntax. Maintain one authoritative path
+  for each conversion, verification, encoding, and execution rule. Remove a
+  stale path only after confirming its callers and required behavior have
+  moved to that path.
+- Ask the user before implementing an unresolved choice that materially
+  changes semantics, data formats, ownership, compatibility, or performance
+  tradeoffs. Continue autonomously for mechanical corrections whose intended
+  behavior is already established by the repository contract.
