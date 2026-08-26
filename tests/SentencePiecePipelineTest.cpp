@@ -1,7 +1,7 @@
 #include "CompilerFrontend.h"
 #include "FelidaeIr.h"
-#include "form/BinaryIsa.h"
-#include "form/IsaLowerer.h"
+#include "form/BinaryIr.h"
+#include "form/SemanticOperation.h"
 #include "IntegerParser.h"
 #include "IntegerTokenList.h"
 #include "MixfixStateModel.h"
@@ -22,7 +22,7 @@
 
 namespace {
 
-Felidae::VmValue executeIrThroughIsa(const Felidae::FelidaeIr& program,
+Felidae::VmValue executeIrDirect(const Felidae::FelidaeIr& program,
                                      Felidae::VmRuntime& runtime) {
     constexpr Felidae::IrSymbolRef kTestEntry = 0xf11da00000000001ull;
     Felidae::IrModule module;
@@ -35,12 +35,12 @@ Felidae::VmValue executeIrThroughIsa(const Felidae::FelidaeIr& program,
         static_cast<Felidae::IrWord>(Felidae::IrOpcode::End),
     };
     module.procedures.emplace(kTestEntry, Felidae::IrProcedure{program, {}, {}, {}});
-    return Felidae::RegisterVm{}.executeIsaMain(Felidae::IsaLowerer::lowerModule(module), runtime);
+    return Felidae::RegisterVm{}.executeMain(Felidae::verifyIrModule(std::move(module)), runtime);
 }
 
-Felidae::VmValue executeModuleThroughIsa(const Felidae::IrModule& module,
+Felidae::VmValue executeModuleDirect(const Felidae::IrModule& module,
                                          Felidae::VmRuntime& runtime) {
-    return Felidae::RegisterVm{}.executeIsaMain(Felidae::IsaLowerer::lowerModule(module), runtime);
+    return Felidae::RegisterVm{}.executeMain(Felidae::verifyIrModule(Felidae::IrModule(module)), runtime);
 }
 
 } // namespace
@@ -52,15 +52,33 @@ int main() {
         std::error_code ignored;
         std::filesystem::remove(path, ignored);
     };
+    // UTF-8 BOM bytes must never reach SentencePiece as a fake token before
+    // the first source statement.
+    const auto bomSource = testOutputDirectory / "utf8-bom-first-line.fx";
+    {
+        std::ofstream out(bomSource, std::ios::binary | std::ios::trunc);
+        out.write("\xEF\xBB\xBF", 3);
+        out << "main() => return 42\n";
+    }
+    assert(Felidae::readSourceFile(bomSource) == "main() => return 42\n");
+    const auto bomModule = Felidae::compileProgramFileToIr(bomSource);
+    assert(!bomModule.ir.words.empty());
+    removeTemporary(bomSource);
     Felidae::VmDisplayContext display;
-    display.symbolDecoder = [](Felidae::IrSymbolRef symbol) {
-        return Felidae::symbolNameForId(static_cast<Felidae::SymbolId>(symbol));
+    display.textDecoder = [](std::span<const Felidae::PieceId> pieces) {
+        std::vector<int> ids(pieces.begin(), pieces.end());
+        std::string text;
+        assert(Felidae::felidaeSentencePieceModel().Decode(ids, &text).ok());
+        return text;
+    };
+    display.symbolDecoder = [&](Felidae::IrSymbolRef symbol) {
+        const auto pieces = Felidae::runtimeSymbolPieces(symbol);
+        return pieces.empty() ? std::string{} : display.textDecoder(pieces);
     };
     const auto executeModule=[](const Felidae::IrModule& module){
-        const auto isa=Felidae::IsaLowerer::lowerModule(module);
         Felidae::FelidaeKnowledgeRuntime runtime;
         Felidae::RegisterVm vm;
-        return vm.executeIsaMain(isa,runtime);
+        return vm.executeMain(Felidae::verifyIrModule(Felidae::IrModule(module)),runtime);
     };
     static_assert(std::variant_size_v<Felidae::VmValue> == 8,
                   "production VM values must remain typed and AST-free");
@@ -80,7 +98,7 @@ int main() {
     assert(program.clauses.front()->body.back()->sourceSpan.startLine == 3);
 
     // Mixfix declarations and uses share one parser-owned registry over the
-    // same full-source SentencePiece stream. This must parse even when the
+    // same line-wise SentencePiece stream. This must parse even when the
     // strict module compiler can lower a uniquely typed implementation into
     // the same Call IR used by ordinary function syntax.
     const auto mixfixProgram = Felidae::parseProgramText(
@@ -243,11 +261,12 @@ int main() {
     const auto selectedMixfixPath = testOutputDirectory /
         "felidae_compiler_ssm_pipeline.bin";
     removeTemporary(selectedMixfixPath);
-    Felidae::writeBinaryIsa(selectedMixfixPath,
-                            Felidae::IsaLowerer::lowerModule(selectedMixfixModule));
-    const auto selectedMixfixBinary = Felidae::loadBinaryIsa(selectedMixfixPath);
+    Felidae::writeBinaryIr(selectedMixfixPath,
+                          Felidae::verifyIrModule(Felidae::IrModule(selectedMixfixModule)));
+    const auto selectedMixfixBinary = Felidae::loadBinaryIr(
+        selectedMixfixPath, Felidae::felidaeSentencePieceModelIdentity());
     Felidae::FelidaeKnowledgeRuntime selectedMixfixRuntime;
-    assert(std::get<double>(Felidae::RegisterVm{}.executeIsaMain(
+    assert(std::get<double>(Felidae::RegisterVm{}.executeMain(
         selectedMixfixBinary, selectedMixfixRuntime)) == 42.0);
     removeTemporary(selectedMixfixPath);
 
@@ -391,33 +410,38 @@ int main() {
     // opcode values: legal registers, constants, and symbols may share a
     // numeric value with an opcode.
     Felidae::IrVerifier::verify(module.ir);
-    const auto loweredModule=Felidae::IsaLowerer::lowerModule(module);
-    Felidae::verifyIsaModule(loweredModule);
+    const auto verifiedModule=Felidae::verifyIrModule(Felidae::IrModule(module));
     Felidae::RegisterVm vm;
     Felidae::FelidaeKnowledgeRuntime moduleRuntime;
-    const auto vmResult = vm.executeIsaMain(loweredModule, moduleRuntime);
+    const auto vmResult = vm.executeMain(verifiedModule, moduleRuntime);
     assert(Felidae::vmValueToDisplayString(vmResult, display) == "{answer: 42}");
 
     // The serialized artifact is executable in a fresh module/runtime path:
     // loader verification occurs before RegisterVm sees any instruction.
     const auto binaryPath = testOutputDirectory / "felidae_pipeline_roundtrip.bin";
-    Felidae::writeBinaryIsa(binaryPath, loweredModule);
-    const auto loadedModule = Felidae::loadBinaryIsa(binaryPath);
+    Felidae::writeBinaryIr(binaryPath, verifiedModule);
+    const auto loadedModule = Felidae::loadBinaryIr(binaryPath, Felidae::felidaeSentencePieceModelIdentity());
     Felidae::FelidaeKnowledgeRuntime loadedRuntime;
-    const auto binaryDisplay = Felidae::makeIsaDisplayContext(loadedModule);
-    assert(Felidae::vmValueToDisplayString(vm.executeIsaMain(loadedModule, loadedRuntime), binaryDisplay) ==
+    const auto textDecoder = [](std::span<const Felidae::PieceId> pieces) {
+        std::vector<int> ids(pieces.begin(), pieces.end());
+        std::string text;
+        assert(Felidae::felidaeSentencePieceModel().Decode(ids, &text).ok());
+        return text;
+    };
+    const auto binaryDisplay = Felidae::makeIrDisplayContext(loadedModule, textDecoder);
+    assert(Felidae::vmValueToDisplayString(vm.executeMain(loadedModule, loadedRuntime), binaryDisplay) ==
            "{answer: 42}");
     const auto malformedPath = testOutputDirectory / "felidae_pipeline_bad.bin";
     { std::ofstream bad(malformedPath, std::ios::binary | std::ios::trunc); bad << "not a felidae IR"; }
     bool malformedRejected = false;
-    try { (void)Felidae::loadBinaryIsa(malformedPath); } catch (const Felidae::IrError&) { malformedRejected = true; }
+    try { (void)Felidae::loadBinaryIr(malformedPath, Felidae::felidaeSentencePieceModelIdentity()); } catch (const Felidae::IrError&) { malformedRejected = true; }
     assert(malformedRejected);
     const auto expectRejectedCopy = [&](const char* suffix, const auto& mutate) {
         auto candidate = testOutputDirectory / (std::string("felidae_pipeline_") + suffix + ".bin");
         std::filesystem::copy_file(binaryPath, candidate, std::filesystem::copy_options::overwrite_existing);
         mutate(candidate);
         bool rejected = false;
-        try { (void)Felidae::loadBinaryIsa(candidate); } catch (const Felidae::IrError&) { rejected = true; }
+        try { (void)Felidae::loadBinaryIr(candidate, Felidae::felidaeSentencePieceModelIdentity()); } catch (const Felidae::IrError&) { rejected = true; }
         removeTemporary(candidate);
         assert(rejected);
     };
@@ -451,20 +475,20 @@ int main() {
         std::unordered_map<Felidae::IrSymbolRef, Felidae::VmValue> symbols;
     } noRuntime;
     Felidae::RegisterVm nativeVm;
-    assert(std::get<double>(executeIrThroughIsa(expressionIr, noRuntime)) == 42.0);
+    assert(std::get<double>(executeIrDirect(expressionIr, noRuntime)) == 42.0);
     Felidae::IntegerParser astExpressionParser(expressionInput);
     const auto astExpression = astExpressionParser.parseExpressionText();
     const auto astExpressionIr = Felidae::IntegerParser::compileAstExpressionIr(astExpression);
-    assert(std::get<double>(executeIrThroughIsa(astExpressionIr, noRuntime)) == 42.0);
+    assert(std::get<double>(executeIrDirect(astExpressionIr, noRuntime)) == 42.0);
     const auto bindingProgram = Felidae::parseProgramText("answer := 6 * 7.");
     assert(bindingProgram.globals.size() == 1);
     const auto bindingIr = Felidae::IntegerParser::compileAstGlobalBindingIr(*bindingProgram.globals.front());
-    assert(std::get<double>(executeIrThroughIsa(bindingIr, noRuntime)) == 42.0);
+    assert(std::get<double>(executeIrDirect(bindingIr, noRuntime)) == 42.0);
     assert(std::get<double>(noRuntime.symbols.at(Felidae::symbolIdForName("answer"))) == 42.0);
     const auto entryProgram = Felidae::parseProgramText("main() => return (answer: 42).");
     assert(entryProgram.clauses.size() == 1);
     const auto entryIr = Felidae::IntegerParser::compileAstEntryMethodIr(*entryProgram.clauses.front());
-    const auto entryResult = std::get<Felidae::VmMapPtr>(executeIrThroughIsa(entryIr, noRuntime));
+    const auto entryResult = std::get<Felidae::VmMapPtr>(executeIrDirect(entryIr, noRuntime));
     assert(entryResult && entryResult->entries.size() == 1);
     assert(std::get<double>(entryResult->entries.front().second) == 42.0);
     auto directFact = std::make_shared<Felidae::MapExpr>(std::vector<Felidae::MapEntry>{
@@ -472,7 +496,7 @@ int main() {
     });
     directFact->factType = "Cat";
     const auto directFactIr = Felidae::IntegerParser::compileAstExpressionIr(directFact);
-    const auto directFactValue = executeIrThroughIsa(directFactIr, noRuntime);
+    const auto directFactValue = executeIrDirect(directFactIr, noRuntime);
     const auto directFactResult = std::get<Felidae::VmFactPtr>(directFactValue);
     assert(directFactResult && directFactResult->type == Felidae::symbolIdForName("Cat"));
     assert(directFactResult->fields.size() == 1 &&
@@ -481,7 +505,7 @@ int main() {
     const auto directModule = Felidae::compileProgramTextToIr("main() => return (answer: 42).");
     Felidae::IrVerifier::verify(directModule.ir);
     Felidae::FelidaeKnowledgeRuntime directRuntime;
-    const auto directResult = executeModuleThroughIsa(directModule, directRuntime);
+    const auto directResult = executeModuleDirect(directModule, directRuntime);
     const auto directMap = std::get<Felidae::VmMapPtr>(directResult);
     assert(directMap && std::get<double>(directMap->entries.front().second) == 42.0);
     assert(Felidae::vmValueToDisplayString(directResult, display) == "{answer: 42}");
@@ -494,7 +518,7 @@ int main() {
         "main() => return (both: false and explode(divisor: 0), "
         "either: true or explode(divisor: 0)).\n");
     Felidae::FelidaeKnowledgeRuntime shortCircuitRuntime;
-    const auto shortCircuitResult = executeModuleThroughIsa(shortCircuitModule, shortCircuitRuntime);
+    const auto shortCircuitResult = executeModuleDirect(shortCircuitModule, shortCircuitRuntime);
     assert(Felidae::vmValueToDisplayString(shortCircuitResult, display) ==
            "{both: 0, either: 1}");
 
@@ -508,17 +532,17 @@ int main() {
         "main() => return for_each_fact(Color, colorValue).\n");
     assert(repeatedFactsModule.factTypes.size() == 1);
     Felidae::FelidaeKnowledgeRuntime repeatedFactsRuntime;
-    const auto repeatedFactsResult = executeModuleThroughIsa(repeatedFactsModule,
+    const auto repeatedFactsResult = executeModuleDirect(repeatedFactsModule,
                                                               repeatedFactsRuntime);
     assert(Felidae::vmValueToDisplayString(repeatedFactsResult, display) == "[red, blue]");
 
-    // Real source semantic intrinsic -> structured compiler IR -> fixed ISA
+    // Real source semantic intrinsic -> structured compiler IR
     // operation ID -> typed runtime-model result. No tokenizer or symbol ID
     // crosses the semantic execution boundary.
     const auto semanticModule = Felidae::compileProgramTextToIr(
         "main() => return semantic_identity(42).\n");
-    const auto semanticIsa = Felidae::IsaLowerer::lowerModule(semanticModule);
-    assert(Felidae::containsRuntimeSemanticOperation(semanticIsa));
+    const auto semanticIr = Felidae::verifyIrModule(Felidae::IrModule(semanticModule));
+    assert(Felidae::containsRuntimeSemanticOperation(semanticIr));
     class IdentityRuntimeModel final : public Felidae::RuntimeStateModel {
     public:
         Felidae::VmValue evaluate(const Felidae::RuntimeOperation& operation,
@@ -530,14 +554,14 @@ int main() {
         }
     } identityModel;
     Felidae::FelidaeKnowledgeRuntime semanticRuntime(&identityModel);
-    assert(std::get<double>(Felidae::RegisterVm{}.executeIsaMain(semanticIsa, semanticRuntime)) == 42.0);
+    assert(std::get<double>(Felidae::RegisterVm{}.executeMain(semanticIr, semanticRuntime)) == 42.0);
     const auto executeBinaryModule = [&](const Felidae::IrModule& candidate) {
         const auto path = testOutputDirectory / "felidae_pipeline_feature_roundtrip.bin";
         try {
-            Felidae::writeBinaryIsa(path, Felidae::IsaLowerer::lowerModule(candidate));
-            const auto loaded = Felidae::loadBinaryIsa(path);
+            Felidae::writeBinaryIr(path, Felidae::verifyIrModule(Felidae::IrModule(candidate)));
+            const auto loaded = Felidae::loadBinaryIr(path, Felidae::felidaeSentencePieceModelIdentity());
             Felidae::FelidaeKnowledgeRuntime runtime;
-            const auto result = nativeVm.executeIsaMain(loaded, runtime);
+            const auto result = nativeVm.executeMain(loaded, runtime);
             std::filesystem::remove(path);
             return Felidae::vmValueToDisplayString(result, display);
         } catch (...) {
@@ -550,33 +574,33 @@ int main() {
         "answer := 6 * 7.\nmain() => return (answer: answer).");
     Felidae::IrVerifier::verify(globalsModule.ir);
     Felidae::FelidaeKnowledgeRuntime globalsRuntime;
-    const auto globalsResult = executeModuleThroughIsa(globalsModule, globalsRuntime);
+    const auto globalsResult = executeModuleDirect(globalsModule, globalsRuntime);
     assert(Felidae::vmValueToDisplayString(globalsResult, display) == "{answer: 42}");
     assert(executeBinaryModule(globalsModule) == "{answer: 42}");
     const auto textGlobalsModule = Felidae::compileProgramTextToIr(
         "label := \"meow\".\nmain() => return (label: label).");
     Felidae::FelidaeKnowledgeRuntime textGlobalsRuntime;
-    const auto textGlobalsResult = executeModuleThroughIsa(textGlobalsModule, textGlobalsRuntime);
+    const auto textGlobalsResult = executeModuleDirect(textGlobalsModule, textGlobalsRuntime);
     assert(Felidae::vmValueToDisplayString(textGlobalsResult, display) == "{label: meow}");
     assert(executeBinaryModule(textGlobalsModule) == "{label: meow}");
     const auto conditionalModule = Felidae::compileProgramTextToIr(
         "main() =>\nif 3 > 2 then\nreturn (result: \"yes\")\nelse\nreturn (result: \"no\").");
     Felidae::IrVerifier::verify(conditionalModule.ir);
     Felidae::FelidaeKnowledgeRuntime conditionalRuntime;
-    const auto conditionalResult = executeModuleThroughIsa(conditionalModule, conditionalRuntime);
+    const auto conditionalResult = executeModuleDirect(conditionalModule, conditionalRuntime);
     assert(Felidae::vmValueToDisplayString(conditionalResult, display) == "{result: yes}");
     assert(executeBinaryModule(conditionalModule) == "{result: yes}");
     const auto falseConditionalModule = Felidae::compileProgramTextToIr(
         "main() =>\nif 2 > 3 then\nreturn (result: \"yes\")\nelse\nreturn (result: \"no\").");
     Felidae::FelidaeKnowledgeRuntime falseConditionalRuntime;
-    const auto falseConditionalResult = executeModuleThroughIsa(falseConditionalModule, falseConditionalRuntime);
+    const auto falseConditionalResult = executeModuleDirect(falseConditionalModule, falseConditionalRuntime);
     assert(Felidae::vmValueToDisplayString(falseConditionalResult, display) == "{result: no}");
     assert(executeBinaryModule(falseConditionalModule) == "{result: no}");
     const auto localBindingModule = Felidae::compileProgramTextToIr(
         "main() =>\nvalue := 40\nanswer := value + 2\nreturn (answer: answer).");
     Felidae::IrVerifier::verify(localBindingModule.ir);
     Felidae::FelidaeKnowledgeRuntime localBindingRuntime;
-    const auto localBindingResult = executeModuleThroughIsa(localBindingModule, localBindingRuntime);
+    const auto localBindingResult = executeModuleDirect(localBindingModule, localBindingRuntime);
     assert(Felidae::vmValueToDisplayString(localBindingResult, display) == "{answer: 42}");
     // Signatures are collected before lowering bodies, so main can call a
     // later declaration and that declaration can in turn call another later
@@ -590,7 +614,7 @@ int main() {
         "add(left: expr, right: expr) => return left + right.");
     Felidae::IrVerifier::verify(callsModule.ir);
     Felidae::FelidaeKnowledgeRuntime callsRuntime;
-    const auto callsResult = executeModuleThroughIsa(callsModule, callsRuntime);
+    const auto callsResult = executeModuleDirect(callsModule, callsRuntime);
     assert(Felidae::vmValueToDisplayString(callsResult, display) == "{answer: 42}");
     assert(executeBinaryModule(callsModule) == "{answer: 42}");
     // A procedure receives an independent lexical frame.  Its local `seed`
@@ -604,7 +628,7 @@ int main() {
         "return seed.");
     Felidae::IrVerifier::verify(isolatedScopeModule.ir);
     Felidae::FelidaeKnowledgeRuntime isolatedScopeRuntime;
-    assert(Felidae::vmValueToDisplayString(executeModuleThroughIsa(isolatedScopeModule, isolatedScopeRuntime), display) ==
+    assert(Felidae::vmValueToDisplayString(executeModuleDirect(isolatedScopeModule, isolatedScopeRuntime), display) ==
            "{caller: 5, callee: 8}");
     assert(executeBinaryModule(isolatedScopeModule) == "{caller: 5, callee: 8}");
     const auto scopeCompileRejected = [](const std::string& source) {
@@ -628,7 +652,7 @@ int main() {
         "else\n"
         "return countdown(value: value - 1).");
     Felidae::FelidaeKnowledgeRuntime recursionRuntime(nullptr, 1024, 16);
-    const auto recursionResult = executeModuleThroughIsa(recursionModule, recursionRuntime);
+    const auto recursionResult = executeModuleDirect(recursionModule, recursionRuntime);
     assert(Felidae::vmValueToDisplayString(recursionResult, display) == "{answer: 0}");
     assert(executeBinaryModule(recursionModule) == "{answer: 0}");
     bool undefinedProcedureRejected = false;
@@ -640,16 +664,16 @@ int main() {
     assert(undefinedProcedureRejected);
     const auto runtimeExpressionIr = Felidae::tryCompileExpressionTextToIr("10 - 3");
     assert(runtimeExpressionIr);
-    assert(std::get<double>(executeIrThroughIsa(*runtimeExpressionIr, noRuntime)) == 7.0);
+    assert(std::get<double>(executeIrDirect(*runtimeExpressionIr, noRuntime)) == 7.0);
     const auto comparisonIr = Felidae::tryCompileExpressionTextToIr("3 < 7");
     assert(comparisonIr);
-    assert(std::get<double>(executeIrThroughIsa(*comparisonIr, noRuntime)) == 1.0);
+    assert(std::get<double>(executeIrDirect(*comparisonIr, noRuntime)) == 1.0);
     const auto logicIr = Felidae::tryCompileExpressionTextToIr("not false and true");
     assert(logicIr);
-    assert(std::get<double>(executeIrThroughIsa(*logicIr, noRuntime)) == 1.0);
+    assert(std::get<double>(executeIrDirect(*logicIr, noRuntime)) == 1.0);
     const auto moduloIr = Felidae::tryCompileExpressionTextToIr("17 % 5");
     assert(moduloIr);
-    assert(std::get<double>(executeIrThroughIsa(*moduloIr, noRuntime)) == 2.0);
+    assert(std::get<double>(executeIrDirect(*moduloIr, noRuntime)) == 2.0);
     const auto callIr = Felidae::tryCompileExpressionTextToIr("combine(6, 7)");
     assert(callIr);
     Felidae::IrVerifier::verify(*callIr);
@@ -658,17 +682,17 @@ int main() {
     Felidae::IrVerifier::verify(*namedCallIr);
     const auto textIr = Felidae::tryCompileExpressionTextToIr("\"mixfix text\"");
     assert(textIr);
-    assert(Felidae::vmValueToDisplayString(executeIrThroughIsa(*textIr, noRuntime), display) == "mixfix text");
+    assert(Felidae::vmValueToDisplayString(executeIrDirect(*textIr, noRuntime), display) == "mixfix text");
     const auto nilIr = Felidae::tryCompileExpressionTextToIr("nil");
     assert(nilIr);
-    assert(std::holds_alternative<Felidae::VmNil>(executeIrThroughIsa(*nilIr, noRuntime)));
+    assert(std::holds_alternative<Felidae::VmNil>(executeIrDirect(*nilIr, noRuntime)));
     const auto arrayIr = Felidae::tryCompileExpressionTextToIr("[1, 2, 3]");
     assert(arrayIr);
-    const auto array = std::get<Felidae::VmArrayPtr>(executeIrThroughIsa(*arrayIr, noRuntime));
+    const auto array = std::get<Felidae::VmArrayPtr>(executeIrDirect(*arrayIr, noRuntime));
     assert(array && array->values.size() == 3 && std::get<double>(array->values[2]) == 3.0);
     const auto mapIr = Felidae::tryCompileExpressionTextToIr("{answer: 42, enabled: true}");
     assert(mapIr);
-    const auto map = std::get<Felidae::VmMapPtr>(executeIrThroughIsa(*mapIr, noRuntime));
+    const auto map = std::get<Felidae::VmMapPtr>(executeIrDirect(*mapIr, noRuntime));
     assert(map && map->entries.size() == 2);
     assert(std::get<double>(map->entries[0].second) == 42.0);
     assert(std::get<double>(map->entries[1].second) == 1.0);
@@ -698,11 +722,11 @@ int main() {
     Felidae::IntegerParser mixfixParser(mixfixInput);
     const auto mixfixIr = mixfixParser.compileVerifiedMixfixSpanIr(
         spanModel, mixfixContext, mixfixShell, 0, mixfixInput.entries().size());
-    assert(std::get<double>(executeIrThroughIsa(mixfixIr, noRuntime)) == 42.0);
+    assert(std::get<double>(executeIrDirect(mixfixIr, noRuntime)) == 42.0);
     const auto fieldIr = Felidae::tryCompileExpressionTextToIr("{answer: 42}:answer");
     assert(fieldIr);
-    assert(std::get<double>(executeIrThroughIsa(*fieldIr, noRuntime)) == 42.0);
+    assert(std::get<double>(executeIrDirect(*fieldIr, noRuntime)) == 42.0);
     const auto aggregateEqualityIr = Felidae::tryCompileExpressionTextToIr("[1, {answer: 42}] == [1, {answer: 42}]");
     assert(aggregateEqualityIr);
-    assert(std::get<double>(executeIrThroughIsa(*aggregateEqualityIr, noRuntime)) == 1.0);
+    assert(std::get<double>(executeIrDirect(*aggregateEqualityIr, noRuntime)) == 1.0);
 }

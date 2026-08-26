@@ -12,9 +12,10 @@ class SentencePieceProcessor;
 
 namespace Felidae {
 
-// The sole source-tokenization result. Entries are emitted verbatim from one
-// SentencePieceProcessor::Encode call over the entire source; this type never
-// assigns token categories or performs source scanning.
+// The sole source-tokenization result. Each physical source line is encoded
+// independently so no learned piece can cross a statement line. Newline bytes
+// remain in the encoded slice and all returned offsets are rebased to the
+// original source. This type assigns no secondary token categories.
 class IntegerTokenList {
 public:
     struct Entry {

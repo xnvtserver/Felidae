@@ -1,5 +1,4 @@
 #include "form/RuntimeStateModel.h"
-#include "form/BinaryIsa.h"
 #include "form/RuntimeTraining.h"
 #include "form/RuntimeTrainingCommand.h"
 

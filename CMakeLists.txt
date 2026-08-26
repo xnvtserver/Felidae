@@ -201,7 +201,7 @@ target_include_directories(felidae_integer_parser_benchmark BEFORE PRIVATE
     ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
 target_compile_definitions(felidae_integer_parser_benchmark PRIVATE
     FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
-target_link_libraries(felidae_integer_parser_benchmark PRIVATE felidae_lowerer sentencepiece)
+target_link_libraries(felidae_integer_parser_benchmark PRIVATE felidae_form sentencepiece)
 felidae_use_sentencepiece_model(felidae_integer_parser_benchmark)
 
 # Explicit, bounded source -> verified IR -> ISA -> VM capability benchmark.
@@ -221,7 +221,7 @@ target_include_directories(felidae_reasoning_benchmark BEFORE PRIVATE
     third_party/sentencepiece/src
     ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
 target_include_directories(felidae_reasoning_benchmark SYSTEM PRIVATE third_party)
-target_link_libraries(felidae_reasoning_benchmark PRIVATE felidae_lowerer sentencepiece)
+target_link_libraries(felidae_reasoning_benchmark PRIVATE felidae_form sentencepiece)
 felidae_use_sentencepiece_model(felidae_reasoning_benchmark)
 target_compile_options(felidae_reasoning_benchmark PRIVATE
     $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
@@ -253,7 +253,7 @@ target_include_directories(felidae_extract_mixfix_dataset BEFORE PRIVATE
 target_include_directories(felidae_extract_mixfix_dataset SYSTEM PRIVATE third_party)
 target_compile_definitions(felidae_extract_mixfix_dataset PRIVATE
     FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
-target_link_libraries(felidae_extract_mixfix_dataset PRIVATE felidae_lowerer sentencepiece nlohmann_json::nlohmann_json)
+target_link_libraries(felidae_extract_mixfix_dataset PRIVATE felidae_form sentencepiece nlohmann_json::nlohmann_json)
 if(MSVC)
     target_compile_options(felidae_extract_mixfix_dataset PRIVATE /EHsc)
 endif()
@@ -318,9 +318,8 @@ endif()
 # as one library prevents the compiler and standalone VM from compiling two
 # subtly different copies of the runtime.
 add_library(felidae_form STATIC
-    src/form/FelidaeAssembler.cpp
-    src/form/BinaryIsa.cpp
-    src/form/FelidaeIsa.cpp
+    src/form/BinaryIr.cpp
+    src/form/IrModule.cpp
     src/form/RegisterVm.cpp
     src/form/RuntimeTraining.cpp)
 target_include_directories(felidae_form PUBLIC src)
@@ -328,27 +327,17 @@ target_link_libraries(felidae_form PRIVATE nlohmann_json::nlohmann_json)
 felidae_enable_static_analysis(felidae_form)
 felidae_enable_msvc_exceptions(felidae_form)
 
-# Compiler-only structured IR verification and deterministic ISA lowering.
-# The standalone VM links felidae_form only, so no compiler IR implementation
-# enters its binary.
-add_library(felidae_lowerer STATIC
-    src/form/FelidaeIsa.cpp
-    src/form/IrModule.cpp
-    src/form/RegisterVm.cpp)
-target_compile_definitions(felidae_lowerer PRIVATE
-    FELIDAE_LOWERER_ONLY=1
-    FELIDAE_IR_VERIFIER_ONLY=1)
-target_include_directories(felidae_lowerer PUBLIC src)
-target_link_libraries(felidae_lowerer PUBLIC felidae_form)
-felidae_enable_static_analysis(felidae_lowerer)
-felidae_enable_msvc_exceptions(felidae_lowerer)
 if(TARGET felidae_mixfix_torch)
-    target_link_libraries(felidae_mixfix_torch PRIVATE felidae_lowerer)
+    target_link_libraries(felidae_mixfix_torch PRIVATE felidae_form)
 endif()
 
 add_executable(felidae_vm
-    src/VmMain.cpp)
-target_link_libraries(felidae_vm PRIVATE felidae_form)
+    src/VmMain.cpp
+    src/SentencePieceModel.cpp)
+target_link_libraries(felidae_vm PRIVATE felidae_form sentencepiece)
+target_compile_definitions(felidae_vm PRIVATE
+    FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
+felidae_use_sentencepiece_model(felidae_vm)
 felidae_enable_msvc_exceptions(felidae_vm)
 set_target_properties(felidae_vm PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
@@ -397,8 +386,12 @@ add_custom_target(felidae_dist
 # and emits a unary fixed-ID Identity teacher for its typed result. It never
 # hashes source names into semantic operation IDs or invents context queries.
 add_executable(felidae_build_runtime_dataset EXCLUDE_FROM_ALL
-    tools/BuildRuntimeTrainingDataset.cpp)
-target_link_libraries(felidae_build_runtime_dataset PRIVATE felidae_form)
+    tools/BuildRuntimeTrainingDataset.cpp
+    src/SentencePieceModel.cpp)
+target_link_libraries(felidae_build_runtime_dataset PRIVATE felidae_form sentencepiece)
+target_compile_definitions(felidae_build_runtime_dataset PRIVATE
+    FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
+felidae_use_sentencepiece_model(felidae_build_runtime_dataset)
 felidae_enable_msvc_exceptions(felidae_build_runtime_dataset)
 set_target_properties(felidae_build_runtime_dataset PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
@@ -438,7 +431,7 @@ target_include_directories(felidae_compiler SYSTEM PRIVATE third_party)
 target_compile_definitions(felidae_compiler PRIVATE
     FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
 felidae_enable_msvc_exceptions(felidae_compiler)
-target_link_libraries(felidae_compiler PRIVATE felidae_lowerer sentencepiece nlohmann_json::nlohmann_json)
+target_link_libraries(felidae_compiler PRIVATE felidae_form sentencepiece nlohmann_json::nlohmann_json)
 if(FELIDAE_ENABLE_LIBTORCH)
     target_compile_definitions(felidae_compiler PRIVATE FELIDAE_HAS_TORCH=1)
     if(FELIDAE_ENABLE_TRAINING)
@@ -535,7 +528,7 @@ if(FELIDAE_BUILD_TESTS)
     # This frontend regression compiles structured compiler IR and therefore
     # needs the compiler-only verifier/lowering boundary. It must not expect
     # IrVerifier symbols from the runtime-only felidae_form library.
-    target_link_libraries(felidae_sentencepiece_model_test PRIVATE felidae_lowerer sentencepiece)
+    target_link_libraries(felidae_sentencepiece_model_test PRIVATE felidae_form sentencepiece)
     felidae_use_sentencepiece_model(felidae_sentencepiece_model_test)
     if(TARGET OpenMP::OpenMP_CXX)
         target_link_libraries(felidae_sentencepiece_model_test PRIVATE OpenMP::OpenMP_CXX)
@@ -576,7 +569,7 @@ if(FELIDAE_BUILD_TESTS)
         $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
         $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
     felidae_enable_msvc_exceptions(felidae_sentencepiece_pipeline_test)
-    target_link_libraries(felidae_sentencepiece_pipeline_test PRIVATE felidae_lowerer sentencepiece)
+    target_link_libraries(felidae_sentencepiece_pipeline_test PRIVATE felidae_form sentencepiece)
     felidae_use_sentencepiece_model(felidae_sentencepiece_pipeline_test)
     if(TARGET OpenMP::OpenMP_CXX)
         target_link_libraries(felidae_sentencepiece_pipeline_test PRIVATE OpenMP::OpenMP_CXX)
@@ -666,15 +659,15 @@ endif()
 if(FELIDAE_BUILD_TESTS)
     # This round-trip test uses the compiler-only lowerer to construct its
     # fixture. The isolation test below proves the VM-only link boundary.
-    add_executable(felidae_form_binary_test tests/FormBinaryIsaTest.cpp)
-    target_link_libraries(felidae_form_binary_test PRIVATE felidae_lowerer)
+    add_executable(felidae_form_binary_test tests/FormBinaryIrTest.cpp)
+    target_link_libraries(felidae_form_binary_test PRIVATE felidae_form)
     target_compile_definitions(felidae_form_binary_test PRIVATE
         FELIDAE_TEST_OUTPUT_DIR="${CMAKE_BINARY_DIR}/test-artifacts/form-binary")
     target_compile_options(felidae_form_binary_test PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
         $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
     felidae_enable_msvc_exceptions(felidae_form_binary_test)
-    target_link_libraries(felidae_mixfix_state_model_test PRIVATE felidae_lowerer)
+    target_link_libraries(felidae_mixfix_state_model_test PRIVATE felidae_form)
     add_test(NAME felidae_form_binary COMMAND felidae_form_binary_test)
     set_tests_properties(felidae_form_binary PROPERTIES TIMEOUT 30)
 
@@ -690,16 +683,16 @@ if(FELIDAE_BUILD_TESTS)
     add_test(NAME felidae_form_isolation COMMAND felidae_form_isolation_test)
     set_tests_properties(felidae_form_isolation PROPERTIES TIMEOUT 30)
 
-    add_executable(felidae_isa_test tests/FelidaeIsaTest.cpp)
-    target_link_libraries(felidae_isa_test PRIVATE felidae_lowerer)
-    target_compile_definitions(felidae_isa_test PRIVATE
+    add_executable(felidae_ir_test tests/FelidaeIrTest.cpp)
+    target_link_libraries(felidae_ir_test PRIVATE felidae_form)
+    target_compile_definitions(felidae_ir_test PRIVATE
         FELIDAE_TEST_OUTPUT_DIR="${CMAKE_BINARY_DIR}/test-artifacts/isa")
-    target_compile_options(felidae_isa_test PRIVATE
+    target_compile_options(felidae_ir_test PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
         $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
-    felidae_enable_msvc_exceptions(felidae_isa_test)
-    add_test(NAME felidae_isa COMMAND felidae_isa_test)
-    set_tests_properties(felidae_isa PROPERTIES TIMEOUT 30)
+    felidae_enable_msvc_exceptions(felidae_ir_test)
+    add_test(NAME felidae_ir COMMAND felidae_ir_test)
+    set_tests_properties(felidae_ir PROPERTIES TIMEOUT 30)
 
     # Tests are deliberately opt-in at build time.  A normal IDE build should
     # compile only the two production executables and their required
@@ -710,7 +703,7 @@ if(FELIDAE_BUILD_TESTS)
         felidae_mixfix_state_model_test
         felidae_form_binary_test
         felidae_form_isolation_test
-        felidae_isa_test)
+        felidae_ir_test)
     if(TARGET felidae_libtorch_smoke_test)
         list(APPEND FELIDAE_TEST_TARGETS felidae_libtorch_smoke_test)
     endif()
@@ -845,7 +838,7 @@ endif()
 foreach(felidae_quality_target IN ITEMS
         felidae_sentencepiece_model_generator felidae_integer_parser_benchmark
         felidae_extract_mixfix_dataset
-        felidae_form felidae_lowerer felidae_mixfix_torch felidae_compiler felidae_vm felidae_debug
+        felidae_form felidae_mixfix_torch felidae_compiler felidae_vm felidae_debug
         felidae_sentencepiece_model_test felidae_sentencepiece_pipeline_test
         felidae_mixfix_state_model_test
         felidae_smoke csv db_native http process set_native group_native wordnet
@@ -870,6 +863,6 @@ if(FELIDAE_BUILD_TESTS)
                 -P "${CMAKE_SOURCE_DIR}/cmake/BetaReleaseCheck.cmake"
         DEPENDS felidae_dist felidae_sentencepiece_model_test felidae_sentencepiece_pipeline_test
                 felidae_mixfix_state_model_test felidae_form_binary_test
-                felidae_form_isolation_test felidae_isa_test
+                felidae_form_isolation_test felidae_ir_test
         COMMENT "Running Felidae beta release gate")
 endif()

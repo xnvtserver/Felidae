@@ -1,7 +1,8 @@
-#include "form/BinaryIsa.h"
+#include "form/BinaryIr.h"
 #include "form/RuntimeStateModel.h"
 #include "form/RuntimeTrainingCommand.h"
 #include "ModelStore.h"
+#include "SentencePieceModel.h"
 #include "Version.h"
 
 #include <filesystem>
@@ -9,6 +10,8 @@
 #include <optional>
 #include <sstream>
 #include <string>
+
+#include <sentencepiece_processor.h>
 
 namespace fs = std::filesystem;
 using namespace Felidae;
@@ -27,10 +30,10 @@ std::optional<Options> parseInput(int argc, char** argv) {
             options.modelDirectory = fs::path(argv[index]);
             continue;
         }
-        if (!options.input.empty()) throw std::runtime_error("felidae_vm accepts exactly one verified .bin ISA file");
+        if (!options.input.empty()) throw std::runtime_error("felidae_vm accepts exactly one verified .bin IR file");
         options.input = argument;
     }
-    if (options.input.empty()) throw std::runtime_error("felidae_vm requires a .bin Felidae ISA file");
+    if (options.input.empty()) throw std::runtime_error("felidae_vm requires a .bin Felidae IR file");
     return options;
 }
 
@@ -39,7 +42,7 @@ void printHelp() {
               << "Usage: felidae_vm program.bin\n"
               << "       felidae_vm [--serve] [--model models/runtime] program.bin\n"
               << "       felidae_vm --train datasets/vm/runtime-context-v1.jsonl --store-model build|dist [--epochs N] [--learning-rate R]\n"
-              << "Loads, verifies, and executes Felidae ISA. --serve keeps one VM and "
+              << "Loads, verifies once, and executes Felidae IR. --serve keeps one VM and "
                  "its fact memory resident; use run, facts [type-id], field <id>, "
                  "history, proof <child-id> <ancestor-id>, load <module.bin>, "
                  "modules, or quit on stdin.\n";
@@ -84,11 +87,20 @@ int main(int argc, char** argv) {
         const auto options = parseInput(argc, argv);
         if (!options) { printHelp(); return argc == 1 ? 1 : 0; }
         const auto binary = fs::absolute(options->input).lexically_normal();
-        if (binary.extension() != kFelidaeBinaryExtension) {
-            throw std::runtime_error("felidae_vm accepts only .bin Felidae ISA files");
+        if (binary.extension() != kBinaryIrExtension) {
+            throw std::runtime_error("felidae_vm accepts only .bin Felidae IR files");
         }
-        auto module = loadBinaryIsa(binary);
-        auto display = makeIsaDisplayContext(module);
+        const VmTextDecoder decoder = [](std::span<const PieceId> pieces) {
+            std::vector<int> ids;
+            ids.reserve(pieces.size());
+            for (const auto piece : pieces) ids.push_back(static_cast<int>(piece));
+            std::string text;
+            const auto status = felidaeSentencePieceModel().Decode(ids, &text);
+            if (!status.ok()) throw IrError("SentencePiece cannot decode VM text");
+            return text;
+        };
+        auto module = loadBinaryIr(binary, felidaeSentencePieceModelIdentity());
+        auto display = makeIrDisplayContext(module, decoder);
 #ifdef FELIDAE_HAS_TORCH
         std::unique_ptr<GruRuntimeStateModel> model;
         if (options->modelDirectory) {
@@ -104,10 +116,9 @@ int main(int argc, char** argv) {
         if (options->modelDirectory) throw std::runtime_error("this VM build has no LibTorch runtime SSM support");
         FelidaeKnowledgeRuntime runtime;
 #endif
-        runtime.installIsaModule(module);
         RegisterVm vm;
         const auto execute = [&] {
-            std::cout << vmValueToDisplayString(vm.executeIsaMain(module, runtime), display) << "\n";
+            std::cout << vmValueToDisplayString(vm.executeMain(module, runtime), display) << "\n";
         };
         if (!options->serve) {
             execute();
@@ -121,16 +132,11 @@ int main(int argc, char** argv) {
             if (verb == "run") execute();
             else if (verb == "load") {
                 std::string path;
-                if (!(words >> path)) throw std::runtime_error("load requires a .bin Felidae ISA file");
+                if (!(words >> path)) throw std::runtime_error("load requires a .bin Felidae IR file");
                 const auto next = fs::absolute(fs::path(path)).lexically_normal();
-                if (next.extension() != kFelidaeBinaryExtension) throw std::runtime_error("load accepts only .bin Felidae ISA files");
-                module = loadBinaryIsa(next);
-                display = makeIsaDisplayContext(module);
-                // Registration is explicit and verified before this module can
-                // become the daemon's current entry point. Persistent facts
-                // and already registered procedures are preserved.
-                runtime.installIsaModule(module);
-                for (const auto& type : module.factTypes) runtime.registerFactType(type.symbol, type.parents);
+                if (next.extension() != kBinaryIrExtension) throw std::runtime_error("load accepts only .bin Felidae IR files");
+                module = loadBinaryIr(next, felidaeSentencePieceModelIdentity());
+                display = makeIrDisplayContext(module, decoder);
                 std::cout << next.string() << "\n";
             } else if (verb == "modules") {
                 std::cout << runtime.installedModuleCount() << "\n";

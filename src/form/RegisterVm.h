@@ -12,23 +12,29 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <variant>
 #include <vector>
 
 namespace Felidae {
 
-struct IsaModule;
-struct IsaProgram;
+struct IrModule;
+class VerifiedIrModule;
 
 // Instruction operands are verifier-bounded host indices. Symbol values are
 // deliberately separate: source SymbolId values are always 64-bit and must
 // never narrow through a pointer-width IR word on Win32.
-using IrWord = std::size_t;
+using IrWord = std::uint32_t;
+using IrConstant = std::uint64_t;
 using RegisterId = std::size_t;
 using IrConstantId = std::size_t;
 using IrSymbolRef = std::uint64_t;
 using IrFactRef = std::size_t;
+using PieceId = std::uint32_t;
+using PieceSequence = std::vector<PieceId>;
+PieceSequence runtimeSymbolPieces(IrSymbolRef symbol);
 
 enum class IrConstantKind : std::uint8_t { Number, Boolean, Nil, Text };
 
@@ -43,9 +49,9 @@ public:
 };
 
 // Constant-pool numbers use a canonical bit representation shared by the
-// compiler lowerer, FELBIN loader, and ISA VM.
-IrWord encodeIrNumber(double value) noexcept;
-double decodeIrNumber(IrWord word) noexcept;
+// compiler, binary IR loader, and register VM.
+IrConstant encodeIrNumber(double value) noexcept;
+double decodeIrNumber(IrConstant word) noexcept;
 
 struct VmNil { bool operator==(const VmNil&) const = default; };
 struct VmSymbol { IrSymbolRef value = 0; bool operator==(const VmSymbol&) const = default; };
@@ -55,7 +61,7 @@ struct VmDegree {
     bool operator==(const VmDegree&) const = default;
 };
 struct VmText {
-    std::string value;
+    PieceSequence pieces;
     bool operator==(const VmText&) const = default;
 };
 struct VmArray;
@@ -65,6 +71,10 @@ using VmMapPtr = std::shared_ptr<VmMap>;
 struct VmFact;
 using VmFactPtr = std::shared_ptr<VmFact>;
 using VmValue = std::variant<VmNil, double, VmDegree, VmText, VmSymbol, VmArrayPtr, VmMapPtr, VmFactPtr>;
+static_assert([]<std::size_t... Index>(std::index_sequence<Index...>) {
+    return (!std::is_same_v<bool, std::variant_alternative_t<Index, VmValue>> && ...);
+}(std::make_index_sequence<std::variant_size_v<VmValue>>{}),
+"VM truth values must be double 0.0 or 1.0, never bool");
 // Public runtime spelling for canonical VM values.
 using Value = VmValue;
 
@@ -83,9 +93,11 @@ enum class RuntimeValueKind : std::uint8_t {
 };
 RuntimeValueKind runtimeValueKind(const VmValue& value) noexcept;
 using VmSymbolDecoder = std::function<std::string(IrSymbolRef)>;
+using VmTextDecoder = std::function<std::string(std::span<const PieceId>)>;
 // Rendering is an adapter boundary, not VM state. Form consumes only IDs and
 // typed values; callers may inject SentencePiece and symbol decoders for UI.
 struct VmDisplayContext {
+    VmTextDecoder textDecoder;
     VmSymbolDecoder symbolDecoder;
 };
 std::string vmValueToDisplayString(const VmValue& value,
@@ -234,7 +246,8 @@ public:
     // Modules are independently verified before this hook. A long-lived
     // runtime may retain their procedure metadata for later calls; the base
     // runtime remains intentionally stateless.
-    virtual void installIsaModule(const IsaModule& module);
+    virtual void installIrModule(const IrModule& module);
+    virtual IrSymbolRef resolveSymbol(IrSymbolRef moduleSymbol) const;
     virtual void enterProcedure(IrSymbolRef procedure,
                                 std::span<const IrSymbolRef> parameters,
                                 std::span<const VmValue> arguments);
@@ -245,7 +258,7 @@ public:
     virtual RuntimeStateModel* runtimeStateModel();
     virtual void beginExecution();
     virtual void endExecution() noexcept;
-    virtual RuntimeContext makeIsaRuntimeContext(const VmValue& systemInput) const;
+    virtual RuntimeContext makeRuntimeContext(const VmValue& systemInput) const;
     // A long-lived runtime updates operation context at the semantic boundary;
     // the base runtime has no knowledge state to add.
     virtual void refreshRuntimeContext(RuntimeContext& context) const;
@@ -281,7 +294,8 @@ public:
     std::vector<IrSymbolRef> mostGeneralCommonAncestors(IrSymbolRef left, IrSymbolRef right) override;
     std::vector<VmRankedFact> rankFacts(IrSymbolRef effectiveAtField,
                                         IrSymbolRef priorityField) override;
-    void installIsaModule(const IsaModule& module) override;
+    void installIrModule(const IrModule& module) override;
+    IrSymbolRef resolveSymbol(IrSymbolRef moduleSymbol) const override;
     void enterProcedure(IrSymbolRef procedure,
                         std::span<const IrSymbolRef> parameters,
                         std::span<const VmValue> arguments) override;
@@ -290,7 +304,7 @@ public:
     RuntimeStateModel* runtimeStateModel() override;
     void beginExecution() override;
     void endExecution() noexcept override;
-    RuntimeContext makeIsaRuntimeContext(const VmValue& systemInput) const override;
+    RuntimeContext makeRuntimeContext(const VmValue& systemInput) const override;
     void refreshRuntimeContext(RuntimeContext& context) const override;
     const std::shared_ptr<VmFactStore>& factStore() const noexcept { return factStore_; }
     std::vector<VmExecutionTrace> executionTraces() const;
@@ -307,6 +321,7 @@ private:
     std::vector<VmCallFrame> callFrames_;
     struct VmModuleState {
         std::unordered_map<IrSymbolRef, VmValue> globals;
+        std::vector<IrSymbolRef> symbols;
     };
     // Registry and traces are process-resident knowledge-runtime state.
     // Registers, call frames and recurrent state are deliberately excluded.
@@ -328,14 +343,13 @@ private:
 class RegisterVm {
 public:
     explicit RegisterVm(std::size_t maximumInstructionSteps = 10'000'000);
-    VmValue executeIsaMain(const IsaModule& module, VmRuntime& runtime,
-                           VmValue systemInput = VmNil{});
+    VmValue executeMain(const VerifiedIrModule& module, VmRuntime& runtime,
+                        VmValue systemInput = VmNil{});
 
 private:
-    VmValue executeIsaProgram(const IsaModule& module, const IsaProgram& program,
-                              VmRuntime& runtime, VmValue systemInput,
-                              std::size_t callDepth,
-                              std::size_t& instructionSteps);
+    VmValue executeIrProgram(const IrModule& module, const struct FelidaeIr& program,
+                             VmRuntime& runtime, VmValue systemInput,
+                             std::size_t callDepth, std::size_t& instructionSteps);
     std::size_t maximumInstructionSteps_;
 };
 

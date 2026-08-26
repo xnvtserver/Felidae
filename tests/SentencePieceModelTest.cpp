@@ -80,6 +80,8 @@ int main() {
     assert(expanded[1].filename() == "mixfix-v1.jsonl");
     std::filesystem::remove_all(datasetTestDirectory);
 
+    assert(Felidae::felidaeSentencePieceModelIdentity() ==
+           "sha256:e84eacbb51d5e63a10c308ea6728a7653f24015099215ad75e2b679a4d01b8b8");
     sentencepiece::SentencePieceProcessor model;
     const auto loaded = model.Load(FELIDAE_SENTENCEPIECE_MODEL_PATH);
     assert(loaded.ok());
@@ -154,7 +156,7 @@ int main() {
         "# comment\\n"
         "café(value: \"hello\") => return value\\n";
     const Felidae::IntegerTokenList sourceTokens(model, completeSource);
-    assert(sourceTokens.encodeCount() == 1);
+    assert(sourceTokens.encodeCount() == 2);
     assert(!sourceTokens.entries().empty());
     for (const auto& entry : sourceTokens.entries()) {
         assert(entry.begin <= entry.end);
@@ -166,7 +168,7 @@ int main() {
     Felidae::IntegerParser integerParser(expressionTokens);
     const auto expression = integerParser.parseExpressionText();
     assert(expression->debug() == "[\"value\", café, true]");
-    assert(integerParser.metrics().sourceEncodeCount == 1);
+    assert(integerParser.metrics().sourceEncodeCount == 2);
     assert(integerParser.metrics().tokenCount == expressionTokens.entries().size());
     assert(integerParser.metrics().iterations > 0);
     assert(integerParser.metrics().peakRecursionDepth > 0);
@@ -176,7 +178,7 @@ int main() {
     Felidae::IntegerParser structuredParser(structuredTokens);
     const auto structured = structuredParser.parseExpressionText();
     assert(structured->debug() == "worker(task: {name: \"café\"}):result + 2 * 3");
-    assert(structuredParser.metrics().sourceEncodeCount == 1);
+    assert(structuredParser.metrics().sourceEncodeCount == 2);
 
     const Felidae::IntegerTokenList programTokens(
         model, "import \"core.fx\".\nthreshold := 2 + 3.\nPerson(name: \"Ada\", age: threshold).");
@@ -241,7 +243,7 @@ int main() {
     assert(dottedLabelProgram.clauses.size() == 1);
     assert(dottedLabelProgram.clauses.front()->head.args.front().name == "fx.effective_at");
 
-    // Moderate-size program regression: a full source is encoded exactly once
+    // Moderate-size program regression: every physical line is encoded once
     // and repeated SentencePiece word fragments never merge statements.
     std::string largeSource;
     largeSource.reserve(12'000);
@@ -252,7 +254,7 @@ int main() {
     Felidae::IntegerParser largeParser(largeTokens);
     const auto largeProgram = largeParser.parseProgram();
     assert(largeProgram.clauses.size() == 512);
-    assert(largeParser.metrics().sourceEncodeCount == 1);
+    assert(largeParser.metrics().sourceEncodeCount == 512);
     assert(largeParser.metrics().statementCount == 512);
     assert(largeParser.metrics().iterations < 100'000);
 

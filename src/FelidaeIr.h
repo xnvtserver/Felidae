@@ -1,7 +1,6 @@
 #pragma once
 
-// Internal compiler IR. Runtime entry points include RegisterVm.h or
-// BinaryIsa.h and never accept these instruction words.
+// Unified variable-width executable IR shared by compiler and RegisterVm.
 #include <cstddef>
 #include <cstdint>
 namespace Felidae { using SentencePieceId = std::size_t; }
@@ -51,11 +50,12 @@ enum class IrComparison : std::uint8_t { Equal = 0, NotEqual, Less, LessEqual, G
 
 struct FelidaeIr {
     std::vector<IrWord> words;
-    std::vector<IrWord> constants;
+    std::vector<IrConstant> constants;
     std::vector<IrConstantKind> constantKinds;
-    // Text is a dedicated UTF-8 side table: compiler IR words carry only its
-    // bounded index. SentencePiece IDs remain private to the frontend.
-    std::vector<std::string> texts;
+    // Complete SentencePiece sequences are the canonical text representation.
+    // IR words carry only a bounded side-table index; UTF-8 exists only at
+    // source and display boundaries.
+    std::vector<PieceSequence> texts;
     std::vector<IrSymbolRef> symbols;
     std::vector<IrWord> programs;
     std::vector<IrSourceMapEntry> sourceMap;

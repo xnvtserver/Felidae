@@ -3,8 +3,6 @@
 #include "IntegerTokenList.h"
 #include "Operator.h"
 #include "SentencePieceModel.h"
-#include "form/FelidaeIsa.h"
-#include "form/IsaLowerer.h"
 
 #include <chrono>
 #include <fstream>
@@ -41,9 +39,8 @@ int main(int argc, char** argv) {
             static_cast<Felidae::IrWord>(Felidae::IrOpcode::End),
         };
         module.procedures.emplace(entry, Felidae::IrProcedure{ir, {}, {}, {}});
-        const auto isa = Felidae::IsaLowerer::lowerModule(module);
         Felidae::RegisterVm vm;
-        (void)vm.executeIsaMain(isa, runtime, Felidae::VmNil{});
+        (void)vm.executeMain(Felidae::verifyIrModule(std::move(module)), runtime, Felidae::VmNil{});
         const auto executed = std::chrono::steady_clock::now();
         const auto micros = [](auto begin, auto end) {
             return std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count();

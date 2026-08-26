@@ -10,21 +10,36 @@ namespace Felidae {
 IntegerTokenList::IntegerTokenList(const sentencepiece::SentencePieceProcessor& processor,
                                    std::string source)
     : source_(std::move(source)) {
-    sentencepiece::SentencePieceText encoded;
-    const auto status = processor.Encode(source_, &encoded);
-    if (!status.ok()) {
-        throw std::runtime_error("SentencePiece source encoding failed: " + status.ToString());
-    }
-    ++encodeCount_;
-    entries_.reserve(encoded.pieces_size());
-    for (const auto& piece : encoded.pieces()) {
-        const auto begin = static_cast<std::size_t>(piece.begin());
-        const auto end = static_cast<std::size_t>(piece.end());
-        if (begin > end || end > source_.size()) {
-            throw std::runtime_error("SentencePiece returned an invalid source offset");
+    std::size_t lineBegin = 0;
+    std::size_t lineNumber = 1;
+    while (lineBegin < source_.size()) {
+        const auto newline = source_.find_first_of("\r\n", lineBegin);
+        auto lineEnd = newline == std::string::npos ? source_.size() : newline + 1;
+        if (newline != std::string::npos && source_[newline] == '\r' &&
+            lineEnd < source_.size() && source_[lineEnd] == '\n') {
+            ++lineEnd;
         }
-        const auto id = static_cast<TokenId::Id>(piece.id());
-        entries_.push_back(Entry{id, begin, end});
+        const auto line = source_.substr(lineBegin, lineEnd - lineBegin);
+        sentencepiece::SentencePieceText encoded;
+        const auto status = processor.Encode(line, &encoded);
+        if (!status.ok()) {
+            throw std::runtime_error("SentencePiece encoding failed on source line " +
+                                     std::to_string(lineNumber) + ": " + status.ToString());
+        }
+        ++encodeCount_;
+        entries_.reserve(entries_.size() + static_cast<std::size_t>(encoded.pieces_size()));
+        for (const auto& piece : encoded.pieces()) {
+            const auto relativeBegin = static_cast<std::size_t>(piece.begin());
+            const auto relativeEnd = static_cast<std::size_t>(piece.end());
+            if (relativeBegin > relativeEnd || relativeEnd > line.size()) {
+                throw std::runtime_error("SentencePiece returned an invalid offset on source line " +
+                                         std::to_string(lineNumber));
+            }
+            const auto id = static_cast<TokenId::Id>(piece.id());
+            entries_.push_back(Entry{id, lineBegin + relativeBegin, lineBegin + relativeEnd});
+        }
+        lineBegin = lineEnd;
+        ++lineNumber;
     }
 }
 

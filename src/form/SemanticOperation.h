@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 
 namespace Felidae {
 
@@ -11,5 +12,20 @@ enum class SemanticOperationId : std::uint16_t {
     DeriveFact = 0x0003,
     EvaluateDegree = 0x0004,
 };
+
+inline bool isKnownSemanticOperation(std::uint16_t operation) noexcept {
+    switch (static_cast<SemanticOperationId>(operation)) {
+    case SemanticOperationId::Identity:
+    case SemanticOperationId::SelectFact:
+    case SemanticOperationId::DeriveFact:
+    case SemanticOperationId::EvaluateDegree: return true;
+    }
+    return false;
+}
+
+inline bool semanticOperationAcceptsArity(std::uint16_t operation,
+                                          std::size_t inputCount) noexcept {
+    return isKnownSemanticOperation(operation) && inputCount == 1;
+}
 
 } // namespace Felidae
