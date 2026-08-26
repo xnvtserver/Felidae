@@ -28,4 +28,25 @@ IntegerTokenList::IntegerTokenList(const sentencepiece::SentencePieceProcessor& 
     }
 }
 
+std::string IntegerTokenList::to_string() const
+{
+    std::string result = "[";
+
+    for (std::size_t i = 0; i < entries_.size(); ++i) {
+        const auto& entry = entries_[i];
+
+        if (i > 0) {
+            result += ", ";
+        }
+
+        result += std::to_string(entry.id);
+    }
+
+    result += "] (source length: ";
+    result += std::to_string(source_.size());
+    result += ")";
+
+    return result;
+}
+
 } // namespace Felidae

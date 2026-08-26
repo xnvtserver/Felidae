@@ -35,6 +35,7 @@ private:
     std::string source_;
     std::vector<Entry> entries_;
     std::size_t encodeCount_ = 0;
+    std::string to_string() const;
 };
 
 } // namespace Felidae
