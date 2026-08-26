@@ -118,3 +118,78 @@ grow combinatorially, its learned selectors require held-out validation, and
 it does not yet provide a complete logical theorem prover. Physical coffee or
 HVAC control additionally needs a trusted I/O layer, actuator interlocks,
 timeouts, and independent safety limits outside the reasoning program.
+
+## Fact-reasoning baseline and improvement gates
+
+The August 2026 Debug smoke audit used the checked-in compiler and VM without
+training. It is a capability baseline, not a trained-model score:
+
+| Capability | Result | Evidence |
+|---|---:|---|
+| Numeric similarity and fuzzy membership | pass | `degree_profiles.fx` returned `Degree` values 0.125 and 0.696947396356321 |
+| Degree preservation inside facts/maps | pass | similarity, membership, confidence, and truth degree remained separate values |
+| Explicit threshold over a Degree | pass | 0.696947396356321 produced `not-met` for the 0.75 threshold |
+| Temporal fact ranking | pass | 2025/priority-2 preceded both 2024/priority-1 facts |
+| Bounded controller proofs | 5/5 actions | coffee dispense/refund and HVAC cool/ventilate/lockout matched |
+| Deep fact analysis example | compile failure | unsupported typed-lambda lowering |
+| Multi-ancestor comparison example | compile failure | unsupported `Relation.compare` lowering |
+| Fact-comparison contract example | compile failure | unsupported relationship-comparison construct |
+
+This sample passes the two executable non-Boolean scenarios but none of the
+three selected rich fact-comparison scenarios. Do not turn that small `2/5`
+result into a general intelligence percentage: it is not balanced by hierarchy
+depth, data size, negative evidence, or held-out domains.
+
+The deterministic VM primitives are stronger than the source-level feature
+surface currently reaching them. Hierarchy proofs, common ancestors, least and
+most-general common ancestors, structural similarity, Gaussian membership,
+and temporal ranking have verified ISA implementations. Several documented
+high-level comparison and fact-query forms still fail before ISA lowering.
+
+### Measured engineering bottlenecks
+
+- Map and fact similarity performs nested field scans, giving quadratic field
+  comparison cost. Canonical field indexes would make matching near-linear.
+- Fact similarity gives 25% weight to exact type identity and does not use
+  hierarchy distance. Related subtypes can score worse than unrelated facts
+  with coincidentally similar fields.
+- Numeric similarity uses `1 / (1 + absolute_difference)`. It is deterministic
+  but unit-sensitive across temperature, salary, probability, and other scales.
+- Least/most-general ancestor calculation launches repeated hierarchy searches
+  for pairs of common ancestors. Dense multiple-inheritance graphs can require
+  quadratic pair checks, each with another graph traversal.
+- Temporal ranking scans every retained fact and fails if any fact lacks the
+  requested fields. It needs a type- or query-bounded indexed candidate set.
+- Benchmark `--expect` checks display substrings. It cannot prove exact fact
+  identity, field differences, calibrated Degrees, or proof paths.
+- Felidae has bounded explicit alternatives, but no native logic variables,
+  occurs check, choice-point stack, or complete unification engine.
+
+### Intelligence improvement plan
+
+1. **Restore the source-to-ISA surface.** Lower typed fact iteration,
+   relationship comparison, and maintained fact-analysis examples. Add a
+   compile-and-run regression for every supported public construct.
+2. **Make benchmarks typed.** Assert exact result paths, value kinds, fact
+   types, ordered IDs, Degree values with tolerances, and expected failures.
+   Keep substring checks only as presentation smoke tests.
+3. **Improve deterministic comparison first.** Canonicalize/index fields, add
+   schema-declared numeric scales and weights, incorporate hierarchy distance,
+   and return evidence with contributions, missing fields, paths, and provenance.
+4. **Improve graph algorithms.** Cache revision-keyed ancestor closures and
+   compute minimal/maximal common ancestors without nested full searches. Test
+   chains, diamonds, multiple inheritance, cycles, and disconnected graphs.
+5. **Add bounded unification deliberately.** Introduce typed variables,
+   substitutions, occurs check, deterministic choice points, step/depth/result
+   limits, and proof traces as a verified runtime service.
+6. **Calibrate non-Boolean reasoning.** Test identity, bounds, promised
+   symmetry, monotonicity, normalized units, missing/conflicting evidence, and
+   threshold sensitivity. Report calibration error for learned Degrees.
+7. **Evaluate learning last.** Split by domain and hierarchy family, compare
+   learned proposals with deterministic oracle results, require abstention on
+   uncertainty, and report accuracy, invalid proposals, calibration,
+   median/p95 latency, and memory independently.
+
+The beta gate should require 100% deterministic primitive and safety-case
+accuracy, zero invalid values entering VM registers, zero silent halts, stable
+results across 100 runs, and separately reported held-out learned accuracy.

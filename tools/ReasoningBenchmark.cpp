@@ -1,5 +1,6 @@
 #include "CompilerFrontend.h"
 #include "SentencePieceModel.h"
+#include "form/BinaryIsa.h"
 #include "form/FelidaeIsa.h"
 #include "form/IsaLowerer.h"
 #include "form/RegisterVm.h"
@@ -82,6 +83,7 @@ int main(int argc, char** argv) {
         Felidae::verifyIrModule(ir);
         const auto isa = Felidae::IsaLowerer::lowerModule(ir);
         Felidae::verifyIsaModule(isa);
+        const auto display = Felidae::makeIsaDisplayContext(isa);
         const auto compileFinished = Clock::now();
 
         std::vector<std::int64_t> executionMicros;
@@ -95,7 +97,7 @@ int main(int argc, char** argv) {
             const auto result = Felidae::RegisterVm{}.executeIsaMain(isa, runtime);
             const auto finished = Clock::now();
             executionMicros.push_back(micros(started, finished));
-            const auto rendered = Felidae::vmValueToDisplayString(result);
+            const auto rendered = Felidae::vmValueToDisplayString(result, display);
             if (iteration == 0) baseline = rendered;
             else deterministic = deterministic && rendered == baseline;
         }

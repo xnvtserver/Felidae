@@ -38,7 +38,7 @@
       "type": "cppdbg",
       "request": "launch",
       "program": "${workspaceFolder}/build/debug/felidae_compiler",
-      "args": ["${file}"],
+      "args": ["${workspaceFolder}/v2_examples/air_conditioner_theorem_solver.fx"],
       "cwd": "${workspaceFolder}",
       "MIMode": "gdb",
       "miDebuggerPath": "/usr/bin/gdb",
@@ -64,7 +64,7 @@
       "type": "lldb",
       "request": "launch",
       "program": "${workspaceFolder}/build/debug/felidae_compiler",
-      "args": ["${file}"],
+      "args": ["${workspaceFolder}/v2_examples/air_conditioner_theorem_solver.fx"],
       "cwd": "${workspaceFolder}"
     },
     {
