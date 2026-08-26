@@ -1,9 +1,7 @@
 #include "MixfixStateModel.h"
 #include "CompilerFrontend.h"
 #include "SentencePieceModel.h"
-#include "form/BinaryIsa.h"
-#include "form/FelidaeIsa.h"
-#include "form/IsaLowerer.h"
+#include "form/BinaryIr.h"
 #include "form/RuntimeStateModel.h"
 #include "form/RuntimeTraining.h"
 
@@ -28,7 +26,7 @@ bool rejects(Action&& action) {
     return false;
 }
 
-Felidae::VmValue executeThroughIsa(
+Felidae::VmValue executeDirect(
     const Felidae::FelidaeIr& program, Felidae::VmRuntime& runtime,
     std::unordered_map<Felidae::IrSymbolRef, Felidae::IrProcedure> procedures = {}) {
     constexpr Felidae::IrSymbolRef kTestEntry = 0xf11da00000000001ull;
@@ -44,7 +42,7 @@ Felidae::VmValue executeThroughIsa(
     };
     module.procedures = std::move(procedures);
     module.procedures.emplace(kTestEntry, Felidae::IrProcedure{program, {}, {}, {}});
-    return Felidae::RegisterVm{}.executeIsaMain(Felidae::IsaLowerer::lowerModule(module), runtime);
+    return Felidae::RegisterVm{}.executeMain(Felidae::verifyIrModule(std::move(module)), runtime);
 }
 
 bool rejectsBranchValue(Felidae::VmRuntime& runtime, const Felidae::VmValue& value) {
@@ -262,13 +260,12 @@ int main() {
     productionCompilerOptions.mixfixModel = &reloadedCompiler;
     const auto trainedCompilerIr = compileProgramTextToIr(
         compilerE2eSource, productionCompilerOptions);
-    const auto trainedCompilerIsa = IsaLowerer::lowerModule(trainedCompilerIr);
     const auto trainedCompilerBinary = std::filesystem::path(
         FELIDAE_MODEL_TEST_OUTPUT_DIR) / "compiler-ssm-e2e.bin";
-    writeBinaryIsa(trainedCompilerBinary, trainedCompilerIsa);
-    const auto loadedCompilerBinary = loadBinaryIsa(trainedCompilerBinary);
+    writeBinaryIr(trainedCompilerBinary, verifyIrModule(IrModule(trainedCompilerIr)));
+    const auto loadedCompilerBinary = loadBinaryIr(trainedCompilerBinary, felidaeSentencePieceModelIdentity());
     FelidaeKnowledgeRuntime compilerE2eRuntime;
-    const auto compilerE2eResult = RegisterVm{}.executeIsaMain(
+    const auto compilerE2eResult = RegisterVm{}.executeMain(
         loadedCompilerBinary, compilerE2eRuntime);
     assert(std::holds_alternative<double>(compilerE2eResult));
     assert(std::get<double>(compilerE2eResult) == 42.0);
@@ -318,9 +315,9 @@ int main() {
                                     {{RuntimeOutputTokenKind::InputReference, 0}});
     RuntimeContext runtimeGruContext;
     runtimeGruContext.executionState = runtimeGru.createExecutionState();
-    const VmValue runtimeText = VmText{"runtime text"};
+    const VmValue runtimeText = VmText{{101, 102, 103}};
     assert(std::get<VmText>(runtimeGru.evaluate(RuntimeOperation{static_cast<std::uint16_t>(SemanticOperationId::Identity)}, {&runtimeText, 1},
-                                                runtimeGruContext)).value == "runtime text");
+                                                runtimeGruContext)).pieces == PieceSequence({101, 102, 103}));
     auto runtimeFact = std::make_shared<VmFact>();
     runtimeFact->type = 42;
     const VmValue runtimeFactValue = runtimeFact;
@@ -373,7 +370,7 @@ int main() {
     RuntimeContext loadedRuntimeContext;
     loadedRuntimeContext.executionState = loadedRuntime.createExecutionState();
     assert(std::get<VmText>(loadedRuntime.evaluate(RuntimeOperation{static_cast<std::uint16_t>(SemanticOperationId::Identity)}, {&runtimeText, 1},
-                                                   loadedRuntimeContext)).value == "runtime text");
+                                                   loadedRuntimeContext)).pieces == PieceSequence({101, 102, 103}));
     bool nativeRuntimeRejected = false;
     try { GruRuntimeStateModel invalidProduction(runtimeGruConfiguration,
         {{RuntimeOutputTokenKind::InputReference, 0}}, runtimeCheckpoint); }
@@ -448,11 +445,11 @@ int main() {
     trainedRuntime.exportTorchScript(trainedArtifact);
     GruRuntimeStateModel reloadedTrainedRuntime(trainedRuntimeConfiguration,
         trainedRuntimeVocabulary, trainedArtifact);
-    const auto trainedRuntimeModule = loadBinaryIsa(
-        FELIDAE_RUNTIME_SSM_E2E_BINARY);
+    const auto trainedRuntimeModule = loadBinaryIr(
+        FELIDAE_RUNTIME_SSM_E2E_BINARY, felidaeSentencePieceModelIdentity());
     assert(containsRuntimeSemanticOperation(trainedRuntimeModule));
     FelidaeKnowledgeRuntime trainedKnowledgeRuntime(&reloadedTrainedRuntime);
-    const auto trainedResult = RegisterVm{}.executeIsaMain(
+    const auto trainedResult = RegisterVm{}.executeMain(
         trainedRuntimeModule, trainedKnowledgeRuntime);
     assert(std::holds_alternative<double>(trainedResult));
     assert(std::get<double>(trainedResult) == 42.0);
@@ -472,7 +469,7 @@ int main() {
     public:
         VmValue callNativeSymbol(IrSymbolRef symbol) override { return static_cast<double>(symbol); }
     } noRuntime;
-    const auto arithmeticResult = executeThroughIsa(arithmetic, noRuntime);
+    const auto arithmeticResult = executeDirect(arithmetic, noRuntime);
     assert(std::get<double>(arithmeticResult) == 42.0);
     // The branch protocol is deliberately narrower than host-language
     // truthiness. Every non-boolean VM type remains usable data and must not
@@ -482,7 +479,7 @@ int main() {
     assert(!noRuntime.shouldBranchFalse(1.0));
     assert(rejectsBranchValue(noRuntime, 2.0));
     assert(rejectsBranchValue(noRuntime, VmDegree(0.0)));
-    assert(rejectsBranchValue(noRuntime, VmText{"text"}));
+    assert(rejectsBranchValue(noRuntime, VmText{{101}}));
     assert(rejectsBranchValue(noRuntime, std::make_shared<VmArray>()));
     assert(rejectsBranchValue(noRuntime, std::make_shared<VmMap>()));
     assert(rejectsBranchValue(noRuntime, std::make_shared<VmFact>()));
@@ -498,7 +495,7 @@ int main() {
         static_cast<IrWord>(IrOpcode::Return), 0, 0,
         static_cast<IrWord>(IrOpcode::End),
     };
-    const auto factValue = executeThroughIsa(factProgram, noRuntime);
+    const auto factValue = executeDirect(factProgram, noRuntime);
     const auto fact = std::get<VmFactPtr>(factValue);
     assert(fact->type == 50 && fact->fields.size() == 1);
     assert(fact->fields.front().first == 51);
@@ -512,7 +509,7 @@ int main() {
         static_cast<IrWord>(IrOpcode::Return), 0, 0,
         static_cast<IrWord>(IrOpcode::End),
     };
-    assert(std::get<double>(executeThroughIsa(nativeCall, noRuntime)) == 12.0);
+    assert(std::get<double>(executeDirect(nativeCall, noRuntime)) == 12.0);
 
     class SymbolRuntime final : public VmRuntime {
     public:
@@ -531,7 +528,7 @@ int main() {
         static_cast<IrWord>(IrOpcode::Return), 0, 0,
         static_cast<IrWord>(IrOpcode::End),
     };
-    assert(std::get<double>(executeThroughIsa(symbolStore, symbolRuntime)) == 9.0);
+    assert(std::get<double>(executeDirect(symbolStore, symbolRuntime)) == 9.0);
 
     FelidaeIr directProcedure;
     directProcedure.registerCount = 1;
@@ -550,7 +547,7 @@ int main() {
         static_cast<IrWord>(IrOpcode::End),
     };
     FelidaeKnowledgeRuntime procedureRuntime;
-    assert(std::get<double>(executeThroughIsa(directCaller, procedureRuntime,
+    assert(std::get<double>(executeDirect(directCaller, procedureRuntime,
         {{99, IrProcedure{directProcedure, {}, {}, {}}}})) == 7.0);
     FelidaeIr recursiveProcedure;
     recursiveProcedure.registerCount = 1;
@@ -565,7 +562,7 @@ int main() {
     FelidaeKnowledgeRuntime boundedRecursionRuntime(nullptr, 1024, 2);
     bool recursionRejected = false;
     try {
-        (void)executeThroughIsa(recursiveCaller, boundedRecursionRuntime,
+        (void)executeDirect(recursiveCaller, boundedRecursionRuntime,
             {{77, IrProcedure{recursiveProcedure, {}, {}, {}}}});
     } catch (const IrError&) {
         recursionRejected = true;
@@ -596,7 +593,7 @@ int main() {
     public:
         explicit SemanticRuntime(RuntimeStateModel& model) : model_(model) {}
         RuntimeStateModel* runtimeStateModel() override { return &model_; }
-        RuntimeContext makeIsaRuntimeContext(const VmValue&) const override {
+        RuntimeContext makeRuntimeContext(const VmValue&) const override {
             RuntimeContext context;
             context.maximumSemanticSteps = 2;
             return context;
@@ -614,12 +611,12 @@ int main() {
         static_cast<IrWord>(IrOpcode::Return), 1, 0,
         static_cast<IrWord>(IrOpcode::End),
     };
-    assert(std::get<double>(executeThroughIsa(semanticProgram, semanticRuntime)) == 5.0);
+    assert(std::get<double>(executeDirect(semanticProgram, semanticRuntime)) == 5.0);
     // A new VM execution owns a new RuntimeContext; recurrent state cannot
     // leak across requests even when the backend instance is reused.
-    assert(std::get<double>(executeThroughIsa(semanticProgram, semanticRuntime)) == 5.0);
+    assert(std::get<double>(executeDirect(semanticProgram, semanticRuntime)) == 5.0);
     FelidaeKnowledgeRuntime directSemanticRuntime(&semanticModel);
-    assert(std::get<double>(executeThroughIsa(semanticProgram, directSemanticRuntime)) == 5.0);
+    assert(std::get<double>(executeDirect(semanticProgram, directSemanticRuntime)) == 5.0);
     // Facts asserted earlier in the same VM program are refreshed into the
     // learned-operation context; a model never trains on a snapshot it cannot
     // observe during production execution.
@@ -647,7 +644,7 @@ int main() {
         static_cast<IrWord>(IrOpcode::End),
     };
     FelidaeKnowledgeRuntime knowledgeRuntime(&knowledgeModel);
-    assert(std::holds_alternative<VmFactPtr>(executeThroughIsa(knowledgeProgram, knowledgeRuntime)));
+    assert(std::holds_alternative<VmFactPtr>(executeDirect(knowledgeProgram, knowledgeRuntime)));
     // Nested calls are part of one top-level execution: the SSM state and
     // semantic budget are shared across their fresh register frames.
     FelidaeIr semanticCaller;
@@ -660,7 +657,7 @@ int main() {
         static_cast<IrWord>(IrOpcode::End),
     };
     FelidaeKnowledgeRuntime nestedSemanticRuntime(&semanticModel, 2);
-    assert(std::get<double>(executeThroughIsa(semanticCaller, nestedSemanticRuntime,
+    assert(std::get<double>(executeDirect(semanticCaller, nestedSemanticRuntime,
         {{99, IrProcedure{semanticProgram, {}, {}, {}}}})) == 6.0);
     FelidaeIr overLimitSemanticProgram;
     overLimitSemanticProgram.registerCount = 4;
@@ -675,7 +672,7 @@ int main() {
     };
     bool semanticLimitRejected = false;
     try {
-        (void)executeThroughIsa(overLimitSemanticProgram, semanticRuntime);
+        (void)executeDirect(overLimitSemanticProgram, semanticRuntime);
     } catch (const IrError&) {
         semanticLimitRejected = true;
     }
@@ -683,14 +680,14 @@ int main() {
     FelidaeKnowledgeRuntime oneStepSemanticRuntime(&semanticModel, 1);
     bool directSemanticLimitRejected = false;
     try {
-        (void)executeThroughIsa(overLimitSemanticProgram, oneStepSemanticRuntime);
+        (void)executeDirect(overLimitSemanticProgram, oneStepSemanticRuntime);
     } catch (const IrError&) {
         directSemanticLimitRejected = true;
     }
     assert(directSemanticLimitRejected);
     bool unavailableSemanticRejected = false;
     try {
-        (void)executeThroughIsa(semanticProgram, noRuntime);
+        (void)executeDirect(semanticProgram, noRuntime);
     } catch (const IrError&) {
         unavailableSemanticRejected = true;
     }
@@ -704,7 +701,7 @@ int main() {
     SemanticRuntime invalidSemanticRuntime(invalidSemanticModel);
     bool invalidSemanticRejected = false;
     try {
-        (void)executeThroughIsa(semanticProgram, invalidSemanticRuntime);
+        (void)executeDirect(semanticProgram, invalidSemanticRuntime);
     } catch (const IrError&) {
         invalidSemanticRejected = true;
     }
@@ -713,13 +710,13 @@ int main() {
     public:
         VmValue evaluate(const RuntimeOperation&, std::span<const VmValue>,
                          RuntimeContext&) override {
-            return VmText{"wrong identity type"};
+            return VmText{{101, 102}};
         }
     } wrongIdentityTypeModel;
     SemanticRuntime wrongIdentityRuntime(wrongIdentityTypeModel);
     bool wrongIdentityTypeRejected = false;
     try {
-        (void)executeThroughIsa(semanticProgram, wrongIdentityRuntime);
+        (void)executeDirect(semanticProgram, wrongIdentityRuntime);
     } catch (const IrError&) {
         wrongIdentityTypeRejected = true;
     }
@@ -807,3 +804,4 @@ int main() {
     }
     assert(rejected);
 }
+

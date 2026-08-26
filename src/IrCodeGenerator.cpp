@@ -796,7 +796,6 @@ IrModule IrCodeGenerator::compile(Program program) const {
         const auto& span = (*main)->sourceSpan;
         module.ir.sourceMap.push_back(IrSourceMapEntry{module.ir.words.size() - 8,
             {span.startLine, span.startColumn, span.endLine, span.endColumn}});
-        verifyIrModule(module);
         return module;
     }
     SourceSpan span;

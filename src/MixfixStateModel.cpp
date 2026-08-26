@@ -1,6 +1,5 @@
 #include "MixfixStateModel.h"
 
-#include "form/BinaryIsa.h"
 
 #include <algorithm>
 #include <fstream>

@@ -5,8 +5,7 @@
 #include "ModelStore.h"
 #include "SentencePieceModel.h"
 #include "Version.h"
-#include "form/BinaryIsa.h"
-#include "form/IsaLowerer.h"
+#include "form/BinaryIr.h"
 
 #include <filesystem>
 #include <fstream>
@@ -56,7 +55,7 @@ void printHelp() {
               << "Usage: felidae_compiler [--mixfix-model models/mixfix] program.fx\n"
               << "       felidae_compiler --tokenize input.fx\n"
               << "       felidae_compiler --train 'datasets/compiler/*.jsonl' --store-model build|dist [--epochs N] [--learning-rate R]\n"
-              << "Writes verified Felidae ISA to the compiler directory.\n";
+              << "Writes verified Felidae binary IR to the compiler directory.\n";
 }
 
 int tokenizeSource(const fs::path& input) {
@@ -83,7 +82,8 @@ int trainMixfixModel(const ModelTrainingOptions& training) {
     const auto outputVocabulary = std::to_string(kMixfixStructuralVocabularySize);
     std::vector<std::string> arguments{
         "felidae_compiler", encodeDatasetPaths(datasets), output.string(), inputVocabulary,
-        outputVocabulary, "0", std::to_string(training.epochs), std::to_string(training.learningRate)};
+        outputVocabulary, "0", std::to_string(training.epochs), std::to_string(training.learningRate),
+        felidaeSentencePieceModelIdentity()};
     std::vector<char*> rawArguments;
     rawArguments.reserve(arguments.size());
     for (auto& argument : arguments) rawArguments.push_back(argument.data());
@@ -123,16 +123,13 @@ int main(int argc, char** argv) {
             configuration.outputVocabularySize = std::stoll(manifestValue(manifest, "output_vocabulary"));
             configuration.beginToken = std::stoll(manifestValue(manifest, "begin_token"));
             mixfixModel.emplace(GruMixfixStateModel::loadVersioned(
-                configuration, *input->mixfixModelDirectory, felidaeSentencePieceModelHash()));
+                configuration, *input->mixfixModelDirectory, felidaeSentencePieceModelIdentity()));
             compilerOptions.mixfixModel = &*mixfixModel;
         }
 #else
         if (input->mixfixModelDirectory) throw std::runtime_error("this compiler build has no LibTorch mixfix support");
 #endif
-        const auto module = compileProgramFileToIr(source, compilerOptions);
-        verifyIrModule(module);
-        const auto isaModule = IsaLowerer::lowerModule(module);
-        verifyIsaModule(isaModule);
+        auto module = verifyIrModule(compileProgramFileToIr(source, compilerOptions));
         // Build artifacts never modify example/source directories or a staged
         // distribution. The caller's existing build/ directory is the one
         // canonical artifact location for both a developer build and the
@@ -140,8 +137,8 @@ int main(int argc, char** argv) {
         const auto outputDirectory = fs::absolute(fs::path(argv[0])).lexically_normal().parent_path();
         fs::create_directories(outputDirectory);
         auto output = outputDirectory / source.filename();
-        output.replace_extension(kFelidaeBinaryExtension);
-        writeBinaryIsa(output, isaModule);
+        output.replace_extension(kBinaryIrExtension);
+        writeBinaryIr(output, module);
         std::cout << output.string() << "\n";
         return 0;
     } catch (const std::exception& error) {

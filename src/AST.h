@@ -94,9 +94,9 @@ public:
         : value(std::move(value)), sentencePieceIds(std::move(sentencePieceIds)),
           containsEscape(containsEscape) {}
     std::string value;
-    // Captured from the parser's sole full-source SentencePiece encode. The
-    // compiler writes these IDs directly into IR text constants; it never
-    // invokes a second tokenizer for an already parsed literal.
+    // Captured from the parser's line-wise SentencePiece stream. The compiler
+    // writes these IDs directly into IR text constants and does not tokenize
+    // an already parsed literal again.
     std::vector<std::uint32_t> sentencePieceIds;
     bool containsEscape = false;
 

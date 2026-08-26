@@ -4,8 +4,6 @@
 #include "IrCodeGenerator.h"
 #include "MixfixStateModel.h"
 #include "SentencePieceModel.h"
-#include "form/FelidaeIsa.h"
-#include "form/IsaLowerer.h"
 #include "form/RegisterVm.h"
 
 #include <nlohmann/json.hpp>
@@ -270,7 +268,7 @@ int main(int argc, char** argv) {
         }
         if (roots.empty()) throw std::runtime_error("mixfix dataset requires at least one example root");
         std::vector<nlohmann::json> records;
-        const auto sentencePieceHash = felidaeSentencePieceModelHash();
+        const auto sentencePieceHash = felidaeSentencePieceModelIdentity();
         std::set<std::pair<std::vector<SentencePieceId>, std::vector<MixfixVocabularyId>>> unique;
         std::size_t boundedOut = 0;
         std::size_t rejectedSources = 0;
@@ -342,12 +340,11 @@ int main(int argc, char** argv) {
                 try {
                     const auto program = parseProgramText(source);
                     try {
-                        const auto module = IrCodeGenerator{}.compile(program);
+                        auto module = IrCodeGenerator{}.compile(program);
                         try {
-                            const auto isaModule = IsaLowerer::lowerModule(module);
                             FelidaeKnowledgeRuntime runtime;
                             RegisterVm vm;
-                            (void)vm.executeIsaMain(isaModule, runtime);
+                            (void)vm.executeMain(verifyIrModule(std::move(module)), runtime);
                         } catch (const std::exception&) {
                             stage = 3; // Verified VM/runtime rejection.
                         }

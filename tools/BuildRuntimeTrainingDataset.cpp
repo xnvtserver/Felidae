@@ -1,4 +1,5 @@
-#include "form/BinaryIsa.h"
+#include "form/BinaryIr.h"
+#include "SentencePieceModel.h"
 #include "form/RegisterVm.h"
 #include "form/RuntimeTraining.h"
 
@@ -41,17 +42,17 @@ int main(int argc, char** argv) {
         records.reserve(static_cast<std::size_t>(argc - 2));
         for (int index = 2; index < argc; ++index) {
             const std::filesystem::path input(argv[index]);
-            if (input.extension() != kFelidaeBinaryExtension) {
+            if (input.extension() != kBinaryIrExtension) {
                 throw std::runtime_error("runtime dataset input must be .bin");
             }
-            const auto module = loadBinaryIsa(input);
+            const auto module = loadBinaryIr(input, felidaeSentencePieceModelIdentity());
             if (containsRuntimeSemanticOperation(module)) {
                 throw std::runtime_error("runtime SSM binaries require explicit operation-level teachers; no partial dataset was written");
             }
             try {
                 FelidaeKnowledgeRuntime runtime;
                 RegisterVm vm;
-                const auto result = vm.executeIsaMain(module, runtime);
+                const auto result = vm.executeMain(module, runtime);
                 const auto knowledge = runtime.factStore()->knowledgeSnapshot();
                 records.push_back(makeIdentityTeacher(result, knowledge));
             } catch (const std::exception& error) {

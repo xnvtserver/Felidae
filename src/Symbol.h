@@ -1,8 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <array>
-#include <functional>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
@@ -49,10 +47,9 @@ inline std::string internalSymbolString(InternalSymbolKind kind) {
     return std::string(internalSymbolName(kind));
 }
 
-// Source symbols use deterministic 63-bit FNV-1a IDs. The compiler retains
-// spellings only while compiling to detect the astronomically unlikely hash
-// collision. Executable ISA carries IDs and bounded pool indexes; FELBIN may
-// additionally retain verified non-executable spellings for clean display.
+// AST symbols use short-lived compiler handles only. They are never persisted
+// or sent to the VM: the compiler replaces them with module-local indexes into
+// full SentencePiece ID sequences before verification and binary emission.
 class SymbolInterner {
 public:
     static constexpr SymbolId GeneratedIdBase = SymbolId{1} << 63U;
@@ -71,11 +68,10 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         const auto found = ids_.find(key);
         if (found != ids_.end()) return found->second;
-        const SymbolId id = deterministicId(name);
-        const auto collision = names_.find(id);
-        if (collision != names_.end() && collision->second != key) {
-            throw std::runtime_error("Felidae SymbolId hash collision");
+        if (nextSourceId_ == GeneratedIdBase) {
+            throw std::overflow_error("Felidae source symbol handle space exhausted");
         }
+        const SymbolId id = nextSourceId_++;
         ids_.emplace(key, id);
         names_.emplace(id, key);
         return id;
@@ -107,23 +103,12 @@ private:
         ids_.emplace(std::string(name), id);
         reservedNames_.emplace(id, std::string(name));
     }
-    static SymbolId deterministicId(std::string_view name) noexcept {
-        SymbolId value = 1469598103934665603ull;
-        for (const char character : name) {
-            const auto byte = static_cast<unsigned char>(character);
-            value ^= byte;
-            value *= 1099511628211ull;
-        }
-        value &= ~(SymbolId{1} << 63U);
-        value |= SymbolId{1} << 62U;
-        return value;
-    }
-
     mutable std::mutex mutex_;
     std::unordered_map<std::string, SymbolId> ids_;
     std::unordered_map<SymbolId, std::string> reservedNames_;
     std::unordered_map<SymbolId, std::string> generatedNames_;
     std::unordered_map<SymbolId, std::string> names_;
+    SymbolId nextSourceId_ = 7;
     SymbolId nextGeneratedId_ = GeneratedIdBase;
 };
 
@@ -133,25 +118,7 @@ inline SymbolInterner& symbolInterner() {
 }
 
 inline SymbolId symbolIdForName(std::string_view name) {
-    // Parsing fact-heavy sources repeatedly sees the same small set of type
-    // and field identifiers. Avoid taking the process-wide interner mutex for
-    // every occurrence while still confirming the spelling on hash collision.
-    struct LocalEntry {
-        std::size_t hash = 0;
-        std::string spelling;
-        SymbolId id = 0;
-    };
-    thread_local std::array<LocalEntry, 64> local{};
-    const std::size_t hash = std::hash<std::string_view>{}(name);
-    auto& entry = local[hash % local.size()];
-    if (entry.id != 0 && entry.hash == hash && entry.spelling == name) {
-        return entry.id;
-    }
-    const SymbolId id = symbolInterner().intern(name);
-    entry.hash = hash;
-    entry.spelling.assign(name.data(), name.size());
-    entry.id = id;
-    return id;
+    return symbolInterner().intern(name);
 }
 
 inline SymbolId symbolIdForName(const std::string& name) {

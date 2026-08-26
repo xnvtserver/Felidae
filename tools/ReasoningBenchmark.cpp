@@ -1,8 +1,6 @@
 #include "CompilerFrontend.h"
 #include "SentencePieceModel.h"
-#include "form/BinaryIsa.h"
-#include "form/FelidaeIsa.h"
-#include "form/IsaLowerer.h"
+#include "form/BinaryIr.h"
 #include "form/RegisterVm.h"
 
 #include <algorithm>
@@ -79,11 +77,14 @@ int main(int argc, char** argv) {
         }
 
         const auto compileStarted = Clock::now();
-        const auto ir = Felidae::compileProgramFileToIr(source);
-        Felidae::verifyIrModule(ir);
-        const auto isa = Felidae::IsaLowerer::lowerModule(ir);
-        Felidae::verifyIsaModule(isa);
-        const auto display = Felidae::makeIsaDisplayContext(isa);
+        const auto ir = Felidae::verifyIrModule(Felidae::compileProgramFileToIr(source));
+        const auto decoder = [](std::span<const Felidae::PieceId> pieces) {
+            std::vector<int> ids(pieces.begin(), pieces.end());
+            std::string text;
+            if (!Felidae::felidaeSentencePieceModel().Decode(ids, &text).ok()) throw Felidae::IrError("cannot decode benchmark value");
+            return text;
+        };
+        const auto display = Felidae::makeIrDisplayContext(ir, decoder);
         const auto compileFinished = Clock::now();
 
         std::vector<std::int64_t> executionMicros;
@@ -92,9 +93,8 @@ int main(int argc, char** argv) {
         bool deterministic = true;
         for (std::size_t iteration = 0; iteration < iterations; ++iteration) {
             Felidae::FelidaeKnowledgeRuntime runtime;
-            runtime.installIsaModule(isa);
             const auto started = Clock::now();
-            const auto result = Felidae::RegisterVm{}.executeIsaMain(isa, runtime);
+            const auto result = Felidae::RegisterVm{}.executeMain(ir, runtime);
             const auto finished = Clock::now();
             executionMicros.push_back(micros(started, finished));
             const auto rendered = Felidae::vmValueToDisplayString(result, display);

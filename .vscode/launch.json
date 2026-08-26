@@ -43,7 +43,13 @@
       "MIMode": "gdb",
       "miDebuggerPath": "/usr/bin/gdb",
       "stopAtEntry": false,
-      "externalConsole": false
+      "externalConsole": false,
+      "environment": [
+        {
+          "name": "FELIDAE_TRACE",
+          "value": "1"
+        }
+      ]
     },
     {
       "name": "Linux: Debug Form VM (GCC or Clang)",
@@ -51,7 +57,7 @@
       "request": "launch",
       "program": "${workspaceFolder}/build/debug/felidae_vm",
       "args": [
-        "${workspaceFolder}/build/debug/${fileBasenameNoExtension}.bin"
+        "${workspaceFolder}/build/debug/air_conditioner_theorem_solver.bin"
       ],
       "cwd": "${workspaceFolder}",
       "MIMode": "gdb",
@@ -73,7 +79,7 @@
       "request": "launch",
       "program": "${workspaceFolder}/build/debug/felidae_vm",
       "args": [
-        "${workspaceFolder}/build/debug/${fileBasenameNoExtension}.bin"
+        "${workspaceFolder}/build/debug/air_conditioner_theorem_solver.bin"
       ],
       "cwd": "${workspaceFolder}"
     }

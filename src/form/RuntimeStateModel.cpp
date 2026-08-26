@@ -1,6 +1,6 @@
 #include "RuntimeStateModel.h"
 
-#include "BinaryIsa.h"
+#include "BinaryIr.h"
 #include "RuntimeTraining.h"
 
 #include <fstream>
@@ -225,9 +225,9 @@ GruRuntimeStateModel GruRuntimeStateModel::loadVersioned(Configuration c, std::v
                                                          const std::filesystem::path& directory) {
     const auto manifest = directory / "runtime-manifest.txt";
     const auto expect = [&](const char* key, const char* value) { if (manifestValue(manifest, key) != value) throw IrError(std::string("runtime SSM manifest is incompatible: ") + key); };
-    expect("model_version", "runtime-gru-v1"); expect("backend", "torchscript-gru"); expect("opcode_vocabulary_version", "felidae-isa-v1");
-    expect("symbol_encoding", "felidae-fnv1a63-v1"); expect("architecture", "gru-runtime-v1"); expect("training_schema", "felidae-runtime-operation-v7");
-    if (std::stoull(manifestValue(manifest, "ir_binary_version")) != kFelidaeBinaryVersion ||
+    expect("model_version", "runtime-gru-v1"); expect("backend", "torchscript-gru"); expect("opcode_vocabulary_version", "felidae-ir-v12");
+    expect("symbol_encoding", "sentencepiece-sequence-v1"); expect("architecture", "gru-runtime-v1"); expect("training_schema", "felidae-runtime-operation-v7");
+    if (std::stoull(manifestValue(manifest, "ir_binary_version")) != kBinaryIrVersion ||
         std::stoll(manifestValue(manifest, "input_vocabulary")) != c.inputVocabularySize || std::stoll(manifestValue(manifest, "output_vocabulary")) != c.outputVocabularySize ||
         std::stoll(manifestValue(manifest, "embedding_size")) != c.embeddingSize || std::stoll(manifestValue(manifest, "hidden_size")) != c.hiddenSize ||
         std::stoll(manifestValue(manifest, "layer_count")) != c.layerCount) throw IrError("runtime SSM manifest configuration is incompatible");
@@ -340,7 +340,7 @@ void GruRuntimeStateModel::exportTorchScript(const std::filesystem::path& artifa
     torch::jit::Module module("FelidaeRuntimeGru");module.register_parameter("embedding",implementation_->network->embedding->weight.detach().clone(),false);module.register_parameter("projection_weight",implementation_->network->projection->weight.detach().clone(),false);module.register_parameter("projection_bias",implementation_->network->projection->bias.detach().clone(),false);
     std::ostringstream parameters;bool first=true;for(const auto& parameter:implementation_->network->recurrent->named_parameters(false)){const auto name="recurrent_"+parameter.key();module.register_parameter(name,parameter.value().detach().clone(),false);if(!first)parameters<<", ";parameters<<"self."<<name;first=false;}
     std::ostringstream source;source<<"def forward(self, input_ids: Tensor, hidden: Tensor) -> Tuple[Tensor, Tensor]:\n"<<"    embedded = torch.embedding(self.embedding, input_ids)\n"<<"    recurrent = torch.gru(embedded, hidden, ["<<parameters.str()<<"], True, "<<configuration_.layerCount<<", 0.0, False, False, False)\n"<<"    logits = torch.linear(recurrent[0][-1][0], self.projection_weight, self.projection_bias)\n"<<"    return logits, recurrent[1]\n";module.define(source.str());module.eval();module.save(artifactPath.string());
-    std::ofstream manifest(parent/"runtime-manifest.txt",std::ios::trunc);if(!manifest)throw IrError("cannot write runtime SSM manifest");manifest<<"model_version=runtime-gru-v1\nbackend=torchscript-gru\nir_binary_version="<<kFelidaeBinaryVersion<<"\nopcode_vocabulary_version=felidae-isa-v1\nsymbol_encoding=felidae-fnv1a63-v1\narchitecture=gru-runtime-v1\ntraining_schema=felidae-runtime-operation-v7\ninput_vocabulary="<<configuration_.inputVocabularySize<<"\noutput_vocabulary="<<configuration_.outputVocabularySize<<"\nembedding_size="<<configuration_.embeddingSize<<"\nhidden_size="<<configuration_.hiddenSize<<"\nlayer_count="<<configuration_.layerCount<<"\nartifact_hash=fnv1a64:"<<std::hex<<fnv1a(artifactPath)<<"\n";
+    std::ofstream manifest(parent/"runtime-manifest.txt",std::ios::trunc);if(!manifest)throw IrError("cannot write runtime SSM manifest");manifest<<"model_version=runtime-gru-v1\nbackend=torchscript-gru\nir_binary_version="<<kBinaryIrVersion<<"\nopcode_vocabulary_version=felidae-ir-v12\nsymbol_encoding=sentencepiece-sequence-v1\narchitecture=gru-runtime-v1\ntraining_schema=felidae-runtime-operation-v7\ninput_vocabulary="<<configuration_.inputVocabularySize<<"\noutput_vocabulary="<<configuration_.outputVocabularySize<<"\nembedding_size="<<configuration_.embeddingSize<<"\nhidden_size="<<configuration_.hiddenSize<<"\nlayer_count="<<configuration_.layerCount<<"\nartifact_hash=fnv1a64:"<<std::hex<<fnv1a(artifactPath)<<"\n";
 #else
     (void)artifactPath;throw IrError("runtime GRU TorchScript export requires FELIDAE_ENABLE_LIBTORCH=ON");
 #endif

@@ -560,8 +560,8 @@ const OperatorPatternDefinition& IntegerParser::registerOperatorPattern(
     OperatorPatternDefinition pattern) {
     if (!operators_) throw IntegerParserError("Operator registry is unavailable");
     // Pattern structure is registered independently from source IDs. Literal
-    // anchors are matched against offsets from the one full-source
-    // SentencePiece encode; do not encode each anchor again.
+    // anchors use the absolute offsets in the line-wise SentencePiece stream;
+    // do not encode each anchor again.
     OperatorRegistry::compilePattern(pattern);
     return operators_->registerPattern(std::move(pattern));
 }
@@ -1468,8 +1468,8 @@ FelidaeIr IntegerParser::compileModelRoutedMixfixExpressionIr(
     // model output can reference them but never manufacture a machine word.
     FelidaeIr shell;
     shell.registerCount = kMaximumMixfixRegisters;
-    const auto addConstant = [&](IrConstantKind kind, IrWord value,
-                                 std::string text = {}) {
+    const auto addConstant = [&](IrConstantKind kind, IrConstant value,
+                                 PieceSequence text = {}) {
         if (shell.constants.size() >= kMaximumMixfixReferences) {
             throw IntegerParserError("mixfix compiler context has too many constants");
         }
@@ -1495,10 +1495,10 @@ FelidaeIr IntegerParser::compileModelRoutedMixfixExpressionIr(
         } else if (std::dynamic_pointer_cast<NilExpr>(node)) {
             addConstant(IrConstantKind::Nil, 0);
         } else if (const auto text = std::dynamic_pointer_cast<StringExpr>(node)) {
-            if (text->containsEscape || text->sentencePieceIds.empty()) {
+            if (text->containsEscape) {
                 throw IntegerParserError("string literal cannot be lowered without its original SentencePiece IDs");
             }
-            addConstant(IrConstantKind::Text, 0, text->value);
+            addConstant(IrConstantKind::Text, 0, text->sentencePieceIds);
         } else if (const auto variable = std::dynamic_pointer_cast<VarExpr>(node)) {
             addSymbol(variable->nameId);
         } else if (const auto array = std::dynamic_pointer_cast<ArrayExpr>(node)) {
@@ -1689,7 +1689,10 @@ FelidaeIr IntegerParser::compileAstExpressionIr(const std::shared_ptr<Expr>& exp
         return static_cast<IrWord>(ir.constants.size() - 1);
     };
     const auto addText = [&](const StringExpr& text) {
-        ir.texts.push_back(text.value);
+        if (text.containsEscape) {
+            throw IntegerParserError("string literal cannot be lowered without its original SentencePiece IDs");
+        }
+        ir.texts.push_back(text.sentencePieceIds);
         ir.constants.push_back(static_cast<IrWord>(ir.texts.size() - 1));
         ir.constantKinds.push_back(IrConstantKind::Text);
         return static_cast<IrWord>(ir.constants.size() - 1);
