@@ -1,8 +1,9 @@
 # Felidae
 
 Felidae compiles `.fx` source into verified, integer-only `.bin` artifacts.
-`.bin` uses the beta **FELBIN v10** container. During beta, binaries must be
-rebuilt whenever the current container or ISA version changes.
+`.bin` uses the beta **FELBIR v13** container. During beta, binaries must be
+rebuilt whenever the current IR version changes; pre-release compatibility
+formats are intentionally not retained.
 The compiler and VM are separate C++ executables:
 
 ```text
@@ -10,15 +11,17 @@ source.fx -> SentencePiece IDs -> IntegerParser -> AST compiler -> verified .bin
 program.bin -> binary loader -> verifier -> Form register VM
 ```
 
-Compiler IR is internal. Before binary emission it is verified and lowered
-deterministically to the fixed 32-bit [Felidae ISA v1](docs/isa.md); the VM
-accepts only verified ISA instructions. SentencePiece IDs remain inside the
-frontend, while runtime text is stored as UTF-8 constant-pool data.
+The compiler emits one executable, variable-width IR. It is verified once at
+the compiler or hostile-binary boundary and executed directly by the Form
+register VM; there is no assembler, secondary ISA, or lowering stage.
+`.bin` stores numeric opcodes and operands, registers, constants, source-map
+spans, procedure metadata, and a module symbol table whose entries are complete
+SentencePiece ID sequences. It never stores source syntax, pointers, AST
+objects, symbol hashes, or a parallel UTF-8 symbol-identity system.
 
-The Form VM executes verified ISA only. It does not link the parser, AST, or
-Interpreter. `.bin` stores fixed numeric ISA opcodes, registers, symbol IDs,
-UTF-8 text pools and their bounded indexes, numeric constants, source-map spans, and procedure metadata;
-it never stores source syntax, pointers, or AST objects.
+The Form VM does not link the parser or AST. SentencePiece decoding is a
+presentation adapter used for meaningful output, while execution and runtime
+SSM context remain integer-only.
 
 For intelligence-style evaluation, use the reproducible
 [reasoning and robustness benchmark](docs/reasoning_benchmark.md). It includes
@@ -51,6 +54,7 @@ directories. The portable `build.sh` exposes its normal controls at the top:
 MODE="test"          # test or release
 ENABLE_TRAINING="OFF" # ON requires LibTorch
 ENABLE_LIBTORCH="OFF"
+JOBS="auto"           # detected logical CPUs, or a positive integer
 ```
 
 Test mode configures `build/test`, builds the compiler, VM, and tests, then
@@ -60,9 +64,14 @@ source folder.
 
 ```bash
 ./build.sh --mode test
+./build.sh --mode test --jobs 8
 ./build.sh --mode test --libtorch ON --training ON
 ./build.sh --mode release --libtorch ON --training OFF
 ```
+
+Normal builds use all detected logical CPUs. Use `--jobs N` or
+`FELIDAE_JOBS=N` to cap parallelism when LibTorch compilation approaches the
+machine's memory limit.
 
 Linux x86-64 and ARM use native CMake when run on that architecture. macOS
 supports Intel and Apple Silicon, and Android uses the official NDK toolchain:
@@ -122,7 +131,7 @@ gdb --args ./build/debug/felidae_vm build/debug/form_core_concepts.bin
 ```
 
 Debug builds also provide an opt-in action trace. `FELIDAE_TRACE=1` writes
-parser and verified-ISA dispatch details to `stderr`; normal program results
+parser and verified-IR dispatch details to `stderr`; normal program results
 remain on `stdout`. The trace code is guarded by `#ifndef NDEBUG` and is absent
 from Release builds:
 
@@ -163,11 +172,10 @@ ctest --test-dir build/asan --output-on-failure
 ```
 
 Check `git status --short` before and after builds. Build products belong in
-their build directories, while the reproducible SentencePiece step can create
-generated files under `models/`; review those files before committing. Model
-training and beta packaging are explicit workflows and should not be run as
-part of routine setup. Increase `--parallel` only when the machine has enough
-available memory.
+their build directories. Normal builds consume the checked-in SentencePiece
+model and ID header without rewriting them. Model regeneration, training, and
+beta packaging are explicit maintainer workflows and should not run during
+routine setup. Increase `--parallel` only when the machine has enough memory.
 
 ### Fixed tokenizer corpus
 
@@ -184,7 +192,20 @@ Grammar spellings remain pinned SentencePiece user-defined symbols. The model
 uses identity normalization, a bounded 1024-piece vocabulary, deterministic
 single-threaded training, and byte fallback for unseen UTF-8. Generated token
 IDs record the corpus schema, record count, and dataset hash. Tokenizer IDs
-remain frontend-only and never become ISA opcodes or runtime semantics.
+are the canonical lexical representation in executable IR symbol and text
+tables; opcodes, registers, numeric values, indexes, and branch targets remain
+ordinary numeric IR operands.
+
+Before intentional regeneration, inspect the Git history and status of the
+model, generated ID header, grammar, and tokenizer corpus. Then run:
+
+```bash
+cmake --build build/debug \
+  --target felidae_regenerate_sentencepiece_model --parallel 8
+```
+
+Keep the generated changes only when an authoritative input changed and the
+tokenizer and pipeline tests pass.
 
 
 For your Debian + C++20 Felidae build, install the official **Linux LibTorch C++ package** rather than `pip install torch`. PyTorch’s LibTorch distribution includes the C++ headers, shared libraries, and CMake config files needed by `find_package(Torch)`. ([PyTorch Docs][1])
@@ -239,8 +260,6 @@ Then configure Felidae with LibTorch enabled:
 
 ```bash
 cd /home/vishal/Felidae
-
-rm -rf build/debug
 
 cmake -S . -B build/debug -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug \
@@ -369,8 +388,9 @@ build\debug\felidae_compiler.exe v2_examples\form_core_concepts.fx
 build\debug\felidae_vm.exe build\debug\form_core_concepts.bin
 ```
 
-The VM verifies the binary again before execution. A malformed, truncated, or
-unverified `.bin` fails before it can run.
+The binary loader parses and verifies untrusted input once before constructing
+the immutable module accepted by the VM. A malformed, truncated, or unverified
+`.bin` fails before it can run.
 
 For the long-lived Form daemon mode:
 
@@ -399,13 +419,14 @@ For example:
 ```powershell
 build\debug\felidae_compiler.exe v2_examples\mixfix_deep_ir_nesting.fx
 build\debug\felidae_vm.exe build\debug\mixfix_deep_ir_nesting.bin
-# {#...: 9, #...: 36, #...: 756}
+# {first: 9, second: 36, nested: 756}
 ```
 
-Fact keys and type names display as numeric symbol IDs by design. VM text is
-stored as UTF-8 text-pool data; SentencePiece IDs stop at the compiler
-frontend and are never serialized as executable data or semantics. Symbol
-spelling is not serialized into `.bin`.
+Fact keys and type names are stored as module-local indexes backed by complete
+SentencePiece ID sequences. VM text is also stored as PieceId sequences.
+Execution compares those sequences without decoding them; display and other
+human-readable boundaries decode them through the matching SentencePiece
+model, producing meaningful names rather than numeric hashes.
 
 Fact designations participate in typed hierarchical queries. For example,
 `Animal(...) as animals` lets source use
@@ -421,7 +442,9 @@ compile directly to the same internal compiler IR. The compiler-side `MixfixStat
 uses a C++ LibTorch GRU and accepts only a finite structural IR vocabulary.
 Its output is verifier-gated; missing models, invalid output, or malformed
 spans are compile errors and never fall back to AST execution. No trained
-mixfix artifact is currently shipped.
+mixfix artifact is currently shipped. `REJECT` and `ABSTAIN` produce bounded,
+contextual diagnostics containing the source/PieceId span and available
+reference counts; the model cannot emit arbitrary diagnostic text.
 
 Training and production artifacts are deliberately separate. Native LibTorch
 state is written only to `mixfix-gru.ckpt`; inference loads the C++-exported
@@ -437,24 +460,24 @@ build\debug\felidae_compiler.exe --train 'datasets\compiler\*.jsonl' --store-mod
 ```
 
 After changing `datasets/tokenizer/` or regenerating `models/felidae.model`,
-regenerate both compiler corpora together. Schema-v2 records carry the exact
-SentencePiece model hash and compiler-IR vocabulary version, and training
+regenerate both compiler corpora together. Schema-v3 records carry the exact
+SentencePiece model identity and compiler-IR vocabulary version, and training
 rejects stale tokenizer or target IDs:
 
 ```bash
 cmake --build build/debug --target felidae_extract_mixfix_dataset --parallel 1
 ./build/debug/felidae_extract_mixfix_dataset \
-  datasets/compiler/mixfix-v1.jsonl examples v2_examples \
+  datasets/compiler/mixfix-v1.jsonl v2_examples \
   --rejections datasets/compiler/mixfix-invalid-v1.jsonl
 ```
 
 The VM has a different optional recurrent model exclusively for explicit
-`SemanticEval` ISA operations. It is built from
+`SemanticEval` IR operations. It is built from
 `src/form/RuntimeStateModel.cpp` and uses
 a finite, typed result vocabulary (nil, numeric `0.0`/`1.0` truth values, a bounded Degree lattice, a
 validated bounded input reference, or a fact derived from a validated input), never implicit
 truthiness. No runtime artifact is shipped until it has been trained and
-validated against FELBIN v10 and ISA v1. No runtime artifact is currently shipped. The
+validated against FELBIR v13. No runtime artifact is currently shipped. The
 dataset tool can prepare deterministic unary Identity teachers from verified
 examples. Every record carries the permanent semantic operation ID `0x0001`;
 source-name hashes are forbidden. Binaries with `SemanticEval` still require

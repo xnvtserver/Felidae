@@ -6,7 +6,7 @@ Canonical positive file: `mixfix-v1.jsonl`. Rejection-evaluation file:
 The dataset is JSON Lines, with one versioned record per line:
 
 ```json
-{"schema_version":2,"sentencepiece_model_hash":"fnv1a64:...","compiler_ir_vocabulary":"felidae-compiler-ir-v2","decision":"ACCEPT","input_ids":[1,2],"target_ids":[3,0]}
+{"schema_version":3,"sentencepiece_model_identity":"sha256:...","compiler_ir_vocabulary":"felidae-compiler-ir-v2","decision":"ACCEPT","input_ids":[1,2],"target_ids":[3,0]}
 ```
 
 The target sequence ends in `IR_END`. The output vocabulary is the parser's
@@ -27,14 +27,14 @@ actually learned, while executable target families are isolated across train,
 validation, and test partitions.
 
 `input_ids` are meaningful only for the exact fixed tokenizer that produced
-them. Every record therefore carries `sentencepiece_model_hash`; the C++
+them. Every record therefore carries `sentencepiece_model_identity`; the C++
 trainer rejects stale corpora after any tokenizer regeneration.
 `compiler_ir_vocabulary` similarly prevents training against target IDs from
 an older internal compiler-IR opcode layout. It does not change the stable
-Felidae ISA v1 opcode IDs.
+Felidae executable-IR opcode IDs.
 
-Invalid programs from `examples/invalid/` and `v2_examples/invalid/` are kept
-in the separate integer-only rejection-evaluation set. Its records contain
+Current invalid programs named `v2_examples/invalid_*.fx` are kept in the
+separate integer-only rejection-evaluation set. Its records contain
 `input_ids` and `rejection_stage` (`1` parser, `2` compiler, `3` verified
 runtime), an explicit `REJECT` target, and no executable compiler IR. They are
 real negative training records: the model learns the bounded rejection

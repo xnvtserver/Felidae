@@ -3,6 +3,7 @@
 #include "FelidaeGrammar.h"
 #include "MixfixStateModel.h"
 #include "ModelStore.h"
+#include "SentencePieceModel.h"
 
 #include <sentencepiece_processor.h>
 #include <sentencepiece.pb.h>
@@ -86,11 +87,9 @@ int main() {
     const auto loaded = model.Load(FELIDAE_SENTENCEPIECE_MODEL_PATH);
     assert(loaded.ok());
     assert(Felidae::kFelidaeTokenizerDatasetSchemaVersion == 1);
-    assert(Felidae::kFelidaeTokenizerDatasetHash != 0);
     assert(Felidae::kFelidaeTokenizerDatasetRecordCount == 32);
     assert(Felidae::kFelidaeSentencePieceVocabularySize ==
            static_cast<std::uint32_t>(model.GetPieceSize()));
-    assert(Felidae::kFelidaeSentencePieceModelHash != 0);
     assert(model.GetPieceSize() <= 1024 && model.GetPieceSize() > 512);
 
     // Corpus-covered identifiers should use learned pieces rather than one
@@ -153,11 +152,17 @@ int main() {
     assert(wraps != accepts);
 
     const std::string completeSource =
-        "# comment\\n"
-        "café(value: \"hello\") => return value\\n";
+        "# comment\n"
+        "café(value: \"hello\") => return value\n";
+    const Felidae::IntegerTokenList lazyLines(model, "first\nsecond\nthird\n");
+    assert(lazyLines.encodeCount() == 1);
+    assert(lazyLines.has(lazyLines.loadedSize()));
+    assert(lazyLines.encodeCount() == 2);
+    assert(lazyLines.has(lazyLines.loadedSize()));
+    assert(lazyLines.encodeCount() == 3);
     const Felidae::IntegerTokenList sourceTokens(model, completeSource);
-    assert(sourceTokens.encodeCount() == 2);
     assert(!sourceTokens.entries().empty());
+    assert(sourceTokens.encodeCount() == 2);
     for (const auto& entry : sourceTokens.entries()) {
         assert(entry.begin <= entry.end);
         assert(entry.end <= completeSource.size());

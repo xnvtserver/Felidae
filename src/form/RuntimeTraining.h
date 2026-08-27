@@ -23,17 +23,30 @@ enum class RuntimeTrainingTargetKind : std::uint8_t {
 struct RuntimeTrainingRecord {
     std::uint16_t operationId = 0;
     std::vector<RuntimeValueKind> inputKinds;
-    std::vector<IrSymbolRef> factTypes;
-    std::vector<std::pair<IrSymbolRef, std::uint32_t>> factTypeCounts;
-    std::vector<std::pair<IrSymbolRef, IrSymbolRef>> hierarchyEdges;
+    std::vector<PieceSequence> factTypes;
+    std::vector<std::pair<PieceSequence, std::uint32_t>> factTypeCounts;
+    std::vector<std::pair<PieceSequence, PieceSequence>> hierarchyEdges;
     RuntimeTrainingTargetKind targetKind = RuntimeTrainingTargetKind::Nil;
     std::uint32_t targetValue = 0;
 };
 
-// JSON Lines v7: one self-describing, integer-only record per line.  The
+struct RuntimeKnowledgePieces {
+    std::vector<PieceSequence> factTypes;
+    std::vector<std::pair<PieceSequence, std::uint32_t>> factTypeCounts;
+    std::vector<std::pair<PieceSequence, PieceSequence>> hierarchyEdges;
+};
+
+// Convert module-local runtime symbol references at the single boundary where
+// the SSM consumes them. Both live inference and dataset extraction use this
+// path, so their model inputs cannot drift apart.
+RuntimeKnowledgePieces runtimeKnowledgePieces(
+    const VmKnowledgeSnapshot& knowledge,
+    std::span<const PieceSequence> symbolTable);
+
+// JSON Lines v8: one self-describing, integer-only record per line.  The
 // schema value is repeated deliberately: lines can be validated or streamed
 // independently and no legacy binary header needs to be retained.
-inline constexpr std::uint32_t kRuntimeTrainingSchemaVersion = 7;
+inline constexpr std::uint32_t kRuntimeTrainingSchemaVersion = 8;
 void verifyRuntimeTrainingRecord(const RuntimeTrainingRecord& record);
 void writeRuntimeTrainingDataset(const std::filesystem::path& path,
                                  std::span<const RuntimeTrainingRecord> records);

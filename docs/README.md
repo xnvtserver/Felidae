@@ -3,7 +3,7 @@
 The supported product path is deliberately small:
 
 ```text
-source.fx -> felidae_compiler -> verified FELBIN v10 / Felidae ISA v1 .bin -> felidae_vm
+source.fx -> felidae_compiler -> verified FELBIR v13 executable IR -> felidae_vm
 ```
 
 Build artifacts are created only in `build/`; the portable package is generated
@@ -12,10 +12,11 @@ only from a Release configuration by the `felidae_dist` CMake target in
 [`README.md`](../README.md) for build, compiler, VM, binary-format, mixfix,
 and SSM guidance.
 
-Compiler IR and SentencePiece IDs are frontend-only. FELBIN contains verified
-ISA words plus bounded constant, UTF-8 text, symbol, procedure, fact-type, and
-source-map tables; neither compiler IR nor tokenizer IDs are executable data.
+FELBIR contains the verified executable IR, bounded constants, complete
+SentencePiece-sequence symbol and text entries, procedures, fact types, and
+source maps. It contains no AST, source syntax, symbol hashes, or secondary
+instruction representation.
 
 The former interpreter-hosted documentation site, browser/WASM playground, and
-Celidae visualizer were removed because they are not part of the FELBIN/Form VM
+Celidae visualizer were removed because they are not part of the FELBIR/Form VM
 release path.

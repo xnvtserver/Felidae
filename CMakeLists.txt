@@ -19,7 +19,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(FELIDAE_ENABLE_SANITIZERS
-    "Build compiler, ISA VM, and tooling with address/undefined-behavior sanitizers" OFF)
+    "Build compiler, register VM, and tooling with address/undefined-behavior sanitizers" OFF)
 option(FELIDAE_BUILD_TESTS "Build Felidae regression tests" ON)
 option(FELIDAE_ENABLE_STRICT_WARNINGS
     "Enable strict warnings for Felidae-owned targets only" OFF)
@@ -139,7 +139,7 @@ if(FELIDAE_ENABLE_LIBTORCH)
     target_link_libraries(felidae_mixfix_torch PRIVATE ${TORCH_LIBRARIES})
 endif()
 
-add_executable(felidae_sentencepiece_model_generator
+add_executable(felidae_sentencepiece_model_generator EXCLUDE_FROM_ALL
     tools/GenerateSentencePieceModel.cpp)
 target_include_directories(felidae_sentencepiece_model_generator PRIVATE src)
 target_compile_definitions(felidae_sentencepiece_model_generator PRIVATE
@@ -156,11 +156,17 @@ if(TARGET OpenMP::OpenMP_CXX)
     target_link_libraries(felidae_sentencepiece_model_generator PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
-# Keep generated SentencePiece artifacts out of build/: build/ contains only
-# CMake state and executable/binary build products, while models/ owns the
-# reproducible lexical model and its generated vocabulary header.
-add_custom_command(
-    OUTPUT "${FELIDAE_SENTENCEPIECE_MODEL_PATH}" "${FELIDAE_SENTENCEPIECE_IDS_HEADER}"
+# The lexical model and matching ID header are versioned release inputs. A
+# normal build must never rewrite source-controlled files merely because the
+# generator executable has a newer timestamp. Regeneration is an explicit
+# maintainer operation after reviewing corpus/grammar changes and Git history.
+if(NOT EXISTS "${FELIDAE_SENTENCEPIECE_MODEL_PATH}" OR
+   NOT EXISTS "${FELIDAE_SENTENCEPIECE_IDS_HEADER}")
+    message(FATAL_ERROR
+        "Checked-in SentencePiece artifacts are missing. Restore models/ from Git before configuring the normal build.")
+endif()
+add_custom_target(felidae_sentencepiece_model)
+add_custom_target(felidae_regenerate_sentencepiece_model
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${FELIDAE_SENTENCEPIECE_GENERATED_DIR}"
     COMMAND $<TARGET_FILE:felidae_sentencepiece_model_generator>
             "${FELIDAE_SENTENCEPIECE_MODEL_PATH}" "${FELIDAE_SENTENCEPIECE_IDS_HEADER}"
@@ -168,10 +174,8 @@ add_custom_command(
     DEPENDS felidae_sentencepiece_model_generator
             tools/GenerateSentencePieceModel.cpp src/FelidaeGrammar.h
             "${FELIDAE_SENTENCEPIECE_DATASET}"
-    COMMENT "Generating the fixed Felidae SentencePiece model and token IDs"
+    COMMENT "Explicitly regenerating the Felidae SentencePiece model and token IDs"
     VERBATIM)
-add_custom_target(felidae_sentencepiece_model
-    DEPENDS "${FELIDAE_SENTENCEPIECE_MODEL_PATH}" "${FELIDAE_SENTENCEPIECE_IDS_HEADER}")
 
 function(felidae_use_sentencepiece_model target)
     add_dependencies(${target} felidae_sentencepiece_model)
@@ -204,7 +208,7 @@ target_compile_definitions(felidae_integer_parser_benchmark PRIVATE
 target_link_libraries(felidae_integer_parser_benchmark PRIVATE felidae_form sentencepiece)
 felidae_use_sentencepiece_model(felidae_integer_parser_benchmark)
 
-# Explicit, bounded source -> verified IR -> ISA -> VM capability benchmark.
+# Explicit, bounded source -> verified executable IR -> VM capability benchmark.
 # It is excluded from ALL so routine builds never build benchmark workloads.
 add_executable(felidae_reasoning_benchmark EXCLUDE_FROM_ALL
     tools/ReasoningBenchmark.cpp
@@ -314,7 +318,7 @@ if(TARGET felidae_mixfix_torch)
     felidae_enable_static_analysis(felidae_mixfix_torch)
 endif()
 
-# Form is the AST/parser-free ISA, binary, and register-VM boundary. Keeping it
+# Form is the AST/parser-free executable IR, binary, and register-VM boundary. Keeping it
 # as one library prevents the compiler and standalone VM from compiling two
 # subtly different copies of the runtime.
 add_library(felidae_form STATIC
@@ -383,7 +387,8 @@ add_custom_target(felidae_dist
     COMMENT "Staging portable Felidae distribution in ${FELIDAE_DIST_DIR}")
 
 # Explicit runtime-corpus boundary. The tool accepts only verified .bin input
-# and emits a unary fixed-ID Identity teacher for its typed result. It never
+# and emits a unary Identity teacher for its typed result. Symbol context is
+# stored as complete SentencePiece ID sequences. It never
 # hashes source names into semantic operation IDs or invents context queries.
 add_executable(felidae_build_runtime_dataset EXCLUDE_FROM_ALL
     tools/BuildRuntimeTrainingDataset.cpp
@@ -525,9 +530,8 @@ if(FELIDAE_BUILD_TESTS)
         $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
         $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
     felidae_enable_msvc_exceptions(felidae_sentencepiece_model_test)
-    # This frontend regression compiles structured compiler IR and therefore
-    # needs the compiler-only verifier/lowering boundary. It must not expect
-    # IrVerifier symbols from the runtime-only felidae_form library.
+    # This frontend regression compiles executable IR and exercises the same
+    # verifier implementation linked by the runtime-only felidae_form library.
     target_link_libraries(felidae_sentencepiece_model_test PRIVATE felidae_form sentencepiece)
     felidae_use_sentencepiece_model(felidae_sentencepiece_model_test)
     if(TARGET OpenMP::OpenMP_CXX)
@@ -561,7 +565,7 @@ if(FELIDAE_BUILD_TESTS)
         ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
     target_include_directories(felidae_sentencepiece_pipeline_test SYSTEM PRIVATE third_party)
     target_compile_definitions(felidae_sentencepiece_pipeline_test PRIVATE
-        FELIDAE_PIPELINE_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/tests/data/sentencepiece_pipeline.fx"
+        FELIDAE_PIPELINE_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/v2_examples/sentencepiece_pipeline.fx"
         FELIDAE_TEST_OUTPUT_DIR="${CMAKE_BINARY_DIR}/test-artifacts/sentencepiece-pipeline"
         FELIDAE_COFFEE_REASONING_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/v2_examples/coffee_vending_theorem_solver.fx"
         FELIDAE_HVAC_REASONING_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/v2_examples/air_conditioner_theorem_solver.fx")
@@ -604,12 +608,12 @@ if(FELIDAE_BUILD_TESTS)
         felidae_use_sentencepiece_model(felidae_mixfix_state_model_test)
         # SentencePiece and LibTorch remain separate translation-unit
         # dependency islands even in this combined E2E test. The real compiler
-        # also emits this FELBIN fixture under build/, after which the test
+        # also emits this FELBIR fixture under build/, after which the test
         # loads it through the production binary verifier and executes its
         # SemanticEval instruction with a trained, exported, and reloaded
         # TorchScript backend.
         set(FELIDAE_RUNTIME_SSM_E2E_SOURCE
-            "${CMAKE_SOURCE_DIR}/tests/data/runtime_ssm_e2e.fx")
+            "${CMAKE_SOURCE_DIR}/v2_examples/runtime_ssm_e2e.fx")
         set(FELIDAE_RUNTIME_SSM_E2E_BINARY
             "${CMAKE_BINARY_DIR}/runtime_ssm_e2e.bin")
         add_custom_command(
@@ -618,7 +622,7 @@ if(FELIDAE_BUILD_TESTS)
                     "${FELIDAE_RUNTIME_SSM_E2E_SOURCE}"
             DEPENDS felidae_compiler "${FELIDAE_RUNTIME_SSM_E2E_SOURCE}"
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            COMMENT "Compiling runtime SSM end-to-end FELBIN fixture"
+            COMMENT "Compiling runtime SSM end-to-end FELBIR fixture"
             VERBATIM)
         add_custom_target(felidae_runtime_ssm_e2e_binary
             DEPENDS "${FELIDAE_RUNTIME_SSM_E2E_BINARY}")
@@ -686,7 +690,7 @@ if(FELIDAE_BUILD_TESTS)
     add_executable(felidae_ir_test tests/FelidaeIrTest.cpp)
     target_link_libraries(felidae_ir_test PRIVATE felidae_form)
     target_compile_definitions(felidae_ir_test PRIVATE
-        FELIDAE_TEST_OUTPUT_DIR="${CMAKE_BINARY_DIR}/test-artifacts/isa")
+        FELIDAE_TEST_OUTPUT_DIR="${CMAKE_BINARY_DIR}/test-artifacts/ir")
     target_compile_options(felidae_ir_test PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
         $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
@@ -713,7 +717,7 @@ if(FELIDAE_BUILD_TESTS)
     add_custom_target(felidae_tests DEPENDS ${FELIDAE_TEST_TARGETS})
 endif()
 
-# Form executes verified Felidae ISA and has no production native-extension
+# Form executes verified Felidae IR and has no production native-extension
 # dispatch path. Keep retired DLL experiments opt-in so ordinary builds do not
 # write generated binaries into source directories or ship parallel services.
 if(FELIDAE_BUILD_NATIVE_MODULES)
@@ -849,7 +853,7 @@ foreach(felidae_quality_target IN ITEMS
 endforeach()
 
 if(FELIDAE_BUILD_TESTS)
-    # Release gate: build the portable distribution, run the focused ISA/VM
+    # Release gate: build the portable distribution, run the focused IR/VM
     # regression suite, then execute a compiler->.bin->VM smoke through the
     # staged binaries themselves. It never creates a second build tree.
     add_custom_target(felidae_beta
