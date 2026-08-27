@@ -29,10 +29,10 @@ public:
     explicit IntegerParserError(const std::string& message) : std::runtime_error(message) {}
 };
 
-// Direct SentencePiece-ID grammar assembler. It has no secondary tokenizer,
+// Direct SentencePiece-ID parser. It has no secondary tokenizer,
 // source-character syntax scanner, or spelling-to-token lookup table. IDs
 // determine all syntax; original source is retained only to copy an already
-// bounded identifier payload into the IR for SymbolId interning.
+// bounded identifier payload into short-lived compiler symbol interning.
 class IntegerParser {
 public:
     explicit IntegerParser(const IntegerTokenList& input,
@@ -95,10 +95,7 @@ private:
     std::size_t byte_ = 0;
     std::size_t recursionDepth_ = 0;
     IntegerParserMetrics metrics_;
-    // Position before each SentencePiece entry. Built once from the original
-    // encode offsets so source-map stamping never rescans the full stream.
-    std::vector<SourceSpan> pieceStarts_;
-
+    std::vector<std::size_t> lineStarts_;
     static constexpr std::size_t kMaximumRecursionDepth = 512;
     static constexpr std::size_t kMaximumIterations = 1'000'000;
 
@@ -154,6 +151,8 @@ private:
     std::size_t sourceLineIndent(std::size_t offset) const;
     void consumeStatementTerminator(std::size_t statementBegin);
     SourceSpan span(std::size_t begin, std::size_t end) const;
+    std::pair<int, int> sourcePosition(std::size_t offset) const;
+    std::size_t sourceOffset(int line, int column) const;
     void stamp(const std::shared_ptr<AstNode>& node, std::size_t begin, std::size_t end) const;
     FelidaeIr compileModelRoutedMixfixExpressionIr(const std::shared_ptr<Expr>& expression) const;
 };

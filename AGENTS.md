@@ -40,3 +40,8 @@
   changes semantics, data formats, ownership, compatibility, or performance
   tradeoffs. Continue autonomously for mechanical corrections whose intended
   behavior is already established by the repository contract.
+- Before regenerating a checked-in model, dataset, vocabulary header, or other
+  generated source artifact, inspect its Git status and relevant history plus
+  the generator inputs and dependencies. Regenerate only when an authoritative
+  input changed or the user explicitly requests it; confirm whether the result
+  actually changed before keeping it.

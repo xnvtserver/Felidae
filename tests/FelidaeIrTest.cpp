@@ -13,6 +13,8 @@ bool rejects(const std::function<void()>& action) {
 Felidae::IrModule returning(Felidae::IrConstant value, Felidae::IrConstantKind kind) {
     using namespace Felidae;
     IrModule module;
+    module.sentencePieceModelIdentity = "sha256:test";
+    module.symbolTable = {{1}};
     module.entryProcedure = 1;
     module.ir.registerCount = 1;
     module.ir.symbols = {1};
@@ -21,8 +23,7 @@ Felidae::IrModule returning(Felidae::IrConstant value, Felidae::IrConstantKind k
                        static_cast<IrWord>(IrOpcode::End)};
     IrProcedure procedure;
     procedure.ir.registerCount = 1;
-    procedure.ir.constants = {value};
-    procedure.ir.constantKinds = {kind};
+    procedure.ir.constants = {{kind, value}};
     procedure.ir.words = {static_cast<IrWord>(IrOpcode::LoadConst), 0, 0,
                           static_cast<IrWord>(IrOpcode::Return), 0, 0,
                           static_cast<IrWord>(IrOpcode::End)};
@@ -58,6 +59,8 @@ int main() {
     assert(rejects([&] { (void)verifyIrModule(std::move(invalid)); }));
 
     IrModule loop;
+    loop.sentencePieceModelIdentity = "sha256:test";
+    loop.symbolTable = {{1}};
     loop.entryProcedure = 1;
     loop.ir.registerCount = 1;
     loop.ir.symbols = {1};

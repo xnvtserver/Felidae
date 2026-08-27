@@ -3,16 +3,20 @@
 The current reusable baseline is `runtime-context-v1.jsonl`. It is generated
 from verified deterministic `.bin` results built from `v2_examples`.
 
-The dataset is JSON Lines schema v7, with one operation-level record per line:
+The dataset is JSON Lines schema v8, with one operation-level record per line:
 `operation_id`, ordered `input_kinds`, sorted `fact_types`, sorted
 `fact_type_counts`, sorted `hierarchy_edges`, `target_kind`, and `target_value`. Those fields are exactly
 the finite information the current GRU sees at inference; it must not store
 whole-program results or train-only features.
+Every symbol in the three fact/hierarchy fields is its complete SentencePiece
+ID sequence. Module-local indexes, hashes, and source spellings are not model
+identity and must never be written to this dataset.
 `target_value` must name an action in the production vocabulary: input/fact
 references `0..15`, numeric truth `0` or `1`, nil `0`, or Degree milli-values
 `0`, `250`, `500`, `750`, and `1000`.
 
-The baseline trains only the permanent `SemanticOperationId::Identity` value
+The baseline currently contains 15 deterministic records across the existing
+typed runtime fixtures and trains only the permanent `SemanticOperationId::Identity` value
 `0x0001`. It preserves one typed input and never hashes a source spelling into
 an operation ID. Binaries containing `SemanticEval` still require a separate
 explicit teacher and are rejected rather than assigned a whole-program label.

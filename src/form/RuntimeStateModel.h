@@ -30,6 +30,7 @@ struct RuntimeOutputToken {
 // a finite decoder vocabulary and every selected position is range-checked
 // against the current operation inputs before it enters a VM register.
 inline constexpr std::size_t kRuntimeModelReferenceLimit = 16;
+inline constexpr std::int64_t kRuntimeStructuralInputTokens = 32;
 
 // Single production vocabulary contract used by both the VM loader and the
 // C++ trainer. A manifest's output_vocabulary is checked against this list.

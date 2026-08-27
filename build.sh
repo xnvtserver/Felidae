@@ -9,6 +9,7 @@ ENABLE_LIBTORCH="${FELIDAE_ENABLE_LIBTORCH:-OFF}" # ON | OFF
 PLATFORM="${FELIDAE_PLATFORM:-auto}"               # auto | linux | macos | windows | android | generic
 ARCHITECTURE="${FELIDAE_ARCH:-auto}"               # auto | x86_64 | arm64 | armv7
 ANDROID_API="${FELIDAE_ANDROID_API:-24}"
+JOBS="${FELIDAE_JOBS:-auto}"
 SANITIZE=0
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,7 +17,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() {
     echo "usage: ./build.sh [--mode test|release] [--training ON|OFF] [--libtorch ON|OFF]"
     echo "                  [--platform auto|linux|macos|windows|android|generic]"
-    echo "                  [--arch auto|x86_64|arm64|armv7] [--android-api N] [--sanitize]"
+    echo "                  [--arch auto|x86_64|arm64|armv7] [--android-api N]"
+    echo "                  [--jobs N|auto] [--sanitize]"
 }
 
 normalize_boolean() {
@@ -35,6 +37,7 @@ while [[ $# -gt 0 ]]; do
         --platform) PLATFORM="${2:-}"; shift 2 ;;
         --arch) ARCHITECTURE="${2:-}"; shift 2 ;;
         --android-api) ANDROID_API="${2:-}"; shift 2 ;;
+        --jobs) JOBS="${2:-}"; shift 2 ;;
         --sanitize) SANITIZE=1; shift ;;
         --configuration)
             case "${2:-}" in
@@ -98,6 +101,19 @@ esac
 
 ENABLE_TRAINING="$(normalize_boolean "$ENABLE_TRAINING")"
 ENABLE_LIBTORCH="$(normalize_boolean "$ENABLE_LIBTORCH")"
+if [[ "${JOBS,,}" == auto ]]; then
+    if command -v getconf >/dev/null 2>&1; then
+        JOBS="$(getconf _NPROCESSORS_ONLN)"
+    elif command -v sysctl >/dev/null 2>&1; then
+        JOBS="$(sysctl -n hw.ncpu)"
+    else
+        JOBS=1
+    fi
+fi
+if [[ ! "$JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Invalid job count '$JOBS'; expected auto or a positive integer" >&2
+    exit 2
+fi
 if [[ "$ENABLE_TRAINING" == ON && "$ENABLE_LIBTORCH" != ON ]]; then
     echo "Training requires LibTorch; set ENABLE_LIBTORCH=ON" >&2
     exit 2
@@ -163,12 +179,12 @@ if [[ "$SANITIZE" -eq 1 ]]; then
     CMAKE_ARGS+=("-DFELIDAE_ENABLE_SANITIZERS=ON")
 fi
 
-echo "Felidae platform=${PLATFORM} arch=${ARCHITECTURE} mode=${MODE} configuration=${CONFIGURATION} training=${ENABLE_TRAINING} libtorch=${ENABLE_LIBTORCH}"
+echo "Felidae platform=${PLATFORM} arch=${ARCHITECTURE} mode=${MODE} configuration=${CONFIGURATION} training=${ENABLE_TRAINING} libtorch=${ENABLE_LIBTORCH} jobs=${JOBS}"
 nice -n 19 cmake "${CMAKE_ARGS[@]}"
 
 if [[ "$MODE" == test ]]; then
     nice -n 19 cmake --build "$BUILD_DIR" --config "$CONFIGURATION" \
-        --target felidae_compiler felidae_vm felidae_tests --parallel "${FELIDAE_JOBS:-1}"
+        --target felidae_compiler felidae_vm felidae_tests --parallel "$JOBS"
     if [[ "$CAN_RUN_TESTS" -eq 1 ]]; then
         ctest --test-dir "$BUILD_DIR" --build-config "$CONFIGURATION" --output-on-failure
     else
@@ -176,5 +192,5 @@ if [[ "$MODE" == test ]]; then
     fi
 else
     nice -n 19 cmake --build "$BUILD_DIR" --config "$CONFIGURATION" \
-        --target felidae_dist --parallel "${FELIDAE_JOBS:-1}"
+        --target felidae_dist --parallel "$JOBS"
 fi

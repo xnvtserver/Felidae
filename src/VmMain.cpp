@@ -106,7 +106,8 @@ int main(int argc, char** argv) {
         if (options->modelDirectory) {
             auto vocabulary = defaultRuntimeOutputVocabulary();
             GruRuntimeStateModel::Configuration configuration;
-            configuration.inputVocabularySize = 4096;
+            configuration.inputVocabularySize = felidaeSentencePieceModel().GetPieceSize() +
+                                                kRuntimeStructuralInputTokens;
             configuration.outputVocabularySize = static_cast<std::int64_t>(vocabulary.size());
             model = std::make_unique<GruRuntimeStateModel>(
                 GruRuntimeStateModel::loadVersioned(configuration, std::move(vocabulary), *options->modelDirectory));

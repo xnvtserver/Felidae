@@ -24,7 +24,7 @@ built-in expressions migrate to `OperatorExpression`.
 | Fact selection | `FactSelectionExpr` | Runtime-only value; not custom operator syntax. |
 | Rule implication | `ClauseStmt` | Structural declaration syntax; never overloadable. |
 
-Primary regression fixtures are `v2_examples/operator_expression_inventory.fx`,
-`examples/arithmetic_and_boolean.fx`, `examples/then_pipeline.fx`, parser negative
-cases under `examples/invalid/`, and the inline parser cases in
-`scripts/test_felidae_examples.ps1`.
+Primary regression fixtures are
+`v2_examples/operator_expression_inventory.fx`, the current
+`v2_examples/invalid_*.fx` rejection cases, and the inline C++ parser and
+pipeline regression cases.

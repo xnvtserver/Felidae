@@ -43,7 +43,7 @@ cmake --build build/debug --target felidae_compiler felidae_vm --parallel 1
 ./build/debug/felidae_vm build/debug/air_conditioner_theorem_solver.bin
 ```
 
-The native benchmark target runs the same source-to-verified-ISA path in one
+The native benchmark target runs the same source-to-verified-IR path in one
 process and emits one JSON result. Build it explicitly, then supply expected
 action text from the versioned manifest:
 
@@ -77,7 +77,7 @@ Record these metrics rather than one opaque score:
 
 Do not count a crash, hang, `nil`, or silent halt as a correct rejection. For
 fault tolerance, add cases for invalid sensor truth, missing resources,
-unknown fact fields, malformed source, corrupted FELBIN bytes, and recursion
+unknown fact fields, malformed source, corrupted FELBIR bytes, and recursion
 depth exhaustion. The compiler or verifier must reject malformed artifacts;
 the domain policy must return a documented safe action for valid but adverse
 inputs.
@@ -87,7 +87,7 @@ inputs.
 Felidae code supplies executable rules; merely reading a new `.fx` file is
 not model training. The compiler SSM learns mixfix target selection, while
 the runtime SSM learns operation selection. Neither model may invent new
-language semantics or bypass IR/ISA verification.
+language semantics or bypass executable IR verification.
 
 Use three disjoint sets when evaluating learning:
 
@@ -107,7 +107,7 @@ CPU, and command line with every result.
 
 Felidae is stronger than a hand-written finite-state table when policies are
 shared across many hierarchical fact types, explanations and proof scores
-matter, or new combinations of known facts must be evaluated. Verified ISA,
+matter, or new combinations of known facts must be evaluated. Verified IR,
 bounded indexes, deterministic lowering, and numeric truth also give a useful
 safety boundary.
 
@@ -143,8 +143,9 @@ depth, data size, negative evidence, or held-out domains.
 The deterministic VM primitives are stronger than the source-level feature
 surface currently reaching them. Hierarchy proofs, common ancestors, least and
 most-general common ancestors, structural similarity, Gaussian membership,
-and temporal ranking have verified ISA implementations. Several documented
-high-level comparison and fact-query forms still fail before ISA lowering.
+and temporal ranking have verified executable-IR implementations. Several
+documented high-level comparison and fact-query forms still fail during IR
+generation.
 
 ### Measured engineering bottlenecks
 
@@ -167,7 +168,7 @@ high-level comparison and fact-query forms still fail before ISA lowering.
 
 ### Intelligence improvement plan
 
-1. **Restore the source-to-ISA surface.** Lower typed fact iteration,
+1. **Complete the source-to-IR surface.** Compile typed fact iteration,
    relationship comparison, and maintained fact-analysis examples. Add a
    compile-and-run regression for every supported public construct.
 2. **Make benchmarks typed.** Assert exact result paths, value kinds, fact
