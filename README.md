@@ -1,211 +1,1910 @@
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vishalkrishnaag/vs-code-extension/master/icons/fx-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/vishalkrishnaag/vs-code-extension/master/icons/fx-light.svg">
+  <img alt="Felidae" src="https://raw.githubusercontent.com/vishalkrishnaag/vs-code-extension/master/icons/fx-light.svg" width="112">
+</picture>
+
 # Felidae
 
-Felidae compiles `.fx` source into verified, integer-only `.bin` artifacts.
-`.bin` uses the beta **FELBIR v16** container. During beta, binaries must be
-rebuilt whenever the current IR version changes; pre-release compatibility
-formats are intentionally not retained.
-The compiler and VM are separate C++ executables:
+### A reasoning language for facts, relationships, degrees, rules, and intelligent software.
+
+**Felidae combines programming, structured knowledge, fuzzy reasoning, and carefully controlled learned behavior in a fast C++ language and runtime.**
+
+<br>
+
+[![Status](https://img.shields.io/badge/status-beta-F59E0B?style=for-the-badge)](#beta-status)
+[![Version](https://img.shields.io/badge/version-0.2.3--beta.1-7C3AED?style=for-the-badge)](#beta-status)
+[![C++](https://img.shields.io/badge/C%2B%2B-20-00599C?style=for-the-badge\&logo=cplusplus)](#building-felidae)
+[![CMake](https://img.shields.io/badge/CMake-3.21%2B-064F8C?style=for-the-badge\&logo=cmake)](#building-felidae)
+[![License](https://img.shields.io/badge/license-MIT-22C55E?style=for-the-badge)](./LICENCE)
+
+<br>
+
+[🌐 Website](https://felidae.xnovity.com)
+  •  
+[📚 Documentation](./docs)
+  •  
+[🧪 Examples](./v2_examples)
+  •  
+[🤝 Contributing](./CONTRIBUTING.md)
+  •  
+[🔐 Security](./SECURITY.md)
+
+</div>
+
+---
+
+> [!IMPORTANT]
+> **Felidae is currently beta software.**
+>
+> It is intended for development, evaluation, experimentation, research, and non-critical workflows.
+>
+> Production use is **not currently recommended**. Do not make safety-critical, medical, legal, financial, security-critical, or other high-risk decisions solely from Felidae outputs while the project remains in beta.
+
+---
+
+## Welcome to Felidae
+
+Most programming languages are excellent at answering questions such as:
 
 ```text
-source.fx -> SentencePiece IDs -> IntegerParser -> AST compiler -> verified .bin
-program.bin -> binary loader -> verifier -> Form register VM
+What instruction should execute next?
+What value should this function return?
+Is this condition true or false?
 ```
 
-The compiler emits one executable, variable-width IR. It is verified once at
-the compiler or hostile-binary boundary and executed directly by the Form
-register VM; there is no assembler, secondary ISA, or lowering stage.
-`.bin` stores numeric opcodes and operands, registers, constants, source-map
-spans, procedure metadata, and a module symbol table whose entries are complete
-SentencePiece ID sequences. It never stores source syntax, pointers, AST
-objects, symbol hashes, or a parallel UTF-8 symbol-identity system.
+But many real-world systems need to ask broader questions:
 
-The Form VM does not link the parser or AST. SentencePiece decoding is a
-presentation adapter used for meaningful output, while execution and runtime
-SSM context remain integer-only.
+```text
+What do we know?
 
-FELBIR v16 also provides deterministic floating-point intrinsics such as
-`MIN`, `MAX`, `ABS`, `AVG`, `CLAMP`, `SQRT`, `POW`, `LERP`, and range/finite
-classifiers. They execute directly in `RegisterVm`; invalid domains raise an
-error, and classifiers return numeric truth `0.0` or `1.0`. See
-[`v2_examples/numeric_operations.fx`](v2_examples/numeric_operations.fx).
+How are these facts related?
 
-Supported desktop builds also require LibTorch for tensor operations over
-numeric arrays and SentencePiece-backed fact features. Non-scalar results stay
-as real LibTorch tensors inside the VM and are materialized only for display or
-another explicit boundary. Tensor metadata,
-clone/transpose/symmetry, differences, cosine similarity, dot product, MSE,
-sigmoid, and ReLU execute deterministically without consulting the VM SSM.
-Android and explicitly unsupported targets may configure
-`FELIDAE_ENABLE_LIBTORCH=OFF`; such a VM rejects tensor instructions clearly.
-See [`v2_examples/tensor_operations.fx`](v2_examples/tensor_operations.fx).
+Does this item belong to this category?
 
-For intelligence-style evaluation, use the reproducible
-[reasoning and robustness benchmark](docs/reasoning_benchmark.md). It includes
-coffee-vending and HVAC examples using hierarchy, explicit unification
-predicates, theorem-like mixfix statements, bounded alternative proofs, and
-safe failure cases. The benchmark reports proof accuracy, fault tolerance,
-determinism, latency, and held-out learning separately; it does not claim a
-human IQ score or native Prolog backtracking.
+How strongly does something match?
 
-For focused C++ quality checks after a successful Debug build:
+What can be derived from the information available?
 
-```bash
-clang-tidy -p build/debug \
-  src/form/RegisterVm.cpp src/form/LibTorchTensorRuntime.cpp \
-  src/IrCodeGenerator.cpp src/IntegerParser.cpp
+What if an answer is partially true rather than simply true or false?
 
-cppcheck --enable=warning,performance,portability \
-  --std=c++20 --project=build/debug/compile_commands.json \
-  --suppress=missingIncludeSystem
+Can different kinds of evidence be combined?
 
-valgrind --error-exitcode=1 --leak-check=full \
-  ./build/debug/felidae_libtorch_smoke_test
+Can a program work with relationships and knowledge directly?
 ```
 
-These tools are deliberately not attached to every ordinary build because
-they are substantially slower. Their final diagnostics are release evidence;
-installation or a clean compilation alone is not.
+**Felidae is an experiment in building a programming language around those kinds of problems.**
 
-## Build and debug on Linux or WSL
+It combines familiar programming ideas with:
 
-Felidae requires CMake 3.21 or newer, a C++20 compiler (GCC 8+ or Clang 7+),
-and the pinned Git submodules. Ninja and GDB are recommended for fast builds
-and native debugging. Python is not used. LibTorch is required for the normal
-desktop VM and may be disabled only for unsupported targets such as Android.
+* structured facts,
+* relationships,
+* hierarchy,
+* degrees,
+* fuzzy reasoning,
+* queries,
+* custom expressions,
+* deterministic computation,
+* and optional learned semantic evaluation.
 
-Clone the repository with its submodules, or initialize them in an existing
-checkout:
+The intention is not to make ordinary programming unnecessarily complicated.
+
+The intention is to give developers another way to build software when the problem naturally involves **knowledge and reasoning**, rather than only instructions and data transformations.
+
+---
+
+## ✨ Felidae in one sentence
+
+> **Felidae is a C++ reasoning language and runtime that lets software work directly with facts, relationships, degrees, and rules while keeping ordinary execution predictable.**
+
+---
+
+## Table of contents
+
+* [Why Felidae?](#why-felidae)
+* [What makes Felidae different?](#what-makes-felidae-different)
+* [What Felidae can be useful for](#what-felidae-can-be-useful-for)
+* [Felidae at a glance](#felidae-at-a-glance)
+* [A quick feel for the language](#a-quick-feel-for-the-language)
+* [Facts](#facts)
+* [Relationships and hierarchy](#relationships-and-hierarchy)
+* [Degrees and fuzzy reasoning](#degrees-and-fuzzy-reasoning)
+* [Queries and fact traversal](#queries-and-fact-traversal)
+* [Methods and ordinary programming](#methods-and-ordinary-programming)
+* [Flexible expressions and mixfix](#flexible-expressions-and-mixfix)
+* [Numeric operations](#numeric-operations)
+* [Tensor operations](#tensor-operations)
+* [Reasoning and proof-style workflows](#reasoning-and-proof-style-workflows)
+* [Deterministic and learned behavior](#deterministic-and-learned-behavior)
+* [How Felidae works](#how-felidae-works)
+* [Compiler and VM separation](#compiler-and-vm-separation)
+* [Verified binary programs](#verified-binary-programs)
+* [Beta status](#beta-status)
+* [Quick start](#quick-start)
+* [Requirements](#requirements)
+* [Building Felidae](#building-felidae)
+* [Linux and WSL](#linux-and-wsl)
+* [Windows](#windows)
+* [macOS](#macos)
+* [Android and cross-compilation](#android-and-cross-compilation)
+* [Running a program](#running-a-program)
+* [Long-lived VM mode](#long-lived-vm-mode)
+* [Working examples](#working-examples)
+* [Repository structure](#repository-structure)
+* [Dependencies](#dependencies)
+* [Testing](#testing)
+* [Debugging](#debugging)
+* [Code quality](#code-quality)
+* [LibTorch](#libtorch)
+* [SentencePiece and the tokenizer](#sentencepiece-and-the-tokenizer)
+* [Compiler recurrent model](#compiler-recurrent-model)
+* [VM recurrent model](#vm-recurrent-model)
+* [Training](#training)
+* [Release builds](#release-builds)
+* [Documentation](#documentation)
+* [Editor support](#editor-support)
+* [Development principles](#development-principles)
+* [Project maturity](#project-maturity)
+* [Security](#security)
+* [Contributing](#contributing)
+* [FAQ](#frequently-asked-questions)
+* [License](#license)
+* [Project](#project)
+
+---
+
+# Why Felidae?
+
+Software increasingly works with information that is more complicated than a simple boolean condition.
+
+Consider statements such as:
+
+* this customer is **similar** to another customer,
+* this observation has **high confidence**,
+* this employee belongs to a broader organizational category,
+* this product is **partially relevant** to a request,
+* this fact is inherited from a more general category,
+* several pieces of evidence support a conclusion,
+* one explanation is stronger than another,
+* a condition is almost satisfied but does not cross a final threshold.
+
+Traditional programming can represent all of these things.
+
+But developers often have to manually build layers of:
+
+```text
+objects
++
+rules
++
+database queries
++
+classification logic
++
+scoring systems
++
+relationship graphs
++
+application-specific conventions
+```
+
+Felidae explores whether some of those ideas can live directly inside the language and runtime.
+
+Instead of treating reasoning as an external feature bolted onto an application, Felidae makes concepts such as **facts, hierarchy, degrees, and queries part of the programming model itself**.
+
+---
+
+# What makes Felidae different?
+
+Felidae is not designed around one single feature.
+
+Its identity comes from combining several ideas.
+
+| Capability                   | What it means                                                               |
+| ---------------------------- | --------------------------------------------------------------------------- |
+| 🐾 **Facts**                 | Structured knowledge can exist directly in the language                     |
+| 🌳 **Hierarchy**             | Facts and types can have broader and more specific relationships            |
+| 🌗 **Degrees**               | Values do not always need to collapse immediately into `true` or `false`    |
+| 🔎 **Queries**               | Programs can work with groups of known facts                                |
+| 🧠 **Reasoning**             | Facts, rules, hierarchy and evidence can participate in reasoning workflows |
+| 🧩 **Flexible expressions**  | Domain-oriented expressions can be expressed using mixfix forms             |
+| ⚙️ **Deterministic runtime** | Ordinary computation remains predictable                                    |
+| 🔬 **Controlled learning**   | Learned behavior is limited to explicit, validated parts of the system      |
+| 📦 **Compiled programs**     | `.fx` source is compiled before execution                                   |
+| 🛡️ **Verification**         | Compiled programs are checked before the VM accepts them                    |
+| 🚀 **C++ runtime**           | The compiler and VM are implemented primarily in modern C++                 |
+
+---
+
+# What Felidae can be useful for
+
+Felidae is experimental, but its design is particularly relevant to software involving:
+
+### Expert systems
+
+Applications where knowledge and rules are evaluated together.
+
+Examples:
+
+* diagnosis-like workflows,
+* recommendation rules,
+* configuration reasoning,
+* operational decision support,
+* policy evaluation.
+
+### Knowledge-oriented software
+
+Systems where relationships between facts are as important as the facts themselves.
+
+Examples:
+
+* organizational knowledge,
+* product hierarchies,
+* scientific classifications,
+* domain models,
+* knowledge graphs.
+
+### Fuzzy decision systems
+
+Applications where there is meaningful information between `false` and `true`.
+
+Examples:
+
+* similarity,
+* suitability,
+* confidence,
+* membership,
+* relevance,
+* preference,
+* quality scoring.
+
+### Rule engines
+
+Systems with domain rules that need more expressive structure than a large collection of application-level `if` statements.
+
+### Contextual evaluation
+
+Programs that evaluate information differently depending on the surrounding facts or state.
+
+### Reasoning research
+
+Experiments involving:
+
+* hierarchical reasoning,
+* evidence,
+* partial truth,
+* alternate proofs,
+* semantic evaluation,
+* symbolic structures,
+* learned assistance.
+
+### Domain-specific languages
+
+Felidae's custom/mixfix expression support can make certain domain concepts more readable than ordinary function calls.
+
+### Analytical systems
+
+Felidae can combine:
+
+* facts,
+* numeric operations,
+* degree calculations,
+* tensors,
+* hierarchy,
+* and rule execution.
+
+---
+
+# Felidae at a glance
+
+```text
+File extension        .fx
+
+Implementation        C++20
+
+Build system          CMake
+
+Main components       Compiler + Form VM
+
+Program output        Verified .bin executable
+
+Reasoning model       Facts + hierarchy + degrees + explicit semantics
+
+ML backend            LibTorch
+
+Tokenizer             SentencePiece
+
+Primary status        Beta
+
+Current beta          0.2.3-beta.1
+
+License               MIT
+```
+
+---
+
+# A quick feel for the language
+
+Felidae can still look familiar to someone who has used ordinary programming languages.
+
+For example:
+
+```felidae
+Person(name: "unknown", age: 0, active: false)
+
+Employee extend Person(
+    name: "unknown",
+    age: 0,
+    active: true,
+    role: "staff"
+)
+
+Engineer extend Employee(
+    name: "unknown",
+    age: 0,
+    active: true,
+    role: "engineer",
+    level: 1
+)
+```
+
+A function can look like:
+
+```felidae
+increment(value: number) =>
+
+    return value + 1
+```
+
+Functions may call other functions:
+
+```felidae
+double(value: number) =>
+
+    return value * 2
+
+scoreFor(age: number, level: number) =>
+
+    base := double(value: age)
+
+    return base + level
+```
+
+Recursion is also represented in the current examples:
+
+```felidae
+factorial(value: number) =>
+
+    if value <= 1 then
+
+        return 1
+
+    else
+
+        previous := factorial(value: value - 1)
+
+        return value * previous
+```
+
+And programs can return structured values:
+
+```felidae
+return {
+    name: "Felidae",
+    active: true,
+    tags: ["facts", "reasoning", "degrees"]
+}
+```
+
+So Felidae is not only a rule notation.
+
+It remains a programming language while adding reasoning-oriented concepts.
+
+---
+
+# Facts
+
+Facts are one of the central ideas in Felidae.
+
+A declaration such as:
+
+```felidae
+Person(
+    name: "Ada",
+    age: 32,
+    active: true
+)
+```
+
+represents structured information that can participate in runtime operations.
+
+A fact may contain:
+
+* names,
+* numbers,
+* boolean values,
+* strings,
+* arrays,
+* maps,
+* degree values,
+* and other supported values.
+
+Facts can then become part of:
+
+* queries,
+* hierarchy,
+* loops,
+* comparisons,
+* reasoning,
+* reporting,
+* semantic evaluation.
+
+This is different from treating a fact as merely an application-specific JSON document.
+
+Felidae understands the fact as part of the language/runtime model.
+
+---
+
+# Relationships and hierarchy
+
+Felidae supports relationships between fact types.
+
+For example:
+
+```felidae
+Animal(name: "generic")
+
+Dog extend Animal(name: "fido")
+
+Cat extend Animal(name: "milo")
+```
+
+Here:
+
+```text
+Animal
+├── Dog
+└── Cat
+```
+
+This allows broader operations to include more specific types.
+
+Instead of manually writing logic such as:
+
+```text
+if object is Animal
+or object is Dog
+or object is Cat
+...
+```
+
+a hierarchy-aware operation can start from `Animal`.
+
+This becomes especially useful when the hierarchy becomes deeper.
+
+For example:
+
+```text
+Person
+└── Employee
+    └── Engineer
+```
+
+A system can work with the broader concept while still preserving the more specific type.
+
+---
+
+# Degrees and fuzzy reasoning
+
+Ordinary boolean logic gives two values:
+
+```text
+false
+true
+```
+
+That is ideal for many problems.
+
+For example:
+
+```text
+Is 10 greater than 5? → true
+```
+
+But other questions are naturally gradual.
+
+For example:
+
+```text
+How similar are these values?
+
+How strongly does this score belong to this category?
+
+How confident is this observation?
+
+How close is a value to the ideal?
+```
+
+Felidae allows these kinds of values to remain numeric degrees rather than immediately forcing them into a boolean.
+
+For example:
+
+```felidae
+membershipDegree := membership(score, profile)
+
+closenessDegree := similarity(score, 75)
+```
+
+A degree can later be converted into a crisp decision when the program explicitly chooses a threshold:
+
+```felidae
+if degree >= 75% then
+
+    return "met"
+
+else
+
+    return "not-met"
+```
+
+This distinction is important.
+
+Felidae does not try to make every boolean operation fuzzy.
+
+Instead:
+
+```text
+graded information remains graded
+until
+the program explicitly needs a crisp decision
+```
+
+---
+
+## Example degree profile
+
+A profile might describe a graded category:
+
+```felidae
+RatingProfile(
+    name: "Strong / Agree",
+    peak: 75,
+    fades_in: 50,
+    fades_out: 90
+)
+```
+
+The program can then calculate how strongly another value belongs to that profile.
+
+This is useful for concepts such as:
+
+* low / medium / high,
+* poor / acceptable / strong,
+* unlikely / possible / likely,
+* weak / moderate / strong evidence,
+* low / medium / high similarity.
+
+---
+
+# Queries and fact traversal
+
+Facts can be designated for later queries.
+
+Example:
+
+```felidae
+Animal(name: "generic") as animals
+
+Dog extend Animal(name: "fido")
+
+Cat extend Animal(name: "milo")
+```
+
+A program can then operate over that designation:
+
+```felidae
+keep(fact: any) => return fact
+
+main() => return for_each_fact(animals, keep)
+```
+
+Because `Dog` and `Cat` extend `Animal`, the query can work with the hierarchy rather than only one exact concrete type.
+
+This gives Felidae a natural path for:
+
+* typed fact traversal,
+* hierarchical searches,
+* fact filtering,
+* relationship reasoning,
+* group operations.
+
+---
+
+# Methods and ordinary programming
+
+Felidae also supports conventional language constructs.
+
+The current compiler/runtime examples cover areas such as:
+
+* procedures,
+* arguments,
+* named arguments,
+* return values,
+* recursion,
+* conditions,
+* arrays,
+* maps,
+* arithmetic,
+* comparisons,
+* methods,
+* imports,
+* custom operators.
+
+This is intentional.
+
+Felidae is not meant to require a reasoning operation for ordinary computation.
+
+Simple work should remain simple.
+
+For example:
+
+```felidae
+double(value: number) =>
+
+    return value * 2
+```
+
+does not need machine learning, fuzzy reasoning, or a semantic model.
+
+It is normal deterministic computation.
+
+---
+
+# Flexible expressions and mixfix
+
+Felidae supports **mixfix expressions**.
+
+The term sounds technical, but the underlying idea is simple:
+
+> A language can allow domain-specific expressions that do not always look like ordinary `function(argument)` calls.
+
+For example, some domains are naturally expressed as:
+
+```text
+something BETWEEN something AND something
+```
+
+or:
+
+```text
+IF something THEN something
+```
+
+or another custom pattern.
+
+Felidae's mixfix system explores allowing such forms while still compiling them into the same executable runtime representation used by ordinary code.
+
+The repository includes examples covering:
+
+* nested mixfix expressions,
+* prefix/infix combinations,
+* custom operators,
+* overloaded operators,
+* typed mixfix expressions,
+* fact reasoning with mixfix,
+* fuzzy facts with mixfix,
+* same-anchor patterns,
+* deeply nested patterns.
+
+Representative examples include:
+
+```text
+v2_examples/mixfix_ir_roundtrip.fx
+v2_examples/mixfix_deep_ir_nesting.fx
+v2_examples/mixfix_fuzzy_fact_report.fx
+v2_examples/mixfix_operator_overload.fx
+v2_examples/mixfix_expr_fact_reasoning.fx
+v2_examples/nested_mixfix_overload_resolution.fx
+```
+
+---
+
+# Numeric operations
+
+Felidae includes deterministic numeric operations directly in the runtime.
+
+Current operations include functionality such as:
+
+```text
+MIN
+MAX
+ABS
+AVG
+CLAMP
+SQRT
+POW
+LERP
+```
+
+along with range and finite-value checks.
+
+These operations execute as ordinary runtime operations.
+
+They do **not** require the optional semantic model.
+
+This is an important design rule:
+
+> If an operation has a clear deterministic answer, Felidae should normally compute that answer directly.
+
+See:
+
+```text
+v2_examples/numeric_operations.fx
+```
+
+for examples.
+
+---
+
+# Tensor operations
+
+Supported desktop builds can also use LibTorch-backed tensor functionality.
+
+This allows Felidae to work with numeric arrays using operations such as:
+
+* tensor metadata,
+* cloning,
+* transpose,
+* symmetry checks,
+* differences,
+* cosine similarity,
+* dot product,
+* mean squared error,
+* sigmoid,
+* ReLU.
+
+These operations remain deterministic.
+
+The existence of LibTorch inside Felidae does **not** mean every tensor operation is passed through a learned model.
+
+Tensor mathematics and semantic learning are separate concerns.
+
+See:
+
+```text
+v2_examples/tensor_operations.fx
+```
+
+for representative functionality.
+
+---
+
+# Reasoning and proof-style workflows
+
+Felidae includes reasoning-oriented examples that go beyond simple arithmetic.
+
+The repository currently includes examples such as:
+
+```text
+coffee_vending_theorem_solver.fx
+air_conditioner_theorem_solver.fx
+contextual_fact_intelligence.fx
+deep_fact_reasoning_analysis.fx
+selective_relationship_reasoning.fx
+temporal_fact_reasoning.fx
+sentiment_fact_expert_system.fx
+animal_fact_similarity_evidence.fx
+```
+
+The reasoning benchmark covers areas including:
+
+* hierarchy,
+* explicit unification,
+* theorem-like expressions,
+* bounded alternative proofs,
+* safe failure cases,
+* deterministic execution,
+* fault tolerance,
+* latency,
+* held-out learning evaluation.
+
+See:
+
+```text
+docs/reasoning_benchmark.md
+```
+
+for the benchmark methodology.
+
+Felidae does **not** claim that these benchmarks represent human intelligence or a human IQ score.
+
+The benchmark is designed to measure specific system behaviors independently.
+
+---
+
+# Deterministic and learned behavior
+
+Felidae deliberately separates two categories of work.
+
+## Deterministic work
+
+Examples:
+
+```text
+2 + 2
+
+MAX(10, 20)
+
+array lookup
+
+procedure call
+
+fact field access
+
+comparison
+
+hierarchical traversal
+
+tensor dot product
+```
+
+When the answer is defined by the language, the result should come from ordinary execution.
+
+---
+
+## Learned or semantic work
+
+Some situations may require choosing between interpretations or evaluating explicitly semantic operations.
+
+Felidae experiments with recurrent neural models for these limited cases.
+
+There are currently **two different model roles**.
+
+### Compiler-side model
+
+This model is associated with constrained compiler situations such as ambiguous mixfix structures.
+
+It does not replace the compiler.
+
+The compiler still owns:
+
+* syntax,
+* validation,
+* source errors,
+* binary generation,
+* verification.
+
+Model output must pass validation before it can become part of a compiled program.
+
+### VM-side model
+
+The VM contains a separate experimental recurrent model for explicit semantic evaluation operations.
+
+This model is not used automatically for ordinary arithmetic, boolean logic, fact access, or tensor mathematics.
+
+Semantic evaluation must be explicitly represented.
+
+---
+
+## Why separate them?
+
+Compiler uncertainty and runtime semantic uncertainty are different problems.
+
+Therefore Felidae does not treat them as one universal AI component.
+
+```text
+Source ambiguity
+      ↓
+Compiler model
+
+Runtime semantic operation
+      ↓
+VM model
+```
+
+Each model has its own:
+
+* responsibilities,
+* datasets,
+* training,
+* validation,
+* runtime boundary.
+
+---
+
+# How Felidae works
+
+At the highest level, Felidae is straightforward:
+
+```text
+             Felidae source
+                  .fx
+                   │
+                   ▼
+             ┌──────────┐
+             │ Compiler │
+             └──────────┘
+                   │
+                   ▼
+          verified binary program
+                  .bin
+                   │
+                   ▼
+             ┌─────────┐
+             │ Form VM │
+             └─────────┘
+                   │
+                   ▼
+                result
+```
+
+The compiler understands source code.
+
+The VM executes compiled programs.
+
+This separation is one of the most important architectural principles in Felidae.
+
+---
+
+# Compiler and VM separation
+
+Felidae deliberately keeps the compiler and runtime separate.
+
+The compiler is responsible for understanding `.fx` source.
+
+The runtime should not need to understand source syntax.
+
+Conceptually:
+
+```text
+SOURCE SIDE
+
+.fx source
+   ↓
+token IDs
+   ↓
+parser
+   ↓
+compiler
+   ↓
+verified executable binary
+
+
+RUNTIME SIDE
+
+.bin
+ ↓
+loader
+ ↓
+verification
+ ↓
+Form VM
+ ↓
+result
+```
+
+The VM does not need the compiler's AST in order to execute a program.
+
+This provides several benefits.
+
+### Cleaner responsibilities
+
+The compiler handles language syntax.
+
+The VM handles execution.
+
+### Smaller runtime boundary
+
+Source-language machinery does not need to be carried into normal execution.
+
+### Better validation
+
+A compiled binary can be checked before it runs.
+
+### Easier evolution
+
+The source language can evolve without forcing every parser detail into the VM.
+
+---
+
+# Verified binary programs
+
+Felidae source files compile to:
+
+```text
+.bin
+```
+
+files.
+
+The binary contains the information needed by the runtime, including concepts such as:
+
+* instructions,
+* operands,
+* registers,
+* constants,
+* procedures,
+* symbols,
+* source locations,
+* fact/type information.
+
+The binary is verified before normal execution.
+
+Malformed or invalid programs should fail at the binary boundary rather than being blindly executed.
+
+---
+
+## Why binary programs?
+
+Compilation provides a clean separation:
+
+```text
+Developer machine
+
+source.fx
+   ↓
+compiler
+   ↓
+program.bin
+
+
+Runtime
+
+program.bin
+   ↓
+VM
+```
+
+That separation also makes it possible to reason clearly about:
+
+* compiler correctness,
+* binary correctness,
+* runtime correctness,
+* semantic-model correctness.
+
+---
+
+## Beta binary compatibility
+
+Felidae's binary format is still evolving.
+
+During beta:
+
+> A `.bin` file generated by an older beta build may need to be rebuilt with the current compiler.
+
+Pre-release binary compatibility should not be assumed unless a particular release explicitly documents it.
+
+Keep the `.fx` source as the authoritative program representation during beta.
+
+---
+
+# Beta status
+
+Current supported beta:
+
+```text
+0.2.3-beta.1
+```
+
+Felidae is under active development.
+
+Beta means the project is real and usable for testing, but major areas are still evolving.
+
+During beta, the following may change:
+
+* syntax,
+* compiler behavior,
+* binary representation,
+* VM instructions,
+* APIs,
+* model formats,
+* training data formats,
+* experimental semantic features,
+* platform support.
+
+---
+
+## Recommended beta use
+
+Felidae is suitable for:
+
+✅ development
+
+✅ experimentation
+
+✅ research
+
+✅ learning
+
+✅ language exploration
+
+✅ reasoning experiments
+
+✅ proof-of-concept systems
+
+✅ non-critical internal workflows
+
+✅ benchmark development
+
+---
+
+## Not currently recommended
+
+Felidae beta should not be the sole decision-maker for:
+
+❌ medical decisions
+
+❌ legal decisions
+
+❌ financial decisions
+
+❌ safety-critical systems
+
+❌ infrastructure safety controls
+
+❌ irreversible high-impact decisions
+
+❌ security-critical authorization
+
+Production use is not currently recommended.
+
+See [SECURITY.md](./SECURITY.md).
+
+---
+
+# Quick start
+
+## 1. Clone Felidae
+
+Felidae uses Git submodules, so clone recursively:
 
 ```bash
-git clone --recurse-submodules <repository-url>
-# existing checkout:
+git clone --recurse-submodules https://github.com/xnvtserver/Felidae.git
+cd Felidae
+```
+
+If you already cloned the repository:
+
+```bash
+git submodule sync --recursive
 git submodule update --init --recursive
 ```
 
-Keep Debug, sanitizer, and Release configuration state in separate build
-directories. The portable `build.sh` exposes its normal controls at the top:
+---
 
-```bash
-MODE="test"          # test or release
-ENABLE_TRAINING="OFF" # ON requires LibTorch
-ENABLE_LIBTORCH="auto" # ON on supported desktop targets; OFF on Android
-JOBS="auto"           # detected logical CPUs, or a positive integer
-```
+## 2. Build
 
-Test mode configures `build/test`, builds the compiler, VM, and tests, then
-runs CTest. Release mode configures `build/release`, builds optimized binaries,
-and dynamically generates `build/release/dist/`; `dist/` is never a static
-source folder.
+On a supported Linux development system:
 
 ```bash
 ./build.sh --mode test
-./build.sh --mode test --jobs 8
-./build.sh --mode test --libtorch ON --training ON
-./build.sh --mode release --libtorch ON --training OFF
 ```
 
-Normal builds use all detected logical CPUs. Use `--jobs N` or
-`FELIDAE_JOBS=N` to cap parallelism when LibTorch compilation approaches the
-machine's memory limit.
-CMake also uses `ccache` automatically when it is installed. Disable this with
-`-DFELIDAE_ENABLE_CCACHE=OFF`, or provide an explicit
-`CMAKE_CXX_COMPILER_LAUNCHER` to use another launcher. Its cache stays inside
-the active build tree, for example `build/debug/ccache`.
+The normal Linux test build is created under:
 
-Linux x86-64 and ARM use native CMake when run on that architecture. macOS
-supports Intel and Apple Silicon, and Android uses the official NDK toolchain:
+```text
+build/test/
+```
+
+The build script:
+
+1. configures CMake,
+2. builds the compiler,
+3. builds the VM,
+4. builds the tests,
+5. runs CTest.
+
+---
+
+## 3. Compile an example
 
 ```bash
-FELIDAE_LIBTORCH_PATH=/opt/libtorch-macos-arm64 \
-  ./build.sh --platform macos --arch arm64 --mode release
-
-ANDROID_NDK_HOME=/opt/android-ndk \
-  ./build.sh --platform android --arch arm64 --android-api 24 \
-  --mode release --libtorch OFF
+./build/test/felidae_compiler \
+  v2_examples/form_core_concepts.fx
 ```
 
-For another OS or cross-compiler, use `--platform generic` and set
-`FELIDAE_TOOLCHAIN_FILE`. Cross-platform
-LibTorch builds must also set `FELIDAE_LIBTORCH_PATH` to a package built for
-the target architecture. Android tests are compiled but not executed on the
-host. Training is compiled into the compiler and VM only when both training
-and LibTorch are enabled; it is never started by `build.sh`.
+---
 
-A conservative manual Debug build suitable for machines with limited memory is:
+## 4. Run it
+
+```bash
+./build/test/felidae_vm \
+  build/test/form_core_concepts.bin
+```
+
+You have now executed a Felidae program through the normal:
+
+```text
+.fx → compiler → .bin → VM
+```
+
+pipeline.
+
+---
+
+# Requirements
+
+The normal project requires:
+
+| Requirement            | Purpose                                             |
+| ---------------------- | --------------------------------------------------- |
+| C++20-capable compiler | Building Felidae                                    |
+| CMake 3.21+            | Build configuration                                 |
+| Git                    | Repository/submodules                               |
+| SentencePiece          | Token representation                                |
+| LibTorch               | Tensor/model functionality on normal desktop builds |
+| CTest                  | Test execution                                      |
+| Ninja                  | Recommended build backend                           |
+
+Useful development tools include:
+
+```text
+GDB
+LLDB
+clang-tidy
+cppcheck
+Valgrind
+ccache
+```
+
+depending on your platform.
+
+---
+
+# Building Felidae
+
+Felidae includes:
+
+```text
+build.sh
+build.ps1
+build.cmd
+```
+
+as well as direct CMake support.
+
+The portable Unix-style build script supports options such as:
+
+```bash
+./build.sh \
+  --mode test \
+  --libtorch ON \
+  --training OFF \
+  --jobs 8
+```
+
+Main options include:
+
+| Option       | Values            | Meaning                        |
+| ------------ | ----------------- | ------------------------------ |
+| `--mode`     | `test`, `release` | Build purpose                  |
+| `--training` | `ON`, `OFF`       | Compile training functionality |
+| `--libtorch` | `ON`, `OFF`       | Enable LibTorch                |
+| `--platform` | platform name     | Select target platform         |
+| `--arch`     | architecture      | Select target architecture     |
+| `--jobs`     | number / auto     | Parallel build jobs            |
+| `--sanitize` | flag              | Enable sanitizer build         |
+
+---
+
+# Linux and WSL
+
+A normal Linux test build is:
+
+```bash
+./build.sh --mode test
+```
+
+Limit parallelism on machines with less memory:
+
+```bash
+./build.sh --mode test --jobs 2
+```
+
+or:
+
+```bash
+FELIDAE_JOBS=2 ./build.sh --mode test
+```
+
+For a manual Debug build:
 
 ```bash
 cmake -S . -B build/debug -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug \
   -DFELIDAE_ENABLE_LIBTORCH=ON \
   -DFELIDAE_BUILD_TESTS=ON
+```
 
+Then:
+
+```bash
 cmake --build build/debug \
   --target felidae_compiler felidae_vm felidae_debug felidae_tests \
   --parallel 1
 ```
 
-Run the complete test suite before debugging or changing the compiler/VM:
+Run tests:
 
 ```bash
-ctest --test-dir build/debug --output-on-failure
+ctest \
+  --test-dir build/debug \
+  --output-on-failure
 ```
 
-CTest also compiles and executes representative `v2_examples/` programs
-through the production compiler and VM. Run only these end-to-end checks with:
+---
+
+# Windows
+
+Felidae supports native Windows development through CMake.
+
+With LibTorch installed at:
+
+```text
+C:\libtorch
+```
+
+configure:
+
+```powershell
+cmake -S . -B build/debug -A x64 `
+  -DFELIDAE_ENABLE_LIBTORCH=ON `
+  -DCMAKE_PREFIX_PATH=C:\libtorch
+```
+
+Build the compiler and VM:
+
+```powershell
+cmake --build build/debug `
+  --config Debug `
+  --target felidae_compiler felidae_vm
+```
+
+Optional development targets:
+
+```powershell
+cmake --build build/debug `
+  --config Debug `
+  --target felidae_debug
+```
+
+```powershell
+cmake --build build/debug `
+  --config Debug `
+  --target felidae_tests
+```
+
+Run tests:
+
+```powershell
+ctest `
+  --test-dir build/debug `
+  -C Debug `
+  --output-on-failure
+```
+
+If LibTorch DLLs are not available on `PATH`:
+
+```powershell
+$env:PATH = 'C:\libtorch\lib;' + $env:PATH
+```
+
+---
+
+# macOS
+
+The build system includes native macOS handling for:
+
+```text
+x86_64
+arm64
+```
+
+For Apple Silicon, for example:
 
 ```bash
-ctest --test-dir build/debug -L examples --output-on-failure
+FELIDAE_LIBTORCH_PATH=/path/to/libtorch \
+./build.sh \
+  --platform macos \
+  --arch arm64 \
+  --mode release
 ```
 
-Compile and execute a working example:
+The LibTorch distribution must match the target architecture.
+
+---
+
+# Android and cross-compilation
+
+Felidae contains an Android cross-compilation path using the official Android NDK.
+
+Example:
 
 ```bash
-./build/debug/felidae_compiler v2_examples/form_core_concepts.fx
-./build/debug/felidae_vm build/debug/form_core_concepts.bin
+ANDROID_NDK_HOME=/opt/android-ndk \
+./build.sh \
+  --platform android \
+  --arch arm64 \
+  --android-api 24 \
+  --mode release \
+  --libtorch OFF
 ```
 
-The compiler writes the generated `.bin` into its own executable directory,
-not beside the source. The VM verifies the binary before executing it.
-Test binaries and model fixtures use deterministic subdirectories below
-`build/<configuration>/test-artifacts/` and `build/<configuration>/model-tests/`;
-tests do not create random build directories in the system temporary folder.
+Android is not currently treated as the primary production target.
 
-Use GDB to debug either side of the compiler/VM boundary:
+LibTorch is disabled when it is unavailable for the target.
+
+Cross-compiled tests can be built even when they cannot be executed on the host machine.
+
+For another toolchain, Felidae also supports:
+
+```text
+FELIDAE_TOOLCHAIN_FILE
+```
+
+for custom CMake toolchain configuration.
+
+---
+
+# Running a program
+
+Compile:
 
 ```bash
-gdb --args ./build/debug/felidae_compiler v2_examples/form_core_concepts.fx
-gdb --args ./build/debug/felidae_vm build/debug/form_core_concepts.bin
+./build/debug/felidae_compiler \
+  v2_examples/form_core_concepts.fx
 ```
 
-Debug builds also provide an opt-in action trace. `FELIDAE_TRACE=1` writes
-parser and verified-IR dispatch details to `stderr`; normal program results
-remain on `stdout`. The trace code is guarded by `#ifndef NDEBUG` and is absent
-from Release builds:
+Run:
 
 ```bash
-FELIDAE_TRACE=1 ./build/debug/felidae_compiler v2_examples/form_core_concepts.fx
-FELIDAE_TRACE=1 ./build/debug/felidae_vm build/debug/form_core_concepts.bin
+./build/debug/felidae_vm \
+  build/debug/form_core_concepts.bin
 ```
 
-Parser lines report source bytes, SentencePiece token count, the single encode
-pass, statement completion, compiler-SSM spans, and verified compiler-IR
-sizes. VM lines report the verified module version followed by call depth,
-instruction PC, fixed opcode ID, and decoded instruction width.
+The compiler writes the generated binary into the active build/output area instead of modifying the source example directory.
 
-The repository's `.vscode/launch.json` contains Linux GDB profiles. Build
-first, then adjust their executable paths from `build/` to `build/debug/` when
-using the separate directory above. The current default VS Code build task is
-Windows-specific and should not be used unchanged on Linux or WSL.
+---
 
-`felidae_debug` is a non-executing source-analysis tool rather than the Form
-register VM. It can emit human-readable or structured diagnostics:
+# Long-lived VM mode
+
+Felidae also contains a long-lived Form VM mode.
+
+Example:
 
 ```bash
-./build/debug/felidae_debug v2_examples/form_core_concepts.fx --check
-./build/debug/felidae_debug v2_examples/form_core_concepts.fx --check-json
+felidae_vm --serve program.bin
 ```
 
-For memory errors and undefined behavior, create a separate sanitizer build:
+The current server mode supports commands around concepts such as:
+
+```text
+run
+
+facts
+
+field
+
+history
+
+proof
+
+load
+
+modules
+
+quit
+```
+
+This allows the VM to remain alive instead of starting a completely new process for every interaction.
+
+The feature is particularly relevant to future reasoning and fact-oriented workflows.
+
+---
+
+# Working examples
+
+`v2_examples/` is one of the best places to understand the current language.
+
+The examples are executable development artifacts rather than only conceptual documentation.
+
+---
+
+## Core language
+
+| Example                         | Covers                                                   |
+| ------------------------------- | -------------------------------------------------------- |
+| `form_core_concepts.fx`         | Core types, functions, recursion, arrays, maps and facts |
+| `ast_typed_methods.fx`          | Typed methods                                            |
+| `dotless_method_syntax.fx`      | Alternative method syntax                                |
+| `list_data_structure.fx`        | List structures                                          |
+| `standard_search_algorithms.fx` | Search algorithms                                        |
+| `parser_fold.fx`                | Parser/fold-oriented behavior                            |
+
+---
+
+## Facts and hierarchy
+
+| Example                                | Covers                             |
+| -------------------------------------- | ---------------------------------- |
+| `hierarchical_designation_filter.fx`   | Queries across fact hierarchy      |
+| `direct_ancestor_analysis.fx`          | Ancestor relationships             |
+| `fact_degree_loop.fx`                  | Fact traversal with degree values  |
+| `fact_semantic_designations.fx`        | Fact designations                  |
+| `fact_similarity_requires_ancestry.fx` | Similarity constrained by ancestry |
+| `selective_fact_query.fx`              | Fact selection                     |
+| `selective_relationship_reasoning.fx`  | Relationship reasoning             |
+| `temporal_fact_reasoning.fx`           | Time-related fact reasoning        |
+
+---
+
+## Degree and fuzzy behavior
+
+| Example                              | Covers                                 |
+| ------------------------------------ | -------------------------------------- |
+| `degree_profiles.fx`                 | Membership, similarity and thresholds  |
+| `graded_evidence_profiles.fx`        | Graded evidence                        |
+| `animal_fact_similarity_evidence.fx` | Similarity with facts                  |
+| `mixfix_fuzzy_fact_report.fx`        | Fuzzy degrees combined with mixfix     |
+| `sentiment_fact_expert_system.fx`    | Degree-oriented expert-system behavior |
+
+---
+
+## Reasoning
+
+| Example                               | Covers                            |
+| ------------------------------------- | --------------------------------- |
+| `coffee_vending_theorem_solver.fx`    | Theorem-style reasoning           |
+| `air_conditioner_theorem_solver.fx`   | Rule/reasoning workflow           |
+| `deep_fact_reasoning_analysis.fx`     | Deeper fact analysis              |
+| `contextual_fact_intelligence.fx`     | Context-sensitive fact processing |
+| `selective_relationship_reasoning.fx` | Relationship-oriented reasoning   |
+
+---
+
+## Mixfix and custom operators
+
+| Example                                | Covers                         |
+| -------------------------------------- | ------------------------------ |
+| `mixfix_ir_roundtrip.fx`               | Mixfix compilation             |
+| `mixfix_deep_ir_nesting.fx`            | Deeply nested mixfix           |
+| `mixfix_deep_chain_stress.fx`          | Long expression chains         |
+| `mixfix_operator_overload.fx`          | Operator overloads             |
+| `mixfix_expr_fact_reasoning.fx`        | Mixfix with facts              |
+| `mixfix_shape_inference.fx`            | Pattern shapes                 |
+| `mixfix_shape_matrix.fx`               | Mixfix shape combinations      |
+| `mixfix_same_anchor.fx`                | Same-anchor expressions        |
+| `mixfix_same_anchor_long.fx`           | Longer same-anchor expressions |
+| `nested_mixfix_overload_resolution.fx` | Nested overload resolution     |
+| `symbolic_operator_overload.fx`        | Symbolic operators             |
+| `user_defined_operator_types.fx`       | User-defined operator types    |
+| `typed_builtin_operator_overload.fx`   | Typed operator overloads       |
+
+---
+
+## Runtime semantic model
+
+| Example                           | Covers                          |
+| --------------------------------- | ------------------------------- |
+| `runtime_ssm_e2e.fx`              | Runtime semantic model pipeline |
+| `runtime_ssm_identity_array.fx`   | Array identity case             |
+| `runtime_ssm_identity_boolean.fx` | Boolean identity case           |
+| `runtime_ssm_identity_degree.fx`  | Degree identity case            |
+| `runtime_ssm_identity_fact.fx`    | Fact identity case              |
+| `runtime_ssm_identity_text.fx`    | Text identity case              |
+| `runtime_training_smoke.fx`       | Training workflow smoke case    |
+
+---
+
+## Native and imported functionality
+
+Representative examples include:
+
+```text
+import_smoke.fx
+imported_math.fx
+imported_public_operator.fx
+native_lazy_import.fx
+native_packages_smoke.fx
+set_group_native.fx
+third_party_native_smoke.fx
+```
+
+---
+
+# Repository structure
+
+The project currently contains areas such as:
+
+```text
+Felidae/
+│
+├── cmake/
+│   └── CMake support
+│
+├── core/
+│   └── Core project components
+│
+├── datasets/
+│   ├── Compiler data
+│   ├── Runtime data
+│   └── Tokenizer data
+│
+├── docs/
+│   └── Detailed documentation
+│
+├── examples/
+│   └── Additional examples
+│
+├── ml/
+│   └── Model-related implementation
+│
+├── models/
+│   └── Model/tokenizer assets
+│
+├── native_modules/
+│   └── Native integration modules
+│
+├── scripts/
+│   └── Project utilities
+│
+├── src/
+│   ├── Compiler
+│   ├── Integer parser
+│   ├── IR generation
+│   └── Form VM/runtime
+│
+├── tests/
+│   └── Test suites
+│
+├── third_party/
+│   └── Pinned external dependencies
+│
+├── tools/
+│   └── Development tools
+│
+├── v2_examples/
+│   └── Current production-pipeline examples
+│
+├── tree-sitter-felidae/
+│   └── Tree-sitter support
+│
+├── emacs-extension/
+├── intellij-idea-extension/
+├── nano-extension/
+├── notepad-plus-plus-extension/
+├── sublime-text-extension/
+├── vim-extension/
+├── vs-code-extension/
+└── zed-extension/
+```
+
+The editor-related repositories are maintained as Git submodules.
+
+---
+
+# Dependencies
+
+Felidae intentionally uses a relatively small set of C++ dependencies.
+
+Current submodule dependencies include:
+
+### SentencePiece
+
+Used for Felidae's integer/token representation.
+
+### nlohmann/json
+
+Used for JSON handling in project tooling/data paths.
+
+### Abseil
+
+Provides selected C++ utility components.
+
+### Protocol Buffers
+
+Available for structured serialization-related needs.
+
+### Eigen
+
+Provides mathematical functionality.
+
+### cpp-httplib
+
+Lightweight HTTP functionality.
+
+### rapidcsv
+
+CSV functionality.
+
+### LibTorch
+
+PyTorch's native C++ distribution.
+
+LibTorch is not kept as an ordinary source submodule in the same way as the lightweight dependencies; developers provide an appropriate platform package.
+
+---
+
+# Testing
+
+Felidae uses CTest for the primary native test workflow.
+
+After a Debug build:
+
+```bash
+ctest \
+  --test-dir build/debug \
+  --output-on-failure
+```
+
+With the normal build script:
+
+```bash
+./build.sh --mode test
+```
+
+tests are built and executed automatically on native supported hosts.
+
+---
+
+## Example tests
+
+The test suite also runs representative `.fx` examples through:
+
+```text
+compiler
+   ↓
+binary
+   ↓
+VM
+```
+
+This is important because a parser-only or compiler-only test cannot demonstrate that the final runtime program actually works.
+
+Run example-labelled tests:
+
+```bash
+ctest \
+  --test-dir build/debug \
+  -L examples \
+  --output-on-failure
+```
+
+---
+
+# Debugging
+
+Compiler debugging:
+
+```bash
+gdb --args \
+  ./build/debug/felidae_compiler \
+  v2_examples/form_core_concepts.fx
+```
+
+VM debugging:
+
+```bash
+gdb --args \
+  ./build/debug/felidae_vm \
+  build/debug/form_core_concepts.bin
+```
+
+---
+
+## Runtime trace
+
+Debug builds support an optional trace:
+
+```bash
+FELIDAE_TRACE=1 \
+./build/debug/felidae_compiler \
+v2_examples/form_core_concepts.fx
+```
+
+and:
+
+```bash
+FELIDAE_TRACE=1 \
+./build/debug/felidae_vm \
+build/debug/form_core_concepts.bin
+```
+
+Trace output goes to:
+
+```text
+stderr
+```
+
+while normal program results remain on:
+
+```text
+stdout
+```
+
+This keeps diagnostic information separate from application output.
+
+---
+
+## Source-analysis tool
+
+Felidae also includes:
+
+```text
+felidae_debug
+```
+
+This is a source-analysis/debugging tool.
+
+It is **not** the production Form VM.
+
+Examples:
+
+```bash
+./build/debug/felidae_debug \
+  v2_examples/form_core_concepts.fx \
+  --check
+```
+
+Structured diagnostics:
+
+```bash
+./build/debug/felidae_debug \
+  v2_examples/form_core_concepts.fx \
+  --check-json
+```
+
+---
+
+# Code quality
+
+The project supports additional C++ analysis tools.
+
+These are intentionally not run during every normal build because they are substantially slower.
+
+---
+
+## clang-tidy
+
+```bash
+clang-tidy \
+  -p build/debug \
+  src/form/RegisterVm.cpp \
+  src/form/LibTorchTensorRuntime.cpp \
+  src/IrCodeGenerator.cpp \
+  src/IntegerParser.cpp
+```
+
+---
+
+## cppcheck
+
+```bash
+cppcheck \
+  --enable=warning,performance,portability \
+  --std=c++20 \
+  --project=build/debug/compile_commands.json \
+  --suppress=missingIncludeSystem
+```
+
+---
+
+## Valgrind
+
+```bash
+valgrind \
+  --error-exitcode=1 \
+  --leak-check=full \
+  ./build/debug/felidae_libtorch_smoke_test
+```
+
+---
+
+## Sanitizers
+
+Create a separate sanitizer build:
 
 ```bash
 cmake -S . -B build/asan -G Ninja \
@@ -213,373 +1912,1245 @@ cmake -S . -B build/asan -G Ninja \
   -DFELIDAE_ENABLE_SANITIZERS=ON \
   -DFELIDAE_ENABLE_LIBTORCH=ON \
   -DFELIDAE_BUILD_TESTS=ON
-
-cmake --build build/asan --target felidae_tests --parallel 1
-ctest --test-dir build/asan --output-on-failure
-```
-
-Check `git status --short` before and after builds. Build products belong in
-their build directories. Normal builds consume the checked-in SentencePiece
-model and ID header without rewriting them. Model regeneration, training, and
-beta packaging are explicit maintainer workflows and should not run during
-routine setup. Increase `--parallel` only when the machine has enough memory.
-
-### Fixed tokenizer corpus
-
-The compiler's fixed SentencePiece model is generated in pure C++ from
-[`datasets/tokenizer/felidae-tokenizer-v1.jsonl`](datasets/tokenizer/felidae-tokenizer-v1.jsonl).
-The versioned corpus currently covers 32 representative programs across 19
-syntax families, including facts, hierarchy, methods, control flow, operators,
-queries, mixfix forms, semantic intrinsics, Unicode, strings, temporal fields,
-and Prolog-style fact iteration. Each JSONL row has exactly
-`schema_version`, `id`, `family`, and `source`; duplicate IDs, oversized rows,
-unknown fields, or insufficient family coverage stop model generation.
-
-Grammar spellings remain pinned SentencePiece user-defined symbols. The model
-uses identity normalization, a bounded 1024-piece vocabulary, deterministic
-single-threaded training, and byte fallback for unseen UTF-8. Generated token
-IDs record the corpus schema, record count, and dataset hash. Tokenizer IDs
-are the canonical lexical representation in executable IR symbol and text
-tables; opcodes, registers, numeric values, indexes, and branch targets remain
-ordinary numeric IR operands.
-
-Before intentional regeneration, inspect the Git history and status of the
-model, generated ID header, grammar, and tokenizer corpus. Then run:
-
-```bash
-cmake --build build/debug \
-  --target felidae_regenerate_sentencepiece_model --parallel 8
-```
-
-Keep the generated changes only when an authoritative input changed and the
-tokenizer and pipeline tests pass.
-
-
-For your Debian + C++20 Felidae build, install the official **Linux LibTorch C++ package** rather than `pip install torch`. PyTorch’s LibTorch distribution includes the C++ headers, shared libraries, and CMake config files needed by `find_package(Torch)`. ([PyTorch Docs][1])
-
-Start with the basic packages:
-
-```bash
-sudo apt update
-
-sudo apt install -y \
-  build-essential \
-  cmake \
-  ninja-build \
-  wget \
-  unzip \
-  ca-certificates
-```
-
-For a CPU-only machine, download the official CPU LibTorch archive. PyTorch documents this CPU-only package directly: ([PyTorch Docs][1])
-
-```bash
-cd ~/Downloads
-
-wget https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.13.0%2Bcpu.zip
-
-unzip libtorch-cxx11-abi-shared-with-deps-latest.zip
-```
-
-Remember, **`cxx11-abi` does not mean C++11 language mode**. Your Felidae project can remain C++20; this refers to GCC/libstdc++ ABI compatibility. Current LibTorch C++11-ABI builds require GCC 9+ and glibc 2.29+, which modern Debian satisfies. ([PyTorch Docs][1])
-
-I recommend installing it under `/opt`:
-
-```bash
-sudo mv libtorch /opt/libtorch
-```
-
-Verify:
-
-```bash
-ls /opt/libtorch/share/cmake/Torch/TorchConfig.cmake
-```
-
-and:
-
-```bash
-ls /opt/libtorch/lib/libtorch.so
-ls /opt/libtorch/lib/libtorch_cpu.so
-ls /opt/libtorch/lib/libc10.so
-```
-
-Then configure Felidae with LibTorch enabled:
-
-```bash
-cd /home/vishal/Felidae
-
-cmake -S . -B build/debug -G Ninja \
-  -DCMAKE_BUILD_TYPE=Debug \
-  -DFELIDAE_ENABLE_LIBTORCH=ON \
-  -DFELIDAE_BUILD_TESTS=ON \
-  -DCMAKE_PREFIX_PATH=/opt/libtorch
 ```
 
 Build:
 
 ```bash
-cmake --build build/debug \
-  --target felidae_compiler felidae_vm felidae_debug felidae_tests \
+cmake --build build/asan \
+  --target felidae_tests \
   --parallel 1
 ```
 
-You can confirm CMake actually enabled it with:
+Run:
 
 ```bash
-grep FELIDAE_ENABLE_LIBTORCH build/debug/CMakeCache.txt
+ctest \
+  --test-dir build/asan \
+  --output-on-failure
 ```
 
-Expected:
+---
+
+# LibTorch
+
+Felidae uses **LibTorch**, the native C++ distribution of PyTorch.
+
+Python is not required for the current normal compiler/runtime training path.
+
+LibTorch is used for areas including:
+
+* tensor operations,
+* compiler recurrent-model support,
+* VM recurrent-model support.
+
+For normal desktop development, install an official LibTorch package matching:
 
 ```text
-FELIDAE_ENABLE_LIBTORCH:BOOL=ON
+operating system
++
+architecture
++
+compiler ABI
++
+CPU/GPU requirement
 ```
 
-Also check Torch discovery:
+A CPU-only package is appropriate for machines without a supported GPU.
 
-```bash
-grep -E 'Torch_DIR|CMAKE_PREFIX_PATH' build/debug/CMakeCache.txt
-```
-
-You should see something similar to:
+A common Linux installation location is:
 
 ```text
-Torch_DIR=/opt/libtorch/share/cmake/Torch
+/opt/libtorch
 ```
 
-If the executable later complains that `libtorch.so` or `libc10.so` cannot be found, test with:
-
-```bash
-export LD_LIBRARY_PATH=/opt/libtorch/lib:$LD_LIBRARY_PATH
-```
-
-Then:
-
-```bash
-ldd build/debug/felidae_vm | grep -E 'torch|c10'
-```
-
-For a permanent development-machine setup, you can register LibTorch with the Linux dynamic linker:
-
-```bash
-echo "/opt/libtorch/lib" | sudo tee /etc/ld.so.conf.d/libtorch.conf
-sudo ldconfig
-```
-
-Then verify:
-
-```bash
-ldconfig -p | grep -E 'libtorch|libc10'
-```
-
-That is preferable to setting `LD_LIBRARY_PATH` on every shell.
-
-One thing I would **not** do is install a Debian `libtorch-dev` package for this project if you want the same controlled LibTorch version across Windows and Linux. Pinning an official LibTorch distribution under `/opt/libtorch` makes your Felidae CMake environment much more reproducible.
-
-[1]: https://docs.pytorch.org/cppdocs/installing.html?utm_source=chatgpt.com "Installing C++ Distributions of PyTorch — PyTorch main documentation"
-
-
-## Build on Windows
-
-SentencePiece and LibTorch are C++ dependencies. No Python or deprecated
-visualizer runtime is required.
-
-Clone with the pinned third-party sources, or initialize them after cloning:
-
-```powershell
-git clone --recurse-submodules <repository-url>
-# existing checkout:
-git submodule update --init --recursive
-```
-
-`third_party/` is tracked exclusively through Git submodules, including
-SentencePiece, nlohmann/json, Abseil, Protobuf, Eigen, cpp-httplib, and
-rapidcsv.
-
-```powershell
-cmake -S . -B build/debug -A x64 -DFELIDAE_ENABLE_LIBTORCH=ON -DCMAKE_PREFIX_PATH=C:\libtorch
-cmake --build build/debug --config Debug --target felidae_compiler felidae_vm
-```
-
-The default IDE/Debug build contains only the production compiler and VM plus
-their required dependencies. Build the optional debugger or complete unit
-suite explicitly when needed:
-
-```powershell
-cmake --build build/debug --config Debug --target felidae_debug
-cmake --build build/debug --config Debug --target felidae_tests
-ctest --test-dir build/debug -C Debug --output-on-failure
-```
-
-Both executables are written directly to `build/debug/`:
+The build script will use:
 
 ```text
-build/debug/felidae_compiler.exe
-build/debug/felidae_vm.exe
+FELIDAE_LIBTORCH_PATH
 ```
 
-When LibTorch DLLs are not already on `PATH`, add them before running either
-executable:
+when an explicit location is required.
 
-```powershell
-$env:PATH = 'C:\libtorch\lib;' + $env:PATH
+Example:
+
+```bash
+FELIDAE_LIBTORCH_PATH=/opt/libtorch \
+./build.sh \
+  --mode test \
+  --libtorch ON
 ```
 
-## Compile, inspect, execute
+---
 
-The compiler writes the binary beside its executable, so source folders stay
-unchanged:
+# SentencePiece and the tokenizer
 
-```powershell
-build\debug\felidae_compiler.exe v2_examples\form_core_concepts.fx
-build\debug\felidae_vm.exe build\debug\form_core_concepts.bin
+Felidae intentionally represents source language tokens using integer IDs.
+
+SentencePiece provides the project's tokenizer representation.
+
+A simplified view is:
+
+```text
+source text
+
+   ↓
+
+SentencePiece IDs
+
+   ↓
+
+integer parser
+
+   ↓
+
+compiler
+
+   ↓
+
+verified binary
 ```
 
-The binary loader parses and verifies untrusted input once before constructing
-the immutable module accepted by the VM. A malformed, truncated, or unverified
-`.bin` fails before it can run.
+The runtime itself is not designed around repeatedly parsing human-readable source text.
 
-For the long-lived Form daemon mode:
+Human-readable text is decoded when a presentation boundary requires it.
 
-```powershell
-build\debug\felidae_vm.exe --serve build\debug\form_core_concepts.bin
-# stdin commands: run, facts [type-id], field <symbol-id>, history,
-# proof <child-type-id> <ancestor-type-id>, load <other.bin>, modules, quit
+---
+
+## Fixed tokenizer model
+
+The tokenizer is generated from the project's versioned tokenizer corpus:
+
+```text
+datasets/tokenizer/
 ```
 
-## Working examples
+The corpus covers representative syntax families such as:
 
-These examples use the current compiler/VM pipeline and produce `.bin` files
-in `build/debug/`.
+* facts,
+* hierarchy,
+* methods,
+* control flow,
+* operators,
+* queries,
+* mixfix,
+* semantic operations,
+* Unicode,
+* strings,
+* temporal fields.
 
-| Example | Covers |
-| --- | --- |
-| `v2_examples/form_core_concepts.fx` | globals, procedures, arrays/maps, facts, fields and comparisons |
-| `v2_examples/degree_profiles.fx` | deterministic `similarity`, `membership`, and `Degree` thresholds |
-| `v2_examples/fact_degree_loop.fx` | typed fact traversal and degree-carrying values |
-| `v2_examples/mixfix_ir_roundtrip.fx` | annotation-declared mixfix resolved to normal IR calls |
-| `v2_examples/mixfix_deep_ir_nesting.fx` | deeply nested prefix/infix mixfix forms; result is `9`, `36`, `756` |
-| `v2_examples/mixfix_fuzzy_fact_report.fx` | mixfix composition with facts and fuzzy degrees |
+Tokenizer regeneration is a maintainer operation.
+
+It should not occur during every normal build.
+
+---
+
+<details>
+<summary><strong>Advanced: tokenizer regeneration</strong></summary>
+
+<br>
+
+After intentionally changing the authoritative tokenizer corpus or grammar inputs:
+
+```bash
+cmake --build build/debug \
+  --target felidae_regenerate_sentencepiece_model \
+  --parallel 8
+```
+
+Generated tokenizer changes should only be committed when:
+
+* an authoritative input actually changed,
+* tokenizer tests pass,
+* compiler pipeline tests pass,
+* generated IDs are intentionally updated.
+
+Routine builds should consume the checked-in model rather than rewrite it.
+
+</details>
+
+---
+
+# Compiler recurrent model
+
+Felidae contains an optional compiler-side recurrent model for constrained mixfix ambiguity.
+
+Its purpose is **not**:
+
+```text
+source → AI → executable
+```
+
+Instead, the normal compiler remains responsible for the language.
+
+The model is only allowed to participate at an explicit ambiguity boundary.
+
+Conceptually:
+
+```text
+normal expression
+      ↓
+deterministic compiler
+      ↓
+compiled
+
+
+ambiguous supported mixfix span
+      ↓
+compiler model
+      ↓
+validated structural result
+      ↓
+compiler verification
+      ↓
+compiled or rejected
+```
+
+If the model cannot produce an acceptable result, compilation should fail safely rather than secretly executing source through an alternate interpreter.
+
+---
+
+## Compiler model principles
+
+The model:
+
+* uses a bounded structural vocabulary,
+* works with integer-oriented structures,
+* does not own the entire parser,
+* does not replace source validation,
+* does not directly execute source,
+* must produce output accepted by compiler verification.
+
+The repository currently does not treat an unvalidated model output as executable truth.
+
+---
+
+# VM recurrent model
+
+Felidae's Form VM contains a **different** optional recurrent model for explicit runtime semantic evaluation.
+
+This model is separate from the compiler model because runtime meaning and source ambiguity are different problems.
+
+Conceptually:
+
+```text
+verified runtime state
+        +
+explicit semantic operation
+        ↓
+runtime model
+        ↓
+bounded typed result
+        ↓
+validation
+        ↓
+VM value
+```
+
+---
+
+## What the VM model does not replace
+
+It is not intended to replace:
+
+* addition,
+* subtraction,
+* multiplication,
+* division,
+* comparisons,
+* ordinary boolean logic,
+* procedure calls,
+* deterministic fact access,
+* deterministic numeric operations,
+* tensor mathematics.
+
+Those operations execute directly.
+
+---
+
+## Runtime semantic results
+
+The runtime semantic path is intentionally constrained to supported result categories rather than unrestricted arbitrary memory or instruction generation.
+
+This keeps learned behavior behind a defined runtime boundary.
+
+---
+
+# Training
+
+Training support is explicit.
+
+It is not started automatically by an ordinary Felidae build.
+
+Training requires:
+
+```text
+LibTorch = ON
+Training = ON
+```
 
 For example:
 
-```powershell
-build\debug\felidae_compiler.exe v2_examples\mixfix_deep_ir_nesting.fx
-build\debug\felidae_vm.exe build\debug\mixfix_deep_ir_nesting.bin
-# {first: 9, second: 36, nested: 756}
+```bash
+./build.sh \
+  --mode test \
+  --libtorch ON \
+  --training ON
 ```
 
-Fact keys and type names are stored as module-local indexes backed by complete
-SentencePiece ID sequences. VM text is also stored as PieceId sequences.
-Execution compares those sequences without decoding them; display and other
-human-readable boundaries decode them through the matching SentencePiece
-model, producing meaningful names rather than numeric hashes.
+---
 
-Fact designations participate in typed hierarchical queries. For example,
-`Animal(...) as animals` lets source use
-`for_each_fact(animals, callback)`; the compiler emits `ForEachFact` against
-the `Animal` type, and the VM includes `Animal` plus all registered descendant
-types. `as` remains compiler metadata—it is not a fact field or inheritance
-edge. See `v2_examples/hierarchical_designation_filter.fx`.
+<details>
+<summary><strong>Advanced: compiler-model training</strong></summary>
 
-## Mixfix and recurrent models
+<br>
 
-Normal syntax and uniquely resolved annotated mixfix stay deterministic and
-compile directly to the same internal compiler IR. The compiler-side `MixfixStateModel`
-uses a C++ LibTorch GRU and accepts only a finite structural IR vocabulary.
-Its output is verifier-gated; missing models, invalid output, or malformed
-spans are compile errors and never fall back to AST execution. No trained
-mixfix artifact is currently shipped. `REJECT` and `ABSTAIN` produce bounded,
-contextual diagnostics containing the source/PieceId span and available
-reference counts; the model cannot emit arbitrary diagnostic text.
+The compiler can train from reusable JSONL datasets.
 
-Training and production artifacts are deliberately separate. Native LibTorch
-state is written only to `mixfix-gru.ckpt`; inference loads the C++-exported
-TorchScript module `mixfix-gru.pt`. The project does not use Python for model
-training, export, loading, or inference.
-
-Train the compiler mixfix GRU from the reusable JSONL corpus. Windows shells
-pass the wildcard literally; the compiler expands it itself and treats invalid
-records as rejection cases rather than positive targets:
+Representative Windows command:
 
 ```powershell
-build\debug\felidae_compiler.exe --train 'datasets\compiler\*.jsonl' --store-model build --epochs 8 --learning-rate 0.001
+build\debug\felidae_compiler.exe `
+  --train 'datasets\compiler\*.jsonl' `
+  --store-model build `
+  --epochs 8 `
+  --learning-rate 0.001
 ```
 
-After changing `datasets/tokenizer/` or regenerating `models/felidae.model`,
-regenerate both compiler corpora together. Schema-v3 records carry the exact
-SentencePiece model identity and compiler-IR vocabulary version, and training
-rejects stale tokenizer or target IDs:
+Compiler datasets are tied to the tokenizer and structural vocabulary.
+
+When the tokenizer changes, compiler training data may need to be regenerated.
+
+Dataset extraction can be run with the relevant CMake target and extraction utility.
+
+Invalid training records are intended to remain rejection cases rather than being silently accepted as positive examples.
+
+</details>
+
+---
+
+<details>
+<summary><strong>Advanced: runtime-model training</strong></summary>
+
+<br>
+
+The runtime uses its own dataset.
+
+Representative command:
+
+```powershell
+build\debug\felidae_vm.exe `
+  --train datasets\vm\runtime-context-v1.jsonl `
+  --store-model build `
+  --epochs 8 `
+  --learning-rate 0.001
+```
+
+The runtime model is trained independently from the compiler model.
+
+This prevents compiler ambiguity data from being treated as runtime semantic knowledge.
+
+</details>
+
+---
+
+# Release builds
+
+A normal release build can be created with:
 
 ```bash
-cmake --build build/debug --target felidae_extract_mixfix_dataset --parallel 1
-./build/debug/felidae_extract_mixfix_dataset \
-  datasets/compiler/mixfix-v1.jsonl v2_examples \
-  --rejections datasets/compiler/mixfix-invalid-v1.jsonl
+./build.sh --mode release
 ```
 
-The VM has a different optional recurrent model exclusively for explicit
-`SemanticEval` IR operations. It is built from
-`src/form/RuntimeStateModel.cpp` and uses
-a finite, typed result vocabulary (nil, numeric `0.0`/`1.0` truth values, a bounded Degree lattice, a
-validated bounded input reference, or a fact derived from a validated input), never implicit
-truthiness. No runtime artifact is shipped until it has been trained and
-validated against FELBIR v16. No runtime artifact is currently shipped. The
-dataset tool can prepare deterministic unary Identity teachers from verified
-examples. Every record carries the permanent semantic operation ID `0x0001`;
-source-name hashes are forbidden. Binaries with `SemanticEval` still require
-explicit operation-level teachers rather than false whole-program labels.
+Release mode builds optimized binaries and creates the distribution through the project's distribution target.
 
-The runtime trainer likewise keeps native state in `runtime-gru.ckpt` and
-exports the production `runtime-gru.pt` as TorchScript. The VM rejects native
-training archives at its production model boundary.
+On normal Linux:
 
-Train the reusable VM GRU JSONL baseline explicitly (C++/LibTorch only):
-
-```powershell
-build\debug\felidae_vm.exe --train datasets\vm\runtime-context-v1.jsonl --store-model build --epochs 8 --learning-rate 0.001
+```text
+build/release/
 ```
 
-Both commands print held-out structural-family metrics, elapsed epoch seconds,
-and training samples per second. These measurements are reported for review;
-the README does not label a configuration efficient until a Release run has
-been tested on the target machine.
+and the generated distributable package is staged under:
 
-## Validation
-
-Run the focused compiler, binary, VM, SentencePiece, and GRU checks:
-
-```powershell
-$env:PATH = 'C:\libtorch\lib;' + $env:PATH
-ctest --test-dir build -R 'felidae_(sentencepiece_model|sentencepiece_pipeline|mixfix_state_model|form_binary)' --output-on-failure
+```text
+build/release/dist/
 ```
 
-Create a portable shipment only after a successful Release build. The target
-refuses Debug and other non-Release configurations:
+The distribution folder is generated.
 
-```powershell
-# Builds, runs focused tests, stages <build-directory>/dist/, starts the staged executables,
-# and compiles/runs the nested-mixfix smoke program through them.
-cmake --build build --target felidae_beta
-# equivalent wrapper:
-.\build.ps1 -Beta
+It is not intended to be a manually maintained source directory.
+
+---
+
+## Release philosophy
+
+A release package should come from:
+
+```text
+clean intended source revision
+       ↓
+Release configuration
+       ↓
+tests / validation
+       ↓
+distribution target
+       ↓
+staged package
+       ↓
+clean-machine smoke test
+       ↓
+release
 ```
 
-`<build-directory>/dist/` contains the two executables, models, and required LibTorch DLLs; it
-does not contain source or CMake build state. The staged package writes
-`SHA256SUMS.txt`; verify it before uploading the beta.
+Do not treat a successful compilation alone as complete release evidence.
 
-## Beta release checklist
+---
 
-1. Start with the existing `build/` directory and a clean intended source
-   revision. Do not create a parallel build directory.
-2. Configure a Release LibTorch build, then run `cmake --build build --target
-   felidae_beta`.
-3. Confirm the gate reports the compiler and VM version
-   `0.2.3-beta.1`, all focused tests pass, and the build-local `dist/` contains only the
-   approved executables, models, runtime DLLs, `README.txt`, and
-   `SHA256SUMS.txt`.
-4. Copy `<build-directory>/dist/` to a clean Windows machine, verify checksums, compile a `.fx`
-   file, and run its generated `.bin` using only the copied folder.
-5. Tag and publish the exact revision only after that clean-machine smoke
-   succeeds. Do not publish files directly from `build/`.
+# Documentation
+
+The README is intentionally the **front page** of Felidae.
+
+It should explain:
+
+* what Felidae is,
+* why it exists,
+* what it can do,
+* how to try it,
+* where to learn more.
+
+Detailed documentation lives under:
+
+```text
+docs/
+```
+
+Current documentation includes areas such as:
+
+```text
+docs/README.md
+
+docs/about.fx
+docs/basics.fx
+docs/getting_started.fx
+docs/language_reference.fx
+docs/syntax.fx
+
+docs/facts.fx
+docs/queries.fx
+docs/probability.fx
+docs/methods.fx
+
+docs/native_modules.fx
+docs/libraries.fx
+docs/stdlib.fx
+
+docs/testing.fx
+docs/debugging.fx
+
+docs/executable_ir.md
+docs/expression_inventory.md
+docs/compiler_form_audit.md
+docs/reasoning_benchmark.md
+
+docs/server.fx
+docs/server_features.fx
+
+docs/milestones.fx
+docs/version.fx
+```
+
+There are also root-level technical references including:
+
+```text
+docs_language.md
+docs_native_modules.md
+docs_github_linguist.md
+```
+
+---
+
+# Editor support
+
+Felidae includes or links dedicated editor integrations.
+
+Current editor-related repositories include:
+
+| Editor             | Component                      |
+| ------------------ | ------------------------------ |
+| Visual Studio Code | `vs-code-extension/`           |
+| IntelliJ IDEA      | `intellij-idea-extension/`     |
+| Vim                | `vim-extension/`               |
+| Emacs              | `emacs-extension/`             |
+| Zed                | `zed-extension/`               |
+| Sublime Text       | `sublime-text-extension/`      |
+| Notepad++          | `notepad-plus-plus-extension/` |
+| Nano               | `nano-extension/`              |
+
+Felidae also contains:
+
+```text
+tree-sitter-felidae/
+```
+
+for Tree-sitter language support.
+
+Because syntax can evolve during beta, editor integrations may occasionally lag behind the compiler.
+
+Compiler behavior remains authoritative.
+
+---
+
+# Development principles
+
+Felidae is guided by several architectural principles.
+
+---
+
+## 1. Keep simple things simple
+
+Normal arithmetic should be arithmetic.
+
+```text
+2 + 2
+```
+
+should not require a neural model.
+
+---
+
+## 2. Keep deterministic work deterministic
+
+If the runtime can calculate an exact result directly, it should normally do so.
+
+---
+
+## 3. Make reasoning explicit
+
+Reasoning should be visible in the language/runtime model rather than hidden inside unrelated application code.
+
+---
+
+## 4. Represent knowledge directly
+
+Facts and relationships should be first-class concepts.
+
+---
+
+## 5. Preserve graded information
+
+If something is naturally a degree, Felidae should not force it into a boolean too early.
+
+---
+
+## 6. Separate compilation from execution
+
+The compiler understands source.
+
+The VM executes verified programs.
+
+---
+
+## 7. Validate learned behavior
+
+A model output should not automatically become an executable instruction or trusted result.
+
+---
+
+## 8. Keep learned components focused
+
+Felidae does not aim to make the whole runtime probabilistic.
+
+Learning is used only at explicit boundaries.
+
+---
+
+## 9. Prefer inspectable systems
+
+Reasoning behavior should be testable and measurable.
+
+---
+
+## 10. Benchmark claims carefully
+
+Different qualities should be measured separately.
+
+For example:
+
+```text
+correctness
+determinism
+proof success
+failure behavior
+learning quality
+latency
+```
+
+should not be merged into one impressive-looking but meaningless score.
+
+---
+
+# Project maturity
+
+Felidae currently contains several different maturity levels.
+
+### Established project foundations
+
+Areas with significant existing implementation include:
+
+* C++ compiler infrastructure,
+* `.fx` source compilation,
+* verified binary execution,
+* register-based Form VM,
+* facts,
+* hierarchy,
+* procedures,
+* arrays/maps,
+* degree operations,
+* numeric operations,
+* example programs,
+* tests,
+* editor integrations.
+
+### Active beta areas
+
+Areas that continue to evolve include:
+
+* binary format,
+* advanced fact reasoning,
+* mixfix coverage,
+* recurrent-model integration,
+* runtime semantic evaluation,
+* training datasets,
+* platform packaging,
+* performance stabilization.
+
+### Experimental areas
+
+Some examples intentionally explore future-facing behavior.
+
+An example existing in the repository does not necessarily mean that its API is stable.
+
+Always check the current documentation before building long-term integrations against a beta feature.
+
+---
+
+# What Felidae is not
+
+Felidae is **not currently**:
+
+### A replacement for C++, Rust, Java, Python, or JavaScript
+
+General-purpose languages remain better choices for many ordinary applications.
+
+### A general-purpose LLM
+
+Felidae's learned components are constrained and task-specific.
+
+### A chatbot framework
+
+Conversational interaction is not the central language design goal.
+
+### An excuse to make every operation fuzzy
+
+Crisp deterministic logic stays crisp.
+
+### A system where machine learning controls every instruction
+
+Ordinary runtime execution remains deterministic.
+
+### Production-certified decision software
+
+Felidae is still beta.
+
+---
+
+# Security
+
+Please read:
+
+[SECURITY.md](./SECURITY.md)
+
+before using Felidae in an important environment.
+
+Current beta guidance includes:
+
+* production use is not recommended,
+* important outputs should be independently verified,
+* older beta versions may not receive fixes,
+* vulnerabilities should be reported privately.
+
+Do **not** open a public issue containing security-sensitive vulnerability details.
+
+Security reports can be sent to:
+
+```text
+info@xnovity.com
+```
+
+or:
+
+```text
+support@xnovity.com
+```
+
+---
+
+# Contributing
+
+Felidae welcomes contributions involving:
+
+* compiler development,
+* VM development,
+* language design,
+* fact reasoning,
+* degree/fuzzy functionality,
+* tests,
+* documentation,
+* examples,
+* performance,
+* code quality,
+* security,
+* portability,
+* editor integrations,
+* Tree-sitter support,
+* datasets,
+* development tooling.
+
+Before contributing, read:
+
+[CONTRIBUTING.md](./CONTRIBUTING.md)
+
+and:
+
+[CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
+
+---
+
+## A good first contribution
+
+Useful first contributions include:
+
+* fixing a reproducible bug,
+* improving an existing example,
+* adding a regression test,
+* correcting documentation,
+* improving an error message,
+* validating a platform build,
+* reducing a compiler warning,
+* improving editor syntax coverage.
+
+Large architectural changes should normally begin with an issue or discussion.
+
+---
+
+# Frequently asked questions
+
+## Is Felidae a programming language?
+
+Yes.
+
+Felidae has source files, syntax, functions, data structures, a compiler, executable binaries, and a VM.
+
+Its focus on facts and reasoning differentiates it from conventional general-purpose languages.
+
+---
+
+## Is Felidae an AI model?
+
+No.
+
+Felidae is a programming language and runtime.
+
+It contains optional learned components for specific compiler/runtime tasks, but those components are not the entire system.
+
+---
+
+## Does Felidae require machine learning to run programs?
+
+No.
+
+Normal deterministic programs should execute without semantic model involvement.
+
+---
+
+## Is fuzzy logic used everywhere?
+
+No.
+
+Felidae supports graded values where they are useful.
+
+Normal boolean conditions remain boolean.
+
+---
+
+## Can Felidae work with facts?
+
+Yes.
+
+Facts, fact types, hierarchy, designations and traversal are central project areas.
+
+---
+
+## Can one fact type inherit from another?
+
+The language currently includes hierarchical fact/type relationships using forms such as:
+
+```felidae
+Employee extend Person(...)
+```
+
+---
+
+## Can Felidae perform ordinary calculations?
+
+Yes.
+
+Felidae includes normal arithmetic and deterministic numeric operations.
+
+---
+
+## Does Felidae support recursion?
+
+Current examples include recursive procedures such as factorial.
+
+---
+
+## Does Felidae support arrays and maps?
+
+Yes.
+
+Current examples exercise arrays and structured maps.
+
+---
+
+## Does Felidae support custom operators?
+
+The repository contains multiple examples of custom and overloaded operator behavior.
+
+---
+
+## What is mixfix?
+
+Mixfix allows an expression to use a custom arrangement of words/operators instead of always looking like:
+
+```text
+function(a, b)
+```
+
+Felidae uses this to experiment with more domain-oriented expression forms.
+
+---
+
+## Why use SentencePiece in a programming language?
+
+Felidae's architecture explores representing language input as stable integer IDs before parsing and compilation.
+
+SentencePiece provides that token-to-integer layer.
+
+The VM then works with compiled binary structures rather than source strings.
+
+---
+
+## Does the VM contain the parser?
+
+No.
+
+The source parser belongs to the compiler side.
+
+The Form VM executes compiled programs.
+
+---
+
+## Why use a VM?
+
+The VM provides a dedicated execution environment for Felidae programs.
+
+It also creates a clear boundary between:
+
+```text
+language compilation
+```
+
+and:
+
+```text
+program execution
+```
+
+---
+
+## What is Form VM?
+
+Form VM is Felidae's register-based execution runtime.
+
+It runs verified compiled Felidae binaries.
+
+---
+
+## Is Felidae interpreted?
+
+The primary supported path is compiled:
+
+```text
+.fx
+ ↓
+compiler
+ ↓
+.bin
+ ↓
+VM
+```
+
+---
+
+## Does Felidae use Python for training?
+
+The current project training path is implemented around C++ and LibTorch.
+
+Python is not required for the normal current training/export/inference path.
+
+---
+
+## Can I disable LibTorch?
+
+Certain target configurations can disable LibTorch.
+
+However tensor and model-dependent functionality will then be unavailable and should fail clearly when requested.
+
+---
+
+## Does Felidae support Windows?
+
+Yes, native CMake/Visual Studio style builds are part of the current development path.
+
+---
+
+## Does Felidae support Linux?
+
+Yes.
+
+Linux is a primary development environment.
+
+---
+
+## Does Felidae support macOS?
+
+The build script includes macOS x86-64 and ARM64 handling.
+
+---
+
+## Does Felidae support Android?
+
+An Android NDK cross-compilation path exists, but Android should currently be regarded as an experimental/non-primary target.
+
+---
+
+## Is Felidae production ready?
+
+Not yet.
+
+Current releases are beta.
+
+---
+
+## Can I use Felidae for critical decisions?
+
+Not as the sole decision source during beta.
+
+Important outputs should be independently verified.
+
+---
+
+## Are beta binaries guaranteed to remain compatible?
+
+No.
+
+Recompile `.fx` source when the beta executable format changes.
+
+---
+
+## Where should I start?
+
+For a developer:
+
+```text
+1. Clone recursively
+2. Build in test mode
+3. Run form_core_concepts.fx
+4. Explore degree_profiles.fx
+5. Explore hierarchical_designation_filter.fx
+6. Read docs/
+```
+
+---
+
+# Development workflow
+
+A healthy development cycle looks like:
+
+```text
+change
+  ↓
+build
+  ↓
+unit tests
+  ↓
+example tests
+  ↓
+static analysis where relevant
+  ↓
+review
+  ↓
+release validation
+```
+
+Before committing:
+
+```bash
+git status --short
+```
+
+Build outputs should remain inside their build directories.
+
+Routine builds should not unexpectedly rewrite:
+
+* tokenizer models,
+* generated tokenizer IDs,
+* training datasets,
+* release artifacts.
+
+Those are explicit maintainer operations.
+
+---
+
+# Dependency updates
+
+Several dependencies are Git submodules.
+
+After intentionally updating them:
+
+```bash
+git submodule sync --recursive
+git submodule update --init --recursive
+git submodule status --recursive
+```
+
+A clean recursive clone should also succeed:
+
+```bash
+git clone \
+  --recurse-submodules \
+  https://github.com/xnvtserver/Felidae.git
+```
+
+Dependency updates should be reviewed carefully because C++ dependency API or ABI changes can affect the compiler and VM.
+
+---
+
+# Performance
+
+Felidae is written in C++ partly to keep close control over:
+
+* memory,
+* execution cost,
+* runtime boundaries,
+* compilation,
+* tensor operations.
+
+However:
+
+> Performance claims should be measured on real Release builds.
+
+Debug performance should not be used as evidence of production speed.
+
+Training throughput and runtime latency should also be measured independently.
+
+---
+
+# Reasoning quality
+
+Reasoning systems are easy to evaluate poorly.
+
+Felidae therefore aims to separate measurements such as:
+
+```text
+Does the proof succeed?
+
+Does an invalid proof fail safely?
+
+Is the result deterministic?
+
+How long did execution take?
+
+Did a learned model generalize?
+
+Does the model simply memorize a dataset?
+```
+
+These are different questions.
+
+A single "accuracy" number can hide serious problems.
+
+The reasoning benchmark exists to keep those concerns visible.
+
+---
+
+# Project direction
+
+Felidae is exploring a model where software can combine:
+
+```text
+structured knowledge
+      +
+deterministic computation
+      +
+hierarchy
+      +
+graded values
+      +
+reasoning
+      +
+carefully bounded learning
+```
+
+without making the entire system opaque.
+
+The long-term value of Felidae depends less on adding fashionable AI features and more on maintaining a clear answer to:
+
+> **Why did the system produce this result, and which part of the system was responsible?**
+
+That principle influences the separation between:
+
+* compiler and VM,
+* deterministic and learned work,
+* facts and presentation,
+* training and production artifacts,
+* beta experiments and supported behavior.
+
+---
+
+# Design philosophy
+
+Felidae is built around a simple belief:
+
+> Not every intelligent system needs to be a giant black box.
+
+Some problems benefit from explicit:
+
+* facts,
+* types,
+* rules,
+* degrees,
+* relationships,
+* deterministic calculations.
+
+Other problems benefit from learned behavior.
+
+Felidae experiments with putting both in the same system while keeping the boundary visible.
+
+```text
+Know what can be calculated.
+
+Represent what is known.
+
+Learn only where learning adds value.
+
+Validate what learning produces.
+```
+
+---
+
+# Community
+
+Felidae is developed as an open-source project.
+
+We welcome:
+
+* bug reports,
+* technical discussions,
+* design criticism,
+* documentation improvements,
+* benchmarks,
+* examples,
+* code contributions,
+* platform testing.
+
+Please keep discussion respectful and constructive.
+
+See:
+
+[CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
+
+---
+
+# License
+
+Felidae is distributed under the **MIT License**.
+
+See:
+
+[LICENCE](./LICENCE)
+
+for the complete license text.
+
+---
+
+# Project
+
+Felidae is developed by **Xnovity Softwares** together with project contributors and supporters.
+
+### Project website
+
+https://felidae.xnovity.com
+
+### Source repository
+
+https://github.com/xnvtserver/Felidae
+
+### Issues
+
+https://github.com/xnvtserver/Felidae/issues
+
+### Documentation
+
+[docs/](./docs)
+
+### Examples
+
+[v2_examples/](./v2_examples)
+
+---
+
+<div align="center">
+
+<br>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vishalkrishnaag/vs-code-extension/master/icons/fx-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/vishalkrishnaag/vs-code-extension/master/icons/fx-light.svg">
+  <img alt="Felidae" src="https://raw.githubusercontent.com/vishalkrishnaag/vs-code-extension/master/icons/fx-light.svg" width="64">
+</picture>
+
+### Build software that can work with more than just `true` and `false`.
+
+**Facts. Relationships. Degrees. Reasoning.**
+
+<br>
+
+If Felidae's direction interests you:
+
+⭐ **Star the repository**
+
+🧪 **Try the examples**
+
+📚 **Explore the documentation**
+
+🐛 **Report reproducible problems**
+
+🤝 **Contribute**
+
+<br>
+
+**Felidae — reasoning as part of the language.**
+
+</div>
