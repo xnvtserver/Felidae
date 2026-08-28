@@ -1,87 +1,17 @@
 #include "LibTorchTensorRuntime.h"
 
-#include "IrModule.h"
 #include "TensorOperation.h"
 
 #include <torch/torch.h>
 
 #include <cmath>
-#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace Felidae {
 namespace {
 
-void appendFactFeatures(const VmValue &value,
-                        std::span<const PieceSequence> symbols,
-                        std::vector<double> &result) {
-  const auto append = [&](std::span<const PieceId> pieces) {
-    for (const auto piece : pieces)
-      result.push_back(static_cast<double>(piece));
-  };
-  if (const auto number = std::get_if<double>(&value)) {
-    if (!std::isfinite(*number))
-      throw IrError("tensor numeric value must be finite");
-    result.push_back(*number);
-    return;
-  }
-  if (const auto degree = std::get_if<VmDegree>(&value)) {
-    result.push_back(degree->value);
-    return;
-  }
-  if (const auto tensor = std::get_if<VmTensorPtr>(&value)) {
-    if (!*tensor || !(*tensor)->storage)
-      throw IrError("fact tensor field has no LibTorch storage");
-    const auto flat = (*tensor)
-                          ->storage->to(torch::kCPU)
-                          .to(torch::kFloat64)
-                          .contiguous()
-                          .reshape({-1});
-    if (!flat.isfinite().all().item<bool>())
-      throw IrError("fact tensor field must be finite");
-    const auto *data = flat.const_data_ptr<double>();
-    result.insert(result.end(), data, data + flat.numel());
-    return;
-  }
-  if (const auto text = std::get_if<VmText>(&value)) {
-    append(text->pieces);
-    return;
-  }
-  if (const auto symbol = std::get_if<VmSymbol>(&value)) {
-    append(irSymbolPieces(symbols, symbol->value));
-    return;
-  }
-  if (const auto fact = std::get_if<VmFactPtr>(&value); fact && *fact) {
-    append(irSymbolPieces(symbols, (*fact)->type));
-    for (const auto &[field, fieldValue] : (*fact)->fields) {
-      append(irSymbolPieces(symbols, field));
-      appendFactFeatures(fieldValue, symbols, result);
-    }
-    return;
-  }
-  if (const auto array = std::get_if<VmArrayPtr>(&value); array && *array) {
-    for (const auto &item : (*array)->values)
-      appendFactFeatures(item, symbols, result);
-    return;
-  }
-  if (const auto map = std::get_if<VmMapPtr>(&value); map && *map) {
-    for (const auto &[field, fieldValue] : (*map)->entries) {
-      append(irSymbolPieces(symbols, field));
-      appendFactFeatures(fieldValue, symbols, result);
-    }
-    return;
-  }
-  if (const auto map = std::get_if<VmTextMapPtr>(&value); map && *map) {
-    for (const auto &[field, fieldValue] : (*map)->entries) {
-      append(field);
-      appendFactFeatures(fieldValue, symbols, result);
-    }
-  }
-}
-
-torch::Tensor tensorFromValue(const VmValue &value,
-                              std::span<const PieceSequence> symbols) {
+torch::Tensor tensorFromValue(const VmValue &value) {
   if (const auto tensor = std::get_if<VmTensorPtr>(&value)) {
     if (!*tensor || !(*tensor)->storage)
       throw IrError("tensor value has no LibTorch storage");
@@ -102,7 +32,7 @@ torch::Tensor tensorFromValue(const VmValue &value,
     std::vector<torch::Tensor> rows;
     rows.reserve((*array)->values.size());
     for (const auto &item : (*array)->values)
-      rows.push_back(tensorFromValue(item, symbols));
+      rows.push_back(tensorFromValue(item));
     const auto shape = rows.front().sizes().vec();
     for (const auto &row : rows)
       if (row.sizes().vec() != shape)
@@ -110,12 +40,7 @@ torch::Tensor tensorFromValue(const VmValue &value,
     return torch::stack(rows);
   }
 
-  std::vector<double> features;
-  appendFactFeatures(value, symbols, features);
-  if (features.empty())
-    throw IrError(
-        "tensor value has neither numeric data nor SentencePiece IDs");
-  return torch::tensor(features, torch::TensorOptions().dtype(torch::kFloat64));
+  throw IrError("tensor operation requires numeric data or a tensor value");
 }
 
 VmValue arrayFromTensor(const torch::Tensor &source) {
@@ -157,15 +82,15 @@ void requireEqualShapes(const torch::Tensor &left, const torch::Tensor &right,
 
 } // namespace
 
-Value LibTorchTensorRuntime::evaluateTensor(
-    TensorOperation operation, std::span<const Value> inputs,
-    std::span<const PieceSequence> symbolTable) {
+Value LibTorchTensorRuntime::evaluateTensor(TensorOperation operation,
+                                            std::span<const Value> inputs,
+                                            std::span<const PieceSequence>) {
   if (operation >= TensorOperation::Count ||
       inputs.size() != tensorOperationArity(operation))
     throw IrError("tensor operation has an invalid operation ID or arity");
 
   torch::InferenceMode guard;
-  const auto left = tensorFromValue(inputs[0], symbolTable);
+  const auto left = tensorFromValue(inputs[0]);
   switch (operation) {
   case TensorOperation::Size:
     return static_cast<double>(left.numel());
@@ -188,7 +113,7 @@ Value LibTorchTensorRuntime::evaluateTensor(
   case TensorOperation::Clone:
     return tensorValue(left.clone());
   case TensorOperation::Dot: {
-    const auto right = tensorFromValue(inputs[1], symbolTable);
+    const auto right = tensorFromValue(inputs[1]);
     if (left.dim() != 1 || right.dim() != 1 ||
         left.sizes().vec() != right.sizes().vec())
       throw IrError("ml.dot requires equal-length rank-1 tensors");
@@ -198,7 +123,7 @@ Value LibTorchTensorRuntime::evaluateTensor(
     return result;
   }
   case TensorOperation::MeanSquaredError: {
-    const auto right = tensorFromValue(inputs[1], symbolTable);
+    const auto right = tensorFromValue(inputs[1]);
     requireEqualShapes(left, right, "ml.meanSquaredError");
     const auto result = torch::mse_loss(left, right).item<double>();
     if (!std::isfinite(result))
@@ -206,12 +131,12 @@ Value LibTorchTensorRuntime::evaluateTensor(
     return result;
   }
   case TensorOperation::Difference: {
-    const auto right = tensorFromValue(inputs[1], symbolTable);
+    const auto right = tensorFromValue(inputs[1]);
     requireEqualShapes(left, right, "tensor.difference");
     return tensorValue(torch::abs(left - right));
   }
   case TensorOperation::CosineSimilarity: {
-    const auto right = tensorFromValue(inputs[1], symbolTable);
+    const auto right = tensorFromValue(inputs[1]);
     if (left.dim() != 1 || right.dim() != 1)
       throw IrError("tensor.cosineSimilarity requires rank-1 tensors");
     requireEqualShapes(left, right, "tensor.cosineSimilarity");

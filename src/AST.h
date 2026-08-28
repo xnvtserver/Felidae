@@ -1,5 +1,11 @@
 #pragma once
 
+// Felidae's compiler-only high-level IR (HIR). The representation is a
+// syntax-shaped node tree because that preserves source spans, mixfix
+// captures, and debugger diagnostics efficiently. It is not executable AST:
+// IrCodeGenerator lowers it once to verified FelidaeIr, and neither binary
+// modules nor RegisterVm retain or interpret these nodes.
+
 #include "FelidaeGrammar.h"
 #include "Operator.h"
 #include <cstdint>

@@ -158,24 +158,14 @@ int main() {
                                  std::array{ragged}, noSymbols);
   }));
 
-  std::vector<Felidae::PieceSequence> symbols{{11, 12}, {21}, {22}, {23, 24}};
   auto fact = std::make_shared<Felidae::VmFact>();
   fact->type = 1;
   fact->fields.emplace_back(2, Felidae::VmText{{31, 32}});
   fact->fields.emplace_back(3, 2.5);
   const Felidae::VmValue factValue = fact;
-  assert(number(tensors.evaluateTensor(Felidae::TensorOperation::Size,
-                                       std::array{factValue}, symbols)) == 7.0);
-  const auto identitySimilarity =
-      number(tensors.evaluateTensor(Felidae::TensorOperation::CosineSimilarity,
-                                    std::array{factValue, factValue}, symbols));
-  assert(std::abs(identitySimilarity - 1.0) < 1e-12);
-  auto changedFact = std::make_shared<Felidae::VmFact>(*fact);
-  changedFact->fields.back().second = 4.0;
-  const auto factDifference = tensors.evaluateTensor(
-      Felidae::TensorOperation::Difference,
-      std::array<Felidae::VmValue, 2>{factValue, changedFact}, symbols);
-  assert(number(values(materialized(tensors, factDifference)).values.back()) ==
-         1.5);
+  assert(rejects([&] {
+    (void)tensors.evaluateTensor(Felidae::TensorOperation::Size,
+                                 std::array{factValue}, noSymbols);
+  }));
   return 0;
 }

@@ -29,6 +29,12 @@ int main(int argc, char **argv) {
     Felidae::IrVerifier::verify(ir);
     const auto verified = std::chrono::steady_clock::now();
     class NoRuntime final : public Felidae::VmRuntime {
+    public:
+      void installIrModule(const Felidae::IrModule &) override {}
+      Felidae::IrSymbolRef
+      resolveSymbol(Felidae::IrSymbolRef symbol) const override {
+        return symbol;
+      }
     } runtime;
     constexpr Felidae::IrSymbolRef entry = 1;
     Felidae::IrModule module;

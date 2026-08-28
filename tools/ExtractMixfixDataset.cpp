@@ -356,8 +356,28 @@ numberPlan(value:number, enabled:bool) =>
 
 main() =>
     return )";
+  constexpr std::string_view wide =
+      R"(@mixfix(pattern: "weigh {a: number} then {b: number} then {c: number} then {d: number} then {e: number} then {f: number}")
+weighSix(a:number, b:number, c:number, d:number, e:number, f:number) =>
+    return a + b + c + d + e + f
+
+main() =>
+    return )";
+  constexpr std::string_view typed =
+      R"(@mixfix(pattern: "classify {value: number} using {enabled: bool}")
+classifyNumber(value:number, enabled:bool) =>
+    return value
+
+@mixfix(pattern: "classify {value: string} using {enabled: bool}")
+classifyText(value:string, enabled:bool) =>
+    return value
+
+candidate := 7
+
+main() =>
+    return )";
   std::vector<std::pair<std::string, std::string>> result;
-  result.reserve(72);
+  result.reserve(120);
   for (std::size_t seed = 1; seed <= 24; ++seed) {
     const auto left = std::to_string(seed);
     const auto model = std::to_string(seed + 2);
@@ -379,6 +399,34 @@ main() =>
     result.emplace_back("generated-plan-" + std::to_string(seed),
                         std::string(plan) + "plan " + std::to_string(seed * 3) +
                             " using " + (seed % 2 == 0 ? "true\n" : "false\n"));
+  }
+  for (std::size_t seed = 1; seed <= 16; ++seed) {
+    std::string expression = std::to_string(seed + 7);
+    for (std::size_t depth = 0; depth < 12; ++depth) {
+      expression =
+          "choose " + std::to_string(seed + depth) + " otherwise " + expression;
+    }
+    result.emplace_back("generated-deep-choose-" + std::to_string(seed),
+                        std::string(choose) + expression + "\n");
+  }
+  for (std::size_t seed = 1; seed <= 16; ++seed) {
+    std::string expression = "weigh";
+    for (std::size_t index = 0; index < 6; ++index) {
+      expression += " " + std::to_string(seed + index);
+      if (index + 1 < 6)
+        expression += " then";
+    }
+    result.emplace_back("generated-wide-repeated-anchor-" +
+                            std::to_string(seed),
+                        std::string(wide) + expression + "\n");
+  }
+  for (std::size_t seed = 1; seed <= 16; ++seed) {
+    // A variable has no concrete capture type during parsing, so both typed
+    // overloads remain structurally possible. These are safe-target
+    // abstention teachers, not fabricated calls to either implementation.
+    result.emplace_back("generated-typed-abstain-" + std::to_string(seed),
+                        std::string(typed) + "classify candidate using " +
+                            (seed % 2 == 0 ? "true\n" : "false\n"));
   }
   return result;
 }
@@ -472,7 +520,7 @@ int main(int argc, char **argv) {
         const auto input = spanIds(tokens, operation->sourceSpan);
         try {
           const auto target =
-              encodeTeacher(IntegerParser::compileAstExpressionIr(operation));
+              encodeTeacher(IrCodeGenerator::lowerExpression(operation));
           if (unique.emplace(input, target).second)
             records.push_back(
                 {{"schema_version", 3},

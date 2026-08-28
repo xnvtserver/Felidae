@@ -607,7 +607,27 @@ int main() {
       0,
       static_cast<IrWord>(IrOpcode::End),
   };
-  class NoRuntime final : public VmRuntime {
+  class NoRuntime : public VmRuntime {
+  public:
+    void installIrModule(const IrModule &) override {}
+    IrSymbolRef resolveSymbol(IrSymbolRef symbol) const override {
+      return symbol;
+    }
+    VmFactPtr retainFact(const VmFactPtr &fact) override { return fact; }
+    VmFactPtr mutateFact(const VmFactPtr &fact, IrSymbolRef field,
+                         const VmValue &value) override {
+      if (!fact)
+        throw IrError("test mutation requires a fact");
+      auto updated = std::make_shared<VmFact>(*fact);
+      const auto found =
+          std::find_if(updated->fields.begin(), updated->fields.end(),
+                       [&](const auto &entry) { return entry.first == field; });
+      if (found == updated->fields.end())
+        updated->fields.emplace_back(field, value);
+      else
+        found->second = value;
+      return updated;
+    }
   } noRuntime;
   const auto arithmeticResult = executeDirect(arithmetic, noRuntime);
   assert(std::get<double>(arithmeticResult) == 42.0);
@@ -650,7 +670,7 @@ int main() {
   assert(fact->fields.front().first == 51);
   assert(std::get<double>(fact->fields.front().second) == 12.0);
 
-  class SymbolRuntime final : public VmRuntime {
+  class SymbolRuntime final : public NoRuntime {
   public:
     VmValue loadSymbol(IrSymbolRef symbol) override {
       return values.at(symbol);
@@ -747,7 +767,7 @@ int main() {
       return std::get<double>(inputs.front()) + static_cast<double>(*state);
     }
   } semanticModel;
-  class SemanticRuntime final : public VmRuntime {
+  class SemanticRuntime final : public NoRuntime {
   public:
     explicit SemanticRuntime(RuntimeStateModel &model) : model_(model) {}
     RuntimeStateModel *runtimeStateModel() override { return &model_; }

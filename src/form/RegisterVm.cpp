@@ -749,153 +749,33 @@ std::string vmValueToDisplayString(const VmValue &value,
   return render(render, value);
 }
 
-namespace {
-using FactParents = std::unordered_map<IrSymbolRef, std::vector<IrSymbolRef>>;
-
-std::unordered_set<IrSymbolRef> hierarchyClosure(const FactParents &parents,
-                                                 IrSymbolRef type) {
-  std::unordered_set<IrSymbolRef> result;
+const std::unordered_set<IrSymbolRef> &
+VmFactStore::ancestorClosureLocked(IrSymbolRef type) const {
+  const auto cached = ancestorClosureCache_.find(type);
+  if (cached != ancestorClosureCache_.end() &&
+      cached->second.first == hierarchyRevision_) {
+    return cached->second.second;
+  }
+  std::unordered_set<IrSymbolRef> closure;
   std::vector<IrSymbolRef> pending{type};
   while (!pending.empty()) {
     const auto current = pending.back();
     pending.pop_back();
-    if (!result.insert(current).second)
+    if (!closure.insert(current).second)
       continue;
-    if (const auto found = parents.find(current); found != parents.end())
+    if (const auto found = parents_.find(current); found != parents_.end()) {
       pending.insert(pending.end(), found->second.begin(), found->second.end());
-  }
-  return result;
-}
-
-bool isAssignableTo(const FactParents &parents, IrSymbolRef candidate,
-                    IrSymbolRef expected) {
-  return hierarchyClosure(parents, candidate).contains(expected);
-}
-
-// Deterministic fact embedding: feature hashing (no training, no model --
-// reproducible from fact content alone), the same technique behind
-// scikit-learn's FeatureHasher / Vowpal Wabbit. Kept as plain doubles rather
-// than a LibTorch tensor so fact comparison/search works even in builds
-// without LibTorch; TensorRuntime can wrap this into a real tensor for
-// batched/accelerated operations when LibTorch is present.
-constexpr std::size_t kFactEmbeddingDimension = 128;
-
-// SplitMix64-style finalizer: spreads nearby seeds across uncorrelated
-// dimensions/signs instead of adjacent ones.
-std::size_t mixEmbeddingHash(std::size_t value) {
-  value ^= value >> 33;
-  value *= 0xff51afd7ed558ccdULL;
-  value ^= value >> 33;
-  value *= 0xc4ceb9fe1a85ec53ULL;
-  value ^= value >> 33;
-  return value;
-}
-
-std::size_t combineEmbeddingHash(std::size_t seed, std::size_t value) {
-  return mixEmbeddingHash(seed ^ (value + 0x9e3779b97f4a7c15ULL +
-                                  (seed << 6) + (seed >> 2)));
-}
-
-void addEmbeddingFeature(std::vector<double> &vector, std::size_t featureSeed,
-                         double weight) {
-  const auto mixed = mixEmbeddingHash(featureSeed);
-  vector[mixed % vector.size()] += (mixed >> 63) ? -weight : weight;
-}
-
-// Recurses into arrays/maps/nested facts, decaying each level's contribution
-// so deep structure never dominates a shallow field. Depth is bounded by
-// kMaximumVmValueDepth, the same limit validVmValue/similarityDegreeAtDepth
-// already enforce elsewhere in this file.
-void encodeFactValueInto(std::vector<double> &vector, std::size_t keySeed,
-                         const VmValue &value, std::size_t depth,
-                         double scale) {
-  if (depth > kMaximumVmValueDepth || scale < 1e-6)
-    return;
-  if (const auto number = std::get_if<double>(&value)) {
-    addEmbeddingFeature(vector, keySeed, scale * (*number));
-    return;
-  }
-  if (const auto degree = std::get_if<VmDegree>(&value)) {
-    addEmbeddingFeature(vector, combineEmbeddingHash(keySeed, 1),
-                        scale * degree->value);
-    return;
-  }
-  if (const auto text = std::get_if<VmText>(&value)) {
-    std::size_t seed = combineEmbeddingHash(keySeed, 2);
-    for (const auto piece : text->pieces)
-      seed = combineEmbeddingHash(seed, static_cast<std::size_t>(piece));
-    addEmbeddingFeature(vector, seed, scale);
-    return;
-  }
-  if (const auto symbol = std::get_if<VmSymbol>(&value)) {
-    addEmbeddingFeature(
-        vector, combineEmbeddingHash(keySeed, static_cast<std::size_t>(symbol->value)),
-        scale);
-    return;
-  }
-  if (const auto array = std::get_if<VmArrayPtr>(&value)) {
-    if (!*array)
-      return;
-    for (std::size_t index = 0; index < (*array)->values.size(); ++index) {
-      encodeFactValueInto(vector, combineEmbeddingHash(keySeed, index),
-                          (*array)->values[index], depth + 1, scale * 0.5);
     }
-    return;
   }
-  if (const auto map = std::get_if<VmMapPtr>(&value)) {
-    if (!*map)
-      return;
-    for (const auto &[key, entryValue] : (*map)->entries) {
-      encodeFactValueInto(
-          vector, combineEmbeddingHash(keySeed, static_cast<std::size_t>(key)),
-          entryValue, depth + 1, scale * 0.5);
-    }
-    return;
-  }
-  if (const auto textMap = std::get_if<VmTextMapPtr>(&value)) {
-    if (!*textMap)
-      return;
-    for (const auto &[key, entryValue] : (*textMap)->entries) {
-      std::size_t seed = keySeed;
-      for (const auto piece : key)
-        seed = combineEmbeddingHash(seed, static_cast<std::size_t>(piece));
-      encodeFactValueInto(vector, seed, entryValue, depth + 1, scale * 0.5);
-    }
-    return;
-  }
-  if (const auto fact = std::get_if<VmFactPtr>(&value)) {
-    // A "sub fact" folds its own type + fields directly into the parent's
-    // vector, decayed by nesting depth. Its ancestor chain is intentionally
-    // left out here -- only VmFactStore::embedding adds ancestor features,
-    // for the one top-level fact actually being embedded -- so this helper
-    // stays independent of any specific store's hierarchy.
-    if (!*fact)
-      return;
-    addEmbeddingFeature(
-        vector,
-        combineEmbeddingHash(keySeed, static_cast<std::size_t>((*fact)->type)),
-        scale);
-    for (const auto &[field, fieldValue] : (*fact)->fields) {
-      encodeFactValueInto(
-          vector, combineEmbeddingHash(keySeed, static_cast<std::size_t>(field)),
-          fieldValue, depth + 1, scale * 0.5);
-    }
-    return;
-  }
-  if (const auto tensor = std::get_if<VmTensorPtr>(&value)) {
-    // Coarse, Torch-free contribution: shape only, never tensor contents --
-    // keeps this file buildable without LibTorch (see VmTensor's own comment).
-    if (!*tensor)
-      return;
-    std::size_t seed = combineEmbeddingHash(keySeed, 3);
-    for (const auto dimension : (*tensor)->shape)
-      seed = combineEmbeddingHash(seed, static_cast<std::size_t>(dimension));
-    addEmbeddingFeature(vector, seed, scale);
-    return;
-  }
-  // VmNil contributes nothing -- "absent" is naturally the zero vector.
+  auto &entry = ancestorClosureCache_[type];
+  entry = {hierarchyRevision_, std::move(closure)};
+  return entry.second;
 }
-} // namespace
+
+bool VmFactStore::isAssignableToLocked(IrSymbolRef candidate,
+                                       IrSymbolRef expected) const {
+  return ancestorClosureLocked(candidate).contains(expected);
+}
 
 void VmFactStore::registerType(IrSymbolRef type,
                                std::vector<IrSymbolRef> parents) {
@@ -913,39 +793,43 @@ void VmFactStore::registerType(IrSymbolRef type,
       throw IrError("fact hierarchy parent is invalid");
     if (!uniqueParents.insert(parent).second)
       throw IrError("fact hierarchy contains a duplicate parent");
-    if (isAssignableTo(parents_, parent, type))
+    if (isAssignableToLocked(parent, type))
       throw IrError("fact hierarchy contains a cycle");
   }
   parents_.emplace(type, std::move(parents));
-  ++revision_;
+  ++hierarchyRevision_;
+  ++knowledgeRevision_;
 }
 
-IrFactRef VmFactStore::retain(const VmFactPtr &fact) {
+VmFactPtr VmFactStore::retain(const VmFactPtr &fact) {
   if (!fact || !validVmValue(VmValue{fact}))
     throw IrError("fact store cannot retain an invalid fact");
   std::lock_guard lock(mutex_);
   if (fact->id != 0) {
     if (std::ranges::find(facts_, fact) == facts_.end())
       throw IrError("fact already belongs to another knowledge runtime");
-    return fact->id;
+    return fact;
   }
   if (nextId_ == std::numeric_limits<IrFactRef>::max())
     throw IrError("fact store exhausted its fact ID space");
-  fact->id = nextId_++;
-  fact->createdSequence = nextSequence_++;
-  facts_.push_back(fact);
-  byType_[fact->type].push_back(fact);
-  for (const auto &[field, _] : fact->fields)
-    byField_[field].push_back(fact);
+  auto retained = std::make_shared<VmFact>(*fact);
+  retained->id = nextId_++;
+  retained->createdSequence = nextSequence_++;
+  facts_.push_back(retained);
+  byType_[retained->type].push_back(retained);
+  for (const auto &[field, _] : retained->fields)
+    byField_[field].push_back(retained);
   provenance_.push_back(
-      VmFactProvenance{fact->id, 0, fact->origin == VmFact::Origin::Derived});
-  ++revision_;
-  return fact->id;
+      VmFactProvenance{retained->id, 0,
+                       retained->origin == VmFact::Origin::Derived});
+  ++membershipRevision_;
+  ++knowledgeRevision_;
+  return retained;
 }
 
-void VmFactStore::mutate(const VmFactPtr &fact, IrSymbolRef field,
-                         const VmValue &value, IrSymbolRef procedure) {
-  if (!fact || fact->id == 0 || field == 0)
+VmFactPtr VmFactStore::mutate(const VmFactPtr &fact, IrSymbolRef field,
+                              const VmValue &value, IrSymbolRef procedure) {
+  if (!fact || fact->id == 0 || field == 0 || !validVmValue(value))
     throw IrError("fact mutation is invalid");
   std::lock_guard lock(mutex_);
   const auto known =
@@ -954,8 +838,9 @@ void VmFactStore::mutate(const VmFactPtr &fact, IrSymbolRef field,
   if (known == facts_.end())
     throw IrError(
         "fact mutation targets a fact outside this knowledge runtime");
+  auto updated = std::make_shared<VmFact>(*fact);
   bool hadField = false;
-  for (auto &[existing, previous] : fact->fields) {
+  for (auto &[existing, previous] : updated->fields) {
     if (existing == field) {
       previous = value;
       hadField = true;
@@ -963,38 +848,25 @@ void VmFactStore::mutate(const VmFactPtr &fact, IrSymbolRef field,
     }
   }
   if (!hadField) {
-    fact->fields.emplace_back(field, value);
-    byField_[field].push_back(fact);
+    updated->fields.emplace_back(field, value);
   }
+  const auto replace = [&](auto &items) {
+    const auto item = std::ranges::find(items, fact);
+    if (item == items.end())
+      throw IrError("fact store index is inconsistent");
+    *item = updated;
+  };
+  replace(facts_);
+  replace(byType_.at(fact->type));
+  for (const auto &[indexedField, _] : fact->fields)
+    replace(byField_.at(indexedField));
+  if (!hadField)
+    byField_[field].push_back(updated);
   mutations_.push_back(VmFactMutation{nextSequence_++, fact->id, field});
   provenance_.push_back(VmFactProvenance{
       fact->id, procedure, fact->origin == VmFact::Origin::Derived});
-  ++revision_;
-}
-
-std::vector<double> VmFactStore::embedding(const VmFactPtr &fact) const {
-  if (!fact || fact->type == 0)
-    throw IrError("fact store cannot embed an invalid fact");
-  std::lock_guard lock(mutex_);
-  std::vector<double> vector(kFactEmbeddingDimension, 0.0);
-  addEmbeddingFeature(vector, static_cast<std::size_t>(fact->type), 1.0);
-  for (const auto &[field, value] : fact->fields) {
-    encodeFactValueInto(
-        vector,
-        combineEmbeddingHash(static_cast<std::size_t>(fact->type),
-                             static_cast<std::size_t>(field)),
-        value, 0, 1.0);
-  }
-  // Ancestor chain: shared ancestors give two facts of related-but-different
-  // types a naturally higher cosine similarity, without a graph walk at
-  // comparison time. hierarchyClosure includes fact->type itself, which is
-  // fine -- it only reinforces the type feature already added above.
-  for (const auto ancestor : hierarchyClosure(parents_, fact->type)) {
-    addEmbeddingFeature(
-        vector, combineEmbeddingHash(static_cast<std::size_t>(ancestor), 4),
-        1.0);
-  }
-  return vector;
+  ++contentRevision_;
+  return updated;
 }
 
 std::vector<VmFactPtr> VmFactStore::snapshot() const {
@@ -1013,12 +885,16 @@ VmFactStore::hierarchyProof(IrSymbolRef child, IrSymbolRef ancestor) const {
   std::lock_guard lock(mutex_);
   if (child == 0 || ancestor == 0)
     return {};
-  std::vector<std::pair<IrSymbolRef, std::vector<IrSymbolRef>>> pending{
+  if (!isAssignableToLocked(child, ancestor))
+    return {};
+  // A proof is evidence presented to the caller, so choose the shortest
+  // chain. Parent declaration order is the deterministic tie-breaker.
+  std::deque<std::pair<IrSymbolRef, std::vector<IrSymbolRef>>> pending{
       {child, {child}}};
   std::unordered_set<IrSymbolRef> visited;
   while (!pending.empty()) {
-    auto [current, proof] = std::move(pending.back());
-    pending.pop_back();
+    auto [current, proof] = std::move(pending.front());
+    pending.pop_front();
     if (!visited.insert(current).second)
       continue;
     if (current == ancestor)
@@ -1040,8 +916,12 @@ std::vector<IrSymbolRef> VmFactStore::commonAncestors(IrSymbolRef left,
   std::lock_guard lock(mutex_);
   if (left == 0 || right == 0)
     return {};
-  const auto leftAncestors = hierarchyClosure(parents_, left);
-  const auto rightAncestors = hierarchyClosure(parents_, right);
+  // Populate both entries before retaining references: inserting the second
+  // closure may rehash the cache and invalidate a reference to the first.
+  (void)ancestorClosureLocked(left);
+  (void)ancestorClosureLocked(right);
+  const auto &leftAncestors = ancestorClosureLocked(left);
+  const auto &rightAncestors = ancestorClosureLocked(right);
   std::vector<IrSymbolRef> result;
   for (const auto candidate : leftAncestors)
     if (rightAncestors.contains(candidate))
@@ -1129,13 +1009,9 @@ VmFactStore::rankByTimeAndPriority(IrSymbolRef effectiveAtField,
 std::vector<VmFactPtr>
 VmFactStore::snapshotAssignableTo(IrSymbolRef type) const {
   std::lock_guard lock(mutex_);
-  if (const auto cached = assignableCache_.find(type);
-      cached != assignableCache_.end() && cached->second.first == revision_) {
-    return cached->second.second;
-  }
   std::vector<VmFactPtr> result;
   for (const auto &[candidate, facts] : byType_) {
-    if (isAssignableTo(parents_, candidate, type))
+    if (isAssignableToLocked(candidate, type))
       result.insert(result.end(), facts.begin(), facts.end());
   }
   std::sort(result.begin(), result.end(),
@@ -1144,7 +1020,6 @@ VmFactStore::snapshotAssignableTo(IrSymbolRef type) const {
                 return left->createdSequence < right->createdSequence;
               return left->id < right->id;
             });
-  assignableCache_[type] = {revision_, result};
   return result;
 }
 
@@ -1173,7 +1048,7 @@ VmKnowledgeSnapshot VmFactStore::knowledgeSnapshot() const {
 void VmFactStore::refreshKnowledgeSnapshot(std::uint64_t &knownRevision,
                                            VmKnowledgeSnapshot &result) const {
   std::lock_guard lock(mutex_);
-  if (knownRevision == revision_)
+  if (knownRevision == knowledgeRevision_)
     return;
   result = {};
   result.factTypes.reserve(byType_.size());
@@ -1193,7 +1068,12 @@ void VmFactStore::refreshKnowledgeSnapshot(std::uint64_t &knownRevision,
       result.hierarchyEdges.emplace_back(child, parent);
   }
   std::sort(result.hierarchyEdges.begin(), result.hierarchyEdges.end());
-  knownRevision = revision_;
+  knownRevision = knowledgeRevision_;
+}
+
+VmFactStoreRevisions VmFactStore::revisions() const {
+  std::lock_guard lock(mutex_);
+  return {hierarchyRevision_, membershipRevision_, contentRevision_};
 }
 
 std::size_t VmFactStore::size() const {
@@ -1243,15 +1123,16 @@ FelidaeKnowledgeRuntime::FelidaeKnowledgeRuntime(
     throw IrError("direct VM call depth limit must be positive");
 }
 
-void FelidaeKnowledgeRuntime::retainFact(const VmFactPtr &fact) {
-  (void)factStore_->retain(fact);
+VmFactPtr FelidaeKnowledgeRuntime::retainFact(const VmFactPtr &fact) {
+  return factStore_->retain(fact);
 }
 
-void FelidaeKnowledgeRuntime::mutateFact(const VmFactPtr &fact,
-                                         IrSymbolRef field,
-                                         const VmValue &value) {
-  factStore_->mutate(fact, field, value,
-                     callFrames_.empty() ? 0 : callFrames_.back().procedure);
+VmFactPtr FelidaeKnowledgeRuntime::mutateFact(const VmFactPtr &fact,
+                                              IrSymbolRef field,
+                                              const VmValue &value) {
+  return factStore_->mutate(
+      fact, field, value,
+      callFrames_.empty() ? 0 : callFrames_.back().procedure);
 }
 
 void FelidaeKnowledgeRuntime::registerFactType(
@@ -1292,14 +1173,37 @@ FelidaeKnowledgeRuntime::rankFacts(IrSymbolRef effectiveAtField,
 void FelidaeKnowledgeRuntime::installIrModule(const IrModule &module) {
   module_ = {};
   module_.symbolTable = module.symbolTable;
+  module_.runtimeSymbols.reserve(module.symbolTable.size());
+  for (const auto &pieces : module.symbolTable) {
+    const auto found = runtimeSymbolIds_.find(pieces);
+    if (found != runtimeSymbolIds_.end()) {
+      module_.runtimeSymbols.push_back(found->second);
+      continue;
+    }
+    if (runtimeSymbolTable_.size() ==
+        static_cast<std::size_t>(std::numeric_limits<IrSymbolRef>::max())) {
+      throw IrError("runtime symbol table exhausted its ID space");
+    }
+    runtimeSymbolTable_.push_back(pieces);
+    const auto runtimeSymbol =
+        static_cast<IrSymbolRef>(runtimeSymbolTable_.size());
+    runtimeSymbolIds_.emplace(runtimeSymbolTable_.back(), runtimeSymbol);
+    module_.runtimeSymbols.push_back(runtimeSymbol);
+  }
 }
 
 IrSymbolRef
 FelidaeKnowledgeRuntime::resolveSymbol(IrSymbolRef moduleSymbol) const {
-  if (module_.symbolTable.empty())
+  if (module_.runtimeSymbols.empty())
     throw IrError("IR runtime has no installed module");
-  (void)irSymbolPieces(module_.symbolTable, moduleSymbol);
-  return moduleSymbol;
+  if (moduleSymbol == 0 || moduleSymbol > module_.runtimeSymbols.size())
+    throw IrError("IR module symbol index is outside its runtime mapping");
+  return module_.runtimeSymbols[static_cast<std::size_t>(moduleSymbol - 1)];
+}
+
+std::span<const PieceSequence>
+FelidaeKnowledgeRuntime::runtimeSymbolTable() const {
+  return runtimeSymbolTable_;
 }
 
 void FelidaeKnowledgeRuntime::enterProcedure(
@@ -1408,7 +1312,7 @@ FelidaeKnowledgeRuntime::makeRuntimeContext(const VmValue &) const {
   context.maximumSemanticSteps = maximumSemanticSteps_;
   context.executionState = executionState_;
   context.sharedSemanticSteps = sharedSemanticSteps_;
-  context.symbolTable = &module_.symbolTable;
+  context.symbolTable = &runtimeSymbolTable_;
   factStore_->refreshKnowledgeSnapshot(context.knowledgeRevision,
                                        context.knowledge);
   return context;
@@ -1777,22 +1681,18 @@ void VmRuntime::storeSymbol(IrSymbolRef, const VmValue &) {
   throw IrError("IR symbol storage is unavailable in this runtime");
 }
 
-void VmRuntime::retainFact(const VmFactPtr &) {}
-
-void VmRuntime::mutateFact(const VmFactPtr &fact, IrSymbolRef field,
-                           const VmValue &value) {
-  if (!fact)
-    throw IrError("IR mutation requires a fact value");
-  for (auto &[existing, previous] : fact->fields) {
-    if (existing == field) {
-      previous = value;
-      return;
-    }
-  }
-  fact->fields.emplace_back(field, value);
+VmFactPtr VmRuntime::retainFact(const VmFactPtr &) {
+  throw IrError("IR fact retention is unavailable in this runtime");
 }
 
-void VmRuntime::registerFactType(IrSymbolRef, std::vector<IrSymbolRef>) {}
+VmFactPtr VmRuntime::mutateFact(const VmFactPtr &, IrSymbolRef,
+                                const VmValue &) {
+  throw IrError("IR fact mutation is unavailable in this runtime");
+}
+
+void VmRuntime::registerFactType(IrSymbolRef, std::vector<IrSymbolRef>) {
+  throw IrError("IR fact hierarchy is unavailable in this runtime");
+}
 
 std::vector<VmFactPtr> VmRuntime::snapshotFacts(IrSymbolRef) {
   throw IrError("IR fact iteration is unavailable in this runtime");
@@ -1816,9 +1716,14 @@ std::vector<VmRankedFact> VmRuntime::rankFacts(IrSymbolRef, IrSymbolRef) {
   throw IrError("IR temporal ranking is unavailable in this runtime");
 }
 
-void VmRuntime::installIrModule(const IrModule &) {}
-IrSymbolRef VmRuntime::resolveSymbol(IrSymbolRef moduleSymbol) const {
-  return moduleSymbol;
+void VmRuntime::installIrModule(const IrModule &) {
+  throw IrError("IR module installation is unavailable in this runtime");
+}
+IrSymbolRef VmRuntime::resolveSymbol(IrSymbolRef) const {
+  throw IrError("IR symbol resolution is unavailable in this runtime");
+}
+std::span<const PieceSequence> VmRuntime::runtimeSymbolTable() const {
+  throw IrError("IR runtime symbol service is unavailable");
 }
 
 void VmRuntime::enterProcedure(IrSymbolRef,
@@ -2111,8 +2016,8 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
             return runtime.decodeText(pieces);
           },
           [&](std::string_view text) { return runtime.encodeText(text); }};
-      auto result =
-          Form::evaluateBuiltin(operation, inputs, module.symbolTable, codec);
+      auto result = Form::evaluateBuiltin(operation, inputs,
+                                          runtime.runtimeSymbolTable(), codec);
       if (!validVmValue(result))
         throw IrError("builtin operation produced an invalid VM value");
       registers.at(program.words.at(pc + 1)) = std::move(result);
@@ -2147,8 +2052,9 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
         throw IrError("RuntimeStateModel returned an invalid typed result");
       }
       if (const auto fact = std::get_if<VmFactPtr>(&value); fact && *fact) {
-        (*fact)->origin = VmFact::Origin::Derived;
-        runtime.retainFact(*fact);
+        auto derived = std::make_shared<VmFact>(**fact);
+        derived->origin = VmFact::Origin::Derived;
+        value = runtime.retainFact(derived);
       }
       registers.at(program.words.at(pc + 1)) = std::move(value);
       break;
@@ -2179,8 +2085,8 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
       auto *backend = runtime.tensorRuntime();
       if (!backend)
         throw IrError("IR tensor operation requires LibTorch support");
-      auto result =
-          backend->evaluateTensor(operation, inputs, module.symbolTable);
+      auto result = backend->evaluateTensor(operation, inputs,
+                                            runtime.runtimeSymbolTable());
       if (!validVmValue(result))
         throw IrError("tensor operation produced an invalid VM value");
       registers.at(program.words.at(pc + 1)) = std::move(result);
@@ -2189,8 +2095,7 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
     case IrOpcode::MakeFact: {
       auto fact = std::make_shared<VmFact>();
       fact->type = symbol(program.words.at(pc + 2));
-      runtime.retainFact(fact);
-      registers.at(program.words.at(pc + 1)) = std::move(fact);
+      registers.at(program.words.at(pc + 1)) = runtime.retainFact(fact);
       break;
     }
     case IrOpcode::MakeArray: {
@@ -2239,7 +2144,7 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
       const auto object = program.words.at(pc + 1);
       if (const auto fact = std::get_if<VmFactPtr>(&registers.at(object));
           fact && *fact)
-        runtime.mutateFact(*fact, field, value);
+        registers.at(object) = runtime.mutateFact(*fact, field, value);
       else if (const auto map = std::get_if<VmMapPtr>(&registers.at(object));
                map && *map) {
         const auto found = std::find_if(

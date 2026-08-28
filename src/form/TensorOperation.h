@@ -11,9 +11,8 @@ namespace Felidae {
 
 // Operations executed by the optional platform tensor backend. Supported
 // desktop builds provide the backend through LibTorch; RegisterVm retains one
-// instruction format. Fact feature tensors preserve SentencePiece IDs and
-// typed numeric fields; callers must not confuse raw token-ID magnitude with
-// a learned semantic embedding.
+// instruction format. Tensor operations accept numeric scalars, rectangular
+// numeric arrays, or an existing tensor; symbolic facts retain fact semantics.
 enum class TensorOperation : std::uint8_t {
   Size = 0,
   Shape,
