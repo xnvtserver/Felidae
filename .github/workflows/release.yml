@@ -1,0 +1,35 @@
+name: Felidae Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Show build outputs
+        run: find build -maxdepth 3 -type f
+
+      - name: Generate build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: build/felidae
