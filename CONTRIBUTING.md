@@ -1,159 +1,492 @@
 <!-- omit in toc -->
-# Contributing to felidae
 
-First off, thanks for taking the time to contribute! ❤️
+# Contributing to Felidae
 
-All types of contributions are encouraged and valued. See the [Table of Contents](#table-of-contents) for different ways to help and details about how this project handles them. Please make sure to read the relevant section before making your contribution. It will make it a lot easier for us maintainers and smooth out the experience for all involved. The community looks forward to your contributions. 🎉
+Thank you for your interest in contributing to **Felidae**. ❤️
 
-> And if you like the project, but just don't have time to contribute, that's fine. There are other easy ways to support the project and show your appreciation, which we would also be very happy about:
-> - Star the project
-> - Tweet about it
-> - Refer this project in your project's readme
-> - Mention the project at local meetups and tell your friends/colleagues
+Felidae is an open-source C++ language, compiler, reasoning runtime, and register-based virtual machine under active development. Contributions involving the compiler, VM, reasoning system, documentation, tests, tooling, language integrations, editor support, and related components are welcome.
+
+Felidae is currently in **beta**, so correctness, stability, test coverage, clear documentation, and backward-compatible improvements are especially valuable.
+
+Before contributing, please read the relevant sections below and review the existing documentation, issues, and project structure.
+
+If you would like to support Felidae without contributing code, you can also:
+
+* ⭐ Star the repository
+* Share Felidae with developers and researchers
+* Reference Felidae in related projects or articles
+* Improve documentation and examples
+* Report reproducible bugs
+* Participate in technical discussions
+* Test beta releases and provide feedback
 
 <!-- omit in toc -->
+
 ## Table of Contents
 
-- [Code of Conduct](#code-of-conduct)
-- [I Have a Question](#i-have-a-question)
-  - [I Want To Contribute](#i-want-to-contribute)
-  - [Reporting Bugs](#reporting-bugs)
-  - [Suggesting Enhancements](#suggesting-enhancements)
-  - [Your First Code Contribution](#your-first-code-contribution)
-  - [Improving The Documentation](#improving-the-documentation)
-- [Styleguides](#styleguides)
-  - [Commit Messages](#commit-messages)
-- [Join The Project Team](#join-the-project-team)
+* [Code of Conduct](#code-of-conduct)
+* [Questions and Support](#questions-and-support)
+* [Contributing](#contributing)
 
+  * [Legal Notice](#legal-notice)
+  * [Reporting Bugs](#reporting-bugs)
+  * [Reporting Security Vulnerabilities](#reporting-security-vulnerabilities)
+  * [Suggesting Enhancements](#suggesting-enhancements)
+  * [Your First Code Contribution](#your-first-code-contribution)
+  * [Working With Dependencies](#working-with-dependencies)
+  * [Improving Documentation](#improving-documentation)
+* [Development Guidelines](#development-guidelines)
+
+  * [C++ Changes](#c-changes)
+  * [Compiler Changes](#compiler-changes)
+  * [VM Changes](#vm-changes)
+  * [Tests](#tests)
+  * [Commit Messages](#commit-messages)
+* [Pull Requests](#pull-requests)
+* [Editor and Tooling Contributions](#editor-and-tooling-contributions)
+* [Beta Development Policy](#beta-development-policy)
+* [Joining the Project](#joining-the-project)
+* [Attribution](#attribution)
 
 ## Code of Conduct
 
-This project and everyone participating in it is governed by the
-[felidae Code of Conduct](https://github.com/xnvtserver/Felidae/blob/main/CODE_OF_CONDUCT.md).
-By participating, you are expected to uphold this code. Please report unacceptable behavior
-to <info@xnovity.com>.
+Felidae and everyone participating in the project are governed by the [Felidae Code of Conduct](https://github.com/xnvtserver/Felidae/blob/main/CODE_OF_CONDUCT.md).
 
+By participating in the project, you agree to uphold the Code of Conduct.
 
-## I Have a Question
+Unacceptable behavior may be reported privately to:
 
-> If you want to ask a question, we assume that you have read the available [Documentation](https://github.com/xnvtserver/Felidae/tree/main/docs).
+**[info@xnovity.com](mailto:info@xnovity.com)**
 
-Before you ask a question, it is best to search for existing [Issues](https://github.com/xnvtserver/Felidae/issues) that might help you. In case you have found a suitable issue and still need clarification, you can write your question in this issue. It is also advisable to search the internet for answers first.
+## Questions and Support
 
-If you then still feel the need to ask a question and need clarification, we recommend the following:
+Before opening a new issue, please review the available [Felidae documentation](https://github.com/xnvtserver/Felidae/tree/main/docs).
 
-- Open an [Issue](https://github.com/xnvtserver/Felidae/issues/new).
-- Provide as much context as you can about what you're running into.
-- Provide project and platform versions (nodejs, npm, etc), depending on what seems relevant.
+Also search the existing [GitHub Issues](https://github.com/xnvtserver/Felidae/issues) to determine whether your question or problem has already been discussed.
 
-We will then take care of the issue as soon as possible.
+If you still need help:
 
-<!--
-You might want to create a separate issue tag for questions and include it in this description. People should then tag their issues accordingly.
+1. Open a [GitHub Issue](https://github.com/xnvtserver/Felidae/issues/new).
+2. Clearly describe what you are trying to accomplish.
+3. Include the Felidae version or commit you are using.
+4. Include your operating system and relevant development environment information.
+5. Include a minimal example when applicable.
 
-Depending on how large the project is, you may want to outsource the questioning, e.g. to Stack Overflow or Gitter. You may add additional contact and information possibilities:
-- IRC
-- Slack
-- Gitter
-- Stack Overflow tag
-- Blog
-- FAQ
-- Roadmap
-- E-Mail List
-- Forum
--->
+Please keep questions focused and provide enough information for another contributor to understand the problem.
 
-## I Want To Contribute
+## Contributing
 
-> ### Legal Notice <!-- omit in toc -->
-> When contributing to this project, you must agree that you have authored 100% of the content, that you have the necessary rights to the content and that the content you contribute may be provided under the project licence.
+Contributions may include:
+
+* Compiler improvements
+* Integer parser improvements
+* IR validation and optimization
+* Register VM improvements
+* Fact and reasoning functionality
+* Fuzzy and degree-based operations
+* State-model and semantic evaluation improvements
+* Performance optimizations
+* Cross-platform improvements
+* Tests and regression cases
+* Documentation
+* Examples
+* Build-system improvements
+* Editor integrations
+* Tree-sitter and syntax tooling
+* Bug fixes
+* Security improvements
+
+Large architectural changes should normally be discussed through an issue before substantial implementation work begins.
+
+### Legal Notice
+
+By submitting a contribution, you confirm that:
+
+* You created the contribution or otherwise have the legal right to submit it.
+* You have the necessary rights to the contributed content.
+* Your contribution may be distributed under the license used by the Felidae project.
+* Your contribution does not knowingly introduce code or content with incompatible licensing requirements.
+
+Do not submit proprietary source code, confidential information, credentials, private keys, production data, or other material that you are not authorized to distribute.
 
 ### Reporting Bugs
 
-<!-- omit in toc -->
 #### Before Submitting a Bug Report
 
-A good bug report shouldn't leave others needing to chase you up for more information. Therefore, we ask you to investigate carefully, collect information and describe the issue in detail in your report. Please complete the following steps in advance to help us fix any potential bug as fast as possible.
+Before opening a bug report:
 
-- Make sure that you are using the latest version.
-- Determine if your bug is really a bug and not an error on your side e.g. using incompatible environment components/versions (Make sure that you have read the [documentation](https://github.com/xnvtserver/Felidae/tree/main/docs). If you are looking for support, you might want to check [this section](#i-have-a-question)).
-- To see if other users have experienced (and potentially already solved) the same issue you are having, check if there is not already a bug report existing for your bug or error in the [bug tracker](https://github.com/xnvtserver/Felidae/issues?q=label%3Abug).
-- Also make sure to search the internet (including Stack Overflow) to see if users outside of the GitHub community have discussed the issue.
-- Collect information about the bug:
-  - Stack trace (Traceback)
-  - OS, Platform and Version (Windows, Linux, macOS, x86, ARM)
-  - Version of the interpreter, compiler, SDK, runtime environment, package manager, depending on what seems relevant.
-  - Possibly your input and the output
-  - Can you reliably reproduce the issue? And can you also reproduce it with older versions?
+* Make sure you are testing against a currently supported Felidae version.
+* Review the documentation.
+* Search existing issues for the same or a similar problem.
+* Verify that the problem is not caused by an unsupported compiler, incompatible dependency, incorrect build configuration, or local environment issue.
+* Try to reduce the problem to the smallest reproducible example.
 
-<!-- omit in toc -->
-#### How Do I Submit a Good Bug Report?
+Useful information includes:
 
-> You must never report security related issues, vulnerabilities or bugs including sensitive information to the issue tracker, or elsewhere in public. Instead sensitive bugs must be sent by email to <info@xnovity.com>.
-<!-- You may add a PGP key to allow the messages to be sent encrypted as well. -->
+* Felidae version or Git commit
+* Operating system
+* Architecture, such as `x86_64` or `ARM64`
+* C++ compiler and version
+* CMake version
+* Build type, such as `Debug` or `Release`
+* Relevant CMake options
+* Input `.fx` source, when applicable
+* Compiler output
+* VM output
+* Expected behavior
+* Actual behavior
+* Stack trace or crash information
+* Minimal reproduction steps
 
-We use GitHub issues to track bugs and errors. If you run into an issue with the project:
+If the problem concerns generated IR or VM execution, include the smallest input necessary to reproduce the problem whenever possible.
 
-- Open an [Issue](https://github.com/xnvtserver/Felidae/issues/new). (Since we can't be sure at this point whether it is a bug or not, we ask you not to talk about a bug yet and not to label the issue.)
-- Explain the behavior you would expect and the actual behavior.
-- Please provide as much context as possible and describe the *reproduction steps* that someone else can follow to recreate the issue on their own. This usually includes your code. For good bug reports you should isolate the problem and create a reduced test case.
-- Provide the information you collected in the previous section.
+#### Submitting a Bug Report
 
-Once it's filed:
+Use the [Felidae issue tracker](https://github.com/xnvtserver/Felidae/issues) for normal bugs.
 
-- The project team will label the issue accordingly.
-- A team member will try to reproduce the issue with your provided steps. If there are no reproduction steps or no obvious way to reproduce the issue, the team will ask you for those steps and mark the issue as `needs-repro`. Bugs with the `needs-repro` tag will not be addressed until they are reproduced.
-- If the team is able to reproduce the issue, it will be marked `needs-fix`, as well as possibly other tags (such as `critical`), and the issue will be left to be [implemented by someone](#your-first-code-contribution).
+A useful bug report should explain:
 
-<!-- You might want to create an issue template for bugs and errors that can be used as a guide and that defines the structure of the information to be included. If you do so, reference it here in the description. -->
+1. What you attempted to do
+2. What you expected to happen
+3. What actually happened
+4. How another contributor can reproduce it
+5. Which Felidae version or commit is affected
 
+Please avoid posting unnecessarily large logs. Reduce logs and examples to the portions relevant to the issue whenever possible.
+
+Maintainers may apply labels such as `bug`, `needs-repro`, `compiler`, `vm`, `documentation`, or other appropriate classifications.
+
+Issues that cannot be reproduced may require additional information before work can continue.
+
+### Reporting Security Vulnerabilities
+
+**Do not report security vulnerabilities through public GitHub issues.**
+
+Security vulnerabilities and reports containing sensitive security information should be submitted privately according to the project's [Security Policy](https://github.com/xnvtserver/Felidae/blob/main/SECURITY.md).
+
+You may also contact:
+
+**[info@xnovity.com](mailto:info@xnovity.com)**
+
+or
+
+**[support@xnovity.com](mailto:support@xnovity.com)**
+
+Please allow maintainers reasonable time to investigate and address a vulnerability before publicly disclosing technical details.
 
 ### Suggesting Enhancements
 
-This section guides you through submitting an enhancement suggestion for felidae, **including completely new features and minor improvements to existing functionality**. Following these guidelines will help maintainers and the community to understand your suggestion and find related suggestions.
+Feature requests and enhancement proposals are welcome.
 
-<!-- omit in toc -->
-#### Before Submitting an Enhancement
+Before creating one:
 
-- Make sure that you are using the latest version.
-- Read the [documentation](https://github.com/xnvtserver/Felidae/tree/main/docs) carefully and find out if the functionality is already covered, maybe by an individual configuration.
-- Perform a [search](https://github.com/xnvtserver/Felidae/issues) to see if the enhancement has already been suggested. If it has, add a comment to the existing issue instead of opening a new one.
-- Find out whether your idea fits with the scope and aims of the project. It's up to you to make a strong case to convince the project's developers of the merits of this feature. Keep in mind that we want features that will be useful to the majority of our users and not just a small subset. If you're just targeting a minority of users, consider writing an add-on/plugin library.
+* Review the documentation.
+* Search existing issues.
+* Check whether the functionality already exists.
+* Consider whether the proposal fits Felidae's architecture and project goals.
 
-<!-- omit in toc -->
-#### How Do I Submit a Good Enhancement Suggestion?
+Create an issue describing:
 
-Enhancement suggestions are tracked as [GitHub issues](https://github.com/xnvtserver/Felidae/issues).
+* The problem you are trying to solve
+* The proposed behavior
+* Why the change is useful
+* Possible implementation considerations
+* Compatibility implications
+* Alternatives you considered
 
-- Use a **clear and descriptive title** for the issue to identify the suggestion.
-- Provide a **step-by-step description of the suggested enhancement** in as many details as possible.
-- **Describe the current behavior** and **explain which behavior you expected to see instead** and why. At this point you can also tell which alternatives do not work for you.
-- You may want to **include screenshots or screen recordings** which help you demonstrate the steps or point out the part which the suggestion is related to. You can use [LICEcap](https://www.cockos.com/licecap/) to record GIFs on macOS and Windows, and the built-in [screen recorder in GNOME](https://help.gnome.org/users/gnome-help/stable/screen-shot-record.html.en) or [SimpleScreenRecorder](https://github.com/MaartenBaert/ssr) on Linux. <!-- this should only be included if the project has a GUI -->
-- **Explain why this enhancement would be useful** to most felidae users. You may also want to point out the other projects that solved it better and which could serve as inspiration.
+For language, compiler, IR, VM, storage, reasoning, or model-related architectural changes, explain how the proposal interacts with existing components.
 
-<!-- You might want to create an issue template for enhancement suggestions that can be used as a guide and that defines the structure of the information to be included. If you do so, reference it here in the description. -->
+Avoid combining several unrelated architectural changes into a single proposal.
 
 ### Your First Code Contribution
-<!-- TODO
-include Setup of env, IDE and typical getting started instructions?
 
--->
+Start by cloning Felidae with its submodules:
 
-### Improving The Documentation
-<!-- TODO
-Updating, improving and correcting the documentation
+```bash
+git clone --recurse-submodules https://github.com/xnvtserver/Felidae.git
+cd Felidae
+```
 
--->
+If you already cloned the repository without its submodules:
 
-## Styleguides
+```bash
+git submodule sync --recursive
+git submodule update --init --recursive
+```
+
+Create a development branch:
+
+```bash
+git checkout -b fix/short-description
+```
+
+or:
+
+```bash
+git checkout -b feature/short-description
+```
+
+Configure a development build using CMake:
+
+```bash
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DFELIDAE_BUILD_TESTS=ON
+```
+
+Build:
+
+```bash
+cmake --build build
+```
+
+Run the available tests:
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+Build options and dependencies may evolve during beta development. Check the repository documentation and `CMakeLists.txt` for the currently supported configuration.
+
+Before opening a pull request, make sure the project builds successfully and relevant tests pass.
+
+### Working With Dependencies
+
+Felidae uses Git submodules for several external dependencies and project components.
+
+Do not casually update submodule revisions as part of an unrelated change.
+
+Dependency updates should normally be isolated so that compatibility and regression testing can be performed independently.
+
+After changing or updating submodules, verify the repository from a clean state:
+
+```bash
+git submodule sync --recursive
+git submodule update --init --recursive
+git submodule status --recursive
+```
+
+Do not modify third-party source code directly unless the change is intentional, documented, and necessary.
+
+Avoid introducing new dependencies when equivalent functionality can reasonably be implemented using the C++ standard library or an existing Felidae dependency.
+
+New dependencies should have:
+
+* A clear technical justification
+* A compatible license
+* Active maintenance
+* Acceptable build and runtime overhead
+* Cross-platform support where applicable
+
+### Improving Documentation
+
+Documentation contributions are welcome and do not require changes to the compiler or runtime.
+
+Useful documentation contributions include:
+
+* Correcting outdated information
+* Improving explanations
+* Adding examples
+* Documenting language behavior
+* Documenting compiler behavior
+* Documenting VM semantics
+* Improving build instructions
+* Improving platform-specific setup instructions
+* Documenting APIs and tooling
+
+Documentation should describe behavior that actually exists in the repository. Clearly identify experimental or planned functionality rather than documenting it as stable behavior.
+
+## Development Guidelines
+
+Felidae contains components with different responsibilities. Contributions should preserve boundaries between these components rather than bypassing them for convenience.
+
+### C++ Changes
+
+When contributing C++ code:
+
+* Prefer clear and maintainable C++.
+* Avoid unnecessary allocations and copies in performance-sensitive paths.
+* Use RAII for resource ownership.
+* Prefer explicit ownership and lifetime semantics.
+* Avoid introducing global mutable state without strong justification.
+* Avoid undefined behavior.
+* Keep warnings clean where practical.
+* Preserve cross-platform compatibility.
+* Add tests for behavioral changes and bug fixes.
+
+Performance optimizations should preserve correctness and should ideally include measurements when the performance impact is significant.
+
+### Compiler Changes
+
+Compiler changes should preserve the separation between source-language processing and VM execution.
+
+When changing parsing, compilation, or IR generation:
+
+* Keep source-level concerns within the compiler/frontend.
+* Validate generated IR before execution.
+* Reject unsupported constructs clearly rather than silently changing their meaning.
+* Preserve useful source-location information for diagnostics where applicable.
+* Add regression tests for compiler bugs.
+
+Do not introduce runtime dependencies on compiler AST structures merely to simplify implementation.
+
+### VM Changes
+
+The Felidae VM executes compiled IR and should remain independent of source-language parsing details.
+
+VM changes should:
+
+* Preserve the defined IR contract.
+* Validate operands and runtime state where appropriate.
+* Avoid dependencies on parser or AST implementation details.
+* Keep deterministic behavior deterministic.
+* Clearly isolate learned, soft, fuzzy, or non-deterministic semantic behavior from deterministic VM operations.
+* Include tests for new instructions and semantic operations.
+
+Changes to the VM instruction set or IR representation should be treated as architectural changes and discussed before large implementations are submitted.
+
+### Tests
+
+Bug fixes should include regression tests whenever practical.
+
+New functionality should include tests covering:
+
+* Expected behavior
+* Important edge cases
+* Invalid inputs where applicable
+* Compiler/IR boundaries where relevant
+* VM behavior where relevant
+
+Run:
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+before submitting a pull request.
+
+A pull request should not intentionally disable an existing test merely to make the test suite pass.
+
 ### Commit Messages
-<!-- TODO
 
--->
+Use concise commit messages that describe the change.
 
-## Join The Project Team
-<!-- TODO -->
+Recommended prefixes include:
+
+```text
+feat: add ...
+fix: correct ...
+docs: update ...
+test: add ...
+refactor: simplify ...
+perf: optimize ...
+build: update ...
+ci: configure ...
+deps: update ...
+```
+
+Examples:
+
+```text
+fix: validate register operands before execution
+```
+
+```text
+feat: add degree minimum operation
+```
+
+```text
+test: add VM semantic evaluation cases
+```
+
+```text
+docs: clarify compiler and VM boundaries
+```
+
+Keep unrelated changes in separate commits where practical.
+
+## Pull Requests
+
+Before opening a pull request:
+
+* Rebase or update your branch against the current target branch when necessary.
+* Build Felidae successfully.
+* Run relevant tests.
+* Review your own diff.
+* Remove temporary debugging code.
+* Remove generated build artifacts.
+* Avoid unrelated formatting changes.
+* Document user-visible or architectural changes.
+
+A good pull request should contain:
+
+* A clear title
+* A concise description of the problem
+* A summary of the implementation
+* Testing performed
+* Relevant issue references
+* Compatibility or migration considerations, when applicable
+
+Small, focused pull requests are generally easier to review than large changes combining unrelated work.
+
+Maintainers may request changes before merging.
+
+Submission of a pull request does not guarantee that the change will be accepted.
+
+## Editor and Tooling Contributions
+
+Felidae may include editor integrations, syntax definitions, Tree-sitter components, and other development tooling.
+
+Changes to these components should remain synchronized with the currently supported Felidae syntax and behavior.
+
+When changing language syntax, consider whether corresponding changes are required for:
+
+* Tree-sitter grammar
+* VS Code support
+* Vim support
+* Emacs support
+* IntelliJ IDEA support
+* Sublime Text support
+* Zed support
+* Notepad++ support
+* Nano syntax support
+* Documentation and examples
+
+Tooling changes should normally be made in the appropriate component or submodule rather than duplicating editor-specific logic inside the compiler.
+
+## Beta Development Policy
+
+Felidae is currently in beta.
+
+During beta development:
+
+* APIs may evolve.
+* IR formats may evolve.
+* VM instructions may evolve.
+* Language syntax may evolve.
+* Model formats and training procedures may evolve.
+* Compatibility between beta releases is not guaranteed unless explicitly documented.
+
+However, changes should still be deliberate and reviewed.
+
+Do not use beta status as justification for unnecessary breaking changes. Prefer migration paths and compatibility where they are practical.
+
+Correctness, architecture, maintainability, testing, and security take priority over preserving experimental behavior that is known to be incorrect.
+
+## Joining the Project
+
+Regular contributors who consistently provide useful code, documentation, testing, reviews, or technical guidance may become more involved with the project over time.
+
+Project roles and repository permissions are granted at the discretion of the maintainers based on contribution history, project needs, and demonstrated understanding of the project's technical and community standards.
+
+The best way to become involved is to participate constructively through issues, discussions, reviews, documentation, and focused pull requests.
+
+Thank you for helping build Felidae. ❤️
 
 <!-- omit in toc -->
+
 ## Attribution
-This guide is based on the [contributing.md](https://contributing.md/generator)!
+
+Parts of the original contribution guidelines were based on the [contributing.md generator](https://contributing.md/).
+
+This document has been adapted for the Felidae project and its development workflow.
