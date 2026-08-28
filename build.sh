@@ -5,7 +5,7 @@ set -euo pipefail
 # override these values without creating another build script.
 MODE="${FELIDAE_MODE:-test}"                       # test | release
 ENABLE_TRAINING="${FELIDAE_ENABLE_TRAINING:-OFF}" # ON | OFF
-ENABLE_LIBTORCH="${FELIDAE_ENABLE_LIBTORCH:-OFF}" # ON | OFF
+ENABLE_LIBTORCH="${FELIDAE_ENABLE_LIBTORCH:-auto}" # auto | ON | OFF
 PLATFORM="${FELIDAE_PLATFORM:-auto}"               # auto | linux | macos | windows | android | generic
 ARCHITECTURE="${FELIDAE_ARCH:-auto}"               # auto | x86_64 | arm64 | armv7
 ANDROID_API="${FELIDAE_ANDROID_API:-24}"
@@ -100,7 +100,15 @@ case "$(uname -m)" in
 esac
 
 ENABLE_TRAINING="$(normalize_boolean "$ENABLE_TRAINING")"
-ENABLE_LIBTORCH="$(normalize_boolean "$ENABLE_LIBTORCH")"
+if [[ "${ENABLE_LIBTORCH,,}" == auto ]]; then
+    if [[ "$PLATFORM" == android ]]; then
+        ENABLE_LIBTORCH=OFF
+    else
+        ENABLE_LIBTORCH=ON
+    fi
+else
+    ENABLE_LIBTORCH="$(normalize_boolean "$ENABLE_LIBTORCH")"
+fi
 if [[ "${JOBS,,}" == auto ]]; then
     if command -v getconf >/dev/null 2>&1; then
         JOBS="$(getconf _NPROCESSORS_ONLN)"
@@ -169,7 +177,7 @@ fi
 if [[ "$ENABLE_LIBTORCH" == ON ]]; then
     if [[ "$PLATFORM" != linux || "$ARCHITECTURE" != "$HOST_ARCHITECTURE" ]]; then
         if [[ -z "${FELIDAE_LIBTORCH_PATH:-}" ]]; then
-            echo "Cross-platform LibTorch builds require FELIDAE_LIBTORCH_PATH; alternatively use --libtorch OFF" >&2
+            echo "Cross-platform LibTorch builds require FELIDAE_LIBTORCH_PATH; use --libtorch OFF only when LibTorch is unavailable for the target" >&2
             exit 2
         fi
     fi
@@ -180,10 +188,10 @@ if [[ "$SANITIZE" -eq 1 ]]; then
 fi
 
 echo "Felidae platform=${PLATFORM} arch=${ARCHITECTURE} mode=${MODE} configuration=${CONFIGURATION} training=${ENABLE_TRAINING} libtorch=${ENABLE_LIBTORCH} jobs=${JOBS}"
-nice -n 19 cmake "${CMAKE_ARGS[@]}"
+cmake "${CMAKE_ARGS[@]}"
 
 if [[ "$MODE" == test ]]; then
-    nice -n 19 cmake --build "$BUILD_DIR" --config "$CONFIGURATION" \
+    cmake --build "$BUILD_DIR" --config "$CONFIGURATION" \
         --target felidae_compiler felidae_vm felidae_tests --parallel "$JOBS"
     if [[ "$CAN_RUN_TESTS" -eq 1 ]]; then
         ctest --test-dir "$BUILD_DIR" --build-config "$CONFIGURATION" --output-on-failure
@@ -191,6 +199,6 @@ if [[ "$MODE" == test ]]; then
         echo "Cross-compiled tests were built but not executed on the host"
     fi
 else
-    nice -n 19 cmake --build "$BUILD_DIR" --config "$CONFIGURATION" \
+    cmake --build "$BUILD_DIR" --config "$CONFIGURATION" \
         --target felidae_dist --parallel "$JOBS"
 fi

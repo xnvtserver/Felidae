@@ -1,7 +1,7 @@
 # Felidae
 
 Felidae compiles `.fx` source into verified, integer-only `.bin` artifacts.
-`.bin` uses the beta **FELBIR v13** container. During beta, binaries must be
+`.bin` uses the beta **FELBIR v16** container. During beta, binaries must be
 rebuilt whenever the current IR version changes; pre-release compatibility
 formats are intentionally not retained.
 The compiler and VM are separate C++ executables:
@@ -23,6 +23,22 @@ The Form VM does not link the parser or AST. SentencePiece decoding is a
 presentation adapter used for meaningful output, while execution and runtime
 SSM context remain integer-only.
 
+FELBIR v16 also provides deterministic floating-point intrinsics such as
+`MIN`, `MAX`, `ABS`, `AVG`, `CLAMP`, `SQRT`, `POW`, `LERP`, and range/finite
+classifiers. They execute directly in `RegisterVm`; invalid domains raise an
+error, and classifiers return numeric truth `0.0` or `1.0`. See
+[`v2_examples/numeric_operations.fx`](v2_examples/numeric_operations.fx).
+
+Supported desktop builds also require LibTorch for tensor operations over
+numeric arrays and SentencePiece-backed fact features. Non-scalar results stay
+as real LibTorch tensors inside the VM and are materialized only for display or
+another explicit boundary. Tensor metadata,
+clone/transpose/symmetry, differences, cosine similarity, dot product, MSE,
+sigmoid, and ReLU execute deterministically without consulting the VM SSM.
+Android and explicitly unsupported targets may configure
+`FELIDAE_ENABLE_LIBTORCH=OFF`; such a VM rejects tensor instructions clearly.
+See [`v2_examples/tensor_operations.fx`](v2_examples/tensor_operations.fx).
+
 For intelligence-style evaluation, use the reproducible
 [reasoning and robustness benchmark](docs/reasoning_benchmark.md). It includes
 coffee-vending and HVAC examples using hierarchy, explicit unification
@@ -31,12 +47,31 @@ safe failure cases. The benchmark reports proof accuracy, fault tolerance,
 determinism, latency, and held-out learning separately; it does not claim a
 human IQ score or native Prolog backtracking.
 
+For focused C++ quality checks after a successful Debug build:
+
+```bash
+clang-tidy -p build/debug \
+  src/form/RegisterVm.cpp src/form/LibTorchTensorRuntime.cpp \
+  src/IrCodeGenerator.cpp src/IntegerParser.cpp
+
+cppcheck --enable=warning,performance,portability \
+  --std=c++20 --project=build/debug/compile_commands.json \
+  --suppress=missingIncludeSystem
+
+valgrind --error-exitcode=1 --leak-check=full \
+  ./build/debug/felidae_libtorch_smoke_test
+```
+
+These tools are deliberately not attached to every ordinary build because
+they are substantially slower. Their final diagnostics are release evidence;
+installation or a clean compilation alone is not.
+
 ## Build and debug on Linux or WSL
 
 Felidae requires CMake 3.21 or newer, a C++20 compiler (GCC 8+ or Clang 7+),
 and the pinned Git submodules. Ninja and GDB are recommended for fast builds
-and native debugging. Python and LibTorch are not required for the normal
-compiler and VM.
+and native debugging. Python is not used. LibTorch is required for the normal
+desktop VM and may be disabled only for unsupported targets such as Android.
 
 Clone the repository with its submodules, or initialize them in an existing
 checkout:
@@ -53,7 +88,7 @@ directories. The portable `build.sh` exposes its normal controls at the top:
 ```bash
 MODE="test"          # test or release
 ENABLE_TRAINING="OFF" # ON requires LibTorch
-ENABLE_LIBTORCH="OFF"
+ENABLE_LIBTORCH="auto" # ON on supported desktop targets; OFF on Android
 JOBS="auto"           # detected logical CPUs, or a positive integer
 ```
 
@@ -72,12 +107,17 @@ source folder.
 Normal builds use all detected logical CPUs. Use `--jobs N` or
 `FELIDAE_JOBS=N` to cap parallelism when LibTorch compilation approaches the
 machine's memory limit.
+CMake also uses `ccache` automatically when it is installed. Disable this with
+`-DFELIDAE_ENABLE_CCACHE=OFF`, or provide an explicit
+`CMAKE_CXX_COMPILER_LAUNCHER` to use another launcher. Its cache stays inside
+the active build tree, for example `build/debug/ccache`.
 
 Linux x86-64 and ARM use native CMake when run on that architecture. macOS
 supports Intel and Apple Silicon, and Android uses the official NDK toolchain:
 
 ```bash
-./build.sh --platform macos --arch arm64 --mode release --libtorch OFF
+FELIDAE_LIBTORCH_PATH=/opt/libtorch-macos-arm64 \
+  ./build.sh --platform macos --arch arm64 --mode release
 
 ANDROID_NDK_HOME=/opt/android-ndk \
   ./build.sh --platform android --arch arm64 --android-api 24 \
@@ -96,7 +136,7 @@ A conservative manual Debug build suitable for machines with limited memory is:
 ```bash
 cmake -S . -B build/debug -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug \
-  -DFELIDAE_ENABLE_LIBTORCH=OFF \
+  -DFELIDAE_ENABLE_LIBTORCH=ON \
   -DFELIDAE_BUILD_TESTS=ON
 
 cmake --build build/debug \
@@ -108,6 +148,13 @@ Run the complete test suite before debugging or changing the compiler/VM:
 
 ```bash
 ctest --test-dir build/debug --output-on-failure
+```
+
+CTest also compiles and executes representative `v2_examples/` programs
+through the production compiler and VM. Run only these end-to-end checks with:
+
+```bash
+ctest --test-dir build/debug -L examples --output-on-failure
 ```
 
 Compile and execute a working example:
@@ -164,7 +211,7 @@ For memory errors and undefined behavior, create a separate sanitizer build:
 cmake -S . -B build/asan -G Ninja \
   -DCMAKE_BUILD_TYPE=Debug \
   -DFELIDAE_ENABLE_SANITIZERS=ON \
-  -DFELIDAE_ENABLE_LIBTORCH=OFF \
+  -DFELIDAE_ENABLE_LIBTORCH=ON \
   -DFELIDAE_BUILD_TESTS=ON
 
 cmake --build build/asan --target felidae_tests --parallel 1
@@ -430,7 +477,7 @@ model, producing meaningful names rather than numeric hashes.
 
 Fact designations participate in typed hierarchical queries. For example,
 `Animal(...) as animals` lets source use
-`for_each_fact(animals, callback)`; the compiler emits `QueryFacts` against
+`for_each_fact(animals, callback)`; the compiler emits `ForEachFact` against
 the `Animal` type, and the VM includes `Animal` plus all registered descendant
 types. `as` remains compiler metadata—it is not a fact field or inheritance
 edge. See `v2_examples/hierarchical_designation_filter.fx`.
@@ -477,7 +524,7 @@ The VM has a different optional recurrent model exclusively for explicit
 a finite, typed result vocabulary (nil, numeric `0.0`/`1.0` truth values, a bounded Degree lattice, a
 validated bounded input reference, or a fact derived from a validated input), never implicit
 truthiness. No runtime artifact is shipped until it has been trained and
-validated against FELBIR v13. No runtime artifact is currently shipped. The
+validated against FELBIR v16. No runtime artifact is currently shipped. The
 dataset tool can prepare deterministic unary Identity teachers from verified
 examples. Every record carries the permanent semantic operation ID `0x0001`;
 source-name hashes are forbidden. Binaries with `SemanticEval` still require
