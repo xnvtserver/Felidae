@@ -4,10 +4,12 @@
 
 #include <algorithm>
 #include <array>
+#include <barrier>
 #include <cassert>
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -255,6 +257,18 @@ bool close(double actual, double expected, double tolerance = 1e-12) {
 
 int main() {
   using namespace Felidae;
+  VmRuntime unsupportedRuntime;
+  IrModule unsupportedModule;
+  assert(
+      rejects([&] { unsupportedRuntime.installIrModule(unsupportedModule); }));
+  assert(rejects([&] { (void)unsupportedRuntime.resolveSymbol(1); }));
+  assert(rejects(
+      [&] { unsupportedRuntime.retainFact(std::make_shared<VmFact>()); }));
+  assert(rejects([&] {
+    unsupportedRuntime.mutateFact(std::make_shared<VmFact>(), 1, 1.0);
+  }));
+  assert(rejects([&] { unsupportedRuntime.registerFactType(1, {}); }));
+
   VmFactStore hierarchy;
   hierarchy.registerType(1, {});
   hierarchy.registerType(2, {1});
@@ -265,15 +279,15 @@ int main() {
   cyclicHierarchy.registerType(1, {2});
   cyclicHierarchy.registerType(2, {3});
   assert(rejects([&] { cyclicHierarchy.registerType(3, {1}); }));
-  auto indexedFact = std::make_shared<VmFact>();
-  indexedFact->type = 3;
-  indexedFact->fields = {{10, 42.0}};
-  hierarchy.retain(indexedFact);
-  auto secondIndexedFact = std::make_shared<VmFact>();
-  secondIndexedFact->type = 2;
-  secondIndexedFact->fields = {{10, 43.0}};
-  hierarchy.retain(secondIndexedFact);
-  assert(hierarchy.retain(secondIndexedFact) == secondIndexedFact->id);
+  auto indexedFactBuilder = std::make_shared<VmFact>();
+  indexedFactBuilder->type = 3;
+  indexedFactBuilder->fields = {{10, 42.0}};
+  const auto indexedFact = hierarchy.retain(indexedFactBuilder);
+  auto secondIndexedFactBuilder = std::make_shared<VmFact>();
+  secondIndexedFactBuilder->type = 2;
+  secondIndexedFactBuilder->fields = {{10, 43.0}};
+  const auto secondIndexedFact = hierarchy.retain(secondIndexedFactBuilder);
+  assert(hierarchy.retain(secondIndexedFact) == secondIndexedFact);
   VmFactStore unrelatedStore;
   assert(rejects([&] { (void)unrelatedStore.retain(secondIndexedFact); }));
   const auto assignable = hierarchy.snapshotAssignableTo(1);
@@ -284,6 +298,12 @@ int main() {
   assert((hierarchy.leastCommonAncestors(2, 3) == std::vector<IrSymbolRef>{2}));
   assert((hierarchy.mostGeneralCommonAncestors(2, 3) ==
           std::vector<IrSymbolRef>{1}));
+  // Prime the per-type closure before adding type 5. Registering hierarchy
+  // edges must invalidate only that cache domain and expose the new path.
+  assert(hierarchy.hierarchyProof(5, 1).empty());
+  hierarchy.registerType(4, {1});
+  hierarchy.registerType(5, {2, 4});
+  assert((hierarchy.hierarchyProof(5, 1) == std::vector<IrSymbolRef>{5, 2, 1}));
   assert(hierarchy.snapshotByField(10).size() == 2);
   auto invalidFact = std::make_shared<VmFact>();
   invalidFact->type = 0;
@@ -291,6 +311,68 @@ int main() {
   invalidFact->type = 3;
   invalidFact->fields = {{10, 1.0}, {10, 2.0}};
   assert(rejects([&] { (void)hierarchy.retain(invalidFact); }));
+  assert(rejects([&] { hierarchy.mutate(indexedFact, 11, VmFactPtr{}, 0); }));
+  const auto revisionsBeforeMutation = hierarchy.revisions();
+  std::uint64_t knowledgeRevision =
+      std::numeric_limits<std::uint64_t>::max();
+  VmKnowledgeSnapshot knowledgeBeforeMutation;
+  hierarchy.refreshKnowledgeSnapshot(knowledgeRevision,
+                                     knowledgeBeforeMutation);
+  const auto knowledgeRevisionBeforeMutation = knowledgeRevision;
+  const auto updatedIndexedFact = hierarchy.mutate(indexedFact, 10, 44.0, 0);
+  const auto revisionsAfterMutation = hierarchy.revisions();
+  assert(revisionsAfterMutation.hierarchy ==
+         revisionsBeforeMutation.hierarchy);
+  assert(revisionsAfterMutation.membership ==
+         revisionsBeforeMutation.membership);
+  assert(revisionsAfterMutation.content ==
+         revisionsBeforeMutation.content + 1);
+  VmKnowledgeSnapshot knowledgeAfterMutation = knowledgeBeforeMutation;
+  hierarchy.refreshKnowledgeSnapshot(knowledgeRevision,
+                                     knowledgeAfterMutation);
+  assert(knowledgeRevision == knowledgeRevisionBeforeMutation);
+  assert(knowledgeAfterMutation.factTypes ==
+         knowledgeBeforeMutation.factTypes);
+  assert(knowledgeAfterMutation.factTypeCounts ==
+         knowledgeBeforeMutation.factTypeCounts);
+  assert(knowledgeAfterMutation.hierarchyEdges ==
+         knowledgeBeforeMutation.hierarchyEdges);
+  assert(std::get<double>(indexedFact->fields.front().second) == 42.0);
+  assert(std::get<double>(updatedIndexedFact->fields.front().second) == 44.0);
+  assert(hierarchy.snapshotByField(10).front() == updatedIndexedFact);
+  assert(hierarchy.snapshotAssignableTo(1).front() == updatedIndexedFact);
+  assert(rejects([&] { (void)hierarchy.mutate(indexedFact, 10, 45.0, 0); }));
+
+  VmFactStore concurrentFacts;
+  concurrentFacts.registerType(20, {});
+  auto concurrentBuilder = std::make_shared<VmFact>();
+  concurrentBuilder->type = 20;
+  concurrentBuilder->fields = {{21, 1.0}};
+  const auto immutableSnapshot = concurrentFacts.retain(concurrentBuilder);
+  std::barrier concurrentStart(2);
+  std::thread reader([&] {
+    concurrentStart.arrive_and_wait();
+    for (std::size_t iteration = 0; iteration < 256; ++iteration) {
+      // This handle remains readable while the store publishes a replacement.
+      assert(std::get<double>(immutableSnapshot->fields.front().second) == 1.0);
+      const auto indexed = concurrentFacts.snapshotByField(21);
+      assert(indexed.size() == 1);
+      const auto value = std::get<double>(indexed.front()->fields.front().second);
+      assert(value == 1.0 || value == 2.0);
+      assert((concurrentFacts.hierarchyProof(20, 20) ==
+              std::vector<IrSymbolRef>{20}));
+    }
+  });
+  concurrentStart.arrive_and_wait();
+  const auto concurrentUpdate =
+      concurrentFacts.mutate(immutableSnapshot, 21, 2.0, 22);
+  reader.join();
+  assert(std::get<double>(immutableSnapshot->fields.front().second) == 1.0);
+  assert(std::get<double>(concurrentUpdate->fields.front().second) == 2.0);
+  assert(concurrentFacts.snapshotByField(21) ==
+         std::vector<VmFactPtr>{concurrentUpdate});
+  assert(concurrentFacts.mutations().size() == 1);
+  assert(concurrentFacts.provenance().size() == 2);
 
   FelidaeKnowledgeRuntime bindings;
   IrModule bindingModule;
@@ -309,6 +391,34 @@ int main() {
   bindings.leaveProcedure();
   assert(rejects([&] { (void)bindings.loadSymbol(3); }));
   assert(rejects([&] { (void)bindings.resolveSymbol(4); }));
+
+  FelidaeKnowledgeRuntime persistentSymbols;
+  IrModule firstSymbols;
+  firstSymbols.symbolTable = {{11}, {12, 13}};
+  persistentSymbols.installIrModule(firstSymbols);
+  const auto firstType = persistentSymbols.resolveSymbol(1);
+  const auto sharedField = persistentSymbols.resolveSymbol(2);
+  persistentSymbols.registerFactType(firstType, {});
+  auto firstFact = std::make_shared<VmFact>();
+  firstFact->type = firstType;
+  firstFact->fields = {{sharedField, 1.0}};
+  const auto retainedFirstFact = persistentSymbols.retainFact(firstFact);
+
+  IrModule secondSymbols;
+  secondSymbols.symbolTable = {{21}, {12, 13}};
+  persistentSymbols.installIrModule(secondSymbols);
+  const auto secondType = persistentSymbols.resolveSymbol(1);
+  assert(secondType != firstType);
+  assert(persistentSymbols.resolveSymbol(2) == sharedField);
+  persistentSymbols.registerFactType(secondType, {});
+  auto secondFact = std::make_shared<VmFact>();
+  secondFact->type = secondType;
+  secondFact->fields = {{sharedField, 2.0}};
+  const auto retainedSecondFact = persistentSymbols.retainFact(secondFact);
+  assert(persistentSymbols.snapshotFacts(firstType) ==
+         std::vector<VmFactPtr>{retainedFirstFact});
+  assert(persistentSymbols.snapshotFacts(secondType) ==
+         std::vector<VmFactPtr>{retainedSecondFact});
 
   const auto textCodec = testTextCodec();
   const std::vector<PieceSequence> noSymbols;

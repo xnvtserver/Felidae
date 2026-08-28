@@ -5,7 +5,8 @@
 {"schema_version":1,"id":"method-return","family":"methods","source":"add(left: number, right: number) =>\n    return left + right"}
 {"schema_version":1,"id":"method-named-call","family":"methods","source":"main() =>\n    answer := add(left: 19, right: 23)\n    return {answer: answer}"}
 {"schema_version":1,"id":"conditional","family":"control-flow","source":"classify(score: number) =>\n    if score >= 80 then\n        return \"high\"\n    else\n        return \"low\""}
-{"schema_version":1,"id":"where-fallback","family":"control-flow","source":"adult(person: Person) =>\n    where person.age >= 18\n    return true\nelse\n    return false"}
+{"schema_version":1,"id":"where-fallback","family":"control-flow","source":"adult(person: Person) =>\n    where person.age >= 18\n    return 1.0.\nelse\n    return 0.0."}
+{"schema_version":1,"id":"optional-end","family":"control-flow","source":"classify(score: number) =>\n    if score >= 80 then\n        return 1.0\n    else\n        return 0.0\n    end\nend"}
 {"schema_version":1,"id":"boolean-logic","family":"operators","source":"main() => return {both: true and not false, either: false or true, exact: 4 == 4}"}
 {"schema_version":1,"id":"arithmetic","family":"operators","source":"main() => return {add: 6 + 7, sub: 20 - 3, mul: 6 * 7, div: 84 / 2, mod: 17 % 5}"}
 {"schema_version":1,"id":"comparisons","family":"operators","source":"main() => return [1 < 2, 2 <= 2, 4 > 3, 5 >= 5, 6 != 7]"}
@@ -33,4 +34,3 @@
 {"schema_version":1,"id":"tensor-properties","family":"tensor","source":"main() => return (size: tensor.size(value: [[1, 2], [3, 4]]), shape: tensor.shape(value: [[1, 2], [3, 4]]), dimensions: tensor.dimensions(value: [[1, 2], [3, 4]]))"}
 {"schema_version":1,"id":"tensor-comparison","family":"tensor","source":"main() => return (difference: tensor.difference(left: [1, 4], right: [3, 1]), similarity: tensor.cosineSimilarity(left: [1, 0], right: [1, 1]))"}
 {"schema_version":1,"id":"tensor-symmetry-copy","family":"tensor","source":"main() => return (transpose: tensor.transpose(value: [[1, 2], [3, 4]]), symmetric: tensor.isSymmetric(value: [[1, 2], [2, 1]]), copy: tensor.clone(value: [1, 2, 3]))"}
-{"schema_version":1,"id":"fact-feature-tensor","family":"tensor","source":"Observation(sensor: \"\", state: \"\", value: 0)\nmain() =>\n    reading := Observation(sensor: \"indoor\", state: \"steady\", value: 21.5)\n    changed := Observation(sensor: \"indoor\", state: \"steady\", value: 24.0)\n    features := tensor.clone(value: reading)\n    return (size: tensor.size(value: reading), shape: tensor.shape(value: reading), similarity: tensor.cosineSimilarity(left: reading, right: features), difference: tensor.difference(left: reading, right: changed))"}

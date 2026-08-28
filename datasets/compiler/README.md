@@ -14,7 +14,9 @@ fixed structural vocabulary; constants and symbols remain bounded references
 resolved by the compiler context. `mixfix-v1.jsonl` is generated from valid,
 deterministically resolved `v2_examples/` spans with
 `felidae_extract_mixfix_dataset`, plus deterministic parser-validated
-permutations of existing arithmetic, nested, and typed-fact mixfix forms.
+permutations of arithmetic, twelve-level right-nested chains, wide
+repeated-anchor forms, heterogeneous typed overloads, and safe-target
+abstentions.
 Records whose teacher IR cannot fit the
 fixed structural bounds are reported and excluded rather than truncated. No
 trained mixfix artifact is currently shipped.
@@ -22,9 +24,9 @@ trained mixfix artifact is currently shipped.
 Structurally valid spans that require model target selection receive a single
 `ABSTAIN` teacher token instead of fabricated executable IR. Invalid programs
 receive `REJECT`; deterministic teachers begin with `ACCEPT`. Complete REJECT
-and ABSTAIN families are kept in the training partition so both decisions are
-actually learned, while executable target families are isolated across train,
-validation, and test partitions.
+and ABSTAIN families keep most records in training and deterministic held-out
+records in validation and test, so safe ambiguity handling is measured.
+Executable target families remain isolated across partitions.
 
 `input_ids` are meaningful only for the exact fixed tokenizer that produced
 them. Every record therefore carries `sentencepiece_model_identity`; the C++
@@ -41,15 +43,16 @@ real negative training records: the model learns the bounded rejection
 decision without receiving fabricated opcodes. Use them also to measure that a
 compiler build rejects malformed input at the intended boundary.
 
-The trainer splits complete structural target families, not random records:
+The trainer splits executable structural target families, not random records:
 numeric variations of a generated mixfix template cannot leak into both train
 and validation. It reports teacher-forced loss, autoregressive exact sequence
-matches, and invalid autoregressive decodes. Small target families remain
-training-only and are reported through the family and validation counts.
+matches, first-decision accuracy, and invalid autoregressive decodes. Small
+target families remain training-only and are reported through the family and
+validation counts.
 
 Regenerate both corpora together:
 
 ```text
-cmake --build build/debug --target felidae_extract_mixfix_dataset --parallel 1
-./build/debug/felidae_extract_mixfix_dataset datasets/compiler/mixfix-v1.jsonl examples v2_examples --rejections datasets/compiler/mixfix-invalid-v1.jsonl
+cmake --build build/debug --target felidae_extract_mixfix_dataset --parallel 8
+./build/debug/felidae_extract_mixfix_dataset datasets/compiler/mixfix-v1.jsonl v2_examples --rejections datasets/compiler/mixfix-invalid-v1.jsonl
 ```

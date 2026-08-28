@@ -65,11 +65,9 @@ existing `Mod` opcode and `std::fmod` implementation.
 
 The variable-width `Tensor` instruction uses the same destination, operation,
 arity, and input-register layout as `Numeric`. On supported builds its one
-backend is LibTorch. Numeric arrays become `float64` tensors; text, symbols,
-and facts become one-dimensional feature tensors. A fact tensor contains the
-complete SentencePiece sequences for its type, ordered field names, text and
-symbol values, plus typed numeric and Degree field values. Numeric values are
-preserved as numbers rather than reinterpreted as token IDs.
+backend is LibTorch. Numeric scalars and rectangular numeric arrays become
+`float64` tensors. Facts, text, symbols, and maps remain symbolic VM values;
+they are not flattened into numeric feature vectors.
 
 `size`, `shape`, `dimensions`, `clone`, `transpose`, `isSymmetric`, absolute
 `difference`, cosine similarity, dot product, mean-squared error, sigmoid, and

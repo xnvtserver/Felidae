@@ -87,6 +87,9 @@ foreach(FELIDAE_SENTENCEPIECE_TARGET sentencepiece-static sentencepiece_train-st
     endif()
 endforeach()
 find_package(OpenMP)
+if(FELIDAE_BUILD_TESTS)
+    find_package(Threads REQUIRED)
+endif()
 
 # These paths are also part of the isolated LibTorch trainer's manifest
 # contract, so define them before that target is created.
@@ -750,7 +753,7 @@ if(FELIDAE_BUILD_TESTS)
     set_tests_properties(felidae_form_isolation PROPERTIES TIMEOUT 30)
 
     add_executable(felidae_ir_test tests/FelidaeIrTest.cpp)
-    target_link_libraries(felidae_ir_test PRIVATE felidae_form)
+    target_link_libraries(felidae_ir_test PRIVATE felidae_form Threads::Threads)
     target_compile_definitions(felidae_ir_test PRIVATE
         FELIDAE_TEST_OUTPUT_DIR="${CMAKE_BINARY_DIR}/test-artifacts/ir")
     target_compile_options(felidae_ir_test PRIVATE
@@ -774,6 +777,9 @@ if(FELIDAE_BUILD_TESTS)
         degree_profiles
         hierarchical_designation_filter
         fact_expression_result_contract
+        where_guard_chain
+        optional_end_blocks
+        end_then_pipeline
         coffee_vending_theorem_solver
         air_conditioner_theorem_solver
         mixfix_ir_roundtrip)
@@ -802,6 +808,12 @@ if(FELIDAE_BUILD_TESTS)
         PASS_REGULAR_EXPRESSION "abelian: 1.0")
     set_tests_properties(felidae_example_set_operations PROPERTIES
         PASS_REGULAR_EXPRESSION "contains: 1.0")
+    set_tests_properties(felidae_example_where_guard_chain PROPERTIES
+        PASS_REGULAR_EXPRESSION "passes: 82.0, lowScore: 0.0, inactive: 0.0")
+    set_tests_properties(felidae_example_optional_end_blocks PROPERTIES
+        PASS_REGULAR_EXPRESSION "high: 2.0, middle: 1.0, low: 0.0")
+    set_tests_properties(felidae_example_end_then_pipeline PROPERTIES
+        PASS_REGULAR_EXPRESSION "accepted: 10.0, rejected: 0.0")
 
     # Tests are deliberately opt-in at build time.  A normal IDE build should
     # compile only the two production executables and their required

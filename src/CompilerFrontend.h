@@ -26,7 +26,9 @@ struct CompilerOptions {
   std::vector<AstDiagnostic> *warnings = nullptr;
 };
 
-// Source-only frontend boundary.  The Form VM never includes this header.
+// Source-only frontend boundary. `Program` is Felidae's syntax-shaped,
+// compiler-only HIR; the Form VM never includes this header or receives its
+// nodes.
 std::string readSourceFile(const std::filesystem::path &path);
 std::filesystem::path
 resolveProgramEntryPath(const std::filesystem::path &path);

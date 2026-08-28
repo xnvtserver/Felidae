@@ -2,6 +2,7 @@
 #include "FelidaeIr.h"
 #include "IntegerParser.h"
 #include "IntegerTokenList.h"
+#include "IrCodeGenerator.h"
 #include "MixfixStateModel.h"
 #include "SentencePieceModel.h"
 #include "Symbol.h"
@@ -182,6 +183,13 @@ int main() {
       "        then increment(value: system.result)\n");
   assert(std::get<double>(executeModule(thenPipelineModule)) == 21.0);
 
+  const auto nestedThenPipelineModule = Felidae::compileProgramTextToIr(
+      "increment(value: number) => return value + 1\n"
+      "double(value: number) => return value * 2\n"
+      "main() => return 10 then increment(value: system.result then "
+      "double(value: system.result))\n");
+  assert(std::get<double>(executeModule(nestedThenPipelineModule)) == 21.0);
+
   const auto thenAnchorMixfixModule = Felidae::compileProgramTextToIr(
       "@mixfix(pattern: \"join {left: number} then {right: number}\")\n"
       "joinThen(left: number, right: number) => return left + right\n"
@@ -199,6 +207,47 @@ int main() {
                                       "            return 0\n"
                                       "main() => return classify(value: 5)\n");
   assert(std::get<double>(executeModule(nestedConditionalModule)) == 1.0);
+
+  const auto optionalEndModule = Felidae::compileProgramTextToIr(
+      "classify(value: number) =>\n"
+      "    if value > 10 then\n"
+      "        return 2.0\n"
+      "    else\n"
+      "        if value > 0 then\n"
+      "            return 1.0\n"
+      "        else\n"
+      "            return 0.0\n"
+      "        end\n"
+      "    end\n"
+      "end\n"
+      "main() => return classify(value: -1)\n"
+      "end\n");
+  assert(std::get<double>(executeModule(optionalEndModule)) == 0.0);
+
+  const auto contextualEndMixfixModule = Felidae::compileProgramTextToIr(
+      "@mixfix(pattern: \"wrap {value: number} end\")\n"
+      "wrapValue(value: number) => return value\n"
+      "end\n"
+      "main() => return wrap 42 end\n"
+      "end\n");
+  assert(std::get<double>(executeModule(contextualEndMixfixModule)) == 42.0);
+
+  const auto whereGuardModule = Felidae::compileProgramTextToIr(
+      "eligible(score: number, active: number) =>\n"
+      "    adjusted := score + 0\n"
+      "    where adjusted >= 70\n"
+      "    observed := active\n"
+      "    where observed == 1.0\n"
+      "    result := adjusted\n"
+      "    return result\n"
+      "else\n"
+      "    return 0.0\n"
+      "main() => return (pass: eligible(score: 82, active: 1.0), "
+      "low: eligible(score: 40, active: 1.0), "
+      "inactive: eligible(score: 90, active: 0.0))\n");
+  const auto whereGuardResult = displayModuleValue(
+      whereGuardModule, executeModule(whereGuardModule));
+  assert(whereGuardResult == "{pass: 82.0, low: 0.0, inactive: 0.0}");
 
   const auto factExpressionModule =
       Felidae::compileProgramFileToIr(FELIDAE_FACT_EXPRESSION_FIXTURE_PATH);
@@ -313,6 +362,36 @@ int main() {
   } selectingCompilerModel;
   Felidae::CompilerOptions selectingOptions;
   selectingOptions.mixfixModel = &selectingCompilerModel;
+
+  const auto specificMixfixModule = Felidae::compileProgramTextToIr(
+      "@overload(operator: chooseSpecific, pattern: \"choose {value}\", "
+      "type: prefix, captures: {value: any}, result: number)\n"
+      "chooseAny() => return 1\n"
+      "@overload(operator: chooseSpecific, pattern: \"choose {value}\", "
+      "type: prefix, captures: {value: number}, result: number)\n"
+      "chooseNumber() => return 2\n"
+      "main() => return choose 42\n",
+      selectingOptions);
+  assert(selectingCompilerModel.calls == 0);
+  assert(std::get<double>(executeModule(specificMixfixModule)) == 2.0);
+
+  bool incompatibleMixfixRejected = false;
+  try {
+    (void)Felidae::compileProgramTextToIr(
+        "@overload(operator: chooseScalar, pattern: \"scalar {value}\", "
+        "type: prefix, captures: {value: number}, result: number)\n"
+        "chooseNumber() => return 1\n"
+        "@overload(operator: chooseScalar, pattern: \"scalar {value}\", "
+        "type: prefix, captures: {value: string}, result: number)\n"
+        "chooseString() => return 2\n"
+        "main() => return scalar [1, 2]\n",
+        selectingOptions);
+  } catch (const Felidae::IntegerParserError &) {
+    incompatibleMixfixRejected = true;
+  }
+  assert(incompatibleMixfixRejected);
+  assert(selectingCompilerModel.calls == 0);
+
   const auto selectedMixfixModule =
       Felidae::compileProgramTextToIr("@overload(\n"
                                       "    operator: chooseValue,\n"
@@ -597,12 +676,36 @@ int main() {
   const auto expressionIr = expressionParser.compileExpressionIr();
   class NoRuntime final : public Felidae::VmRuntime {
   public:
+    void installIrModule(const Felidae::IrModule &) override {}
+    Felidae::IrSymbolRef
+    resolveSymbol(Felidae::IrSymbolRef symbol) const override {
+      return symbol;
+    }
     Felidae::VmValue loadSymbol(Felidae::IrSymbolRef symbol) override {
       return symbols.at(symbol);
     }
     void storeSymbol(Felidae::IrSymbolRef symbol,
                      const Felidae::VmValue &value) override {
       symbols[symbol] = value;
+    }
+    Felidae::VmFactPtr
+    retainFact(const Felidae::VmFactPtr &fact) override {
+      return fact;
+    }
+    Felidae::VmFactPtr mutateFact(const Felidae::VmFactPtr &fact,
+                                 Felidae::IrSymbolRef field,
+                                 const Felidae::VmValue &value) override {
+      if (!fact)
+        throw Felidae::IrError("test mutation requires a fact");
+      auto updated = std::make_shared<Felidae::VmFact>(*fact);
+      const auto found =
+          std::find_if(updated->fields.begin(), updated->fields.end(),
+                       [&](const auto &entry) { return entry.first == field; });
+      if (found == updated->fields.end())
+        updated->fields.emplace_back(field, value);
+      else
+        found->second = value;
+      return updated;
     }
     std::unordered_map<Felidae::IrSymbolRef, Felidae::VmValue> symbols;
   } noRuntime;
@@ -611,11 +714,11 @@ int main() {
   Felidae::IntegerParser astExpressionParser(expressionInput);
   const auto astExpression = astExpressionParser.parseExpressionText();
   const auto astExpressionIr =
-      Felidae::IntegerParser::compileAstExpressionIr(astExpression);
+      Felidae::IrCodeGenerator::lowerExpression(astExpression);
   assert(std::get<double>(executeIrDirect(astExpressionIr, noRuntime)) == 42.0);
   const auto bindingProgram = Felidae::parseProgramText("answer := 6 * 7.");
   assert(bindingProgram.globals.size() == 1);
-  const auto bindingIr = Felidae::IntegerParser::compileAstGlobalBindingIr(
+  const auto bindingIr = Felidae::IrCodeGenerator::lowerGlobalBinding(
       *bindingProgram.globals.front());
   assert(std::get<double>(executeIrDirect(bindingIr, noRuntime)) == 42.0);
   assert(std::get<double>(
@@ -623,7 +726,7 @@ int main() {
   const auto entryProgram =
       Felidae::parseProgramText("main() => return (answer: 42).");
   assert(entryProgram.clauses.size() == 1);
-  const auto entryIr = Felidae::IntegerParser::compileAstEntryMethodIr(
+  const auto entryIr = Felidae::IrCodeGenerator::lowerEntryMethod(
       *entryProgram.clauses.front());
   const auto entryResult =
       std::get<Felidae::VmMapPtr>(executeIrDirect(entryIr, noRuntime));
@@ -635,7 +738,7 @@ int main() {
       });
   directFact->factType = "Cat";
   const auto directFactIr =
-      Felidae::IntegerParser::compileAstExpressionIr(directFact);
+      Felidae::IrCodeGenerator::lowerExpression(directFact);
   const auto directFactValue = executeIrDirect(directFactIr, noRuntime);
   const auto directFactResult = std::get<Felidae::VmFactPtr>(directFactValue);
   assert(directFactResult &&

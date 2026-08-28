@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -13,6 +14,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -90,7 +92,10 @@ using VmMapPtr = std::shared_ptr<VmMap>;
 struct VmTextMap;
 using VmTextMapPtr = std::shared_ptr<VmTextMap>;
 struct VmFact;
-using VmFactPtr = std::shared_ptr<VmFact>;
+// Published facts are immutable snapshots. Mutable `VmFact` builders may be
+// created locally, but conversion to VmFactPtr removes write access before a
+// value enters VmValue or VmFactStore.
+using VmFactPtr = std::shared_ptr<const VmFact>;
 // The portable VM owns a real LibTorch tensor without including Torch headers
 // in Form. Only TensorRuntime creates or dereferences `storage`; shape is kept
 // here so validation and fallback display remain backend-independent.
@@ -157,6 +162,9 @@ struct VmTextMap {
 // maps: map-shaped values must not acquire fact semantics merely by carrying
 // a similarly named field.
 struct VmFact {
+  // Identity metadata becomes immutable once VmFactStore::retain succeeds.
+  // Change retained fields only through VmFactStore::mutate so indexes and
+  // provenance remain synchronized.
   IrFactRef id = 0;
   IrSymbolRef type = 0;
   enum class Origin : std::uint8_t {
@@ -196,16 +204,24 @@ struct VmRankedFact {
   double effectiveAt = 0.0;
   double priority = 0.0;
 };
+struct VmFactStoreRevisions {
+  std::uint64_t hierarchy = 0;
+  std::uint64_t membership = 0;
+  std::uint64_t content = 0;
+
+  bool operator==(const VmFactStoreRevisions &) const = default;
+};
 
 // Process-resident append-only fact memory. It belongs to the Form runtime,
 // not to AST/parser services, and is shared by repeated VM executions in a
-// daemon. Fact values remain typed and can later be indexed by type/field.
+// daemon. Type and field indexes are authoritative; callers must not mutate a
+// retained fact directly.
 class VmFactStore {
 public:
   void registerType(IrSymbolRef type, std::vector<IrSymbolRef> parents);
-  IrFactRef retain(const VmFactPtr &fact);
-  void mutate(const VmFactPtr &fact, IrSymbolRef field, const VmValue &value,
-              IrSymbolRef procedure);
+  VmFactPtr retain(const VmFactPtr &fact);
+  VmFactPtr mutate(const VmFactPtr &fact, IrSymbolRef field,
+                   const VmValue &value, IrSymbolRef procedure);
   std::vector<VmFactPtr> snapshot() const;
   std::vector<VmFactPtr> snapshot(IrSymbolRef type) const;
   std::vector<VmFactPtr> snapshotAssignableTo(IrSymbolRef type) const;
@@ -231,17 +247,8 @@ public:
   // SemanticEval instruction.
   void refreshKnowledgeSnapshot(std::uint64_t &knownRevision,
                                 VmKnowledgeSnapshot &snapshot) const;
+  VmFactStoreRevisions revisions() const;
   std::size_t size() const;
-
-  // Deterministic, feature-hashed embedding of a fact (type + fields,
-  // recursively for nested facts, + ancestor chain). No training, no model:
-  // reproducible from fact content alone. Facts sharing more fields/ancestors
-  // land closer together under cosine similarity, which is what lets
-  // comparison/search/sort work across related-but-different fact types
-  // without a per-call hand-tuned profile (contrast gaussianMembership
-  // below, which still requires one). Returned as plain doubles, not a
-  // LibTorch tensor, so this works even in builds without LibTorch.
-  std::vector<double> embedding(const VmFactPtr &fact) const;
 
   // A Gaussian tail reaches 1% at each fade boundary.  Degenerate edge
   // profiles (peak equal to one boundary) reuse the non-degenerate side so
@@ -250,6 +257,10 @@ public:
                                    const VmGaussianProfile &profile);
 
 private:
+  const std::unordered_set<IrSymbolRef> &
+  ancestorClosureLocked(IrSymbolRef type) const;
+  bool isAssignableToLocked(IrSymbolRef candidate, IrSymbolRef expected) const;
+
   mutable std::mutex mutex_;
   IrFactRef nextId_ = 1;
   std::uint64_t nextSequence_ = 1;
@@ -259,10 +270,16 @@ private:
   std::unordered_map<IrSymbolRef, std::vector<IrSymbolRef>> parents_;
   std::vector<VmFactMutation> mutations_;
   std::vector<VmFactProvenance> provenance_;
-  mutable std::unordered_map<IrSymbolRef,
-                             std::pair<std::uint64_t, std::vector<VmFactPtr>>>
-      assignableCache_;
-  std::uint64_t revision_ = 0;
+  mutable std::unordered_map<
+      IrSymbolRef,
+      std::pair<std::uint64_t, std::unordered_set<IrSymbolRef>>>
+      ancestorClosureCache_;
+  std::uint64_t hierarchyRevision_ = 0;
+  std::uint64_t membershipRevision_ = 0;
+  std::uint64_t contentRevision_ = 0;
+  // The runtime SSM snapshot contains only hierarchy edges and per-type fact
+  // counts. Its revision therefore excludes ordinary field-value mutation.
+  std::uint64_t knowledgeRevision_ = 0;
 };
 // A semantic operation is a permanent IR ID plus typed VM values. It never
 // uses a source symbol, text, or SentencePiece token as executable semantics.
@@ -314,9 +331,9 @@ public:
   virtual ~VmRuntime() = default;
   virtual VmValue loadSymbol(IrSymbolRef symbol);
   virtual void storeSymbol(IrSymbolRef symbol, const VmValue &value);
-  virtual void retainFact(const VmFactPtr &fact);
-  virtual void mutateFact(const VmFactPtr &fact, IrSymbolRef field,
-                          const VmValue &value);
+  virtual VmFactPtr retainFact(const VmFactPtr &fact);
+  virtual VmFactPtr mutateFact(const VmFactPtr &fact, IrSymbolRef field,
+                               const VmValue &value);
   virtual void registerFactType(IrSymbolRef type,
                                 std::vector<IrSymbolRef> parents);
   virtual std::vector<VmFactPtr> snapshotFacts(IrSymbolRef type);
@@ -335,6 +352,7 @@ public:
   // runtime remains intentionally stateless.
   virtual void installIrModule(const IrModule &module);
   virtual IrSymbolRef resolveSymbol(IrSymbolRef moduleSymbol) const;
+  virtual std::span<const PieceSequence> runtimeSymbolTable() const;
   virtual void enterProcedure(IrSymbolRef procedure,
                               std::span<const IrSymbolRef> parameters,
                               std::span<const VmValue> arguments);
@@ -371,9 +389,9 @@ public:
                                    VmTextEncoder textEncoder = {});
   VmValue loadSymbol(IrSymbolRef symbol) override;
   void storeSymbol(IrSymbolRef symbol, const VmValue &value) override;
-  void retainFact(const VmFactPtr &fact) override;
-  void mutateFact(const VmFactPtr &fact, IrSymbolRef field,
-                  const VmValue &value) override;
+  VmFactPtr retainFact(const VmFactPtr &fact) override;
+  VmFactPtr mutateFact(const VmFactPtr &fact, IrSymbolRef field,
+                       const VmValue &value) override;
   void registerFactType(IrSymbolRef type,
                         std::vector<IrSymbolRef> parents) override;
   std::vector<VmFactPtr> snapshotFacts(IrSymbolRef type) override;
@@ -389,6 +407,7 @@ public:
                                       IrSymbolRef priorityField) override;
   void installIrModule(const IrModule &module) override;
   IrSymbolRef resolveSymbol(IrSymbolRef moduleSymbol) const override;
+  std::span<const PieceSequence> runtimeSymbolTable() const override;
   void enterProcedure(IrSymbolRef procedure,
                       std::span<const IrSymbolRef> parameters,
                       std::span<const VmValue> arguments) override;
@@ -420,10 +439,15 @@ private:
   struct VmModuleState {
     std::unordered_map<IrSymbolRef, VmValue> globals;
     std::vector<PieceSequence> symbolTable;
+    // One entry per module-local symbol. Values are one-based indexes into
+    // runtimeSymbolTable_, which remains stable across installed modules.
+    std::vector<IrSymbolRef> runtimeSymbols;
   };
   // Module globals are process-resident knowledge-runtime state. Registers,
   // call frames and recurrent state are deliberately excluded.
   VmModuleState module_;
+  std::map<PieceSequence, IrSymbolRef> runtimeSymbolIds_;
+  std::vector<PieceSequence> runtimeSymbolTable_;
   std::shared_ptr<VmFactStore> factStore_;
   RuntimeStateModel *semanticModel_ = nullptr;
   TensorRuntime *tensorRuntime_ = nullptr;

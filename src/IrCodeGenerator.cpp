@@ -6,6 +6,8 @@
 #include "form/SemanticOperation.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <iostream>
 #include <limits>
 #include <optional>
 #include <span>
@@ -14,36 +16,50 @@
 namespace Felidae {
 namespace {
 
+#ifndef NDEBUG
+bool codegenTraceEnabled() {
+  static const bool enabled = [] {
+    const auto *value = std::getenv("FELIDAE_TRACE");
+    return value != nullptr && *value != '\0' && std::string_view(value) != "0";
+  }();
+  return enabled;
+}
+#endif
+
 struct DirectCompileContext {
   const std::unordered_set<SymbolId> &procedures;
   const std::unordered_set<SymbolId> &factTypes;
   const std::unordered_map<SymbolId, SymbolId> &factDesignations;
 };
 
-// Desugars a `where C1 / where C2 / ... / <goal>` guard chain into an
-// equivalent nested IfGoal chain (`if C1 then (if C2 then ... else E) else
-// E`), reusing the same else branch E at every level. This lets a
-// where-guarded clause reach the existing IfGoal-aware direct-compile path
-// instead of needing its own opcode or eligibility rule. `remaining` must
-// end in exactly one non-where terminal goal (typically a ReturnGoal).
-std::shared_ptr<Goal> desugarWhereGuards(
+// Desugars ordered `where` guards into the existing IfGoal representation.
+// Goals before a guard execute at their original level; goals after it run
+// only when the condition succeeds. Reusing the same fallback branch at each
+// level gives every failed guard the clause's established `else` behavior.
+// This is a syntax-to-AST normalization only: it adds no opcode or execution
+// path, and supports ordinary assignment sequences around guard statements.
+std::vector<std::shared_ptr<Goal>> desugarWhereGuards(
     std::span<const std::shared_ptr<Goal>> remaining,
     const std::vector<std::shared_ptr<Goal>> &elseBranch) {
   if (remaining.empty())
     throw IntegerParserError("where-guarded clause requires a terminal goal");
-  const auto where = std::dynamic_pointer_cast<WhereGoal>(remaining.front());
-  if (!where) {
-    if (remaining.size() != 1)
-      throw IntegerParserError(
-          "a where guard chain must end in exactly one terminal goal");
-    return remaining.front();
-  }
-  auto thenGoal = desugarWhereGuards(remaining.subspan(1), elseBranch);
+  const auto guard = std::find_if(
+      remaining.begin(), remaining.end(), [](const auto &goal) {
+        return std::dynamic_pointer_cast<WhereGoal>(goal) != nullptr;
+      });
+  if (guard == remaining.end())
+    return {remaining.begin(), remaining.end()};
+
+  std::vector<std::shared_ptr<Goal>> result(remaining.begin(), guard);
+  const auto where = std::dynamic_pointer_cast<WhereGoal>(*guard);
+  const auto offset = static_cast<std::size_t>(guard - remaining.begin());
+  auto thenBranch = desugarWhereGuards(remaining.subspan(offset + 1),
+                                      elseBranch);
   auto ifGoal = std::make_shared<IfGoal>(
-      where->condition,
-      std::vector<std::shared_ptr<Goal>>{std::move(thenGoal)}, elseBranch);
+      where->condition, std::move(thenBranch), elseBranch);
   ifGoal->sourceSpan = where->sourceSpan;
-  return ifGoal;
+  result.push_back(std::move(ifGoal));
+  return result;
 }
 
 // Rewrites every where-guarded clause in the program to its desugared
@@ -76,8 +92,8 @@ void desugarWhereGuardedClauses(Program &program) {
           std::to_string(clause->sourceSpan.startColumn));
     }
     auto rewritten = std::make_shared<ClauseStmt>(*clause);
-    rewritten->body = {
-        desugarWhereGuards(clause->body, clause->fallbackBranches.front())};
+    rewritten->body =
+        desugarWhereGuards(clause->body, clause->fallbackBranches.front());
     rewritten->fallbackBranches.clear();
     clause = std::move(rewritten);
   }
@@ -929,7 +945,7 @@ FelidaeIr compileDirectConditionalEntry(
       directConditionOperator(comparison->op), comparison->left,
       comparison->right);
   expression->sourceSpan = comparison->sourceSpan;
-  auto conditionIr = IntegerParser::compileAstExpressionIr(
+  auto conditionIr = IrCodeGenerator::lowerExpression(
       expression, factTypes, factDesignations);
   const auto conditionRegister =
       conditionIr.words.at(conditionIr.words.size() - 3);
@@ -966,15 +982,15 @@ FelidaeIr compileDirectSequentialEntry(
     GlobalBindingStmt binding(assignment->name, assignment->expr);
     binding.sourceSpan = assignment->sourceSpan;
     appendFragment(result,
-                   IntegerParser::compileAstGlobalBindingIr(binding, factTypes,
-                                                            factDesignations),
+                   IrCodeGenerator::lowerGlobalBinding(binding, factTypes,
+                                                       factDesignations),
                    true);
   }
   // The final statement is not necessarily a return goal -- isDirectProcedure
   // also accepts a trailing IfGoal after a run of assignments. Recurse into
   // compileDirectProcedure, which already dispatches a single-statement body
   // to compileDirectConditionalEntry when it's an IfGoal and to
-  // compileAstEntryMethodIr (return-goal-only) otherwise, instead of assuming
+  // lowerEntryMethod (return-goal-only) otherwise, instead of assuming
   // the return-goal case here and rejecting a compiler-approved program.
   ClauseStmt returned(method.head, {method.body.back()});
   appendFragment(
@@ -990,13 +1006,664 @@ FelidaeIr compileDirectProcedure(
     if (std::dynamic_pointer_cast<IfGoal>(method.body.front())) {
       return compileDirectConditionalEntry(method, factTypes, factDesignations);
     }
-    return IntegerParser::compileAstEntryMethodIr(method, factTypes,
-                                                  factDesignations);
+    return IrCodeGenerator::lowerEntryMethod(method, factTypes,
+                                             factDesignations);
   }
   return compileDirectSequentialEntry(method, factTypes, factDesignations);
 }
 
 } // namespace
+
+FelidaeIr IrCodeGenerator::lowerExpression(
+    const std::shared_ptr<Expr> &expression,
+    const std::unordered_set<SymbolId> &factTypes,
+    const std::unordered_map<SymbolId, SymbolId> &factDesignations) {
+  FelidaeIr ir;
+  const auto addNumber = [&](double number) {
+    ir.constants.push_back({IrConstantKind::Number, encodeIrNumber(number)});
+    return static_cast<IrWord>(ir.constants.size() - 1);
+  };
+  const auto addBoolean = [&](bool boolean) {
+    ir.constants.push_back({IrConstantKind::Boolean, boolean ? 1ull : 0ull});
+    return static_cast<IrWord>(ir.constants.size() - 1);
+  };
+  const auto addText = [&](const StringExpr &text) {
+    if (text.containsEscape) {
+      throw IntegerParserError("string literal cannot be lowered without its "
+                               "original SentencePiece IDs");
+    }
+    ir.texts.push_back(text.sentencePieceIds);
+    ir.constants.push_back(
+        {IrConstantKind::Text, static_cast<IrWord>(ir.texts.size() - 1)});
+    return static_cast<IrWord>(ir.constants.size() - 1);
+  };
+  const auto addNil = [&]() {
+    ir.constants.push_back({IrConstantKind::Nil, 0});
+    return static_cast<IrWord>(ir.constants.size() - 1);
+  };
+  std::optional<RegisterId> pipelineResult;
+  const auto emitFactFields =
+      [&](RegisterId fact,
+          const std::vector<std::pair<SymbolId, RegisterId>> &fields) {
+        std::vector<std::pair<SymbolId, std::vector<RegisterId>>> grouped;
+        std::unordered_map<SymbolId, std::size_t> groupIndexes;
+        grouped.reserve(fields.size());
+        groupIndexes.reserve(fields.size());
+        for (const auto &[name, value] : fields) {
+          const auto [position, inserted] =
+              groupIndexes.emplace(name, grouped.size());
+          if (inserted)
+            grouped.push_back({name, {value}});
+          else
+            grouped[position->second].second.push_back(value);
+        }
+        for (const auto &[name, values] : grouped) {
+          RegisterId value = values.front();
+          if (values.size() > 1) {
+            value = static_cast<RegisterId>(ir.registerCount++);
+            ir.words.insert(ir.words.end(),
+                            {static_cast<IrWord>(IrOpcode::MakeArray), value, 0,
+                             static_cast<IrWord>(values.size())});
+            ir.words.insert(ir.words.end(), values.begin(), values.end());
+          }
+          ir.symbols.push_back(name);
+          ir.words.insert(ir.words.end(),
+                          {static_cast<IrWord>(IrOpcode::SetField), fact,
+                           static_cast<IrWord>(ir.symbols.size() - 1), value});
+        }
+      };
+  auto lower = [&](auto &&self,
+                   const std::shared_ptr<Expr> &value) -> RegisterId {
+    const auto emittedAt = ir.words.size();
+    const auto result = static_cast<RegisterId>(ir.registerCount++);
+    if (const auto number = std::dynamic_pointer_cast<NumberExpr>(value)) {
+      ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst),
+                                       result, addNumber(number->value)});
+    } else if (const auto boolean =
+                   std::dynamic_pointer_cast<BoolExpr>(value)) {
+      ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst),
+                                       result, addBoolean(boolean->value)});
+    } else if (const auto text = std::dynamic_pointer_cast<StringExpr>(value)) {
+      ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst),
+                                       result, addText(*text)});
+    } else if (std::dynamic_pointer_cast<NilExpr>(value)) {
+      ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::LoadConst),
+                                       result, addNil()});
+    } else if (const auto variable =
+                   std::dynamic_pointer_cast<VarExpr>(value)) {
+      if (variable->nameId == symbolIdForName("system.result")) {
+        if (!pipelineResult) {
+          throw IntegerParserError(
+              "system.result is available only on the right side of 'then'");
+        }
+        ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::Move),
+                                         result, *pipelineResult});
+        return result;
+      }
+      ir.symbols.push_back(variable->nameId);
+      ir.words.insert(ir.words.end(),
+                      {static_cast<IrWord>(IrOpcode::LoadSymbol), result,
+                       static_cast<IrWord>(ir.symbols.size() - 1)});
+    } else if (const auto term = std::dynamic_pointer_cast<TermExpr>(value)) {
+      if (const auto arity = builtinOperationArity(term->builtinId)) {
+        std::vector<std::string_view> names;
+        names.reserve(term->args.size());
+        for (const auto &argument : term->args)
+          names.push_back(argument.name);
+        const auto order =
+            builtinOperationArgumentOrder(term->builtinId, names);
+        if (!order)
+          throw IntegerParserError(term->name +
+                                   " has invalid builtin arguments");
+        std::vector<std::optional<RegisterId>> ordered(*arity);
+        for (std::size_t index = 0; index < term->args.size(); ++index)
+          ordered[(*order)[index]] = self(self, term->args[index].value);
+        std::vector<RegisterId> operands;
+        operands.reserve(*arity);
+        for (const auto operand : ordered) {
+          if (!operand)
+            throw IntegerParserError(term->name + " omits a builtin argument");
+          operands.push_back(*operand);
+        }
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::Builtin), result,
+                         static_cast<IrWord>(term->builtinId),
+                         static_cast<IrWord>(operands.size())});
+        ir.words.insert(ir.words.end(), operands.begin(), operands.end());
+      } else if (const auto operation = tensorOperationForName(term->name)) {
+        const auto arity = tensorOperationArity(*operation);
+        std::vector<std::string_view> names;
+        names.reserve(term->args.size());
+        for (const auto &argument : term->args)
+          names.push_back(argument.name);
+        const auto order = tensorOperationArgumentOrder(*operation, names);
+        if (!order)
+          throw IntegerParserError(term->name +
+                                   " has invalid tensor arguments");
+        std::vector<std::optional<RegisterId>> ordered(arity);
+        for (std::size_t index = 0; index < arity; ++index) {
+          const auto &argument = term->args[index];
+          ordered[(*order)[index]] = self(self, argument.value);
+        }
+        std::vector<RegisterId> operands;
+        operands.reserve(arity);
+        for (const auto operand : ordered) {
+          if (!operand)
+            throw IntegerParserError(term->name + " omits a tensor argument");
+          operands.push_back(*operand);
+        }
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::Tensor), result,
+                         static_cast<IrWord>(*operation),
+                         static_cast<IrWord>(operands.size())});
+        ir.words.insert(ir.words.end(), operands.begin(), operands.end());
+      } else if (const auto operation = numericOperationForName(term->name)) {
+        const auto arity = numericOperationArity(*operation);
+        if (term->args.size() != arity ||
+            std::any_of(
+                term->args.begin(), term->args.end(),
+                [](const Arg &argument) { return !argument.name.empty(); })) {
+          throw IntegerParserError(term->name + " requires exactly " +
+                                   std::to_string(arity) +
+                                   " positional numeric arguments");
+        }
+        std::vector<RegisterId> operands;
+        operands.reserve(arity);
+        for (const auto &argument : term->args)
+          operands.push_back(self(self, argument.value));
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::Numeric), result,
+                         static_cast<IrWord>(*operation),
+                         static_cast<IrWord>(operands.size())});
+        ir.words.insert(ir.words.end(), operands.begin(), operands.end());
+      } else if (term->name == "MOD") {
+        if (term->args.size() != 2 ||
+            std::any_of(
+                term->args.begin(), term->args.end(),
+                [](const Arg &argument) { return !argument.name.empty(); })) {
+          throw IntegerParserError(
+              "MOD requires exactly two positional numeric arguments");
+        }
+        const auto left = self(self, term->args[0].value);
+        const auto right = self(self, term->args[1].value);
+        ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::Mod),
+                                         result, left, right});
+      } else if (const auto operation = semanticOperationForName(term->name)) {
+        if (term->args.size() > 255)
+          throw IntegerParserError("semantic operation has too many inputs");
+        std::vector<RegisterId> inputs;
+        inputs.reserve(term->args.size());
+        for (const auto &argument : term->args)
+          inputs.push_back(self(self, argument.value));
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::SemanticEval), result,
+                         static_cast<IrWord>(*operation),
+                         static_cast<IrWord>(inputs.size())});
+        ir.words.insert(ir.words.end(), inputs.begin(), inputs.end());
+      } else if (term->nameId == symbolIdForName("for_each_fact")) {
+        if (term->args.size() != 2)
+          throw IntegerParserError(
+              "for_each_fact requires a fact type and callback");
+        const auto type =
+            std::dynamic_pointer_cast<VarExpr>(term->args[0].value);
+        const auto callback =
+            std::dynamic_pointer_cast<VarExpr>(term->args[1].value);
+        const auto designation =
+            type ? factDesignations.find(type->nameId) : factDesignations.end();
+        const auto typeId =
+            type && factTypes.contains(type->nameId) ? type->nameId
+            : designation != factDesignations.end()  ? designation->second
+                                                     : 0;
+        if (!type || !callback || typeId == 0) {
+          throw IntegerParserError("for_each_fact requires a declared fact "
+                                   "type and deterministic callback");
+        }
+        ir.symbols.push_back(typeId);
+        const auto typeSymbol = static_cast<IrWord>(ir.symbols.size() - 1);
+        ir.symbols.push_back(callback->nameId);
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::ForEachFact), result,
+                         typeSymbol,
+                         static_cast<IrWord>(ir.symbols.size() - 1)});
+      } else if (term->nameId == symbolIdForName("similarity")) {
+        if (term->args.size() != 2)
+          throw IntegerParserError("similarity requires exactly two arguments");
+        const auto left = self(self, term->args[0].value);
+        const auto right = self(self, term->args[1].value);
+        ir.words.insert(
+            ir.words.end(),
+            {static_cast<IrWord>(IrOpcode::Similarity), result, left, right});
+      } else if (term->nameId == symbolIdForName("isA") ||
+                 term->nameId == symbolIdForName("commonAncestors") ||
+                 term->nameId == symbolIdForName("lowestCommonAncestor") ||
+                 term->nameId == symbolIdForName("highestCommonAncestor")) {
+        if (term->args.size() != 2) {
+          throw IntegerParserError(term->name +
+                                   " requires exactly two hierarchy arguments");
+        }
+        const auto left = self(self, term->args[0].value);
+        const auto right = self(self, term->args[1].value);
+        const auto opcode =
+            term->nameId == symbolIdForName("isA") ? IrOpcode::HierarchyIsA
+            : term->nameId == symbolIdForName("commonAncestors")
+                ? IrOpcode::HierarchyCommonAncestors
+            : term->nameId == symbolIdForName("lowestCommonAncestor")
+                ? IrOpcode::HierarchyLeastCommonAncestors
+                : IrOpcode::HierarchyMostGeneralAncestors;
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(opcode), result, left, right});
+      } else if (term->nameId == symbolIdForName("temporalRank")) {
+        if (term->args.size() != 2) {
+          throw IntegerParserError(
+              "temporalRank requires effective-at and priority field symbols");
+        }
+        const auto fieldSymbol = [&](const Arg &argument) {
+          SymbolId fieldId = 0;
+          if (const auto field =
+                  std::dynamic_pointer_cast<VarExpr>(argument.value)) {
+            fieldId = field->nameId;
+          } else if (const auto access = std::dynamic_pointer_cast<AccessExpr>(
+                         argument.value)) {
+            const auto scope =
+                std::dynamic_pointer_cast<VarExpr>(access->target);
+            if (scope)
+              fieldId = symbolIdForName(scope->name + "." + access->key);
+          }
+          if (fieldId == 0) {
+            throw IntegerParserError(
+                "temporalRank fields must be symbol names");
+          }
+          ir.symbols.push_back(fieldId);
+          return static_cast<IrWord>(ir.symbols.size() - 1);
+        };
+        const auto effectiveAt = fieldSymbol(term->args[0]);
+        const auto priority = fieldSymbol(term->args[1]);
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::TemporalRank), result,
+                         effectiveAt, priority});
+      } else if (term->nameId == symbolIdForName("membership")) {
+        if (term->args.size() != 2)
+          throw IntegerParserError(
+              "membership requires a value and named profile");
+        const auto valueRegister = self(self, term->args[0].value);
+        const auto profile = self(self, term->args[1].value);
+        const auto field = [&](const char *name) {
+          const auto fieldRegister =
+              static_cast<RegisterId>(ir.registerCount++);
+          ir.symbols.push_back(symbolIdForName(name));
+          ir.words.insert(ir.words.end(),
+                          {static_cast<IrWord>(IrOpcode::GetField),
+                           fieldRegister, profile,
+                           static_cast<IrWord>(ir.symbols.size() - 1)});
+          return fieldRegister;
+        };
+        const auto peak = field("peak");
+        const auto fadesIn = field("fades_in");
+        const auto fadesOut = field("fades_out");
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::Membership), result,
+                         valueRegister, peak, fadesIn, fadesOut});
+      } else {
+        std::vector<RegisterId> arguments;
+        arguments.reserve(term->args.size());
+        const bool hasNamedArguments = std::any_of(
+            term->args.begin(), term->args.end(),
+            [](const Arg &argument) { return !argument.name.empty(); });
+        std::vector<IrWord> names;
+        names.reserve(term->args.size());
+        for (const auto &argument : term->args) {
+          arguments.push_back(self(self, argument.value));
+          if (hasNamedArguments && argument.name.empty()) {
+            names.push_back(0);
+          } else if (hasNamedArguments) {
+            ir.symbols.push_back(argument.nameId);
+            names.push_back(static_cast<IrWord>(ir.symbols.size()));
+          }
+        }
+        // Capitalized terms with named fields are first-class fact values
+        // even without a separately declared fact schema. The AST carries
+        // this grammar decision; lowering does not infer it from text.
+        const bool factValue =
+            factTypes.contains(term->nameId) ||
+            (term->isCapitalized && term->name.find('.') == std::string::npos &&
+             hasNamedArguments);
+        if (factValue) {
+          if (!hasNamedArguments) {
+            throw IntegerParserError("fact construction requires named fields");
+          }
+          ir.symbols.push_back(term->nameId);
+          ir.words.insert(ir.words.end(),
+                          {static_cast<IrWord>(IrOpcode::MakeFact), result,
+                           static_cast<IrWord>(ir.symbols.size() - 1)});
+          std::vector<std::pair<SymbolId, RegisterId>> fields;
+          fields.reserve(arguments.size());
+          for (std::size_t index = 0; index < arguments.size(); ++index) {
+            if (names[index] == 0)
+              throw IntegerParserError(
+                  "fact construction requires named fields");
+            fields.emplace_back(term->args[index].nameId, arguments[index]);
+          }
+          emitFactFields(result, fields);
+        } else {
+          ir.symbols.push_back(term->nameId);
+          if (!hasNamedArguments) {
+            ir.words.insert(ir.words.end(),
+                            {static_cast<IrWord>(IrOpcode::Call), result,
+                             static_cast<IrWord>(ir.symbols.size() - 1),
+                             static_cast<IrWord>(arguments.size())});
+            ir.words.insert(ir.words.end(), arguments.begin(), arguments.end());
+          } else {
+            ir.words.insert(ir.words.end(),
+                            {static_cast<IrWord>(IrOpcode::CallNamed), result,
+                             static_cast<IrWord>(ir.symbols.size() - 1),
+                             static_cast<IrWord>(arguments.size())});
+            for (std::size_t index = 0; index < arguments.size(); ++index) {
+              ir.words.push_back(names[index]);
+              ir.words.push_back(arguments[index]);
+            }
+          }
+        }
+      }
+    } else if (const auto array = std::dynamic_pointer_cast<ArrayExpr>(value)) {
+      std::vector<RegisterId> items;
+      items.reserve(array->items.size());
+      for (const auto &item : array->items)
+        items.push_back(self(self, item));
+      ir.words.insert(ir.words.end(),
+                      {static_cast<IrWord>(IrOpcode::MakeArray), result, 0,
+                       static_cast<IrWord>(items.size())});
+      ir.words.insert(ir.words.end(), items.begin(), items.end());
+    } else if (const auto map = std::dynamic_pointer_cast<MapExpr>(value)) {
+      std::vector<std::pair<SymbolId, RegisterId>> entries;
+      entries.reserve(map->entries.size());
+      for (const auto &entry : map->entries) {
+        const auto item = self(self, entry.value);
+        entries.emplace_back(entry.keyId, item);
+      }
+      if (map->factType.empty()) {
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::MakeMap), result, 0,
+                         static_cast<IrWord>(entries.size())});
+        for (const auto &[field, item] : entries) {
+          ir.symbols.push_back(field);
+          ir.words.push_back(static_cast<IrWord>(ir.symbols.size() - 1));
+          ir.words.push_back(item);
+        }
+      } else {
+        ir.symbols.push_back(symbolIdForName(map->factType));
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::MakeFact), result,
+                         static_cast<IrWord>(ir.symbols.size() - 1)});
+        emitFactFields(result, entries);
+      }
+    } else if (const auto access =
+                   std::dynamic_pointer_cast<AccessExpr>(value)) {
+      const auto target = self(self, access->target);
+      ir.symbols.push_back(access->keyId);
+      ir.words.insert(ir.words.end(),
+                      {static_cast<IrWord>(IrOpcode::GetField), result, target,
+                       static_cast<IrWord>(ir.symbols.size() - 1)});
+    } else if (const auto operation =
+                   std::dynamic_pointer_cast<OperatorExpression>(value)) {
+      const auto core = operation->coreOperator;
+      if (core == CoreOperator::Unknown) {
+        if (operation->resolvedMethodId == 0) {
+          throw IntegerParserError(
+              "mixfix expression requires verified model target selection");
+        }
+        std::vector<RegisterId> arguments;
+        arguments.reserve(operation->captureCount());
+        for (std::size_t index = 0; index < operation->captureCount();
+             ++index) {
+          arguments.push_back(self(self, operation->capture(index)));
+        }
+        ir.symbols.push_back(operation->resolvedMethodId);
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::Call), result,
+                         static_cast<IrWord>(ir.symbols.size() - 1),
+                         static_cast<IrWord>(arguments.size())});
+        ir.words.insert(ir.words.end(), arguments.begin(), arguments.end());
+      } else if (core == CoreOperator::UnaryPlus) {
+        return self(self, operation->capture(0));
+      } else if (core == CoreOperator::Then) {
+        if (operation->captureCount() != 2) {
+          throw IntegerParserError(
+              "then pipeline requires a left and right expression");
+        }
+        const auto left = self(self, operation->capture(0));
+        const auto previousPipelineResult = pipelineResult;
+        pipelineResult = left;
+        const auto right = self(self, operation->capture(1));
+        pipelineResult = previousPipelineResult;
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::Move), result, right});
+      } else if (core == CoreOperator::UnaryMinus) {
+        const auto source = self(self, operation->capture(0));
+        const auto zero = static_cast<RegisterId>(ir.registerCount++);
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::LoadConst), zero,
+                         addNumber(0.0), static_cast<IrWord>(IrOpcode::Sub),
+                         result, zero, source});
+      } else if (core == CoreOperator::LogicalNot) {
+        const auto source = self(self, operation->capture(0));
+        const auto trueConstant = addBoolean(true);
+        const auto falseConstant = addBoolean(false);
+        const auto branch = ir.words.size();
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::JumpIfFalse), source, 0,
+                         static_cast<IrWord>(IrOpcode::LoadConst), result,
+                         falseConstant, static_cast<IrWord>(IrOpcode::Jump),
+                         0});
+        const auto falseTarget = ir.words.size();
+        ir.words.insert(
+            ir.words.end(),
+            {static_cast<IrWord>(IrOpcode::LoadConst), result, trueConstant});
+        const auto endTarget = ir.words.size();
+        ir.words[branch + 2] = falseTarget;
+        ir.words[branch + 7] = endTarget;
+      } else if (core == CoreOperator::LogicalAnd ||
+                 core == CoreOperator::LogicalOr) {
+        const auto left = self(self, operation->capture(0));
+        const auto trueConstant = addBoolean(true);
+        const auto falseConstant = addBoolean(false);
+        if (core == CoreOperator::LogicalAnd) {
+          const auto leftBranch = ir.words.size();
+          ir.words.insert(
+              ir.words.end(),
+              {static_cast<IrWord>(IrOpcode::JumpIfFalse), left, 0});
+          const auto right = self(self, operation->capture(1));
+          const auto rightBranch = ir.words.size();
+          ir.words.insert(ir.words.end(),
+                          {static_cast<IrWord>(IrOpcode::JumpIfFalse), right, 0,
+                           static_cast<IrWord>(IrOpcode::LoadConst), result,
+                           trueConstant, static_cast<IrWord>(IrOpcode::Jump),
+                           0});
+          const auto falseTarget = ir.words.size();
+          ir.words.insert(ir.words.end(),
+                          {static_cast<IrWord>(IrOpcode::LoadConst), result,
+                           falseConstant});
+          const auto endTarget = ir.words.size();
+          ir.words[leftBranch + 2] = falseTarget;
+          ir.words[rightBranch + 2] = falseTarget;
+          ir.words[rightBranch + 7] = endTarget;
+        } else {
+          const auto leftBranch = ir.words.size();
+          ir.words.insert(ir.words.end(),
+                          {static_cast<IrWord>(IrOpcode::JumpIfFalse), left, 0,
+                           static_cast<IrWord>(IrOpcode::LoadConst), result,
+                           trueConstant, static_cast<IrWord>(IrOpcode::Jump),
+                           0});
+          const auto rightTarget = ir.words.size();
+          const auto right = self(self, operation->capture(1));
+          const auto rightBranch = ir.words.size();
+          ir.words.insert(ir.words.end(),
+                          {static_cast<IrWord>(IrOpcode::JumpIfFalse), right, 0,
+                           static_cast<IrWord>(IrOpcode::LoadConst), result,
+                           trueConstant, static_cast<IrWord>(IrOpcode::Jump),
+                           0});
+          const auto falseTarget = ir.words.size();
+          ir.words.insert(ir.words.end(),
+                          {static_cast<IrWord>(IrOpcode::LoadConst), result,
+                           falseConstant});
+          const auto endTarget = ir.words.size();
+          ir.words[leftBranch + 2] = rightTarget;
+          ir.words[leftBranch + 7] = endTarget;
+          ir.words[rightBranch + 2] = falseTarget;
+          ir.words[rightBranch + 7] = endTarget;
+        }
+      } else {
+        const auto left = self(self, operation->capture(0));
+        const auto right = self(self, operation->capture(1));
+        IrOpcode opcode;
+        IrComparison comparison = IrComparison::Equal;
+        switch (core) {
+        case CoreOperator::Add:
+          opcode = IrOpcode::Add;
+          break;
+        case CoreOperator::Subtract:
+          opcode = IrOpcode::Sub;
+          break;
+        case CoreOperator::Multiply:
+          opcode = IrOpcode::Mul;
+          break;
+        case CoreOperator::Divide:
+          opcode = IrOpcode::Div;
+          break;
+        case CoreOperator::Modulo:
+          opcode = IrOpcode::Mod;
+          break;
+        case CoreOperator::StrictEqual:
+          opcode = IrOpcode::Compare;
+          break;
+        case CoreOperator::StrictNotEqual:
+          opcode = IrOpcode::Compare;
+          comparison = IrComparison::NotEqual;
+          break;
+        case CoreOperator::Less:
+          opcode = IrOpcode::Compare;
+          comparison = IrComparison::Less;
+          break;
+        case CoreOperator::LessEqual:
+          opcode = IrOpcode::Compare;
+          comparison = IrComparison::LessEqual;
+          break;
+        case CoreOperator::Greater:
+          opcode = IrOpcode::Compare;
+          comparison = IrComparison::Greater;
+          break;
+        case CoreOperator::GreaterEqual:
+          opcode = IrOpcode::Compare;
+          comparison = IrComparison::GreaterEqual;
+          break;
+        default:
+          throw IntegerParserError("expression has no direct IR lowering yet");
+        }
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(opcode), result, left, right});
+        if (opcode == IrOpcode::Compare)
+          ir.words.push_back(static_cast<IrWord>(comparison));
+      }
+    } else {
+      throw IntegerParserError("expression has no direct IR lowering yet");
+    }
+    const auto &span = value->sourceSpan;
+    ir.sourceMap.push_back(IrSourceMapEntry{
+        emittedAt,
+        {span.startLine, span.startColumn, span.endLine, span.endColumn}});
+    return result;
+  };
+  const auto result = lower(lower, expression);
+  ir.words.insert(ir.words.end(),
+                  {static_cast<IrWord>(IrOpcode::Return), result, 0,
+                   static_cast<IrWord>(IrOpcode::End)});
+#ifndef NDEBUG
+  if (codegenTraceEnabled()) {
+    std::clog << "[felidae.codegen] action=lower_expression verified_ir_words="
+              << ir.words.size() << " registers=" << ir.registerCount
+              << " constants=" << ir.constants.size()
+              << " symbols=" << ir.symbols.size() << '\n';
+  }
+#endif
+  return ir;
+}
+
+FelidaeIr IrCodeGenerator::lowerGlobalBinding(
+    const GlobalBindingStmt &binding,
+    const std::unordered_set<SymbolId> &factTypes,
+    const std::unordered_map<SymbolId, SymbolId> &factDesignations) {
+  if (!binding.expr)
+    throw IntegerParserError("Global binding has no value expression");
+  auto ir = lowerExpression(binding.expr, factTypes, factDesignations);
+  if (ir.words.size() < 4 ||
+      ir.words[ir.words.size() - 4] != static_cast<IrWord>(IrOpcode::Return) ||
+      ir.words.back() != static_cast<IrWord>(IrOpcode::End)) {
+    throw IntegerParserError("Expression IR is missing its terminal return");
+  }
+  const auto result = ir.words[ir.words.size() - 3];
+  ir.symbols.push_back(symbolIdForName(binding.name));
+  const auto symbol = static_cast<IrWord>(ir.symbols.size() - 1);
+  ir.words.resize(ir.words.size() - 4);
+  ir.words.insert(ir.words.end(),
+                  {
+                      static_cast<IrWord>(IrOpcode::StoreSymbol),
+                      symbol,
+                      result,
+                      static_cast<IrWord>(IrOpcode::LoadSymbol),
+                      result,
+                      symbol,
+                      static_cast<IrWord>(IrOpcode::Return),
+                      result,
+                      0,
+                      static_cast<IrWord>(IrOpcode::End),
+                  });
+  const auto &span = binding.sourceSpan;
+  ir.sourceMap.push_back(IrSourceMapEntry{
+      ir.words.size() - 10,
+      {span.startLine, span.startColumn, span.endLine, span.endColumn}});
+  return ir;
+}
+
+FelidaeIr IrCodeGenerator::lowerEntryMethod(
+    const ClauseStmt &method, const std::unordered_set<SymbolId> &factTypes,
+    const std::unordered_map<SymbolId, SymbolId> &factDesignations) {
+  if (method.body.size() != 1 || !method.fallbackBranches.empty()) {
+    throw IntegerParserError(
+        "Method has not reached direct entry IR lowering yet");
+  }
+  const auto returned =
+      std::dynamic_pointer_cast<ReturnGoal>(method.body.front());
+  if (!returned)
+    throw IntegerParserError("Direct entry IR lowering requires a return goal");
+  if (returned->fields.empty()) {
+    auto nil = std::make_shared<NilExpr>();
+    nil->sourceSpan = returned->sourceSpan;
+    return lowerExpression(nil, factTypes, factDesignations);
+  }
+  bool named = false;
+  for (const auto &field : returned->fields)
+    named = named || !field.name.empty();
+  if (!named) {
+    if (returned->fields.size() != 1) {
+      throw IntegerParserError(
+          "Direct entry IR lowering requires one positional return value");
+    }
+    return lowerExpression(returned->fields.front().value, factTypes,
+                                  factDesignations);
+  }
+  std::vector<MapEntry> entries;
+  entries.reserve(returned->fields.size());
+  for (const auto &field : returned->fields) {
+    if (field.name.empty()) {
+      throw IntegerParserError("Direct entry IR lowering cannot mix named and "
+                               "positional return fields");
+    }
+    entries.emplace_back(field.name, field.nameId, field.value);
+  }
+  auto map = std::make_shared<MapExpr>(std::move(entries));
+  map->sourceSpan = returned->sourceSpan;
+  return lowerExpression(map, factTypes, factDesignations);
+}
+
 
 IrModule IrCodeGenerator::compile(Program program) const {
   desugarWhereGuardedClauses(program);
@@ -1171,7 +1838,7 @@ IrModule IrCodeGenerator::compile(Program program) const {
     // other way.
     for (const auto &binding : program.globals) {
       appendFragment(module.ir,
-                     IntegerParser::compileAstGlobalBindingIr(
+                     IrCodeGenerator::lowerGlobalBinding(
                          *binding, factTypes, factDesignations),
                      true);
     }
@@ -1189,7 +1856,7 @@ IrModule IrCodeGenerator::compile(Program program) const {
             std::to_string(clause->sourceSpan.startColumn));
       }
       appendFragment(module.ir,
-                     IntegerParser::compileAstExpressionIr(
+                     IrCodeGenerator::lowerExpression(
                          std::move(fact), factTypes, factDesignations),
                      true);
     }

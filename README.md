@@ -985,7 +985,8 @@ Form VM
 result
 ```
 
-The VM does not need the compiler's AST in order to execute a program.
+The syntax-shaped tree is compiler-only high-level IR (HIR). The VM receives
+only verified executable IR and never includes or interprets HIR nodes.
 
 This provides several benefits.
 

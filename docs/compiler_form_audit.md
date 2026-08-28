@@ -8,14 +8,14 @@ Stabilization findings were revalidated on Linux on 2026-08-28.
 
 ```text
 felidae_compiler.exe
-  source.fx -> SentencePiece -> IntegerParser -> AST -> IrCodeGenerator -> .bin
+  source.fx -> SentencePiece -> IntegerParser -> compiler HIR -> IrCodeGenerator -> .bin
 
 felidae_vm.exe
   program.bin -> binary validation -> IR verifier -> Form RegisterVm
               -> optional LibTorch tensor/runtime-SSM backend
 ```
 
-`felidae_vm.exe` has no parser or AST dependency. It uses SentencePiece only
+`felidae_vm.exe` has no parser or compiler-HIR dependency. It uses SentencePiece only
 at the display/model boundary and, on supported desktop builds, links LibTorch
 for deterministic tensor operations and the optional runtime SSM. Core Form
 IR verification and execution remain independent of compiler lowering.
@@ -34,12 +34,12 @@ Process/model initialization dominated total time (886--1,794 us).
 
 ## Proven dead code removed
 
-- AST interpreter, reasoning, native-runtime, environment, and memory runtime
+- The old executable-AST interpreter, reasoning, native-runtime, environment, and memory runtime
   sources were unreachable from active CMake targets.
 - The obsolete WASM entry point and stale `FelidaeRuntime` wrapper were
   unreachable.
 - The old `LegacyIrAdapter` was renamed to `IrCodeGenerator` because it is
-  active AST-to-IR code generation, not compatibility runtime code.
+  active HIR-to-IR code generation, not compatibility runtime code.
 
 ## Stabilized contracts
 
@@ -61,11 +61,11 @@ Process/model initialization dominated total time (886--1,794 us).
 ## Remaining complexity worth addressing
 
 1. `IntegerParser.cpp` is about 2,650 lines. It owns SentencePiece-ID parsing,
-   operator/mixfix routing, AST construction, and three AST-to-IR helper
-   implementations. Move the AST-to-IR helpers into a dedicated lowering unit;
+   operator/mixfix routing, HIR construction, and three HIR-to-IR helper
+   implementations. Move the HIR-to-IR helpers into a dedicated lowering unit;
    parsing should not own code generation.
 2. `IrCodeGenerator.cpp` and the parser both participate in lowering. Their
-   responsibilities should become explicit: parser constructs AST only;
+   responsibilities should become explicit: parser constructs HIR only;
    codegen lowers expressions, globals, methods, and conditions.
 3. `IrModule` is the compiler construction form, while `LinkedIrModule` is the
    flattened binary form. The names obscure that distinction. A later API
