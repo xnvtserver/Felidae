@@ -2,20 +2,20 @@ version: 2
 
 updates:
   # GitHub Actions used under .github/workflows/
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "09:00"
-      timezone: "Asia/Kolkata"
-    open-pull-requests-limit: 5
-    labels:
-      - "dependencies"
-      - "github-actions"
-    commit-message:
-      prefix: "deps"
-      include: "scope"
+  # - package-ecosystem: "github-actions"
+  #   directory: "/"
+  #   schedule:
+  #     interval: "weekly"
+  #     day: "monday"
+  #     time: "09:00"
+  #     timezone: "Asia/Kolkata"
+  #   open-pull-requests-limit: 5
+  #   labels:
+  #     - "dependencies"
+  #     - "github-actions"
+  #   commit-message:
+  #     prefix: "deps"
+  #     include: "scope"
 
   # Git submodules such as SentencePiece / Abseil / Protobuf
   - package-ecosystem: "gitsubmodule"
