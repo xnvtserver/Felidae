@@ -1950,57 +1950,11 @@ SymbolId IntegerParser::resolveModelMixfixMethod(
             "mixfix model call has an invalid symbol reference");
       selected.insert(ir.symbols[index]);
     }
-    switch (opcode) {
-    case IrOpcode::End:
-      ++pc;
-      break;
-    case IrOpcode::Call:
-    case IrOpcode::SemanticEval:
-    case IrOpcode::Numeric:
-    case IrOpcode::MakeArray:
-      pc += 4 + ir.words[pc + 3];
-      break;
-    case IrOpcode::CallNamed:
-    case IrOpcode::MakeMap:
-      pc += 4 + ir.words[pc + 3] * 2;
-      break;
-    case IrOpcode::Jump:
-      pc += 2;
-      break;
-    case IrOpcode::LoadConst:
-    case IrOpcode::LoadSymbol:
-    case IrOpcode::StoreSymbol:
-    case IrOpcode::Move:
-    case IrOpcode::JumpIfFalse:
-    case IrOpcode::CallNative:
-    case IrOpcode::MakeFact:
-    case IrOpcode::Return:
-      pc += 3;
-      break;
-    case IrOpcode::ForEachFact:
-    case IrOpcode::Add:
-    case IrOpcode::Sub:
-    case IrOpcode::Mul:
-    case IrOpcode::Div:
-    case IrOpcode::Mod:
-    case IrOpcode::GetField:
-    case IrOpcode::SetField:
-    case IrOpcode::Similarity:
-    case IrOpcode::HierarchyIsA:
-    case IrOpcode::HierarchyCommonAncestors:
-    case IrOpcode::HierarchyLeastCommonAncestors:
-    case IrOpcode::HierarchyMostGeneralAncestors:
-    case IrOpcode::TemporalRank:
-      pc += 4;
-      break;
-    case IrOpcode::Membership:
-      pc += 6;
-      break;
-    case IrOpcode::Compare:
-      pc += 5;
-      break;
-    case IrOpcode::Count:
-      throw IntegerParserError("mixfix model emitted an invalid opcode");
+    try {
+      pc += irInstructionWidth(ir, pc);
+    } catch (const IrError &error) {
+      throw IntegerParserError("mixfix model emitted invalid IR: " +
+                               std::string(error.what()));
     }
   }
   if (selected.size() != 1) {
@@ -2037,19 +1991,37 @@ FelidaeIr IntegerParser::compileAstExpressionIr(
     ir.constants.push_back({IrConstantKind::Nil, 0});
     return static_cast<IrWord>(ir.constants.size() - 1);
   };
-  const auto semanticOperation =
-      [](SymbolId name) -> std::optional<SemanticOperationId> {
-    if (name == symbolIdForName("semantic_identity"))
-      return SemanticOperationId::Identity;
-    if (name == symbolIdForName("semantic_select_fact"))
-      return SemanticOperationId::SelectFact;
-    if (name == symbolIdForName("semantic_derive_fact"))
-      return SemanticOperationId::DeriveFact;
-    if (name == symbolIdForName("semantic_evaluate_degree"))
-      return SemanticOperationId::EvaluateDegree;
-    return std::nullopt;
-  };
   std::optional<RegisterId> pipelineResult;
+  const auto emitFactFields =
+      [&](RegisterId fact,
+          const std::vector<std::pair<SymbolId, RegisterId>> &fields) {
+        std::vector<std::pair<SymbolId, std::vector<RegisterId>>> grouped;
+        std::unordered_map<SymbolId, std::size_t> groupIndexes;
+        grouped.reserve(fields.size());
+        groupIndexes.reserve(fields.size());
+        for (const auto &[name, value] : fields) {
+          const auto [position, inserted] =
+              groupIndexes.emplace(name, grouped.size());
+          if (inserted)
+            grouped.push_back({name, {value}});
+          else
+            grouped[position->second].second.push_back(value);
+        }
+        for (const auto &[name, values] : grouped) {
+          RegisterId value = values.front();
+          if (values.size() > 1) {
+            value = static_cast<RegisterId>(ir.registerCount++);
+            ir.words.insert(ir.words.end(),
+                            {static_cast<IrWord>(IrOpcode::MakeArray), value, 0,
+                             static_cast<IrWord>(values.size())});
+            ir.words.insert(ir.words.end(), values.begin(), values.end());
+          }
+          ir.symbols.push_back(name);
+          ir.words.insert(ir.words.end(),
+                          {static_cast<IrWord>(IrOpcode::SetField), fact,
+                           static_cast<IrWord>(ir.symbols.size() - 1), value});
+        }
+      };
   auto lower = [&](auto &&self,
                    const std::shared_ptr<Expr> &value) -> RegisterId {
     const auto emittedAt = ir.words.size();
@@ -2083,7 +2055,59 @@ FelidaeIr IntegerParser::compileAstExpressionIr(
                       {static_cast<IrWord>(IrOpcode::LoadSymbol), result,
                        static_cast<IrWord>(ir.symbols.size() - 1)});
     } else if (const auto term = std::dynamic_pointer_cast<TermExpr>(value)) {
-      if (const auto operation = numericOperationForName(term->name)) {
+      if (const auto arity = builtinOperationArity(term->builtinId)) {
+        std::vector<std::string_view> names;
+        names.reserve(term->args.size());
+        for (const auto &argument : term->args)
+          names.push_back(argument.name);
+        const auto order =
+            builtinOperationArgumentOrder(term->builtinId, names);
+        if (!order)
+          throw IntegerParserError(term->name +
+                                   " has invalid builtin arguments");
+        std::vector<std::optional<RegisterId>> ordered(*arity);
+        for (std::size_t index = 0; index < term->args.size(); ++index)
+          ordered[(*order)[index]] = self(self, term->args[index].value);
+        std::vector<RegisterId> operands;
+        operands.reserve(*arity);
+        for (const auto operand : ordered) {
+          if (!operand)
+            throw IntegerParserError(term->name + " omits a builtin argument");
+          operands.push_back(*operand);
+        }
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::Builtin), result,
+                         static_cast<IrWord>(term->builtinId),
+                         static_cast<IrWord>(operands.size())});
+        ir.words.insert(ir.words.end(), operands.begin(), operands.end());
+      } else if (const auto operation = tensorOperationForName(term->name)) {
+        const auto arity = tensorOperationArity(*operation);
+        std::vector<std::string_view> names;
+        names.reserve(term->args.size());
+        for (const auto &argument : term->args)
+          names.push_back(argument.name);
+        const auto order = tensorOperationArgumentOrder(*operation, names);
+        if (!order)
+          throw IntegerParserError(term->name +
+                                   " has invalid tensor arguments");
+        std::vector<std::optional<RegisterId>> ordered(arity);
+        for (std::size_t index = 0; index < arity; ++index) {
+          const auto &argument = term->args[index];
+          ordered[(*order)[index]] = self(self, argument.value);
+        }
+        std::vector<RegisterId> operands;
+        operands.reserve(arity);
+        for (const auto operand : ordered) {
+          if (!operand)
+            throw IntegerParserError(term->name + " omits a tensor argument");
+          operands.push_back(*operand);
+        }
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::Tensor), result,
+                         static_cast<IrWord>(*operation),
+                         static_cast<IrWord>(operands.size())});
+        ir.words.insert(ir.words.end(), operands.begin(), operands.end());
+      } else if (const auto operation = numericOperationForName(term->name)) {
         const auto arity = numericOperationArity(*operation);
         if (term->args.size() != arity ||
             std::any_of(
@@ -2114,7 +2138,7 @@ FelidaeIr IntegerParser::compileAstExpressionIr(
         const auto right = self(self, term->args[1].value);
         ir.words.insert(ir.words.end(), {static_cast<IrWord>(IrOpcode::Mod),
                                          result, left, right});
-      } else if (const auto operation = semanticOperation(term->nameId)) {
+      } else if (const auto operation = semanticOperationForName(term->name)) {
         if (term->args.size() > 255)
           throw IntegerParserError("semantic operation has too many inputs");
         std::vector<RegisterId> inputs;
@@ -2261,14 +2285,15 @@ FelidaeIr IntegerParser::compileAstExpressionIr(
           ir.words.insert(ir.words.end(),
                           {static_cast<IrWord>(IrOpcode::MakeFact), result,
                            static_cast<IrWord>(ir.symbols.size() - 1)});
+          std::vector<std::pair<SymbolId, RegisterId>> fields;
+          fields.reserve(arguments.size());
           for (std::size_t index = 0; index < arguments.size(); ++index) {
             if (names[index] == 0)
               throw IntegerParserError(
                   "fact construction requires named fields");
-            ir.words.insert(ir.words.end(),
-                            {static_cast<IrWord>(IrOpcode::SetField), result,
-                             names[index] - 1, arguments[index]});
+            fields.emplace_back(term->args[index].nameId, arguments[index]);
           }
+          emitFactFields(result, fields);
         } else {
           ir.symbols.push_back(term->nameId);
           if (!hasNamedArguments) {
@@ -2299,19 +2324,19 @@ FelidaeIr IntegerParser::compileAstExpressionIr(
                        static_cast<IrWord>(items.size())});
       ir.words.insert(ir.words.end(), items.begin(), items.end());
     } else if (const auto map = std::dynamic_pointer_cast<MapExpr>(value)) {
-      std::vector<std::pair<IrWord, RegisterId>> entries;
+      std::vector<std::pair<SymbolId, RegisterId>> entries;
       entries.reserve(map->entries.size());
       for (const auto &entry : map->entries) {
         const auto item = self(self, entry.value);
-        ir.symbols.push_back(entry.keyId);
-        entries.emplace_back(static_cast<IrWord>(ir.symbols.size() - 1), item);
+        entries.emplace_back(entry.keyId, item);
       }
       if (map->factType.empty()) {
         ir.words.insert(ir.words.end(),
                         {static_cast<IrWord>(IrOpcode::MakeMap), result, 0,
                          static_cast<IrWord>(entries.size())});
         for (const auto &[field, item] : entries) {
-          ir.words.push_back(field);
+          ir.symbols.push_back(field);
+          ir.words.push_back(static_cast<IrWord>(ir.symbols.size() - 1));
           ir.words.push_back(item);
         }
       } else {
@@ -2319,11 +2344,7 @@ FelidaeIr IntegerParser::compileAstExpressionIr(
         ir.words.insert(ir.words.end(),
                         {static_cast<IrWord>(IrOpcode::MakeFact), result,
                          static_cast<IrWord>(ir.symbols.size() - 1)});
-        for (const auto &[field, item] : entries) {
-          ir.words.insert(
-              ir.words.end(),
-              {static_cast<IrWord>(IrOpcode::SetField), result, field, item});
-        }
+        emitFactFields(result, entries);
       }
     } else if (const auto access =
                    std::dynamic_pointer_cast<AccessExpr>(value)) {

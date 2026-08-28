@@ -1,7 +1,8 @@
 # Compiler and Form VM audit
 
-Audit date: 2026-08-16. Measurements are Windows Release builds using the
+Original benchmark date: 2026-08-16. Measurements are Windows Release builds using the
 existing `felidae_integer_parser_benchmark` target, five process-start runs.
+Stabilization findings were revalidated on Linux on 2026-08-28.
 
 ## Current boundaries
 
@@ -11,11 +12,13 @@ felidae_compiler.exe
 
 felidae_vm.exe
   program.bin -> binary validation -> IR verifier -> Form RegisterVm
+              -> optional LibTorch tensor/runtime-SSM backend
 ```
 
-`felidae_vm.exe` links only `src/form/`; it has no parser, AST, SentencePiece,
-or LibTorch dependency. The compiler owns SentencePiece and optional LibTorch
-mixfix support.
+`felidae_vm.exe` has no parser or AST dependency. It uses SentencePiece only
+at the display/model boundary and, on supported desktop builds, links LibTorch
+for deterministic tensor operations and the optional runtime SSM. Core Form
+IR verification and execution remain independent of compiler lowering.
 
 ## Measurements
 
@@ -38,9 +41,26 @@ Process/model initialization dominated total time (886--1,794 us).
 - The old `LegacyIrAdapter` was renamed to `IrCodeGenerator` because it is
   active AST-to-IR code generation, not compatibility runtime code.
 
+## Stabilized contracts
+
+- Compiler and debugger source parsing share `CompilerFrontend` file
+  normalization, entry resolution, SentencePiece parsing, and an explicit
+  operator registry. The debugger no longer maintains a divergent parser path.
+- Debugger JSON-RPC input uses `nlohmann_json`; malformed requests produce
+  protocol errors instead of being interpreted by raw string searches.
+- RegisterVm verification and execution share `irInstructionWidth()` as the
+  single executable-layout contract.
+- Fact hierarchy registration rejects duplicate parents and cycles. Assignable
+  searches have deterministic creation-order results.
+- Map and fact equality are key-based, independent of field insertion order.
+  Fact similarity reuses the same keyed-field algorithm without non-owning
+  stack-backed `shared_ptr` adapters.
+- Fact retention rejects malformed fields and facts owned by another runtime.
+  Variable lookup tests cover immutable globals/locals and frame isolation.
+
 ## Remaining complexity worth addressing
 
-1. `IntegerParser.cpp` is 1,649 lines. It owns SentencePiece-ID parsing,
+1. `IntegerParser.cpp` is about 2,650 lines. It owns SentencePiece-ID parsing,
    operator/mixfix routing, AST construction, and three AST-to-IR helper
    implementations. Move the AST-to-IR helpers into a dedicated lowering unit;
    parsing should not own code generation.
@@ -59,7 +79,9 @@ Process/model initialization dominated total time (886--1,794 us).
 
 ## Tooling status
 
-`clang-tidy` and `cppcheck` were not installed in the audit environment. The
-current repeatable gates are CMake builds, CTest, the parser benchmark, and the
-binary round-trip tests. Install static-analysis tools before treating their
-absence as a clean report.
+The current Linux machine provides Clang tools, IWYU, `cppcheck`, Valgrind,
+Flawfinder, Coccinelle, Doxygen, Graphviz, `pahole`, `bpftrace`, Heaptrack,
+Linux perf, and KCachegrind. They are not part of ordinary compilation because
+complete analysis is intentionally an explicit release gate. Run them against
+the configured `build/debug` compile database and focused executables; a tool
+being installed is not evidence that its checks passed.

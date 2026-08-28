@@ -3,7 +3,7 @@
 The supported product path is deliberately small:
 
 ```text
-source.fx -> felidae_compiler -> verified FELBIR v13 executable IR -> felidae_vm
+source.fx -> felidae_compiler -> verified FELBIR v16 executable IR -> felidae_vm
 ```
 
 Build artifacts are created only in `build/`; the portable package is generated

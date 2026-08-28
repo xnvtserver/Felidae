@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -60,6 +61,24 @@ Felidae::VmValue executeModuleDirect(const Felidae::IrModule &module,
       Felidae::verifyIrModule(Felidae::IrModule(module)), runtime);
 }
 
+bool containsOpcode(const Felidae::FelidaeIr &ir, Felidae::IrOpcode wanted) {
+  for (std::size_t pc = 0; pc < ir.words.size();
+       pc += Felidae::irInstructionWidth(ir, pc)) {
+    if (static_cast<Felidae::IrOpcode>(ir.words[pc]) == wanted)
+      return true;
+  }
+  return false;
+}
+
+bool containsOpcode(const Felidae::IrModule &module, Felidae::IrOpcode wanted) {
+  if (containsOpcode(module.ir, wanted))
+    return true;
+  return std::any_of(module.procedures.begin(), module.procedures.end(),
+                     [&](const auto &procedure) {
+                       return containsOpcode(procedure.second.ir, wanted);
+                     });
+}
+
 } // namespace
 
 int main() {
@@ -103,7 +122,24 @@ int main() {
     return vm.executeMain(Felidae::verifyIrModule(Felidae::IrModule(module)),
                           runtime);
   };
-  static_assert(std::variant_size_v<Felidae::VmValue> == 8,
+  const auto numericModule =
+      Felidae::compileProgramFileToIr(FELIDAE_NUMERIC_OPERATIONS_FIXTURE_PATH);
+  const auto numericResult =
+      std::get<Felidae::VmMapPtr>(executeModule(numericModule));
+  const std::array<double, 26> expectedNumeric{
+      0.3, 0.8, 4.5, 3.2, 15.0, 17.5, 1.0,  4.0,  5.0, 5.0, 4.0, 3.0, 2.0,
+      8.0, 1.0, 0.0, 3.0, 1.5,  12.5, -1.0, 0.25, 9.0, 8.0, 1.0, 1.0, 0.0};
+  assert(numericResult &&
+         numericResult->entries.size() == expectedNumeric.size());
+  for (std::size_t index = 0; index < expectedNumeric.size(); ++index) {
+    const auto actual = std::get<double>(numericResult->entries[index].second);
+    assert(std::abs(actual - expectedNumeric[index]) <=
+           1e-12 * std::max(1.0, std::abs(expectedNumeric[index])));
+  }
+  const auto tensorModule =
+      Felidae::compileProgramFileToIr(FELIDAE_TENSOR_OPERATIONS_FIXTURE_PATH);
+  assert(containsOpcode(tensorModule, Felidae::IrOpcode::Tensor));
+  static_assert(std::variant_size_v<Felidae::VmValue> == 10,
                 "production VM values must remain typed and AST-free");
   // This covers the production frontend: source -> SentencePiece IDs ->
   // integer parser -> AST compiler -> verified IR. No AST runtime exists.
@@ -151,6 +187,28 @@ int main() {
       "joinThen(left: number, right: number) => return left + right\n"
       "main() => return join 20 then 22\n");
   assert(std::get<double>(executeModule(thenAnchorMixfixModule)) == 42.0);
+
+  const auto nestedConditionalModule =
+      Felidae::compileProgramTextToIr("classify(value: number) =>\n"
+                                      "    if value > 10 then\n"
+                                      "        return 2\n"
+                                      "    else\n"
+                                      "        if value > 0 then\n"
+                                      "            return 1\n"
+                                      "        else\n"
+                                      "            return 0\n"
+                                      "main() => return classify(value: 5)\n");
+  assert(std::get<double>(executeModule(nestedConditionalModule)) == 1.0);
+
+  const auto factExpressionModule =
+      Felidae::compileProgramFileToIr(FELIDAE_FACT_EXPRESSION_FIXTURE_PATH);
+  const auto factExpression = displayModuleValue(
+      factExpressionModule, executeModule(factExpressionModule));
+  assert(factExpression.find("crisp: 1.0") != std::string::npos);
+  assert(factExpression.find("chance: 0.2") != std::string::npos);
+  assert(factExpression.find("UnsupportedMode") != std::string::npos);
+  assert(factExpression.find("category: companion") != std::string::npos);
+  assert(factExpression.find("field: legs") != std::string::npos);
 
   // Hierarchy and temporal source intrinsics must survive the complete
   // deterministic frontend -> verified executable IR -> register VM path.
@@ -623,6 +681,17 @@ int main() {
       executeModuleDirect(repeatedFactsModule, repeatedFactsRuntime);
   assert(displayModuleValue(repeatedFactsModule, repeatedFactsResult) ==
          "[red, blue]");
+
+  const auto repeatedFieldsModule = Felidae::compileProgramTextToIr(
+      "Color(value: \"red\", tag: \"warm\", tag: \"primary\").\n"
+      "Color(value: \"blue\", tag: \"cool\", tag: \"primary\").\n"
+      "colorTags(color: Color) => return color.tag.\n"
+      "main() => return for_each_fact(Color, colorTags).\n");
+  Felidae::FelidaeKnowledgeRuntime repeatedFieldsRuntime;
+  assert(displayModuleValue(repeatedFieldsModule,
+                            executeModuleDirect(repeatedFieldsModule,
+                                                repeatedFieldsRuntime)) ==
+         "[[warm, primary], [cool, primary]]");
 
   // Real source semantic intrinsic -> structured compiler IR
   // operation ID -> typed runtime-model result. No tokenizer or symbol ID

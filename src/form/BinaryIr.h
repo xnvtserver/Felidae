@@ -7,7 +7,7 @@
 namespace Felidae {
 
 inline constexpr const char kBinaryIrExtension[] = ".bin";
-inline constexpr std::uint32_t kBinaryIrVersion = 13;
+inline constexpr std::uint32_t kBinaryIrVersion = 16;
 
 // The writer consumes a module already verified by the compiler boundary.
 // The loader parses hostile bytes, checks the exact SentencePiece identity,

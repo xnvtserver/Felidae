@@ -1,16 +1,24 @@
 #include "CompilerFrontend.h"
 
 #include "IntegerParser.h"
+#include "IntegerTokenList.h"
 #include "IrCodeGenerator.h"
+#include "Operator.h"
 #include "SentencePieceModel.h"
 #include "Symbol.h"
+#include "form/RegisterVm.h"
 
 #include <sentencepiece_processor.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <iterator>
+#include <stdexcept>
+#include <system_error>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -77,11 +85,19 @@ std::filesystem::path resolveProgramEntryPath(const fs::path &path) {
 }
 
 Program parseProgramText(std::string text, const CompilerOptions &options) {
+  return parseProgramText(std::move(text), std::make_shared<OperatorRegistry>(),
+                          options);
+}
+
+Program parseProgramText(std::string text,
+                         std::shared_ptr<OperatorRegistry> operators,
+                         const CompilerOptions &options) {
+  if (!operators)
+    throw std::invalid_argument("parser operator registry must not be null");
   IntegerTokenList input(felidaeSentencePieceModel(), std::move(text));
   // Mixfix declarations and uses share one parser-owned registry while each
   // physical source line is independently SentencePiece-encoded.
-  return IntegerParser(input, std::make_shared<OperatorRegistry>(),
-                       options.mixfixModel)
+  return IntegerParser(input, std::move(operators), options.mixfixModel)
       .parseProgram();
 }
 

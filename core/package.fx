@@ -5,7 +5,6 @@
 # corresponding package entry here.
 
 NativePackage(name: "smoke", wrapper: "core/smoke.fx", declaration: "core/smoke.fx", abi: 1, manifest: true, capabilities: [])
-NativePackage(name: "csv", wrapper: "core/csv.fx", declaration: "core/system/flibrary/csv.fx", abi: 1, manifest: true, capabilities: [])
 NativePackage(name: "db", wrapper: "core/db.fx", declaration: "core/system/flibrary/db.fx", abi: 1, manifest: true, capabilities: [])
 NativePackage(name: "http", wrapper: "core/http.fx", declaration: "core/system/flibrary/http.fx", abi: 1, manifest: true, capabilities: [])
 NativePackage(name: "process", wrapper: "core/process.fx", declaration: "core/system/flibrary/process.fx", abi: 1, manifest: true, capabilities: [])

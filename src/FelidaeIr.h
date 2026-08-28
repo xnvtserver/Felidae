@@ -8,6 +8,7 @@ using SentencePieceId = std::size_t;
 }
 #include "form/NumericOperation.h"
 #include "form/RegisterVm.h"
+#include "form/TensorOperation.h"
 
 namespace Felidae {
 
@@ -27,7 +28,7 @@ enum class IrOpcode : std::uint8_t {
   JumpIfFalse,
   Call,
   CallNamed,
-  CallNative,
+  Builtin,
   SemanticEval,
   MakeFact,
   MakeArray,
@@ -43,6 +44,7 @@ enum class IrOpcode : std::uint8_t {
   HierarchyMostGeneralAncestors,
   TemporalRank,
   Numeric,
+  Tensor,
   Return,
   Count
 };

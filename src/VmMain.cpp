@@ -1,9 +1,12 @@
 #include "form/BinaryIr.h"
 #include "form/RuntimeStateModel.h"
-#include "form/RuntimeTrainingCommand.h"
+#ifdef FELIDAE_HAS_TORCH
+#include "form/LibTorchTensorRuntime.h"
+#endif
 #include "ModelStore.h"
 #include "SentencePieceModel.h"
 #include "Version.h"
+#include "form/RuntimeTrainingCommand.h"
 
 #include <filesystem>
 #include <iostream>
@@ -17,154 +20,217 @@ namespace fs = std::filesystem;
 using namespace Felidae;
 
 namespace {
-struct Options { fs::path input; bool serve = false; std::optional<fs::path> modelDirectory; };
+struct Options {
+  fs::path input;
+  bool serve = false;
+  std::optional<fs::path> modelDirectory;
+};
 
-std::optional<Options> parseInput(int argc, char** argv) {
-    if (argc == 1 || (argc == 2 && std::string(argv[1]) == "--help")) return std::nullopt;
-    Options options;
-    for (int index = 1; index < argc; ++index) {
-        const std::string argument(argv[index]);
-        if (argument == "--serve") { options.serve = true; continue; }
-        if (argument == "--model") {
-            if (++index == argc) throw std::runtime_error("--model requires a model directory");
-            options.modelDirectory = fs::path(argv[index]);
-            continue;
-        }
-        if (!options.input.empty()) throw std::runtime_error("felidae_vm accepts exactly one verified .bin IR file");
-        options.input = argument;
+std::optional<Options> parseInput(int argc, char **argv) {
+  if (argc == 1 || (argc == 2 && std::string(argv[1]) == "--help"))
+    return std::nullopt;
+  Options options;
+  for (int index = 1; index < argc; ++index) {
+    const std::string argument(argv[index]);
+    if (argument == "--serve") {
+      options.serve = true;
+      continue;
     }
-    if (options.input.empty()) throw std::runtime_error("felidae_vm requires a .bin Felidae IR file");
-    return options;
+    if (argument == "--model") {
+      if (++index == argc)
+        throw std::runtime_error("--model requires a model directory");
+      options.modelDirectory = fs::path(argv[index]);
+      continue;
+    }
+    if (!options.input.empty())
+      throw std::runtime_error(
+          "felidae_vm accepts exactly one verified .bin IR file");
+    options.input = argument;
+  }
+  if (options.input.empty())
+    throw std::runtime_error("felidae_vm requires a .bin Felidae IR file");
+  return options;
 }
 
 void printHelp() {
-    std::cout << LANGUAGE_NAME << " Form VM v" << LANGUAGE_VERSION << "\n\n"
-              << "Usage: felidae_vm program.bin\n"
-              << "       felidae_vm [--serve] [--model models/runtime] program.bin\n"
-              << "       felidae_vm --train datasets/vm/runtime-context-v1.jsonl --store-model build|dist [--epochs N] [--learning-rate R]\n"
-              << "Loads, verifies once, and executes Felidae IR. --serve keeps one VM and "
-                 "its fact memory resident; use run, facts [type-id], field <id>, "
-                 "history, proof <child-id> <ancestor-id>, load <module.bin>, "
-                 "modules, or quit on stdin.\n";
+  std::cout
+      << LANGUAGE_NAME << " Form VM v" << LANGUAGE_VERSION << "\n\n"
+      << "Usage: felidae_vm program.bin\n"
+      << "       felidae_vm [--serve] [--model models/runtime] program.bin\n"
+      << "       felidae_vm --train datasets/vm/runtime-context-v1.jsonl "
+         "--store-model build|dist [--epochs N] [--learning-rate R]\n"
+      << "Loads, verifies once, and executes Felidae IR. --serve keeps one VM "
+         "and "
+         "its fact memory resident; use run, facts [type-id], field <id>, "
+         "history, proof <child-id> <ancestor-id>, load <module.bin>, "
+         "modules, or quit on stdin.\n";
 }
 
-int trainRuntimeModel(const ModelTrainingOptions& training) {
+int trainRuntimeModel(const ModelTrainingOptions &training) {
 #ifdef FELIDAE_HAS_TRAINING
-    if (training.dataset.extension() != ".jsonl") {
-        throw std::runtime_error("--train requires one VM .jsonl dataset");
-    }
-    const auto output = modelStoreDirectory(training.store, "runtime-gru");
-    std::vector<std::string> arguments{
-        "felidae_vm", training.dataset.string(), output.string(),
-        std::to_string(training.epochs), std::to_string(training.learningRate)};
-    std::vector<char*> rawArguments;
-    rawArguments.reserve(arguments.size());
-    for (auto& argument : arguments) rawArguments.push_back(argument.data());
-    return runRuntimeGruTraining(static_cast<int>(rawArguments.size()), rawArguments.data());
+  if (training.dataset.extension() != ".jsonl") {
+    throw std::runtime_error("--train requires one VM .jsonl dataset");
+  }
+  const auto output = modelStoreDirectory(training.store, "runtime-gru");
+  std::vector<std::string> arguments{
+      "felidae_vm", training.dataset.string(), output.string(),
+      std::to_string(training.epochs), std::to_string(training.learningRate)};
+  std::vector<char *> rawArguments;
+  rawArguments.reserve(arguments.size());
+  for (auto &argument : arguments)
+    rawArguments.push_back(argument.data());
+  return runRuntimeGruTraining(static_cast<int>(rawArguments.size()),
+                               rawArguments.data());
 #else
-    (void)training;
-    throw std::runtime_error("this VM build has training disabled; configure FELIDAE_ENABLE_TRAINING=ON");
+  (void)training;
+  throw std::runtime_error("this VM build has training disabled; configure "
+                           "FELIDAE_ENABLE_TRAINING=ON");
 #endif
 }
 
-IrSymbolRef readSymbol(std::istringstream& input, const char* command) {
-    std::uint64_t value = 0;
-    if (!(input >> value) || value == 0) throw std::runtime_error(std::string(command) + " requires a nonzero numeric symbol ID");
-    return static_cast<IrSymbolRef>(value);
+IrSymbolRef readSymbol(std::istringstream &input, const char *command) {
+  std::uint64_t value = 0;
+  if (!(input >> value) || value == 0)
+    throw std::runtime_error(std::string(command) +
+                             " requires a nonzero numeric symbol ID");
+  return static_cast<IrSymbolRef>(value);
 }
 
 } // namespace
 
-int main(int argc, char** argv) {
-    try {
-        if (argc == 2 && std::string(argv[1]) == "--version") {
-            std::cout << LANGUAGE_NAME << " Form VM v" << LANGUAGE_VERSION << "\n";
-            return 0;
-        }
-        if (const auto training = parseModelTrainingOptions(argc, argv)) {
-            return trainRuntimeModel(*training);
-        }
-        const auto options = parseInput(argc, argv);
-        if (!options) { printHelp(); return argc == 1 ? 1 : 0; }
-        const auto binary = fs::absolute(options->input).lexically_normal();
-        if (binary.extension() != kBinaryIrExtension) {
-            throw std::runtime_error("felidae_vm accepts only .bin Felidae IR files");
-        }
-        const VmTextDecoder decoder = [](std::span<const PieceId> pieces) {
-            std::vector<int> ids;
-            ids.reserve(pieces.size());
-            for (const auto piece : pieces) ids.push_back(static_cast<int>(piece));
-            std::string text;
-            const auto status = felidaeSentencePieceModel().Decode(ids, &text);
-            if (!status.ok()) throw IrError("SentencePiece cannot decode VM text");
-            return text;
-        };
-        auto module = loadBinaryIr(binary, felidaeSentencePieceModelIdentity());
-        auto display = makeIrDisplayContext(module, decoder);
-#ifdef FELIDAE_HAS_TORCH
-        std::unique_ptr<GruRuntimeStateModel> model;
-        if (options->modelDirectory) {
-            auto vocabulary = defaultRuntimeOutputVocabulary();
-            GruRuntimeStateModel::Configuration configuration;
-            configuration.inputVocabularySize = felidaeSentencePieceModel().GetPieceSize() +
-                                                kRuntimeStructuralInputTokens;
-            configuration.outputVocabularySize = static_cast<std::int64_t>(vocabulary.size());
-            model = std::make_unique<GruRuntimeStateModel>(
-                GruRuntimeStateModel::loadVersioned(configuration, std::move(vocabulary), *options->modelDirectory));
-        }
-        FelidaeKnowledgeRuntime runtime(model.get());
-#else
-        if (options->modelDirectory) throw std::runtime_error("this VM build has no LibTorch runtime SSM support");
-        FelidaeKnowledgeRuntime runtime;
-#endif
-        RegisterVm vm;
-        const auto execute = [&] {
-            std::cout << vmValueToDisplayString(vm.executeMain(module, runtime), display) << "\n";
-        };
-        if (!options->serve) {
-            execute();
-            return 0;
-        }
-        std::string command;
-        while (std::getline(std::cin, command)) {
-            std::istringstream words(command);
-            std::string verb;
-            words >> verb;
-            if (verb == "run") execute();
-            else if (verb == "load") {
-                std::string path;
-                if (!(words >> path)) throw std::runtime_error("load requires a .bin Felidae IR file");
-                const auto next = fs::absolute(fs::path(path)).lexically_normal();
-                if (next.extension() != kBinaryIrExtension) throw std::runtime_error("load accepts only .bin Felidae IR files");
-                module = loadBinaryIr(next, felidaeSentencePieceModelIdentity());
-                display = makeIrDisplayContext(module, decoder);
-                std::cout << next.string() << "\n";
-            } else if (verb == "modules") {
-                std::cout << runtime.installedModuleCount() << "\n";
-            }
-            else if (verb == "facts") {
-                std::uint64_t type = 0;
-                if (words >> type) std::cout << runtime.factStore()->snapshotAssignableTo(type).size() << "\n";
-                else std::cout << runtime.factStore()->size() << "\n";
-            } else if (verb == "field") {
-                std::cout << runtime.factStore()->snapshotByField(readSymbol(words, "field")).size() << "\n";
-            } else if (verb == "history") {
-                std::cout << runtime.factStore()->mutations().size() << "\n";
-            } else if (verb == "proof") {
-                const auto child = readSymbol(words, "proof");
-                const auto ancestor = readSymbol(words, "proof");
-                const auto path = runtime.factStore()->hierarchyProof(child, ancestor);
-                for (std::size_t index = 0; index < path.size(); ++index) {
-                    if (index != 0) std::cout << ' ';
-                    std::cout << path[index];
-                }
-                std::cout << "\n";
-            } else if (verb == "quit") return 0;
-            else throw std::runtime_error("VM daemon command is invalid");
-        }
-        return 0;
-    } catch (const std::exception& error) {
-        std::cerr << "error: " << error.what() << "\n";
-        return 1;
+int main(int argc, char **argv) {
+  try {
+    if (argc == 2 && std::string(argv[1]) == "--version") {
+      std::cout << LANGUAGE_NAME << " Form VM v" << LANGUAGE_VERSION << "\n";
+      return 0;
     }
+    if (const auto training = parseModelTrainingOptions(argc, argv)) {
+      return trainRuntimeModel(*training);
+    }
+    const auto options = parseInput(argc, argv);
+    if (!options) {
+      printHelp();
+      return argc == 1 ? 1 : 0;
+    }
+    const auto binary = fs::absolute(options->input).lexically_normal();
+    if (binary.extension() != kBinaryIrExtension) {
+      throw std::runtime_error("felidae_vm accepts only .bin Felidae IR files");
+    }
+    const VmTextDecoder decoder = [](std::span<const PieceId> pieces) {
+      std::vector<int> ids;
+      ids.reserve(pieces.size());
+      for (const auto piece : pieces)
+        ids.push_back(static_cast<int>(piece));
+      std::string text;
+      const auto status = felidaeSentencePieceModel().Decode(ids, &text);
+      if (!status.ok())
+        throw IrError("SentencePiece cannot decode VM text");
+      return text;
+    };
+    const VmTextEncoder encoder = [](std::string_view text) {
+      std::vector<int> ids;
+      const auto status = felidaeSentencePieceModel().Encode(text, &ids);
+      if (!status.ok() || ids.empty())
+        throw IrError("SentencePiece cannot encode VM text");
+      PieceSequence pieces;
+      pieces.reserve(ids.size());
+      for (const auto id : ids) {
+        if (id < 0)
+          throw IrError("SentencePiece emitted an invalid VM text ID");
+        pieces.push_back(static_cast<PieceId>(id));
+      }
+      return pieces;
+    };
+    auto module = loadBinaryIr(binary, felidaeSentencePieceModelIdentity());
+    auto display = makeIrDisplayContext(module, decoder);
+#ifdef FELIDAE_HAS_TORCH
+    std::unique_ptr<GruRuntimeStateModel> model;
+    if (options->modelDirectory) {
+      auto vocabulary = defaultRuntimeOutputVocabulary();
+      GruRuntimeStateModel::Configuration configuration;
+      configuration.inputVocabularySize =
+          felidaeSentencePieceModel().GetPieceSize() +
+          kRuntimeStructuralInputTokens;
+      configuration.outputVocabularySize =
+          static_cast<std::int64_t>(vocabulary.size());
+      model = std::make_unique<GruRuntimeStateModel>(
+          GruRuntimeStateModel::loadVersioned(
+              configuration, std::move(vocabulary), *options->modelDirectory));
+    }
+    LibTorchTensorRuntime tensorRuntime;
+    display.tensorDecoder = [&](const VmTensor &tensor) {
+      return tensorRuntime.displayTensor(tensor);
+    };
+    FelidaeKnowledgeRuntime runtime(model.get(), 1024, 256, {}, &tensorRuntime,
+                                    decoder, encoder);
+#else
+    if (options->modelDirectory)
+      throw std::runtime_error(
+          "this VM build has no LibTorch runtime SSM support");
+    FelidaeKnowledgeRuntime runtime(nullptr, 1024, 256, {}, nullptr, decoder,
+                                    encoder);
+#endif
+    RegisterVm vm;
+    const auto execute = [&] {
+      std::cout << vmValueToDisplayString(vm.executeMain(module, runtime),
+                                          display)
+                << "\n";
+    };
+    if (!options->serve) {
+      execute();
+      return 0;
+    }
+    std::string command;
+    while (std::getline(std::cin, command)) {
+      std::istringstream words(command);
+      std::string verb;
+      words >> verb;
+      if (verb == "run")
+        execute();
+      else if (verb == "load") {
+        std::string path;
+        if (!(words >> path))
+          throw std::runtime_error("load requires a .bin Felidae IR file");
+        const auto next = fs::absolute(fs::path(path)).lexically_normal();
+        if (next.extension() != kBinaryIrExtension)
+          throw std::runtime_error("load accepts only .bin Felidae IR files");
+        module = loadBinaryIr(next, felidaeSentencePieceModelIdentity());
+        display = makeIrDisplayContext(module, decoder);
+        std::cout << next.string() << "\n";
+      } else if (verb == "modules") {
+        std::cout << runtime.installedModuleCount() << "\n";
+      } else if (verb == "facts") {
+        std::uint64_t type = 0;
+        if (words >> type)
+          std::cout << runtime.factStore()->snapshotAssignableTo(type).size()
+                    << "\n";
+        else
+          std::cout << runtime.factStore()->size() << "\n";
+      } else if (verb == "field") {
+        std::cout << runtime.factStore()
+                         ->snapshotByField(readSymbol(words, "field"))
+                         .size()
+                  << "\n";
+      } else if (verb == "history") {
+        std::cout << runtime.factStore()->mutations().size() << "\n";
+      } else if (verb == "proof") {
+        const auto child = readSymbol(words, "proof");
+        const auto ancestor = readSymbol(words, "proof");
+        const auto path = runtime.factStore()->hierarchyProof(child, ancestor);
+        for (std::size_t index = 0; index < path.size(); ++index) {
+          if (index != 0)
+            std::cout << ' ';
+          std::cout << path[index];
+        }
+        std::cout << "\n";
+      } else if (verb == "quit")
+        return 0;
+      else
+        throw std::runtime_error("VM daemon command is invalid");
+    }
+    return 0;
+  } catch (const std::exception &error) {
+    std::cerr << "error: " << error.what() << "\n";
+    return 1;
+  }
 }

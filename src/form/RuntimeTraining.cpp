@@ -44,7 +44,7 @@ template <typename T> T bounded(std::uint64_t value, const char *name) {
 
 RuntimeValueKind valueKind(std::uint64_t value, const char *name) {
   if (value < static_cast<std::uint64_t>(RuntimeValueKind::Nil) ||
-      value > static_cast<std::uint64_t>(RuntimeValueKind::Symbol)) {
+      value > static_cast<std::uint64_t>(RuntimeValueKind::TextMap)) {
     throw IrError(std::string("runtime JSONL has an invalid ") + name);
   }
   return static_cast<RuntimeValueKind>(value);

@@ -6,7 +6,7 @@ Canonical positive file: `mixfix-v1.jsonl`. Rejection-evaluation file:
 The dataset is JSON Lines, with one versioned record per line:
 
 ```json
-{"schema_version":3,"sentencepiece_model_identity":"sha256:...","compiler_ir_vocabulary":"felidae-compiler-ir-v2","decision":"ACCEPT","input_ids":[1,2],"target_ids":[3,0]}
+{"schema_version":3,"sentencepiece_model_identity":"sha256:...","compiler_ir_vocabulary":"felidae-compiler-ir-v4","decision":"ACCEPT","input_ids":[1,2],"target_ids":[3,0]}
 ```
 
 The target sequence ends in `IR_END`. The output vocabulary is the parser's

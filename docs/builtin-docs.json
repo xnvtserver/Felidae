@@ -854,7 +854,7 @@
   },
   "csv:parse": {
     "heading": "csv.parse",
-    "description": "Parses CSV text through the native rapidcsv-backed stdlib and returns an array of row maps.",
+    "description": "Parses CSV text directly in RegisterVm and returns an array of row maps.",
     "example": "rows := csv.parse(data: csvText)",
     "params": [
       {
@@ -877,7 +877,7 @@
   },
   "csv:toText": {
     "heading": "csv.toText",
-    "description": "Writes an array of row maps back to CSV text through the native rapidcsv-backed stdlib.",
+    "description": "Writes an array of row maps back to CSV text directly in RegisterVm.",
     "example": "text := csv.toText(data: rows)",
     "params": [
       {
@@ -895,70 +895,6 @@
       },
       {
         "name": "type"
-      }
-    ]
-  },
-  "csv:addRow": {
-    "heading": "csv.addRow",
-    "description": "Returns a copy of a row array with one map row appended.",
-    "example": "rows2 := csv.addRow(data: rows, row: {name: \"Alice\"})",
-    "params": [
-      {
-        "name": "data"
-      },
-      {
-        "name": "row"
-      }
-    ]
-  },
-  "csv:findRows": {
-    "heading": "csv.findRows",
-    "description": "Returns rows whose field text equals the requested value.",
-    "example": "sea := csv.findRows(data: rows, key: \"office\", value: \"SEA\")",
-    "params": [
-      {
-        "name": "data"
-      },
-      {
-        "name": "key"
-      },
-      {
-        "name": "value"
-      }
-    ]
-  },
-  "csv:updateRows": {
-    "heading": "csv.updateRows",
-    "description": "Returns rows with matching records patched by a map value.",
-    "example": "rows2 := csv.updateRows(data: rows, key: \"name\", value: \"Bob\", patch: {office: \"SEA\"})",
-    "params": [
-      {
-        "name": "data"
-      },
-      {
-        "name": "key"
-      },
-      {
-        "name": "value"
-      },
-      {
-        "name": "patch"
-      }
-    ]
-  },
-  "csv:deleteRows": {
-    "heading": "csv.deleteRows",
-    "description": "Returns rows excluding records whose field text equals the requested value.",
-    "example": "rows2 := csv.deleteRows(data: rows, key: \"role\", value: \"Manager\")",
-    "params": [
-      {
-        "name": "data"
-      },
-      {
-        "name": "key"
-      },
-      {
-        "name": "value"
       }
     ]
   },
