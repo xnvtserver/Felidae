@@ -2625,6 +2625,12 @@ SourceSpan IntegerParser::span(std::size_t begin, std::size_t end) const {
   return result;
 }
 
+void IntegerParser::warn(std::size_t begin, std::size_t end, std::string code,
+                         std::string message) const {
+  warnings_.push_back(diagnosticForSpan(span(begin, end), "warning",
+                                        std::move(code), std::move(message)));
+}
+
 std::pair<int, int> IntegerParser::sourcePosition(std::size_t offset) const {
   offset = std::min(offset, input_.source().size());
   const auto next =

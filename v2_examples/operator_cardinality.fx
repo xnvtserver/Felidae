@@ -2,34 +2,17 @@ Choice(value: 1)
 Choice(value: 2)
 Choice(value: 3)
 
-@overload(
-    operator: choicesThrough,
-    pattern: "choices through {limit}",
-    type: prefix,
-    captures: {limit: number},
-    result: number,
-    precedence: prefix,
-    associativity: right,
-    cardinality: many,
-    effects: pure,
-    visibility: private
-)
+# @mixfix derives operator name and fixity from the pattern shape alone --
+# no explicit type/precedence/associativity/cardinality. Ambiguous
+# compositions, if any, are resolved by the compiler's SSM fallback, not by
+# hand-written metadata (see IntegerParser::resolveModelMixfixMethod).
+@mixfix(pattern: "choices through {limit: number}")
 collectChoices() =>
     Choice(value: choice)
     where choice <= limit
     return choice
 
-@overload(
-    operator: maybeAbove,
-    pattern: "{value} maybeAbove {minimum}",
-    captures: {value: number, minimum: number},
-    result: number,
-    precedence: relationship,
-    associativity: none,
-    cardinality: optional,
-    effects: pure,
-    visibility: private
-)
+@mixfix(pattern: "{value: number} may be Above {minimum: number}")
 keepWhenAbove() =>
     where value > minimum
     return value
@@ -37,6 +20,6 @@ keepWhenAbove() =>
 main() =>
     return (
         many: choices through 2,
-        some: 7 maybeAbove 5,
-        none: 2 maybeAbove 5
+        some: 7 may be Above 5,
+        none: 2 may be Above 5
     )

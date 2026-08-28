@@ -171,17 +171,28 @@ if(TARGET OpenMP::OpenMP_CXX)
     target_link_libraries(felidae_sentencepiece_model_generator PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
-# The lexical model and matching ID header are versioned release inputs. A
-# normal build must never rewrite source-controlled files merely because the
-# generator executable has a newer timestamp. Regeneration is an explicit
-# maintainer operation after reviewing corpus/grammar changes and Git history.
-if(NOT EXISTS "${FELIDAE_SENTENCEPIECE_MODEL_PATH}" OR
-   NOT EXISTS "${FELIDAE_SENTENCEPIECE_IDS_HEADER}")
-    message(FATAL_ERROR
-        "Checked-in SentencePiece artifacts are missing. Restore models/ from Git before configuring the normal build.")
-endif()
-add_custom_target(felidae_sentencepiece_model)
-add_custom_target(felidae_regenerate_sentencepiece_model
+# The lexical model and matching ID header are versioned release inputs, but
+# models/*.model and models/FelidaeSentencePieceIds.h are also .gitignore'd
+# (see .gitignore) rather than committed, so a fresh clone or a cleared
+# models/ directory legitimately has neither -- there is nothing to "restore
+# from Git". Generate them as a normal, ordered step of the build graph
+# instead of failing configure: felidae_sentencepiece_model_generator is
+# built first, then run once against the authoritative grammar/dataset
+# inputs below, and only then do targets that need the model (anything using
+# felidae_use_sentencepiece_model()) build. A single normal
+# `cmake --build ... --target felidae_compiler felidae_vm` therefore works
+# unattended on a machine that has never had models/ populated.
+#
+# A configure-time `if(NOT EXISTS ...) message(FATAL_ERROR ...)` guard used
+# to sit here instead. It made the project unrecoverable through CMake alone
+# whenever these files were missing: configure aborted before
+# felidae_regenerate_sentencepiece_model (the target that would have fixed
+# it) was even defined, and every subsequent configure attempt hit the same
+# FATAL_ERROR before reaching it. Do not reintroduce a configure-time
+# existence check here for that reason -- the OUTPUT-based custom command
+# below is the correct place to encode "build these files if missing".
+add_custom_command(
+    OUTPUT "${FELIDAE_SENTENCEPIECE_MODEL_PATH}" "${FELIDAE_SENTENCEPIECE_IDS_HEADER}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${FELIDAE_SENTENCEPIECE_GENERATED_DIR}"
     COMMAND $<TARGET_FILE:felidae_sentencepiece_model_generator>
             "${FELIDAE_SENTENCEPIECE_MODEL_PATH}" "${FELIDAE_SENTENCEPIECE_IDS_HEADER}"
@@ -189,8 +200,17 @@ add_custom_target(felidae_regenerate_sentencepiece_model
     DEPENDS felidae_sentencepiece_model_generator
             tools/GenerateSentencePieceModel.cpp src/FelidaeGrammar.h
             "${FELIDAE_SENTENCEPIECE_DATASET}"
-    COMMENT "Explicitly regenerating the Felidae SentencePiece model and token IDs"
+    COMMENT "Generating the Felidae SentencePiece model and token IDs (runs only when missing or stale)"
     VERBATIM)
+add_custom_target(felidae_sentencepiece_model
+    DEPENDS "${FELIDAE_SENTENCEPIECE_MODEL_PATH}" "${FELIDAE_SENTENCEPIECE_IDS_HEADER}")
+
+# Explicit alias for a maintainer who wants to force regeneration by name
+# (e.g. after intentionally editing the grammar or dataset) without having to
+# know the underlying OUTPUT paths. Behaves identically to building
+# felidae_sentencepiece_model; kept as a separate name for that discoverability.
+add_custom_target(felidae_regenerate_sentencepiece_model
+    DEPENDS "${FELIDAE_SENTENCEPIECE_MODEL_PATH}" "${FELIDAE_SENTENCEPIECE_IDS_HEADER}")
 
 function(felidae_use_sentencepiece_model target)
     add_dependencies(${target} felidae_sentencepiece_model)
@@ -359,6 +379,10 @@ add_executable(felidae_vm
     src/VmMain.cpp
     src/SentencePieceModel.cpp)
 target_link_libraries(felidae_vm PRIVATE felidae_form sentencepiece)
+target_include_directories(felidae_vm BEFORE PRIVATE
+    third_party/sentencepiece
+    third_party/sentencepiece/src
+    ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
 target_compile_definitions(felidae_vm PRIVATE
     FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
 felidae_use_sentencepiece_model(felidae_vm)
@@ -416,6 +440,10 @@ add_executable(felidae_build_runtime_dataset EXCLUDE_FROM_ALL
     tools/BuildRuntimeTrainingDataset.cpp
     src/SentencePieceModel.cpp)
 target_link_libraries(felidae_build_runtime_dataset PRIVATE felidae_form sentencepiece)
+target_include_directories(felidae_build_runtime_dataset BEFORE PRIVATE
+    third_party/sentencepiece
+    third_party/sentencepiece/src
+    ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
 target_compile_definitions(felidae_build_runtime_dataset PRIVATE
     FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
 felidae_use_sentencepiece_model(felidae_build_runtime_dataset)

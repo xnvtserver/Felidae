@@ -1,13 +1,17 @@
 #pragma once
 
 #include "IrModule.h"
+#include "../Version.h"
 
 #include <filesystem>
 
 namespace Felidae {
 
 inline constexpr const char kBinaryIrExtension[] = ".bin";
-inline constexpr std::uint32_t kBinaryIrVersion = 16;
+// FELBIR embeds and checks LANGUAGE_VERSION (Version.h) directly as its
+// compatibility marker. There is no separate binary-format version number to
+// keep in sync -- Version.h is the one source of truth for every version
+// this project reports, including this one.
 
 // The writer consumes a module already verified by the compiler boundary.
 // The loader parses hostile bytes, checks the exact SentencePiece identity,

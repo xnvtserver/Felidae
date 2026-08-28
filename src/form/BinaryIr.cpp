@@ -6,6 +6,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <string_view>
 #include <type_traits>
 
 namespace Felidae {
@@ -170,7 +171,11 @@ void writeBinaryIr(const std::filesystem::path &path,
     if (!out)
       throw IrError("cannot create temporary FELBIR");
     out.write(kMagic.data(), static_cast<std::streamsize>(kMagic.size()));
-    writeLe<std::uint32_t>(out, kBinaryIrVersion);
+    constexpr std::string_view languageVersion = LANGUAGE_VERSION;
+    writeLe<std::uint32_t>(
+        out, count(languageVersion.size(), "language version size"));
+    out.write(languageVersion.data(),
+             static_cast<std::streamsize>(languageVersion.size()));
     writeLe<std::uint32_t>(out, kEndian);
     writeLe<std::uint32_t>(out, count(module.sentencePieceModelIdentity.size(),
                                       "model identity size"));
@@ -237,7 +242,14 @@ loadBinaryIr(const std::filesystem::path &path,
   in.read(magic.data(), static_cast<std::streamsize>(magic.size()));
   if (magic != kMagic)
     throw IrError("FELBIR magic is invalid");
-  if (readLe<std::uint32_t>(in) != kBinaryIrVersion)
+  const auto versionSize = readLe<std::uint32_t>(in);
+  if (versionSize == 0 || versionSize > 64)
+    throw IrError("FELBIR version field is invalid");
+  std::string fileVersion(versionSize, '\0');
+  in.read(fileVersion.data(), versionSize);
+  if (!in)
+    throw IrError("FELBIR version field is truncated");
+  if (fileVersion != LANGUAGE_VERSION)
     throw IrError("FELBIR version is unsupported");
   if (readLe<std::uint32_t>(in) != kEndian)
     throw IrError("FELBIR endian marker is invalid");

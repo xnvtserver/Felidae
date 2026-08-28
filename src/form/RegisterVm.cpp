@@ -771,6 +771,130 @@ bool isAssignableTo(const FactParents &parents, IrSymbolRef candidate,
                     IrSymbolRef expected) {
   return hierarchyClosure(parents, candidate).contains(expected);
 }
+
+// Deterministic fact embedding: feature hashing (no training, no model --
+// reproducible from fact content alone), the same technique behind
+// scikit-learn's FeatureHasher / Vowpal Wabbit. Kept as plain doubles rather
+// than a LibTorch tensor so fact comparison/search works even in builds
+// without LibTorch; TensorRuntime can wrap this into a real tensor for
+// batched/accelerated operations when LibTorch is present.
+constexpr std::size_t kFactEmbeddingDimension = 128;
+
+// SplitMix64-style finalizer: spreads nearby seeds across uncorrelated
+// dimensions/signs instead of adjacent ones.
+std::size_t mixEmbeddingHash(std::size_t value) {
+  value ^= value >> 33;
+  value *= 0xff51afd7ed558ccdULL;
+  value ^= value >> 33;
+  value *= 0xc4ceb9fe1a85ec53ULL;
+  value ^= value >> 33;
+  return value;
+}
+
+std::size_t combineEmbeddingHash(std::size_t seed, std::size_t value) {
+  return mixEmbeddingHash(seed ^ (value + 0x9e3779b97f4a7c15ULL +
+                                  (seed << 6) + (seed >> 2)));
+}
+
+void addEmbeddingFeature(std::vector<double> &vector, std::size_t featureSeed,
+                         double weight) {
+  const auto mixed = mixEmbeddingHash(featureSeed);
+  vector[mixed % vector.size()] += (mixed >> 63) ? -weight : weight;
+}
+
+// Recurses into arrays/maps/nested facts, decaying each level's contribution
+// so deep structure never dominates a shallow field. Depth is bounded by
+// kMaximumVmValueDepth, the same limit validVmValue/similarityDegreeAtDepth
+// already enforce elsewhere in this file.
+void encodeFactValueInto(std::vector<double> &vector, std::size_t keySeed,
+                         const VmValue &value, std::size_t depth,
+                         double scale) {
+  if (depth > kMaximumVmValueDepth || scale < 1e-6)
+    return;
+  if (const auto number = std::get_if<double>(&value)) {
+    addEmbeddingFeature(vector, keySeed, scale * (*number));
+    return;
+  }
+  if (const auto degree = std::get_if<VmDegree>(&value)) {
+    addEmbeddingFeature(vector, combineEmbeddingHash(keySeed, 1),
+                        scale * degree->value);
+    return;
+  }
+  if (const auto text = std::get_if<VmText>(&value)) {
+    std::size_t seed = combineEmbeddingHash(keySeed, 2);
+    for (const auto piece : text->pieces)
+      seed = combineEmbeddingHash(seed, static_cast<std::size_t>(piece));
+    addEmbeddingFeature(vector, seed, scale);
+    return;
+  }
+  if (const auto symbol = std::get_if<VmSymbol>(&value)) {
+    addEmbeddingFeature(
+        vector, combineEmbeddingHash(keySeed, static_cast<std::size_t>(symbol->value)),
+        scale);
+    return;
+  }
+  if (const auto array = std::get_if<VmArrayPtr>(&value)) {
+    if (!*array)
+      return;
+    for (std::size_t index = 0; index < (*array)->values.size(); ++index) {
+      encodeFactValueInto(vector, combineEmbeddingHash(keySeed, index),
+                          (*array)->values[index], depth + 1, scale * 0.5);
+    }
+    return;
+  }
+  if (const auto map = std::get_if<VmMapPtr>(&value)) {
+    if (!*map)
+      return;
+    for (const auto &[key, entryValue] : (*map)->entries) {
+      encodeFactValueInto(
+          vector, combineEmbeddingHash(keySeed, static_cast<std::size_t>(key)),
+          entryValue, depth + 1, scale * 0.5);
+    }
+    return;
+  }
+  if (const auto textMap = std::get_if<VmTextMapPtr>(&value)) {
+    if (!*textMap)
+      return;
+    for (const auto &[key, entryValue] : (*textMap)->entries) {
+      std::size_t seed = keySeed;
+      for (const auto piece : key)
+        seed = combineEmbeddingHash(seed, static_cast<std::size_t>(piece));
+      encodeFactValueInto(vector, seed, entryValue, depth + 1, scale * 0.5);
+    }
+    return;
+  }
+  if (const auto fact = std::get_if<VmFactPtr>(&value)) {
+    // A "sub fact" folds its own type + fields directly into the parent's
+    // vector, decayed by nesting depth. Its ancestor chain is intentionally
+    // left out here -- only VmFactStore::embedding adds ancestor features,
+    // for the one top-level fact actually being embedded -- so this helper
+    // stays independent of any specific store's hierarchy.
+    if (!*fact)
+      return;
+    addEmbeddingFeature(
+        vector,
+        combineEmbeddingHash(keySeed, static_cast<std::size_t>((*fact)->type)),
+        scale);
+    for (const auto &[field, fieldValue] : (*fact)->fields) {
+      encodeFactValueInto(
+          vector, combineEmbeddingHash(keySeed, static_cast<std::size_t>(field)),
+          fieldValue, depth + 1, scale * 0.5);
+    }
+    return;
+  }
+  if (const auto tensor = std::get_if<VmTensorPtr>(&value)) {
+    // Coarse, Torch-free contribution: shape only, never tensor contents --
+    // keeps this file buildable without LibTorch (see VmTensor's own comment).
+    if (!*tensor)
+      return;
+    std::size_t seed = combineEmbeddingHash(keySeed, 3);
+    for (const auto dimension : (*tensor)->shape)
+      seed = combineEmbeddingHash(seed, static_cast<std::size_t>(dimension));
+    addEmbeddingFeature(vector, seed, scale);
+    return;
+  }
+  // VmNil contributes nothing -- "absent" is naturally the zero vector.
+}
 } // namespace
 
 void VmFactStore::registerType(IrSymbolRef type,
@@ -846,6 +970,31 @@ void VmFactStore::mutate(const VmFactPtr &fact, IrSymbolRef field,
   provenance_.push_back(VmFactProvenance{
       fact->id, procedure, fact->origin == VmFact::Origin::Derived});
   ++revision_;
+}
+
+std::vector<double> VmFactStore::embedding(const VmFactPtr &fact) const {
+  if (!fact || fact->type == 0)
+    throw IrError("fact store cannot embed an invalid fact");
+  std::lock_guard lock(mutex_);
+  std::vector<double> vector(kFactEmbeddingDimension, 0.0);
+  addEmbeddingFeature(vector, static_cast<std::size_t>(fact->type), 1.0);
+  for (const auto &[field, value] : fact->fields) {
+    encodeFactValueInto(
+        vector,
+        combineEmbeddingHash(static_cast<std::size_t>(fact->type),
+                             static_cast<std::size_t>(field)),
+        value, 0, 1.0);
+  }
+  // Ancestor chain: shared ancestors give two facts of related-but-different
+  // types a naturally higher cosine similarity, without a graph walk at
+  // comparison time. hierarchyClosure includes fact->type itself, which is
+  // fine -- it only reinforces the type feature already added above.
+  for (const auto ancestor : hierarchyClosure(parents_, fact->type)) {
+    addEmbeddingFeature(
+        vector, combineEmbeddingHash(static_cast<std::size_t>(ancestor), 4),
+        1.0);
+  }
+  return vector;
 }
 
 std::vector<VmFactPtr> VmFactStore::snapshot() const {

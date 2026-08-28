@@ -233,6 +233,16 @@ public:
                                 VmKnowledgeSnapshot &snapshot) const;
   std::size_t size() const;
 
+  // Deterministic, feature-hashed embedding of a fact (type + fields,
+  // recursively for nested facts, + ancestor chain). No training, no model:
+  // reproducible from fact content alone. Facts sharing more fields/ancestors
+  // land closer together under cosine similarity, which is what lets
+  // comparison/search/sort work across related-but-different fact types
+  // without a per-call hand-tuned profile (contrast gaussianMembership
+  // below, which still requires one). Returned as plain doubles, not a
+  // LibTorch tensor, so this works even in builds without LibTorch.
+  std::vector<double> embedding(const VmFactPtr &fact) const;
+
   // A Gaussian tail reaches 1% at each fade boundary.  Degenerate edge
   // profiles (peak equal to one boundary) reuse the non-degenerate side so
   // ratings at 0 and 100 remain continuous on the closed input domain.

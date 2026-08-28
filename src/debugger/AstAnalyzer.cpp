@@ -217,25 +217,6 @@ void collectAssignedNames(const std::vector<std::shared_ptr<Goal>> &goals,
   }
 }
 
-AstDiagnostic diagnosticFor(const AstNode *node, std::string severity,
-                            std::string code, std::string message) {
-  SourceSpan span;
-  if (node && node->sourceSpan.valid())
-    span = node->sourceSpan;
-  return AstDiagnostic{std::move(severity), std::move(message),
-                       span.startLine,      span.startColumn,
-                       span.endLine,        span.endColumn,
-                       std::move(code),     ""};
-}
-
-AstDiagnostic diagnosticForSpan(const SourceSpan &span, std::string severity,
-                                std::string code, std::string message) {
-  return AstDiagnostic{std::move(severity), std::move(message),
-                       span.startLine,      span.startColumn,
-                       span.endLine,        span.endColumn,
-                       std::move(code),     ""};
-}
-
 void collectGlobalAssignmentCollisions(
     const std::vector<std::shared_ptr<Goal>> &goals,
     const std::set<std::string> &globals,
