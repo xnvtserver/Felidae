@@ -19,18 +19,6 @@ struct DirectCompileContext {
   const std::unordered_map<SymbolId, SymbolId> &factDesignations;
 };
 
-std::optional<SemanticOperationId> semanticOperation(SymbolId name) {
-  if (name == symbolIdForName("semantic_identity"))
-    return SemanticOperationId::Identity;
-  if (name == symbolIdForName("semantic_select_fact"))
-    return SemanticOperationId::SelectFact;
-  if (name == symbolIdForName("semantic_derive_fact"))
-    return SemanticOperationId::DeriveFact;
-  if (name == symbolIdForName("semantic_evaluate_degree"))
-    return SemanticOperationId::EvaluateDegree;
-  return std::nullopt;
-}
-
 // The integer parser preserves a dotted identifier as one symbol because the
 // same SentencePiece sequence is also used for qualified calls and `fx.`
 // keys.  The compiler is the first phase with lexical scope information, so
@@ -239,6 +227,32 @@ bool isDirectDeterministicExpression(
     return definedSymbols.contains(variable->nameId);
   }
   if (const auto term = std::dynamic_pointer_cast<TermExpr>(expression)) {
+    if (builtinOperationArity(term->builtinId)) {
+      std::vector<std::string_view> names;
+      names.reserve(term->args.size());
+      for (const auto &argument : term->args)
+        names.push_back(argument.name);
+      return builtinOperationArgumentOrder(term->builtinId, names) &&
+             std::all_of(term->args.begin(), term->args.end(),
+                         [&](const Arg &argument) {
+                           return isDirectDeterministicExpression(
+                               argument.value, definedSymbols, context);
+                         });
+    }
+    if (const auto operation = tensorOperationForName(term->name)) {
+      std::vector<std::string_view> names;
+      names.reserve(term->args.size());
+      for (const auto &argument : term->args)
+        names.push_back(argument.name);
+      if (!tensorOperationArgumentOrder(*operation, names) ||
+          !std::all_of(term->args.begin(), term->args.end(),
+                       [&](const Arg &argument) {
+                         return isDirectDeterministicExpression(
+                             argument.value, definedSymbols, context);
+                       }))
+        return false;
+      return true;
+    }
     if (const auto operation = numericOperationForName(term->name)) {
       return term->args.size() == numericOperationArity(*operation) &&
              std::all_of(term->args.begin(), term->args.end(),
@@ -257,7 +271,7 @@ bool isDirectDeterministicExpression(
                                       argument.value, definedSymbols, context);
                          });
     }
-    if (semanticOperation(term->nameId)) {
+    if (semanticOperationForName(term->name)) {
       return term->args.size() <= 255 &&
              std::all_of(term->args.begin(), term->args.end(),
                          [&](const Arg &argument) {
@@ -384,6 +398,24 @@ firstUnsupportedExpression(const std::shared_ptr<Expr> &expression,
     }
   } else if (const auto term =
                  std::dynamic_pointer_cast<TermExpr>(expression)) {
+    if (builtinOperationArity(term->builtinId)) {
+      for (const auto &argument : term->args) {
+        if (!isDirectDeterministicExpression(argument.value, definedSymbols,
+                                             context))
+          return firstUnsupportedExpression(argument.value, definedSymbols,
+                                            context);
+      }
+      return expression->sourceSpan;
+    }
+    if (tensorOperationForName(term->name)) {
+      for (const auto &argument : term->args) {
+        if (!isDirectDeterministicExpression(argument.value, definedSymbols,
+                                             context))
+          return firstUnsupportedExpression(argument.value, definedSymbols,
+                                            context);
+      }
+      return expression->sourceSpan;
+    }
     if (numericOperationForName(term->name) || term->name == "MOD") {
       for (const auto &argument : term->args) {
         if (!argument.name.empty() ||
@@ -395,7 +427,7 @@ firstUnsupportedExpression(const std::shared_ptr<Expr> &expression,
       }
       return expression->sourceSpan;
     }
-    if (semanticOperation(term->nameId)) {
+    if (semanticOperationForName(term->name)) {
       for (const auto &argument : term->args) {
         if (!isDirectDeterministicExpression(argument.value, definedSymbols,
                                              context))
@@ -493,7 +525,13 @@ bool isDirectGoalSequence(const std::vector<std::shared_ptr<Goal>> &goals,
       return false;
     visible.insert(assignment->nameId);
   }
-  return isDirectReturn(goals.back(), visible, context);
+  if (isDirectReturn(goals.back(), visible, context))
+    return true;
+  const auto conditional = std::dynamic_pointer_cast<IfGoal>(goals.back());
+  return conditional &&
+         isDirectCondition(conditional->condition, visible, context) &&
+         isDirectGoalSequence(conditional->thenBranch, visible, context) &&
+         isDirectGoalSequence(conditional->elseBranch, visible, context);
 }
 
 const SourceSpan &
@@ -515,8 +553,19 @@ firstUnsupportedGoalSequence(const std::vector<std::shared_ptr<Goal>> &goals,
     visible.insert(assignment->nameId);
   }
   const auto returned = std::dynamic_pointer_cast<ReturnGoal>(goals.back());
-  if (!returned)
-    return goals.back() ? goals.back()->sourceSpan : unknown;
+  if (!returned) {
+    const auto conditional = std::dynamic_pointer_cast<IfGoal>(goals.back());
+    if (!conditional)
+      return goals.back() ? goals.back()->sourceSpan : unknown;
+    if (!isDirectCondition(conditional->condition, visible, context))
+      return conditional->condition ? conditional->condition->sourceSpan
+                                    : conditional->sourceSpan;
+    if (!isDirectGoalSequence(conditional->thenBranch, visible, context))
+      return firstUnsupportedGoalSequence(conditional->thenBranch, visible,
+                                          context);
+    return firstUnsupportedGoalSequence(conditional->elseBranch, visible,
+                                        context);
+  }
   for (const auto &field : returned->fields) {
     if (!isDirectDeterministicExpression(field.value, visible, context)) {
       return firstUnsupportedExpression(field.value, visible, context);
@@ -675,7 +724,6 @@ void appendFragment(FelidaeIr &target, FelidaeIr fragment,
       fragment.words[pc + 2] += wordBase;
       width = 3;
       break;
-    case IrOpcode::CallNative:
     case IrOpcode::MakeFact:
       reg(fragment.words[pc + 1]);
       symbol(fragment.words[pc + 2]);
@@ -737,8 +785,10 @@ void appendFragment(FelidaeIr &target, FelidaeIr fragment,
       width = 4;
       break;
     case IrOpcode::Call:
+    case IrOpcode::Builtin:
     case IrOpcode::SemanticEval:
     case IrOpcode::Numeric:
+    case IrOpcode::Tensor:
     case IrOpcode::MakeArray: {
       reg(fragment.words[pc + 1]);
       if (opcode == IrOpcode::Call)
@@ -1006,7 +1056,20 @@ IrModule IrCodeGenerator::compile(Program program) const {
   }
   const DirectCompileContext context{procedureSymbols, factTypes,
                                      factDesignations};
-  bool directGlobals = program.imports.empty() && !program.clauses.empty();
+  // Builtin modules are compiler-known operation namespaces, not source or
+  // dynamic-library dependencies. Their imports therefore need no secondary
+  // parser/execution path. Other imports remain explicitly unsupported until
+  // they have a verified IR module-linking contract.
+  const bool builtinImports = std::all_of(
+      program.imports.begin(), program.imports.end(), [](const auto &import) {
+        return import && std::all_of(import->paths.begin(), import->paths.end(),
+                                     [](const std::string &path) {
+                                       return path == "json" || path == "csv" ||
+                                              path == "group" ||
+                                              path == "set" || path == "ml";
+                                     });
+      });
+  bool directGlobals = builtinImports && !program.clauses.empty();
   for (const auto &binding : program.globals) {
     if (!binding || !isDirectDeterministicExpression(binding->expr,
                                                      directSymbols, context)) {

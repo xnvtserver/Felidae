@@ -109,7 +109,7 @@ std::vector<std::int64_t> runtimeInputIds(
   }
   ids.push_back(kInputsMarker);
   for (const auto kind : inputKinds) {
-    if (kind < RuntimeValueKind::Nil || kind > RuntimeValueKind::Symbol) {
+    if (kind < RuntimeValueKind::Nil || kind > RuntimeValueKind::TextMap) {
       throw IrError("runtime GRU input value kind is invalid");
     }
     ids.push_back(structural(11 + static_cast<std::int64_t>(kind)));

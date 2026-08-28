@@ -45,3 +45,7 @@
   the generator inputs and dependencies. Regenerate only when an authoritative
   input changed or the user explicitly requests it; confirm whether the result
   actually changed before keeping it.
+- Treat dependency changes made by Dependabot as protected. Do not downgrade,
+  remove, revert, or replace them during compatibility fixes or cleanup. Move
+  fixes forward from the Dependabot-selected versions, and ask the user before
+  changing a dependency pin or deleting dependency/submodule remnants.

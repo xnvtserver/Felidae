@@ -133,12 +133,13 @@ training. It is a capability baseline, not a trained-model score:
 | Bounded controller proofs | 5/5 actions | coffee dispense/refund and HVAC cool/ventilate/lockout matched |
 | Deep fact analysis example | compile failure | unsupported typed-lambda lowering |
 | Multi-ancestor comparison example | compile failure | unsupported `Relation.compare` lowering |
-| Fact-comparison contract example | compile failure | unsupported relationship-comparison construct |
+| Heterogeneous fact-expression result contract | pass | crisp degree, probability, recoverable error, derived fact, and evidence-list results executed through FELBIR |
 
-This sample passes the two executable non-Boolean scenarios but none of the
-three selected rich fact-comparison scenarios. Do not turn that small `2/5`
-result into a general intelligence percentage: it is not balanced by hierarchy
-depth, data size, negative evidence, or held-out domains.
+This sample passes the two controller scenarios and the heterogeneous
+fact-expression contract. Two selected rich fact-comparison scenarios remain
+compiler-rejected. Do not turn that small sample into a general intelligence
+percentage: it is not balanced by hierarchy depth, data size, negative
+evidence, or held-out domains.
 
 The deterministic VM primitives are stronger than the source-level feature
 surface currently reaching them. Hierarchy proofs, common ancestors, least and
@@ -194,3 +195,28 @@ generation.
 The beta gate should require 100% deterministic primitive and safety-case
 accuracy, zero invalid values entering VM registers, zero silent halts, stable
 results across 100 runs, and separately reported held-out learned accuracy.
+
+## SSM utilization audit
+
+The checked-in compiler corpus currently contains 184 `ACCEPT`, 12 `ABSTAIN`,
+and 22 `REJECT` decisions. The compiler SSM is used only when verified parser
+context leaves a mixfix target ambiguous; exact syntax, numeric intrinsics,
+tensor operations, and ordinary IR generation remain deterministic. This is
+the intended boundary: adding tensor examples to compiler-SSM training would
+teach no ambiguity and would only duplicate the compiler.
+
+The VM corpus currently contains 15 records, all for
+`SemanticOperationId::Identity`. No runtime SSM artifact is shipped. The VM
+SSM can return only a bounded input/fact reference, `nil`, numeric truth
+`0.0`/`1.0`, or one of five Degree values. This gives a safe extension point
+and recurrent request-local state, but the present corpus does not demonstrate
+dynamic fact selection, derivation, hierarchy-sensitive decisions, calibrated
+soft evidence, or held-out generalization.
+
+Before claiming those capabilities, add independently labelled records for
+`SelectFact`, `DeriveFact`, and `EvaluateDegree`; balance fact kinds,
+populations, hierarchy shapes, and negative/abstention cases; split by domain
+and hierarchy family; then report exact action accuracy, invalid-output rate,
+Degree calibration, abstention quality, and p50/p95 latency. Deterministic
+tensor comparison stays outside this model and supplies auditable features or
+oracle labels rather than learned arithmetic.

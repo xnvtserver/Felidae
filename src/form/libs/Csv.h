@@ -1,0 +1,15 @@
+#pragma once
+
+#include "Json.h"
+
+#include <string>
+#include <string_view>
+
+namespace Felidae::Form::Csv {
+
+Json::Value parse(std::string_view text);
+Json::Value toFacts(std::string_view text, std::string_view typeName);
+std::string toText(const Json::Value &rows);
+std::string toFelidaeFacts(const Json::Value &rows, std::string_view typeName);
+
+} // namespace Felidae::Form::Csv

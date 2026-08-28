@@ -578,13 +578,13 @@ public:
              std::shared_ptr<Expr> right = {})
       : source(std::move(source)), variable(std::move(variable)),
         variableId(symbolIdForName(this->variable)), body(std::move(body)),
-        op(std::move(op)), right(std::move(right)) {}
+        op(op), right(std::move(right)) {}
   LambdaExpr(std::shared_ptr<Expr> source, std::string displayVariable,
              SymbolId directVariableId, std::shared_ptr<Expr> body,
              TokenId::Id op = TokenId::UNKNOWN,
              std::shared_ptr<Expr> right = {})
       : source(std::move(source)), variable(std::move(displayVariable)),
-        variableId(directVariableId), body(std::move(body)), op(std::move(op)),
+        variableId(directVariableId), body(std::move(body)), op(op),
         right(std::move(right)) {}
 
   std::shared_ptr<Expr> source;
@@ -686,7 +686,7 @@ class BinaryGoal final : public Goal {
 public:
   BinaryGoal(std::shared_ptr<Expr> left, TokenId::Id op,
              std::shared_ptr<Expr> right)
-      : left(std::move(left)), op(std::move(op)), right(std::move(right)) {}
+      : left(std::move(left)), op(op), right(std::move(right)) {}
 
   std::shared_ptr<Expr> left;
   TokenId::Id op;

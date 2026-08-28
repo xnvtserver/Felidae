@@ -2,6 +2,7 @@
 
 #include "IrModule.h"
 #include "SemanticOperation.h"
+#include "libs/Builtin.h"
 
 #include <algorithm>
 #include <cmath>
@@ -12,6 +13,7 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string_view>
 #include <unordered_set>
@@ -33,7 +35,11 @@ RuntimeValueKind runtimeValueKind(const VmValue &value) noexcept {
     return RuntimeValueKind::Array;
   if (std::holds_alternative<VmMapPtr>(value))
     return RuntimeValueKind::Map;
-  return RuntimeValueKind::Fact;
+  if (std::holds_alternative<VmFactPtr>(value))
+    return RuntimeValueKind::Fact;
+  if (std::holds_alternative<VmTensorPtr>(value))
+    return RuntimeValueKind::Tensor;
+  return RuntimeValueKind::TextMap;
 }
 
 std::size_t irInstructionWidth(const FelidaeIr &ir, std::size_t pc) {
@@ -56,7 +62,6 @@ std::size_t irInstructionWidth(const FelidaeIr &ir, std::size_t pc) {
   case IrOpcode::StoreSymbol:
   case IrOpcode::Move:
   case IrOpcode::JumpIfFalse:
-  case IrOpcode::CallNative:
   case IrOpcode::MakeFact:
   case IrOpcode::Return:
     return bounded(3);
@@ -80,8 +85,10 @@ std::size_t irInstructionWidth(const FelidaeIr &ir, std::size_t pc) {
   case IrOpcode::Membership:
     return bounded(6);
   case IrOpcode::Call:
+  case IrOpcode::Builtin:
   case IrOpcode::SemanticEval:
   case IrOpcode::Numeric:
+  case IrOpcode::Tensor:
   case IrOpcode::MakeArray:
   case IrOpcode::CallNamed:
   case IrOpcode::MakeMap: {
@@ -149,6 +156,21 @@ bool vmValuesEqualAtDepth(const VmValue &left, const VmValue &right,
   if (depth > kMaximumVmValueDepth) {
     throw IrError("VM value comparison exceeds its nesting limit");
   }
+  const auto keyedEqual = [&](const auto &leftEntries,
+                              const auto &rightEntries) {
+    if (leftEntries.size() != rightEntries.size())
+      return false;
+    return std::all_of(
+        leftEntries.begin(), leftEntries.end(), [&](const auto &leftEntry) {
+          const auto matching = std::find_if(
+              rightEntries.begin(), rightEntries.end(), [&](const auto &entry) {
+                return entry.first == leftEntry.first;
+              });
+          return matching != rightEntries.end() &&
+                 vmValuesEqualAtDepth(leftEntry.second, matching->second,
+                                      depth + 1);
+        });
+  };
   if (left.index() != right.index())
     return false;
   if (std::holds_alternative<VmNil>(left))
@@ -178,32 +200,24 @@ bool vmValuesEqualAtDepth(const VmValue &left, const VmValue &right,
     const auto &rightMap = std::get<VmMapPtr>(right);
     if (!*leftMap || !rightMap)
       return *leftMap == rightMap;
-    if ((*leftMap)->entries.size() != rightMap->entries.size())
-      return false;
-    for (std::size_t index = 0; index < (*leftMap)->entries.size(); ++index) {
-      const auto &[leftKey, leftValue] = (*leftMap)->entries[index];
-      const auto &[rightKey, rightValue] = rightMap->entries[index];
-      if (leftKey != rightKey ||
-          !vmValuesEqualAtDepth(leftValue, rightValue, depth + 1))
-        return false;
-    }
-    return true;
+    return keyedEqual((*leftMap)->entries, rightMap->entries);
   }
   if (const auto *leftFact = std::get_if<VmFactPtr>(&left)) {
     const auto &rightFact = std::get<VmFactPtr>(right);
     if (!*leftFact || !rightFact)
       return *leftFact == rightFact;
-    if ((*leftFact)->type != rightFact->type ||
-        (*leftFact)->fields.size() != rightFact->fields.size())
-      return false;
-    for (std::size_t index = 0; index < (*leftFact)->fields.size(); ++index) {
-      const auto &[leftKey, leftValue] = (*leftFact)->fields[index];
-      const auto &[rightKey, rightValue] = rightFact->fields[index];
-      if (leftKey != rightKey ||
-          !vmValuesEqualAtDepth(leftValue, rightValue, depth + 1))
-        return false;
-    }
-    return true;
+    return (*leftFact)->type == rightFact->type &&
+           keyedEqual((*leftFact)->fields, rightFact->fields);
+  }
+  if (const auto *leftTensor = std::get_if<VmTensorPtr>(&left)) {
+    const auto &rightTensor = std::get<VmTensorPtr>(right);
+    return *leftTensor == rightTensor;
+  }
+  if (const auto *leftMap = std::get_if<VmTextMapPtr>(&left)) {
+    const auto &rightMap = std::get<VmTextMapPtr>(right);
+    if (!*leftMap || !rightMap)
+      return *leftMap == rightMap;
+    return keyedEqual((*leftMap)->entries, rightMap->entries);
   }
   throw IrError("VM equality received an unsupported value variant");
 }
@@ -331,6 +345,21 @@ double similarityDegreeAtDepth(const VmValue &left, const VmValue &right,
   if (depth > kMaximumVmValueDepth) {
     throw IrError("VM similarity exceeds its nesting limit");
   }
+  const auto keyedSimilarity = [&](const auto &leftEntries,
+                                   const auto &rightEntries) {
+    const auto limit = std::max(leftEntries.size(), rightEntries.size());
+    if (limit == 0)
+      return 1.0;
+    double sum = 0.0;
+    for (const auto &[key, value] : leftEntries) {
+      const auto matching =
+          std::find_if(rightEntries.begin(), rightEntries.end(),
+                       [&](const auto &entry) { return entry.first == key; });
+      if (matching != rightEntries.end())
+        sum += similarityDegreeAtDepth(value, matching->second, depth + 1);
+    }
+    return sum / static_cast<double>(limit);
+  };
   if (const auto a = std::get_if<double>(&left)) {
     if (const auto b = std::get_if<double>(&right))
       return 1.0 / (1.0 + std::abs(*a - *b));
@@ -366,17 +395,14 @@ double similarityDegreeAtDepth(const VmValue &left, const VmValue &right,
     if (const auto b = std::get_if<VmMapPtr>(&right)) {
       if (!*a || !*b)
         return *a == *b ? 1.0 : 0.0;
-      const auto limit = std::max((*a)->entries.size(), (*b)->entries.size());
-      if (limit == 0)
-        return 1.0;
-      double sum = 0.0;
-      for (const auto &[key, value] : (*a)->entries)
-        for (const auto &[otherKey, otherValue] : (*b)->entries)
-          if (key == otherKey) {
-            sum += similarityDegreeAtDepth(value, otherValue, depth + 1);
-            break;
-          }
-      return sum / static_cast<double>(limit);
+      return keyedSimilarity((*a)->entries, (*b)->entries);
+    }
+  }
+  if (const auto a = std::get_if<VmTextMapPtr>(&left)) {
+    if (const auto b = std::get_if<VmTextMapPtr>(&right)) {
+      if (!*a || !*b)
+        return *a == *b ? 1.0 : 0.0;
+      return keyedSimilarity((*a)->entries, (*b)->entries);
     }
   }
   if (const auto a = std::get_if<VmFactPtr>(&left)) {
@@ -384,12 +410,7 @@ double similarityDegreeAtDepth(const VmValue &left, const VmValue &right,
       if (!*a || !*b)
         return *a == *b ? 1.0 : 0.0;
       const double type = (*a)->type == (*b)->type ? 1.0 : 0.0;
-      VmMap leftMap{(*a)->fields};
-      VmMap rightMap{(*b)->fields};
-      return 0.25 * type +
-             0.75 * similarityDegreeAtDepth(VmMapPtr(&leftMap, [](VmMap *) {}),
-                                            VmMapPtr(&rightMap, [](VmMap *) {}),
-                                            depth + 1);
+      return 0.25 * type + 0.75 * keyedSimilarity((*a)->fields, (*b)->fields);
     }
   }
   return vmValuesEqualAtDepth(left, right, depth) ? 1.0 : 0.0;
@@ -400,8 +421,7 @@ double similarityDegree(const VmValue &left, const VmValue &right) {
 }
 
 bool validVmValue(const VmValue &value, std::size_t depth = 0) {
-  constexpr std::size_t kMaximumValueDepth = 256;
-  if (depth > kMaximumValueDepth)
+  if (depth > kMaximumVmValueDepth)
     return false;
   if (const auto number = std::get_if<double>(&value))
     return std::isfinite(*number);
@@ -418,18 +438,34 @@ bool validVmValue(const VmValue &value, std::size_t depth = 0) {
   if (const auto *map = std::get_if<VmMapPtr>(&value)) {
     if (!*map)
       return false;
-    return std::all_of((*map)->entries.begin(), (*map)->entries.end(),
-                       [&](const auto &entry) {
-                         return validVmValue(entry.second, depth + 1);
-                       });
+    std::unordered_set<IrSymbolRef> keys;
+    return std::all_of(
+        (*map)->entries.begin(), (*map)->entries.end(), [&](const auto &entry) {
+          return entry.first != 0 && keys.insert(entry.first).second &&
+                 validVmValue(entry.second, depth + 1);
+        });
   }
   if (const auto *fact = std::get_if<VmFactPtr>(&value)) {
-    if (!*fact)
+    if (!*fact || (*fact)->type == 0)
       return false;
-    return std::all_of((*fact)->fields.begin(), (*fact)->fields.end(),
-                       [&](const auto &entry) {
-                         return validVmValue(entry.second, depth + 1);
-                       });
+    std::unordered_set<IrSymbolRef> fields;
+    return std::all_of(
+        (*fact)->fields.begin(), (*fact)->fields.end(), [&](const auto &entry) {
+          return entry.first != 0 && fields.insert(entry.first).second &&
+                 validVmValue(entry.second, depth + 1);
+        });
+  }
+  if (const auto *tensor = std::get_if<VmTensorPtr>(&value))
+    return *tensor && static_cast<bool>((*tensor)->storage);
+  if (const auto *map = std::get_if<VmTextMapPtr>(&value)) {
+    if (!*map)
+      return false;
+    std::set<PieceSequence> keys;
+    return std::all_of(
+        (*map)->entries.begin(), (*map)->entries.end(), [&](const auto &entry) {
+          return !entry.first.empty() && keys.insert(entry.first).second &&
+                 validVmValue(entry.second, depth + 1);
+        });
   }
   return true;
 }
@@ -551,6 +587,7 @@ void verifyControlFlowInitialization(
       write(ir.words[pc + 1]);
       break;
     case IrOpcode::Numeric:
+    case IrOpcode::Tensor:
       for (std::size_t i = 0; i < ir.words[pc + 3]; ++i)
         requireFlowRead(state, ir.words[pc + 4 + i]);
       write(ir.words[pc + 1]);
@@ -581,7 +618,11 @@ void verifyControlFlowInitialization(
     case IrOpcode::Return:
       requireFlowRead(state, ir.words[pc + 1]);
       break;
-    case IrOpcode::CallNative:
+    case IrOpcode::Builtin:
+      for (std::size_t i = 0; i < ir.words[pc + 3]; ++i)
+        requireFlowRead(state, ir.words[pc + 4 + i]);
+      write(ir.words[pc + 1]);
+      break;
     case IrOpcode::MakeFact:
       write(ir.words[pc + 1]);
       break;
@@ -636,6 +677,20 @@ std::string vmValueToDisplayString(const VmValue &value,
                                         : std::string{};
       return name.empty() ? "#" + std::to_string(symbol->value) : name;
     }
+    if (const auto tensor = std::get_if<VmTensorPtr>(&item)) {
+      if (!*tensor || !(*tensor)->storage)
+        throw IrError("VM display received an invalid tensor value");
+      if (context.tensorDecoder)
+        return context.tensorDecoder(**tensor);
+      std::ostringstream out;
+      out << "tensor(shape=[";
+      for (std::size_t index = 0; index < (*tensor)->shape.size(); ++index) {
+        if (index)
+          out << ", ";
+        out << (*tensor)->shape[index];
+      }
+      return out << "])", out.str();
+    }
     if (const auto array = std::get_if<VmArrayPtr>(&item)) {
       if (!*array)
         throw IrError("VM display received an invalid array value");
@@ -647,6 +702,22 @@ std::string vmValueToDisplayString(const VmValue &value,
         out << self(self, (*array)->values[index]);
       }
       return out << "]", out.str();
+    }
+    if (const auto map = std::get_if<VmTextMapPtr>(&item)) {
+      if (!*map)
+        throw IrError("VM display received an invalid text-keyed map");
+      std::ostringstream out;
+      out << "{";
+      for (std::size_t index = 0; index < (*map)->entries.size(); ++index) {
+        if (index)
+          out << ", ";
+        const auto &[key, value] = (*map)->entries[index];
+        out << (context.textDecoder
+                    ? context.textDecoder(key)
+                    : "<text:" + std::to_string(key.size()) + " pieces>")
+            << ": " << self(self, value);
+      }
+      return out << "}", out.str();
     }
     const auto renderFields = [&](const auto &fields) {
       std::ostringstream out;
@@ -678,6 +749,30 @@ std::string vmValueToDisplayString(const VmValue &value,
   return render(render, value);
 }
 
+namespace {
+using FactParents = std::unordered_map<IrSymbolRef, std::vector<IrSymbolRef>>;
+
+std::unordered_set<IrSymbolRef> hierarchyClosure(const FactParents &parents,
+                                                 IrSymbolRef type) {
+  std::unordered_set<IrSymbolRef> result;
+  std::vector<IrSymbolRef> pending{type};
+  while (!pending.empty()) {
+    const auto current = pending.back();
+    pending.pop_back();
+    if (!result.insert(current).second)
+      continue;
+    if (const auto found = parents.find(current); found != parents.end())
+      pending.insert(pending.end(), found->second.begin(), found->second.end());
+  }
+  return result;
+}
+
+bool isAssignableTo(const FactParents &parents, IrSymbolRef candidate,
+                    IrSymbolRef expected) {
+  return hierarchyClosure(parents, candidate).contains(expected);
+}
+} // namespace
+
 void VmFactStore::registerType(IrSymbolRef type,
                                std::vector<IrSymbolRef> parents) {
   if (type == 0)
@@ -688,32 +783,39 @@ void VmFactStore::registerType(IrSymbolRef type,
       throw IrError("fact hierarchy type has conflicting parents");
     return;
   }
+  std::unordered_set<IrSymbolRef> uniqueParents;
   for (const auto parent : parents) {
     if (parent == 0 || parent == type)
       throw IrError("fact hierarchy parent is invalid");
+    if (!uniqueParents.insert(parent).second)
+      throw IrError("fact hierarchy contains a duplicate parent");
+    if (isAssignableTo(parents_, parent, type))
+      throw IrError("fact hierarchy contains a cycle");
   }
   parents_.emplace(type, std::move(parents));
   ++revision_;
 }
 
 IrFactRef VmFactStore::retain(const VmFactPtr &fact) {
-  if (!fact)
-    throw IrError("fact store cannot retain a null fact");
+  if (!fact || !validVmValue(VmValue{fact}))
+    throw IrError("fact store cannot retain an invalid fact");
   std::lock_guard lock(mutex_);
-  if (fact->id == 0) {
-    if (nextId_ == std::numeric_limits<IrFactRef>::max()) {
-      throw IrError("fact store exhausted its fact ID space");
-    }
-    fact->id = nextId_++;
-    fact->createdSequence = nextSequence_++;
-    facts_.push_back(fact);
-    byType_[fact->type].push_back(fact);
-    for (const auto &[field, _] : fact->fields)
-      byField_[field].push_back(fact);
-    provenance_.push_back(
-        VmFactProvenance{fact->id, 0, fact->origin == VmFact::Origin::Derived});
-    ++revision_;
+  if (fact->id != 0) {
+    if (std::ranges::find(facts_, fact) == facts_.end())
+      throw IrError("fact already belongs to another knowledge runtime");
+    return fact->id;
   }
+  if (nextId_ == std::numeric_limits<IrFactRef>::max())
+    throw IrError("fact store exhausted its fact ID space");
+  fact->id = nextId_++;
+  fact->createdSequence = nextSequence_++;
+  facts_.push_back(fact);
+  byType_[fact->type].push_back(fact);
+  for (const auto &[field, _] : fact->fields)
+    byField_[field].push_back(fact);
+  provenance_.push_back(
+      VmFactProvenance{fact->id, 0, fact->origin == VmFact::Origin::Derived});
+  ++revision_;
   return fact->id;
 }
 
@@ -789,23 +891,8 @@ std::vector<IrSymbolRef> VmFactStore::commonAncestors(IrSymbolRef left,
   std::lock_guard lock(mutex_);
   if (left == 0 || right == 0)
     return {};
-  const auto closure = [&](IrSymbolRef type) {
-    std::unordered_set<IrSymbolRef> result;
-    std::vector<IrSymbolRef> pending{type};
-    while (!pending.empty()) {
-      const auto current = pending.back();
-      pending.pop_back();
-      if (!result.insert(current).second)
-        continue;
-      if (const auto found = parents_.find(current); found != parents_.end()) {
-        pending.insert(pending.end(), found->second.begin(),
-                       found->second.end());
-      }
-    }
-    return result;
-  };
-  const auto leftAncestors = closure(left);
-  const auto rightAncestors = closure(right);
+  const auto leftAncestors = hierarchyClosure(parents_, left);
+  const auto rightAncestors = hierarchyClosure(parents_, right);
   std::vector<IrSymbolRef> result;
   for (const auto candidate : leftAncestors)
     if (rightAncestors.contains(candidate))
@@ -899,30 +986,15 @@ VmFactStore::snapshotAssignableTo(IrSymbolRef type) const {
   }
   std::vector<VmFactPtr> result;
   for (const auto &[candidate, facts] : byType_) {
-    bool matches = candidate == type;
-    if (!matches) {
-      std::vector<IrSymbolRef> pending{candidate};
-      std::unordered_set<IrSymbolRef> visited;
-      while (!pending.empty() && !matches) {
-        const auto current = pending.back();
-        pending.pop_back();
-        if (!visited.insert(current).second)
-          continue;
-        const auto found = parents_.find(current);
-        if (found == parents_.end())
-          continue;
-        for (const auto parent : found->second) {
-          if (parent == type) {
-            matches = true;
-            break;
-          }
-          pending.push_back(parent);
-        }
-      }
-    }
-    if (matches)
+    if (isAssignableTo(parents_, candidate, type))
       result.insert(result.end(), facts.begin(), facts.end());
   }
+  std::sort(result.begin(), result.end(),
+            [](const auto &left, const auto &right) {
+              if (left->createdSequence != right->createdSequence)
+                return left->createdSequence < right->createdSequence;
+              return left->id < right->id;
+            });
   assignableCache_[type] = {revision_, result};
   return result;
 }
@@ -1006,10 +1078,14 @@ double VmFactStore::gaussianMembership(double value,
 
 FelidaeKnowledgeRuntime::FelidaeKnowledgeRuntime(
     RuntimeStateModel *semanticModel, std::size_t maximumSemanticSteps,
-    std::size_t maximumCallDepth, std::shared_ptr<VmFactStore> factStore)
+    std::size_t maximumCallDepth, std::shared_ptr<VmFactStore> factStore,
+    TensorRuntime *tensorRuntime, VmTextDecoder textDecoder,
+    VmTextEncoder textEncoder)
     : factStore_(factStore ? std::move(factStore)
                            : std::make_shared<VmFactStore>()),
-      semanticModel_(semanticModel),
+      semanticModel_(semanticModel), tensorRuntime_(tensorRuntime),
+      textDecoder_(std::move(textDecoder)),
+      textEncoder_(std::move(textEncoder)),
       maximumSemanticSteps_(maximumSemanticSteps),
       maximumCallDepth_(maximumCallDepth) {
   if (maximumSemanticSteps_ == 0)
@@ -1141,6 +1217,23 @@ void FelidaeKnowledgeRuntime::storeSymbol(IrSymbolRef symbol,
 
 RuntimeStateModel *FelidaeKnowledgeRuntime::runtimeStateModel() {
   return semanticModel_;
+}
+
+TensorRuntime *FelidaeKnowledgeRuntime::tensorRuntime() {
+  return tensorRuntime_;
+}
+
+std::string
+FelidaeKnowledgeRuntime::decodeText(std::span<const PieceId> pieces) const {
+  if (!textDecoder_)
+    return VmRuntime::decodeText(pieces);
+  return textDecoder_(pieces);
+}
+
+PieceSequence FelidaeKnowledgeRuntime::encodeText(std::string_view text) const {
+  if (!textEncoder_)
+    return VmRuntime::encodeText(text);
+  return textEncoder_(text);
 }
 
 void FelidaeKnowledgeRuntime::beginExecution() {
@@ -1332,13 +1425,22 @@ void IrVerifier::verify(const FelidaeIr &ir) {
         throw IrError("IR jump target is not an instruction boundary");
       pc += 3;
       break;
-    case IrOpcode::CallNative:
+    case IrOpcode::Builtin: {
       requireRegister(ir, ir.words[pc + 1]);
-      if (ir.words[pc + 2] >= ir.symbols.size())
-        throw IrError("IR call references an invalid symbol");
+      const auto operation = static_cast<BuiltinId>(ir.words[pc + 2]);
+      const auto arity = builtinOperationArity(operation);
+      const auto count = ir.words[pc + 3];
+      if (!arity || count != *arity)
+        throw IrError("IR builtin operation ID or arity is invalid");
+      const auto width = irInstructionWidth(ir, pc);
+      for (std::size_t index = 0; index < count; ++index) {
+        requireRegister(ir, ir.words[pc + 4 + index]);
+        requireInitialized(initialized, ir.words[pc + 4 + index]);
+      }
       initialized[ir.words[pc + 1]] = true;
-      pc += 3;
+      pc += width;
       break;
+    }
     case IrOpcode::Call: {
       requireRegister(ir, ir.words[pc + 1]);
       if (ir.words[pc + 2] >= ir.symbols.size())
@@ -1383,6 +1485,23 @@ void IrVerifier::verify(const FelidaeIr &ir) {
       const auto count = ir.words[pc + 3];
       if (count != numericOperationArity(operation))
         throw IrError("IR numeric operation arity is invalid");
+      const auto width = irInstructionWidth(ir, pc);
+      for (std::size_t index = 0; index < count; ++index) {
+        requireRegister(ir, ir.words[pc + 4 + index]);
+        requireInitialized(initialized, ir.words[pc + 4 + index]);
+      }
+      initialized[ir.words[pc + 1]] = true;
+      pc += width;
+      break;
+    }
+    case IrOpcode::Tensor: {
+      requireRegister(ir, ir.words[pc + 1]);
+      if (ir.words[pc + 2] >= static_cast<IrWord>(TensorOperation::Count))
+        throw IrError("IR tensor operation ID is invalid");
+      const auto operation = static_cast<TensorOperation>(ir.words[pc + 2]);
+      const auto count = ir.words[pc + 3];
+      if (count != tensorOperationArity(operation))
+        throw IrError("IR tensor operation arity is invalid");
       const auto width = irInstructionWidth(ir, pc);
       for (std::size_t index = 0; index < count; ++index) {
         requireRegister(ir, ir.words[pc + 4 + index]);
@@ -1509,10 +1628,6 @@ void VmRuntime::storeSymbol(IrSymbolRef, const VmValue &) {
   throw IrError("IR symbol storage is unavailable in this runtime");
 }
 
-VmValue VmRuntime::callNativeSymbol(IrSymbolRef) {
-  throw IrError("IR native call is unavailable in this runtime");
-}
-
 void VmRuntime::retainFact(const VmFactPtr &) {}
 
 void VmRuntime::mutateFact(const VmFactPtr &fact, IrSymbolRef field,
@@ -1567,6 +1682,16 @@ void VmRuntime::enterProcedure(IrSymbolRef,
 void VmRuntime::leaveProcedure() noexcept {}
 
 RuntimeStateModel *VmRuntime::runtimeStateModel() { return nullptr; }
+
+TensorRuntime *VmRuntime::tensorRuntime() { return nullptr; }
+
+std::string VmRuntime::decodeText(std::span<const PieceId>) const {
+  throw IrError("VM required text decoder service is absent");
+}
+
+PieceSequence VmRuntime::encodeText(std::string_view) const {
+  throw IrError("VM required text encoder service is absent");
+}
 
 void VmRuntime::beginExecution() {}
 
@@ -1641,7 +1766,7 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
     return result;
   };
   const auto invoke = [&](IrSymbolRef procedureSymbol,
-                          std::vector<VmValue> arguments) {
+                          const std::vector<VmValue> &arguments) {
     const auto found = module.procedures.find(procedureSymbol);
     if (found == module.procedures.end())
       throw IrError("IR call target is not a procedure");
@@ -1664,7 +1789,7 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
       throw IrError("IR execution exceeds its instruction-step limit");
     }
     const auto op = static_cast<IrOpcode>(program.words.at(pc));
-    std::size_t width = 0;
+    const auto width = irInstructionWidth(program, pc);
     switch (op) {
     case IrOpcode::End:
       throw IrError("IR program completed without returning a value");
@@ -1680,23 +1805,19 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
         registers.at(destination) = VmNil{};
       else
         registers.at(destination) = VmText{program.texts.at(constant.value)};
-      width = 3;
       break;
     }
     case IrOpcode::LoadSymbol:
       registers.at(program.words.at(pc + 1)) =
           runtime.loadSymbol(symbol(program.words.at(pc + 2)));
-      width = 3;
       break;
     case IrOpcode::StoreSymbol:
       runtime.storeSymbol(symbol(program.words.at(pc + 1)),
                           registers.at(program.words.at(pc + 2)));
-      width = 3;
       break;
     case IrOpcode::Move:
       registers.at(program.words.at(pc + 1)) =
           registers.at(program.words.at(pc + 2));
-      width = 3;
       break;
     case IrOpcode::Add:
     case IrOpcode::Sub:
@@ -1709,6 +1830,8 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
           std::get_if<double>(&registers.at(program.words.at(pc + 3)));
       if (!lhs || !rhs)
         throw IrError("IR arithmetic operands must be numbers");
+      if (!std::isfinite(*lhs) || !std::isfinite(*rhs))
+        throw IrError("IR arithmetic operands must be finite");
       double value = 0.0;
       if (op == IrOpcode::Add)
         value = *lhs + *rhs;
@@ -1725,8 +1848,9 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
           throw IrError("IR modulo by zero");
         value = std::fmod(*lhs, *rhs);
       }
+      if (!std::isfinite(value))
+        throw IrError("IR arithmetic produced a non-finite result");
       registers.at(program.words.at(pc + 1)) = value;
-      width = 4;
       break;
     }
     case IrOpcode::Compare: {
@@ -1761,7 +1885,6 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
           value = *left >= *right;
       }
       registers.at(program.words.at(pc + 1)) = value ? 1.0 : 0.0;
-      width = 5;
       break;
     }
     case IrOpcode::Jump:
@@ -1772,7 +1895,6 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
         pc = program.words.at(pc + 2);
         continue;
       }
-      width = 3;
       break;
     case IrOpcode::Call: {
       const auto count = program.words.at(pc + 3);
@@ -1782,7 +1904,6 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
         arguments.push_back(registers.at(program.words.at(pc + 4 + index)));
       registers.at(program.words.at(pc + 1)) =
           invoke(moduleSymbol(program.words.at(pc + 2)), std::move(arguments));
-      width = 4 + count;
       break;
     }
     case IrOpcode::CallNamed: {
@@ -1827,14 +1948,27 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
       }
       registers.at(program.words.at(pc + 1)) =
           invoke(procedureSymbol, std::move(arguments));
-      width = 4 + 2 * count;
       break;
     }
-    case IrOpcode::CallNative:
-      registers.at(program.words.at(pc + 1)) =
-          runtime.callNativeSymbol(symbol(program.words.at(pc + 2)));
-      width = 3;
+    case IrOpcode::Builtin: {
+      const auto operation = static_cast<BuiltinId>(program.words.at(pc + 2));
+      const auto count = program.words.at(pc + 3);
+      std::vector<VmValue> inputs;
+      inputs.reserve(count);
+      for (std::size_t index = 0; index < count; ++index)
+        inputs.push_back(registers.at(program.words.at(pc + 4 + index)));
+      const Form::BuiltinTextCodec codec{
+          [&](std::span<const PieceId> pieces) {
+            return runtime.decodeText(pieces);
+          },
+          [&](std::string_view text) { return runtime.encodeText(text); }};
+      auto result =
+          Form::evaluateBuiltin(operation, inputs, module.symbolTable, codec);
+      if (!validVmValue(result))
+        throw IrError("builtin operation produced an invalid VM value");
+      registers.at(program.words.at(pc + 1)) = std::move(result);
       break;
+    }
     case IrOpcode::SemanticEval: {
       const auto operation =
           static_cast<std::uint16_t>(program.words.at(pc + 2));
@@ -1868,7 +2002,6 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
         runtime.retainFact(*fact);
       }
       registers.at(program.words.at(pc + 1)) = std::move(value);
-      width = 4 + count;
       break;
     }
     case IrOpcode::Numeric: {
@@ -1884,7 +2017,24 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
       }
       registers.at(program.words.at(pc + 1)) = evaluateNumericOperation(
           static_cast<NumericOperation>(program.words.at(pc + 2)), operands);
-      width = 4 + count;
+      break;
+    }
+    case IrOpcode::Tensor: {
+      const auto operation =
+          static_cast<TensorOperation>(program.words.at(pc + 2));
+      const auto count = program.words.at(pc + 3);
+      std::vector<VmValue> inputs;
+      inputs.reserve(count);
+      for (std::size_t index = 0; index < count; ++index)
+        inputs.push_back(registers.at(program.words.at(pc + 4 + index)));
+      auto *backend = runtime.tensorRuntime();
+      if (!backend)
+        throw IrError("IR tensor operation requires LibTorch support");
+      auto result =
+          backend->evaluateTensor(operation, inputs, module.symbolTable);
+      if (!validVmValue(result))
+        throw IrError("tensor operation produced an invalid VM value");
+      registers.at(program.words.at(pc + 1)) = std::move(result);
       break;
     }
     case IrOpcode::MakeFact: {
@@ -1892,7 +2042,6 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
       fact->type = symbol(program.words.at(pc + 2));
       runtime.retainFact(fact);
       registers.at(program.words.at(pc + 1)) = std::move(fact);
-      width = 3;
       break;
     }
     case IrOpcode::MakeArray: {
@@ -1902,7 +2051,6 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
       for (IrWord index = 0; index < count; ++index)
         array->values.push_back(registers.at(program.words.at(pc + 4 + index)));
       registers.at(program.words.at(pc + 1)) = std::move(array);
-      width = 4 + count;
       break;
     }
     case IrOpcode::MakeMap: {
@@ -1915,7 +2063,6 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
             registers.at(program.words.at(pc + 5 + 2 * index)));
       }
       registers.at(program.words.at(pc + 1)) = std::move(map);
-      width = 4 + 2 * count;
       break;
     }
     case IrOpcode::GetField: {
@@ -1935,7 +2082,6 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
         registers.at(program.words.at(pc + 1)) = read((*map)->entries);
       else
         throw IrError("IR field access requires a fact or map");
-      width = 4;
       break;
     }
     case IrOpcode::SetField: {
@@ -1956,14 +2102,12 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
           found->second = value;
       } else
         throw IrError("IR field assignment requires a fact or map");
-      width = 4;
       break;
     }
     case IrOpcode::Similarity:
       registers.at(program.words.at(pc + 1)) =
           VmDegree(similarityDegree(registers.at(program.words.at(pc + 2)),
                                     registers.at(program.words.at(pc + 3))));
-      width = 4;
       break;
     case IrOpcode::Membership: {
       const auto number = [&](std::size_t offset) {
@@ -1976,7 +2120,6 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
       registers.at(program.words.at(pc + 1)) =
           VmDegree(VmFactStore::gaussianMembership(
               number(2), {number(3), number(4), number(5)}));
-      width = 6;
       break;
     }
     case IrOpcode::ForEachFact: {
@@ -1988,7 +2131,6 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
         values->values.push_back(
             invoke(moduleSymbol(program.words.at(pc + 3)), {VmValue{fact}}));
       registers.at(program.words.at(pc + 1)) = std::move(values);
-      width = 4;
       break;
     }
     case IrOpcode::HierarchyIsA:
@@ -1999,28 +2141,24 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
                   .empty()
               ? 0.0
               : 1.0;
-      width = 4;
       break;
     case IrOpcode::HierarchyCommonAncestors:
       registers.at(program.words.at(pc + 1)) =
           symbolArray(runtime.commonAncestors(
               typeSymbol(registers.at(program.words.at(pc + 2))),
               typeSymbol(registers.at(program.words.at(pc + 3)))));
-      width = 4;
       break;
     case IrOpcode::HierarchyLeastCommonAncestors:
       registers.at(program.words.at(pc + 1)) =
           symbolArray(runtime.leastCommonAncestors(
               typeSymbol(registers.at(program.words.at(pc + 2))),
               typeSymbol(registers.at(program.words.at(pc + 3)))));
-      width = 4;
       break;
     case IrOpcode::HierarchyMostGeneralAncestors:
       registers.at(program.words.at(pc + 1)) =
           symbolArray(runtime.mostGeneralCommonAncestors(
               typeSymbol(registers.at(program.words.at(pc + 2))),
               typeSymbol(registers.at(program.words.at(pc + 3)))));
-      width = 4;
       break;
     case IrOpcode::TemporalRank: {
       const auto ranked = runtime.rankFacts(symbol(program.words.at(pc + 2)),
@@ -2030,7 +2168,6 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
       for (const auto &item : ranked)
         values->values.push_back(item.fact);
       registers.at(program.words.at(pc + 1)) = std::move(values);
-      width = 4;
       break;
     }
     case IrOpcode::Return:

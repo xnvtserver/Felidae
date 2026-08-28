@@ -608,10 +608,6 @@ int main() {
       static_cast<IrWord>(IrOpcode::End),
   };
   class NoRuntime final : public VmRuntime {
-  public:
-    VmValue callNativeSymbol(IrSymbolRef symbol) override {
-      return static_cast<double>(symbol);
-    }
   } noRuntime;
   const auto arithmeticResult = executeDirect(arithmetic, noRuntime);
   assert(std::get<double>(arithmeticResult) == 42.0);
@@ -653,16 +649,6 @@ int main() {
   assert(fact->type == 50 && fact->fields.size() == 1);
   assert(fact->fields.front().first == 51);
   assert(std::get<double>(fact->fields.front().second) == 12.0);
-
-  FelidaeIr nativeCall;
-  nativeCall.registerCount = 1;
-  nativeCall.symbols = {12};
-  nativeCall.words = {
-      static_cast<IrWord>(IrOpcode::CallNative), 0, 0,
-      static_cast<IrWord>(IrOpcode::Return),     0, 0,
-      static_cast<IrWord>(IrOpcode::End),
-  };
-  assert(std::get<double>(executeDirect(nativeCall, noRuntime)) == 12.0);
 
   class SymbolRuntime final : public VmRuntime {
   public:

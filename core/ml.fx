@@ -2,10 +2,23 @@
 
 import ("flibrary", "system.flibrary.fact_analysis", "file")
 
-ml.sigmoid(value: number) => ()
-ml.relu(value: number) => ()
-ml.dot(left: array, right: array) => ()
-ml.meanSquaredError(left: array, right: array) => ()
+ml.sigmoid(value: any) => ()
+ml.relu(value: any) => ()
+ml.dot(left: any, right: any) => ()
+ml.meanSquaredError(left: any, right: any) => ()
+
+# Tensor metadata works for rectangular numeric arrays and PieceId-backed
+# fact/text/symbol feature tensors. Numeric and Degree fact fields remain
+# numeric features. Raw PieceIds are categorical identifiers, not learned
+# embeddings; applications decide whether arithmetic over them is meaningful.
+tensor.size(value: any) => ()
+tensor.shape(value: any) => ()
+tensor.dimensions(value: any) => ()
+tensor.difference(left: any, right: any) => ()
+tensor.cosineSimilarity(left: any, right: any) => ()
+tensor.transpose(value: any) => ()
+tensor.isSymmetric(value: any) => ()
+tensor.clone(value: any) => ()
 
 ml.cluster_facts(facts: array, features: array, clusters: number) =>
     return (system_library_loader(module: "fact_analysis", function: "cluster_facts", args: {facts: facts, features: features, clusters: clusters}))

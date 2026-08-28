@@ -32,8 +32,7 @@ evaluateFactExpression() =>
                     ]
 
 main() =>
-    cats := lambda(Cat, fact => fact.name == "sony")
-    cat := array.get(data: cats, position: 0)
+    cat := Cat(name: "sony", legs: 4)
     crisp := evaluate cat as "crisp"
     probability := evaluate cat as "probability"
     error := evaluate cat as "error"

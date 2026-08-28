@@ -3,3 +3,5 @@
 {"schema_version":1,"id":"hvac-occupied-hot","domain":"hvac","source":"v2_examples/air_conditioner_theorem_solver.fx","scenario":"occupied_hot","expected_action":"cool","expected_truth":1.0,"category":"in_distribution"}
 {"schema_version":1,"id":"hvac-empty-humid","domain":"hvac","source":"v2_examples/air_conditioner_theorem_solver.fx","scenario":"empty_humid","expected_action":"ventilate","expected_truth":1.0,"category":"alternative_proof"}
 {"schema_version":1,"id":"hvac-invalid-sensor","domain":"hvac","source":"v2_examples/air_conditioner_theorem_solver.fx","scenario":"invalid_sensor","expected_action":"fault_lockout","expected_truth":0.0,"category":"fault_tolerance"}
+{"schema_version":1,"id":"tensor-symmetric-matrix","domain":"tensor","source":"v2_examples/tensor_operations.fx","scenario":"symmetric_matrix","expected_truth":1.0,"category":"structural_analysis"}
+{"schema_version":1,"id":"tensor-vector-comparison","domain":"tensor","source":"v2_examples/tensor_operations.fx","scenario":"cosine_and_difference","expected_truth":1.0,"category":"soft_comparison"}

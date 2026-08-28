@@ -61,7 +61,7 @@ if(FELIDAE_DIST_HAS_LIBTORCH)
 endif()
 
 file(WRITE "${FELIDAE_DIST_DIR}/README.txt"
-"Felidae ${FELIDAE_DIST_VERSION} beta portable distribution\n\nRun from this directory:\n  felidae_compiler${FELIDAE_DIST_EXECUTABLE_SUFFIX} program.fx\n  felidae_vm${FELIDAE_DIST_EXECUTABLE_SUFFIX} program.bin\n\nThe compiler writes .bin next to itself; use a disposable working copy or move the artifact after compilation.\nFELBIR v13 is the current beta executable IR; recompile source after beta format changes.\nmodels/felidae.model is required for SentencePiece encoding and symbol decoding.\nLibTorch DLLs are staged beside the executables when this distribution was built with runtime SSM support.\nVerify shipped files with SHA256SUMS.txt before publishing.\n")
+"Felidae ${FELIDAE_DIST_VERSION} beta portable distribution\n\nRun from this directory:\n  felidae_compiler${FELIDAE_DIST_EXECUTABLE_SUFFIX} program.fx\n  felidae_vm${FELIDAE_DIST_EXECUTABLE_SUFFIX} program.bin\n\nThe compiler writes .bin next to itself; use a disposable working copy or move the artifact after compilation.\nFELBIR v16 is the current beta executable IR; recompile source after beta format changes.\nmodels/felidae.model is required for SentencePiece encoding and symbol decoding.\nLibTorch DLLs are staged beside the executables when this distribution was built with runtime SSM support.\nVerify shipped files with SHA256SUMS.txt before publishing.\n")
 
 set(release_files
     "felidae_compiler${FELIDAE_DIST_EXECUTABLE_SUFFIX}"

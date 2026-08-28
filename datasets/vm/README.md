@@ -8,6 +8,11 @@ The dataset is JSON Lines schema v8, with one operation-level record per line:
 `fact_type_counts`, sorted `hierarchy_edges`, `target_kind`, and `target_value`. Those fields are exactly
 the finite information the current GRU sees at inference; it must not store
 whole-program results or train-only features.
+Stable `input_kinds` values are nil `1`, number `2`, Degree `3`, text `4`,
+array `5`, map `6`, fact `7`, symbol `8`, tensor `9`, and dynamic text-keyed
+map `10`. Existing schema-v8
+records remain valid because the tensor kind extends rather than renumbers the
+contract.
 Every symbol in the three fact/hierarchy fields is its complete SentencePiece
 ID sequence. Module-local indexes, hashes, and source spellings are not model
 identity and must never be written to this dataset.

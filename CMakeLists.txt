@@ -344,7 +344,8 @@ add_library(felidae_form STATIC
     src/form/libs/Builtin.cpp
     src/form/libs/Csv.cpp
     src/form/libs/Group.cpp
-    src/form/libs/Json.cpp)
+    src/form/libs/Json.cpp
+    src/form/libs/Set.cpp)
 target_include_directories(felidae_form PUBLIC src)
 target_link_libraries(felidae_form PRIVATE nlohmann_json::nlohmann_json)
 felidae_enable_static_analysis(felidae_form)
@@ -496,6 +497,7 @@ set(FELIDAE_DEBUG_SOURCES
     src/debugger/main.cpp
     src/debugger/AstAnalyzer.cpp
     src/tooling/SourceParser.cpp
+    src/CompilerFrontend.cpp
     src/IrCodeGenerator.cpp
     src/MixfixStateModel.cpp
     src/SentencePieceModel.cpp
@@ -516,7 +518,8 @@ target_include_directories(felidae_debug BEFORE PRIVATE
 target_include_directories(felidae_debug SYSTEM PRIVATE third_party)
 target_compile_definitions(felidae_debug PRIVATE
     FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
-target_link_libraries(felidae_debug PRIVATE felidae_form sentencepiece)
+target_link_libraries(felidae_debug PRIVATE felidae_form sentencepiece
+    nlohmann_json::nlohmann_json)
 felidae_use_sentencepiece_model(felidae_debug)
 if(TARGET OpenMP::OpenMP_CXX)
     target_link_libraries(felidae_debug PRIVATE OpenMP::OpenMP_CXX)
@@ -739,6 +742,7 @@ if(FELIDAE_BUILD_TESTS)
         tensor_operations
         json_csv_operations
         group_operations
+        set_operations
         degree_profiles
         hierarchical_designation_filter
         fact_expression_result_contract
@@ -764,6 +768,12 @@ if(FELIDAE_BUILD_TESTS)
         set_tests_properties(felidae_example_tensor_operations PROPERTIES
             DISABLED TRUE)
     endif()
+    set_tests_properties(felidae_example_json_csv_operations PROPERTIES
+        PASS_REGULAR_EXPRESSION "name: Ada")
+    set_tests_properties(felidae_example_group_operations PROPERTIES
+        PASS_REGULAR_EXPRESSION "abelian: 1.0")
+    set_tests_properties(felidae_example_set_operations PROPERTIES
+        PASS_REGULAR_EXPRESSION "contains: 1.0")
 
     # Tests are deliberately opt-in at build time.  A normal IDE build should
     # compile only the two production executables and their required

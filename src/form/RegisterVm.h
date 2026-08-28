@@ -17,8 +17,15 @@
 #include <variant>
 #include <vector>
 
+namespace at {
+class Tensor;
+}
+
 namespace Felidae {
 
+enum class TensorOperation : std::uint8_t;
+
+struct FelidaeIr;
 struct IrModule;
 class VerifiedIrModule;
 
@@ -55,6 +62,10 @@ public:
 // compiler, binary IR loader, and register VM.
 IrConstant encodeIrNumber(double value) noexcept;
 double decodeIrNumber(IrConstant word) noexcept;
+// Canonical instruction-width decoder shared by verification, execution, and
+// compiler-side inspection of generated IR. It also rejects invalid or
+// truncated instructions, so callers must not maintain parallel width tables.
+std::size_t irInstructionWidth(const FelidaeIr &ir, std::size_t pc);
 
 struct VmNil {
   bool operator==(const VmNil &) const = default;
@@ -76,10 +87,21 @@ struct VmArray;
 using VmArrayPtr = std::shared_ptr<VmArray>;
 struct VmMap;
 using VmMapPtr = std::shared_ptr<VmMap>;
+struct VmTextMap;
+using VmTextMapPtr = std::shared_ptr<VmTextMap>;
 struct VmFact;
 using VmFactPtr = std::shared_ptr<VmFact>;
-using VmValue = std::variant<VmNil, double, VmDegree, VmText, VmSymbol,
-                             VmArrayPtr, VmMapPtr, VmFactPtr>;
+// The portable VM owns a real LibTorch tensor without including Torch headers
+// in Form. Only TensorRuntime creates or dereferences `storage`; shape is kept
+// here so validation and fallback display remain backend-independent.
+struct VmTensor {
+  std::shared_ptr<at::Tensor> storage;
+  std::vector<std::int64_t> shape;
+};
+using VmTensorPtr = std::shared_ptr<VmTensor>;
+using VmValue =
+    std::variant<VmNil, double, VmDegree, VmText, VmSymbol, VmArrayPtr,
+                 VmMapPtr, VmFactPtr, VmTensorPtr, VmTextMapPtr>;
 static_assert(
     []<std::size_t... Index>(std::index_sequence<Index...>) {
       return (
@@ -102,15 +124,20 @@ enum class RuntimeValueKind : std::uint8_t {
   Map = 6,
   Fact = 7,
   Symbol = 8,
+  Tensor = 9,
+  TextMap = 10,
 };
 RuntimeValueKind runtimeValueKind(const VmValue &value) noexcept;
 using VmSymbolDecoder = std::function<std::string(IrSymbolRef)>;
 using VmTextDecoder = std::function<std::string(std::span<const PieceId>)>;
+using VmTextEncoder = std::function<PieceSequence(std::string_view)>;
+using VmTensorDecoder = std::function<std::string(const VmTensor &)>;
 // Rendering is an adapter boundary, not VM state. Form consumes only IDs and
 // typed values; callers may inject SentencePiece and symbol decoders for UI.
 struct VmDisplayContext {
   VmTextDecoder textDecoder;
   VmSymbolDecoder symbolDecoder;
+  VmTensorDecoder tensorDecoder;
 };
 std::string vmValueToDisplayString(const VmValue &value,
                                    const VmDisplayContext &context = {});
@@ -119,6 +146,12 @@ struct VmArray {
 };
 struct VmMap {
   std::vector<std::pair<IrSymbolRef, VmValue>> entries;
+};
+// Dynamic object keys (for JSON and CSV) are tokenized text, never raw UTF-8
+// or module-local symbol references. Static source maps continue to use
+// VmMap; this separate type keeps both identity contracts unambiguous.
+struct VmTextMap {
+  std::vector<std::pair<PieceSequence, VmValue>> entries;
 };
 // Facts retain a separate type tag.  They are deliberately not aliases for
 // maps: map-shaped values must not acquire fact semantics merely by carrying
@@ -255,12 +288,22 @@ public:
                          RuntimeContext &context) = 0;
 };
 
+class TensorRuntime {
+public:
+  virtual ~TensorRuntime() = default;
+  // Returned tensors must own finite backend storage. RegisterVm validates the
+  // portable wrapper; the backend owns element-level validation because Form
+  // intentionally cannot dereference at::Tensor on unsupported platforms.
+  virtual Value evaluateTensor(TensorOperation operation,
+                               std::span<const Value> inputs,
+                               std::span<const PieceSequence> symbolTable) = 0;
+};
+
 class VmRuntime {
 public:
   virtual ~VmRuntime() = default;
   virtual VmValue loadSymbol(IrSymbolRef symbol);
   virtual void storeSymbol(IrSymbolRef symbol, const VmValue &value);
-  virtual VmValue callNativeSymbol(IrSymbolRef symbol);
   virtual void retainFact(const VmFactPtr &fact);
   virtual void mutateFact(const VmFactPtr &fact, IrSymbolRef field,
                           const VmValue &value);
@@ -289,6 +332,9 @@ public:
   // Null means this execution has no learned semantic backend. SemanticEval
   // then fails in a controlled manner; exact opcodes never use this hook.
   virtual RuntimeStateModel *runtimeStateModel();
+  virtual TensorRuntime *tensorRuntime();
+  virtual std::string decodeText(std::span<const PieceId> pieces) const;
+  virtual PieceSequence encodeText(std::string_view text) const;
   virtual void beginExecution();
   virtual void endExecution() noexcept;
   virtual RuntimeContext makeRuntimeContext(const VmValue &systemInput) const;
@@ -309,7 +355,10 @@ public:
   explicit FelidaeKnowledgeRuntime(RuntimeStateModel *semanticModel = nullptr,
                                    std::size_t maximumSemanticSteps = 1024,
                                    std::size_t maximumCallDepth = 256,
-                                   std::shared_ptr<VmFactStore> factStore = {});
+                                   std::shared_ptr<VmFactStore> factStore = {},
+                                   TensorRuntime *tensorRuntime = nullptr,
+                                   VmTextDecoder textDecoder = {},
+                                   VmTextEncoder textEncoder = {});
   VmValue loadSymbol(IrSymbolRef symbol) override;
   void storeSymbol(IrSymbolRef symbol, const VmValue &value) override;
   void retainFact(const VmFactPtr &fact) override;
@@ -335,6 +384,9 @@ public:
                       std::span<const VmValue> arguments) override;
   void leaveProcedure() noexcept override;
   RuntimeStateModel *runtimeStateModel() override;
+  TensorRuntime *tensorRuntime() override;
+  std::string decodeText(std::span<const PieceId> pieces) const override;
+  PieceSequence encodeText(std::string_view text) const override;
   void beginExecution() override;
   void endExecution() noexcept override;
   RuntimeContext makeRuntimeContext(const VmValue &systemInput) const override;
@@ -364,6 +416,9 @@ private:
   VmModuleState module_;
   std::shared_ptr<VmFactStore> factStore_;
   RuntimeStateModel *semanticModel_ = nullptr;
+  TensorRuntime *tensorRuntime_ = nullptr;
+  VmTextDecoder textDecoder_;
+  VmTextEncoder textEncoder_;
   std::size_t maximumSemanticSteps_ = 1024;
   std::size_t maximumCallDepth_ = 256;
   std::size_t procedureDepth_ = 0;

@@ -118,7 +118,6 @@ std::vector<MixfixVocabularyId> encodeTeacher(const FelidaeIr &ir) {
       break;
     case IrOpcode::LoadSymbol:
     case IrOpcode::StoreSymbol:
-    case IrOpcode::CallNative:
     case IrOpcode::MakeFact:
       require(3);
       reg(ir.words[pc + 1]);
@@ -174,8 +173,10 @@ std::vector<MixfixVocabularyId> encodeTeacher(const FelidaeIr &ir) {
       pc += 6;
       break;
     case IrOpcode::Call:
+    case IrOpcode::Builtin:
     case IrOpcode::SemanticEval:
     case IrOpcode::Numeric:
+    case IrOpcode::Tensor:
     case IrOpcode::MakeArray: {
       require(4);
       reg(ir.words[pc + 1]);

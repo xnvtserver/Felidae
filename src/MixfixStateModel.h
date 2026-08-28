@@ -55,7 +55,7 @@ struct MixfixContext {
 inline constexpr std::size_t kMaximumMixfixRegisters = 64;
 inline constexpr std::size_t kMaximumMixfixReferences = 64;
 inline constexpr std::string_view kMixfixIrVocabularyVersion =
-    "felidae-compiler-ir-v3";
+    "felidae-compiler-ir-v4";
 // Three decisions, End, every real opcode, fixed registers, and four bounded
 // reference classes. Training artifacts must use this exact parser-owned
 // vocabulary.
