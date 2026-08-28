@@ -8,16 +8,8 @@
 
 namespace Felidae {
 
-struct AstDiagnostic {
-    std::string severity;
-    std::string message;
-    int line = 1;
-    int column = 1;
-    int endLine = 1;
-    int endColumn = 1;
-    std::string code;
-    std::string file;
-};
+// AstDiagnostic, diagnosticFor(), and diagnosticForSpan() now live in AST.h
+// so the compiler can share them without linking this analyzer.
 
 // One declared parameter of a method/fact head, e.g. the `name: string` in
 // `Greeting(name: string) =>`. `type` is the annotation when the head writes

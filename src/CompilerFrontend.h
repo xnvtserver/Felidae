@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace Felidae {
 
@@ -18,6 +19,11 @@ struct CompilerOptions {
   // Optional, verifier-gated compiler SSM. Normal syntax remains fully
   // deterministic; only unresolved custom mixfix assembly reaches it.
   MixfixStateModel *mixfixModel = nullptr;
+  // Optional out-parameter. When set, non-fatal parser diagnostics (see
+  // IntegerParser::warnings()) are appended here; a compile that produces no
+  // warnings leaves it untouched. Left null by default so every existing
+  // caller is unaffected.
+  std::vector<AstDiagnostic> *warnings = nullptr;
 };
 
 // Source-only frontend boundary.  The Form VM never includes this header.

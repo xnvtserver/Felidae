@@ -1134,4 +1134,43 @@ public:
   }
 };
 
+// Non-fatal or fatal diagnostic about a span of source, in the same
+// severity/code/message shape felidae_debug (src/debugger/AstAnalyzer.h)
+// has used since its rewrite. Shared here so the compiler can report
+// warnings without either linking the debugger's analyzer or hand-rolling a
+// second diagnostic struct of its own; felidae_debug still owns the fuller
+// analyses (unused symbols, hidden materialization, etc.) that produce
+// AstDiagnostic values, this is just the shared value type and the two
+// small constructors every diagnostic emitter otherwise repeats.
+struct AstDiagnostic {
+  std::string severity;
+  std::string message;
+  int line = 1;
+  int column = 1;
+  int endLine = 1;
+  int endColumn = 1;
+  std::string code;
+  std::string file;
+};
+
+inline AstDiagnostic diagnosticFor(const AstNode *node, std::string severity,
+                                   std::string code, std::string message) {
+  SourceSpan span;
+  if (node && node->sourceSpan.valid())
+    span = node->sourceSpan;
+  return AstDiagnostic{std::move(severity), std::move(message),
+                       span.startLine,      span.startColumn,
+                       span.endLine,        span.endColumn,
+                       std::move(code),     ""};
+}
+
+inline AstDiagnostic diagnosticForSpan(const SourceSpan &span,
+                                       std::string severity, std::string code,
+                                       std::string message) {
+  return AstDiagnostic{std::move(severity), std::move(message),
+                       span.startLine,      span.startColumn,
+                       span.endLine,        span.endColumn,
+                       std::move(code),     ""};
+}
+
 } // namespace Felidae

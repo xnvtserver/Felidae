@@ -1,7 +1,7 @@
 #include "MixfixStateModel.h"
+#include "ModelStore.h"
 
 #include <algorithm>
-#include <fstream>
 #include <limits>
 #include <optional>
 #include <sstream>
@@ -15,21 +15,6 @@
 
 namespace Felidae {
 namespace {
-
-std::string manifestValue(const std::filesystem::path &manifestPath,
-                          const std::string &wanted) {
-  std::ifstream manifest(manifestPath);
-  if (!manifest)
-    throw IrError("model manifest is unavailable: " + manifestPath.string());
-  std::string line;
-  while (std::getline(manifest, line)) {
-    const auto separator = line.find('=');
-    if (separator != std::string::npos && line.substr(0, separator) == wanted) {
-      return line.substr(separator + 1);
-    }
-  }
-  throw IrError("model manifest omits " + wanted);
-}
 
 IrWord resolveReference(IrWord index, const std::vector<IrWord> &table,
                         const char *name) {
