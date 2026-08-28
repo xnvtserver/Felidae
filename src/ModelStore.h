@@ -1,9 +1,12 @@
 #pragma once
 
+#include "form/RegisterVm.h"
+
 #include <filesystem>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <fstream>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -12,6 +15,27 @@
 #include <vector>
 
 namespace Felidae {
+
+// Shared by every versioned model loader (compiler-side mixfix GRU, VM-side
+// runtime GRU, and any future model). A manifest is a flat `key=value` text
+// file written beside its `.pt` artifact; this is the one authoritative
+// reader for that format. Do not reintroduce a second copy in a model's own
+// .cpp -- the compiler and VM SSM loaders duplicated this by hand until both
+// were folded into this function.
+inline std::string manifestValue(const std::filesystem::path& manifestPath,
+                                 const std::string& wanted) {
+    std::ifstream manifest(manifestPath);
+    if (!manifest)
+        throw IrError("model manifest is unavailable: " + manifestPath.string());
+    std::string line;
+    while (std::getline(manifest, line)) {
+        const auto separator = line.find('=');
+        if (separator != std::string::npos && line.substr(0, separator) == wanted) {
+            return line.substr(separator + 1);
+        }
+    }
+    throw IrError("model manifest omits " + wanted);
+}
 
 // Training artifacts have two intentional destinations.  Keeping the model in
 // a named subdirectory prevents the executable and model files from being

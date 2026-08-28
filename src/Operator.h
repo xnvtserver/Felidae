@@ -408,6 +408,35 @@ public:
         origins.push_back(OperatorPatternOrigin{module, visibility});
     }
 
+    // Returns the first literal anchor segment in a pattern string whose
+    // captures are already normalized to bare "{name}" placeholders (no
+    // "{name: type}" annotation), skipping any leading captures and
+    // whitespace. This is the same "skip captures, find the next anchor"
+    // scan compilePattern() performs while building the full anchor list,
+    // reduced to just its first result. Kept as the one such scanner so a
+    // caller that only needs the implicit operator name for an @mixfix
+    // declaration with no explicit 'operator' argument -- see
+    // OperatorAnnotation.h -- does not hand-roll a second copy of it.
+    static std::string_view firstAnchorSegment(std::string_view pattern) {
+        std::size_t cursor = 0;
+        while (cursor < pattern.size()) {
+            while (cursor < pattern.size() &&
+                   (pattern[cursor] == ' ' || pattern[cursor] == '\t')) {
+                ++cursor;
+            }
+            if (cursor >= pattern.size() || pattern[cursor] != '{') break;
+            const auto close = pattern.find('}', cursor + 1);
+            if (close == std::string_view::npos) {
+                throw std::runtime_error("Unclosed operator pattern capture");
+            }
+            cursor = close + 1;
+        }
+        const auto end = pattern.find_first_of(" \t{", cursor);
+        if (cursor >= pattern.size() || cursor == end) return {};
+        return pattern.substr(
+            cursor, end == std::string_view::npos ? std::string_view::npos : end - cursor);
+    }
+
     static void compilePattern(OperatorPatternDefinition& pattern) {
         pattern.operatorNameId = symbolIdForName(pattern.operatorName);
         std::size_t cursor = 0;

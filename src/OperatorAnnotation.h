@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AST.h"
+#include "Operator.h"
 #include <stdexcept>
 
 namespace Felidae {
@@ -177,30 +178,15 @@ inline ParsedOperatorAnnotation decodeOperatorAnnotation(const Call& annotation)
         if (parsed.operatorName.empty()) {
             // A mixfix declaration is identified by its pattern.  Derive a
             // stable display/lookup name from its first literal anchor so the
-            // annotation does not need a redundant operator field.
-            std::size_t anchorStart = 0;
-            while (anchorStart < parsed.pattern.size()) {
-                while (anchorStart < parsed.pattern.size() &&
-                       (parsed.pattern[anchorStart] == ' ' ||
-                        parsed.pattern[anchorStart] == '\t')) {
-                    ++anchorStart;
-                }
-                if (anchorStart >= parsed.pattern.size() || parsed.pattern[anchorStart] != '{') break;
-                const auto close = parsed.pattern.find('}', anchorStart + 1);
-                if (close == std::string::npos) {
-                    throw std::runtime_error("@mixfix pattern has an unterminated capture");
-                }
-                anchorStart = close + 1;
-            }
-            const auto anchorEnd = parsed.pattern.find_first_of(" \t{", anchorStart);
-            if (anchorStart >= parsed.pattern.size() || anchorStart == anchorEnd) {
+            // annotation does not need a redundant operator field. Shares
+            // OperatorRegistry::firstAnchorSegment() with compilePattern()
+            // instead of re-scanning the capture grammar a second time here.
+            const auto anchor = OperatorRegistry::firstAnchorSegment(parsed.pattern);
+            if (anchor.empty()) {
                 throw std::runtime_error(
                     "@mixfix pattern must contain a literal operator anchor");
             }
-            parsed.operatorName = parsed.pattern.substr(
-                anchorStart,
-                anchorEnd == std::string::npos
-                    ? std::string::npos : anchorEnd - anchorStart);
+            parsed.operatorName = std::string(anchor);
         }
     }
     if (annotation.builtinId != BuiltinId::MixfixAnnotation) {

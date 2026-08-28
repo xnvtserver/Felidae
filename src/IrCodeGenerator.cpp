@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <limits>
 #include <optional>
+#include <span>
 #include <unordered_set>
 
 namespace Felidae {
@@ -18,6 +19,69 @@ struct DirectCompileContext {
   const std::unordered_set<SymbolId> &factTypes;
   const std::unordered_map<SymbolId, SymbolId> &factDesignations;
 };
+
+// Desugars a `where C1 / where C2 / ... / <goal>` guard chain into an
+// equivalent nested IfGoal chain (`if C1 then (if C2 then ... else E) else
+// E`), reusing the same else branch E at every level. This lets a
+// where-guarded clause reach the existing IfGoal-aware direct-compile path
+// instead of needing its own opcode or eligibility rule. `remaining` must
+// end in exactly one non-where terminal goal (typically a ReturnGoal).
+std::shared_ptr<Goal> desugarWhereGuards(
+    std::span<const std::shared_ptr<Goal>> remaining,
+    const std::vector<std::shared_ptr<Goal>> &elseBranch) {
+  if (remaining.empty())
+    throw IntegerParserError("where-guarded clause requires a terminal goal");
+  const auto where = std::dynamic_pointer_cast<WhereGoal>(remaining.front());
+  if (!where) {
+    if (remaining.size() != 1)
+      throw IntegerParserError(
+          "a where guard chain must end in exactly one terminal goal");
+    return remaining.front();
+  }
+  auto thenGoal = desugarWhereGuards(remaining.subspan(1), elseBranch);
+  auto ifGoal = std::make_shared<IfGoal>(
+      where->condition,
+      std::vector<std::shared_ptr<Goal>>{std::move(thenGoal)}, elseBranch);
+  ifGoal->sourceSpan = where->sourceSpan;
+  return ifGoal;
+}
+
+// Rewrites every where-guarded clause in the program to its desugared
+// IfGoal-chain form, in place, before eligibility checks or lowering ever
+// see it. A where guard with no `else` is intentionally rejected here
+// (clear compile error) rather than guessing a runtime failure behavior --
+// see docs/compiler_form_audit.md's stabilization notes on not implementing
+// unstated semantics.
+void desugarWhereGuardedClauses(Program &program) {
+  for (auto &clause : program.clauses) {
+    if (!clause || clause->isFact())
+      continue;
+    const bool hasWhereGuard = std::any_of(
+        clause->body.begin(), clause->body.end(), [](const auto &goal) {
+          return std::dynamic_pointer_cast<WhereGoal>(goal) != nullptr;
+        });
+    if (!hasWhereGuard && clause->fallbackBranches.empty())
+      continue;
+    if (!hasWhereGuard) {
+      throw IntegerParserError(
+          "not yet lowered to IR: else without a where guard at " +
+          std::to_string(clause->sourceSpan.startLine) + ":" +
+          std::to_string(clause->sourceSpan.startColumn));
+    }
+    if (clause->fallbackBranches.size() != 1) {
+      throw IntegerParserError(
+          "not yet lowered to IR: a where-guarded clause requires exactly "
+          "one else branch at " +
+          std::to_string(clause->sourceSpan.startLine) + ":" +
+          std::to_string(clause->sourceSpan.startColumn));
+    }
+    auto rewritten = std::make_shared<ClauseStmt>(*clause);
+    rewritten->body = {
+        desugarWhereGuards(clause->body, clause->fallbackBranches.front())};
+    rewritten->fallbackBranches.clear();
+    clause = std::move(rewritten);
+  }
+}
 
 // The integer parser preserves a dotted identifier as one symbol because the
 // same SentencePiece sequence is also used for qualified calls and `fx.`
@@ -906,11 +970,16 @@ FelidaeIr compileDirectSequentialEntry(
                                                             factDesignations),
                    true);
   }
+  // The final statement is not necessarily a return goal -- isDirectProcedure
+  // also accepts a trailing IfGoal after a run of assignments. Recurse into
+  // compileDirectProcedure, which already dispatches a single-statement body
+  // to compileDirectConditionalEntry when it's an IfGoal and to
+  // compileAstEntryMethodIr (return-goal-only) otherwise, instead of assuming
+  // the return-goal case here and rejecting a compiler-approved program.
   ClauseStmt returned(method.head, {method.body.back()});
-  appendFragment(result,
-                 IntegerParser::compileAstEntryMethodIr(returned, factTypes,
-                                                        factDesignations),
-                 false);
+  appendFragment(
+      result, compileDirectProcedure(returned, factTypes, factDesignations),
+      false);
   return result;
 }
 
@@ -930,6 +999,7 @@ FelidaeIr compileDirectProcedure(
 } // namespace
 
 IrModule IrCodeGenerator::compile(Program program) const {
+  desugarWhereGuardedClauses(program);
   IrModule module;
   // The strict compiler accepts only constructs that lower to verified IR.
   // Unsupported constructs are rejected with a source span; there is no
@@ -1093,6 +1163,18 @@ IrModule IrCodeGenerator::compile(Program program) const {
       });
   if (directGlobals && main != program.clauses.end() && eligibleMethods &&
       isDirectEntry(**main, directSymbols, context)) {
+    // Globals must execute before fact rows: a fact field may read a global
+    // by name (e.g. Person(age: defaultAge)), which lowers to a LoadSymbol
+    // that requires the matching StoreSymbol to have already run. Global
+    // bindings never read a fact by name (facts are reached by type/query,
+    // not symbol lookup), so this order has no matching requirement the
+    // other way.
+    for (const auto &binding : program.globals) {
+      appendFragment(module.ir,
+                     IntegerParser::compileAstGlobalBindingIr(
+                         *binding, factTypes, factDesignations),
+                     true);
+    }
     for (const auto &clause : program.clauses) {
       if (!clause || !clause->isFact() || clause->emptyDeclaration)
         continue;
@@ -1109,12 +1191,6 @@ IrModule IrCodeGenerator::compile(Program program) const {
       appendFragment(module.ir,
                      IntegerParser::compileAstExpressionIr(
                          std::move(fact), factTypes, factDesignations),
-                     true);
-    }
-    for (const auto &binding : program.globals) {
-      appendFragment(module.ir,
-                     IntegerParser::compileAstGlobalBindingIr(
-                         *binding, factTypes, factDesignations),
                      true);
     }
     for (const auto &clause : program.clauses) {
