@@ -25,7 +25,22 @@ option(FELIDAE_ENABLE_STRICT_WARNINGS
     "Enable strict warnings for Felidae-owned targets only" OFF)
 option(FELIDAE_ENABLE_MSVC_STATIC_ANALYSIS
     "Enable MSVC /analyze on compiler and Form VM targets" OFF)
-option(FELIDAE_ENABLE_LIBTORCH "Enable the C++ LibTorch neural mixfix backend" OFF)
+option(FELIDAE_ENABLE_CCACHE "Reuse native compilation results with ccache" ON)
+if(FELIDAE_ENABLE_CCACHE AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
+    find_program(FELIDAE_CCACHE_PROGRAM ccache)
+    if(FELIDAE_CCACHE_PROGRAM)
+        set(CMAKE_CXX_COMPILER_LAUNCHER
+            "${CMAKE_COMMAND};-E;env;CCACHE_DIR=${CMAKE_BINARY_DIR}/ccache;${FELIDAE_CCACHE_PROGRAM}")
+    endif()
+endif()
+if(ANDROID)
+    set(FELIDAE_LIBTORCH_DEFAULT OFF)
+else()
+    set(FELIDAE_LIBTORCH_DEFAULT ON)
+endif()
+option(FELIDAE_ENABLE_LIBTORCH
+    "Enable mandatory desktop LibTorch support; disable only on targets where LibTorch is unavailable"
+    ${FELIDAE_LIBTORCH_DEFAULT})
 option(FELIDAE_ENABLE_TRAINING
     "Build explicit compiler and VM C++ model-training commands" OFF)
 option(FELIDAE_BUILD_NATIVE_MODULES
@@ -325,7 +340,11 @@ add_library(felidae_form STATIC
     src/form/BinaryIr.cpp
     src/form/IrModule.cpp
     src/form/RegisterVm.cpp
-    src/form/RuntimeTraining.cpp)
+    src/form/RuntimeTraining.cpp
+    src/form/libs/Builtin.cpp
+    src/form/libs/Csv.cpp
+    src/form/libs/Group.cpp
+    src/form/libs/Json.cpp)
 target_include_directories(felidae_form PUBLIC src)
 target_link_libraries(felidae_form PRIVATE nlohmann_json::nlohmann_json)
 felidae_enable_static_analysis(felidae_form)
@@ -354,7 +373,9 @@ felidae_enable_static_analysis(felidae_vm)
 if(FELIDAE_ENABLE_LIBTORCH)
     # The daemon owns an optional runtime-only GRU. Form itself remains free
     # of LibTorch and all compiler/parser dependencies.
-    target_sources(felidae_vm PRIVATE src/form/RuntimeStateModel.cpp)
+    target_sources(felidae_vm PRIVATE
+        src/form/LibTorchTensorRuntime.cpp
+        src/form/RuntimeStateModel.cpp)
     if(FELIDAE_ENABLE_TRAINING)
         target_sources(felidae_vm PRIVATE tools/TrainRuntimeGru.cpp)
         target_compile_definitions(felidae_vm PRIVATE FELIDAE_HAS_TRAINING=1)
@@ -567,8 +588,12 @@ if(FELIDAE_BUILD_TESTS)
     target_compile_definitions(felidae_sentencepiece_pipeline_test PRIVATE
         FELIDAE_PIPELINE_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/v2_examples/sentencepiece_pipeline.fx"
         FELIDAE_TEST_OUTPUT_DIR="${CMAKE_BINARY_DIR}/test-artifacts/sentencepiece-pipeline"
+        FELIDAE_FACT_EXPRESSION_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/v2_examples/fact_expression_result_contract.fx"
         FELIDAE_COFFEE_REASONING_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/v2_examples/coffee_vending_theorem_solver.fx"
         FELIDAE_HVAC_REASONING_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/v2_examples/air_conditioner_theorem_solver.fx")
+    target_compile_definitions(felidae_sentencepiece_pipeline_test PRIVATE
+        FELIDAE_NUMERIC_OPERATIONS_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/v2_examples/numeric_operations.fx"
+        FELIDAE_TENSOR_OPERATIONS_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/v2_examples/tensor_operations.fx")
     target_compile_options(felidae_sentencepiece_pipeline_test PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
         $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
@@ -640,9 +665,15 @@ if(FELIDAE_BUILD_TESTS)
         target_compile_definitions(felidae_mixfix_state_model_test PRIVATE FELIDAE_HAS_TORCH=1)
         target_include_directories(felidae_mixfix_state_model_test SYSTEM PRIVATE ${TORCH_INCLUDE_DIRS})
         target_link_libraries(felidae_mixfix_state_model_test PRIVATE felidae_mixfix_torch ${TORCH_LIBRARIES})
-        add_executable(felidae_libtorch_smoke_test tests/LibTorchSmoke.cpp)
+        add_executable(felidae_libtorch_smoke_test
+            tests/LibTorchSmoke.cpp
+            src/form/LibTorchTensorRuntime.cpp)
+        target_include_directories(felidae_libtorch_smoke_test PRIVATE src)
         target_include_directories(felidae_libtorch_smoke_test SYSTEM PRIVATE ${TORCH_INCLUDE_DIRS})
-        target_link_libraries(felidae_libtorch_smoke_test PRIVATE ${TORCH_LIBRARIES})
+        target_link_libraries(felidae_libtorch_smoke_test PRIVATE felidae_form ${TORCH_LIBRARIES})
+        target_compile_options(felidae_libtorch_smoke_test PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
+            $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
         add_test(NAME felidae_libtorch_smoke COMMAND felidae_libtorch_smoke_test)
         set_tests_properties(felidae_libtorch_smoke PROPERTIES
             TIMEOUT 30
@@ -698,6 +729,42 @@ if(FELIDAE_BUILD_TESTS)
     add_test(NAME felidae_ir COMMAND felidae_ir_test)
     set_tests_properties(felidae_ir PROPERTIES TIMEOUT 30)
 
+    # Exercise representative user programs through the public compiler and
+    # VM executables. Keep generated .bin files in the active build tree.
+    # External-service, training, and stress fixtures have separate
+    # prerequisites and therefore do not belong in this ordinary smoke set.
+    set(FELIDAE_RUNNABLE_V2_EXAMPLES
+        form_core_concepts
+        numeric_operations
+        tensor_operations
+        json_csv_operations
+        group_operations
+        degree_profiles
+        hierarchical_designation_filter
+        fact_expression_result_contract
+        coffee_vending_theorem_solver
+        air_conditioner_theorem_solver
+        mixfix_ir_roundtrip)
+    foreach(example IN LISTS FELIDAE_RUNNABLE_V2_EXAMPLES)
+        add_test(NAME felidae_example_${example}
+            COMMAND "${CMAKE_COMMAND}"
+                "-DFELIDAE_COMPILER=$<TARGET_FILE:felidae_compiler>"
+                "-DFELIDAE_VM=$<TARGET_FILE:felidae_vm>"
+                "-DFELIDAE_EXAMPLE=${CMAKE_SOURCE_DIR}/v2_examples/${example}.fx"
+                "-DFELIDAE_BINARY_DIR=$<TARGET_FILE_DIR:felidae_compiler>"
+                -P "${CMAKE_SOURCE_DIR}/cmake/RunFelidaeExample.cmake")
+        set_tests_properties(felidae_example_${example} PROPERTIES
+            TIMEOUT 30
+            LABELS "examples;integration")
+    endforeach()
+    if(FELIDAE_ENABLE_LIBTORCH)
+        set_tests_properties(felidae_example_tensor_operations PROPERTIES
+            PASS_REGULAR_EXPRESSION "dot: 32")
+    else()
+        set_tests_properties(felidae_example_tensor_operations PROPERTIES
+            DISABLED TRUE)
+    endif()
+
     # Tests are deliberately opt-in at build time.  A normal IDE build should
     # compile only the two production executables and their required
     # dependencies; `--target felidae_tests` builds the complete test suite.
@@ -714,7 +781,8 @@ if(FELIDAE_BUILD_TESTS)
     foreach(test_target IN LISTS FELIDAE_TEST_TARGETS)
         set_property(TARGET ${test_target} PROPERTY EXCLUDE_FROM_ALL TRUE)
     endforeach()
-    add_custom_target(felidae_tests DEPENDS ${FELIDAE_TEST_TARGETS})
+    add_custom_target(felidae_tests
+        DEPENDS ${FELIDAE_TEST_TARGETS} felidae_compiler felidae_vm)
 endif()
 
 # Form executes verified Felidae IR and has no production native-extension
@@ -728,16 +796,11 @@ set_target_properties(felidae_smoke PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/smoke"
 )
 
-add_library(csv SHARED native_modules/csv/NativeCsv.cpp)
 add_library(db_native SHARED native_modules/db/NativeDb.cpp)
 add_library(http SHARED native_modules/http/NativeHttp.cpp)
 add_library(process SHARED native_modules/process/NativeProcess.cpp)
 add_library(set_native SHARED native_modules/set/NativeSet.cpp)
 add_library(group_native SHARED native_modules/group/NativeGroup.cpp)
-set_target_properties(csv PROPERTIES OUTPUT_NAME csv
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/csv"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/csv"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/csv")
 set_target_properties(db_native PROPERTIES OUTPUT_NAME db
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/db"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/db"
@@ -815,7 +878,6 @@ function(felidae_native_manifest target module role)
 endfunction()
 
 felidae_native_manifest(felidae_smoke smoke SMOKE)
-felidae_native_manifest(csv csv CSV)
 felidae_native_manifest(db_native db DB)
 felidae_native_manifest(http http HTTP)
 felidae_native_manifest(process process PROCESS)
@@ -845,7 +907,7 @@ foreach(felidae_quality_target IN ITEMS
         felidae_form felidae_mixfix_torch felidae_compiler felidae_vm felidae_debug
         felidae_sentencepiece_model_test felidae_sentencepiece_pipeline_test
         felidae_mixfix_state_model_test
-        felidae_smoke csv db_native http process set_native group_native wordnet
+        felidae_smoke db_native http process set_native group_native wordnet
         fact plot gtk qt)
     if(TARGET ${felidae_quality_target})
         felidae_enable_quality_warnings(${felidae_quality_target})
