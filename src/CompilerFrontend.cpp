@@ -97,8 +97,14 @@ Program parseProgramText(std::string text,
   IntegerTokenList input(felidaeSentencePieceModel(), std::move(text));
   // Mixfix declarations and uses share one parser-owned registry while each
   // physical source line is independently SentencePiece-encoded.
-  return IntegerParser(input, std::move(operators), options.mixfixModel)
-      .parseProgram();
+  IntegerParser parser(input, std::move(operators), options.mixfixModel);
+  auto program = parser.parseProgram();
+  if (options.warnings) {
+    const auto &collected = parser.warnings();
+    options.warnings->insert(options.warnings->end(), collected.begin(),
+                             collected.end());
+  }
+  return program;
 }
 
 Program parseProgramFile(const fs::path &path, const CompilerOptions &options) {

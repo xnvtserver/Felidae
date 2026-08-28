@@ -3,6 +3,7 @@
 #include "BinaryIr.h"
 #include "RuntimeTraining.h"
 #include "SemanticOperation.h"
+#include "../ModelStore.h"
 
 #include <fstream>
 #include <optional>
@@ -16,20 +17,6 @@
 
 namespace Felidae {
 namespace {
-std::string manifestValue(const std::filesystem::path &manifestPath,
-                          const std::string &wanted) {
-  std::ifstream manifest(manifestPath);
-  if (!manifest)
-    throw IrError("model manifest is unavailable: " + manifestPath.string());
-  std::string line;
-  while (std::getline(manifest, line)) {
-    const auto separator = line.find('=');
-    if (separator != std::string::npos && line.substr(0, separator) == wanted)
-      return line.substr(separator + 1);
-  }
-  throw IrError("model manifest omits " + wanted);
-}
-
 std::vector<std::int64_t> runtimeInputIds(
     std::uint16_t operation, std::span<const RuntimeValueKind> inputKinds,
     std::span<const PieceSequence> factTypes,
@@ -269,13 +256,15 @@ GruRuntimeStateModel::loadVersioned(Configuration c,
   };
   expect("model_version", "runtime-gru-v1");
   expect("backend", "torchscript-gru");
+  // Checked against LANGUAGE_VERSION (Version.h), the one source of truth
+  // for every version this project reports -- there is no separate binary
+  // IR format version to keep in sync with it.
+  expect("ir_binary_version", LANGUAGE_VERSION);
   expect("opcode_vocabulary_version", "felidae-ir-v13");
   expect("symbol_encoding", "sentencepiece-sequence-v1");
   expect("architecture", "gru-runtime-v1");
   expect("training_schema", "felidae-runtime-operation-v8");
-  if (std::stoull(manifestValue(manifest, "ir_binary_version")) !=
-          kBinaryIrVersion ||
-      std::stoll(manifestValue(manifest, "input_vocabulary")) !=
+  if (std::stoll(manifestValue(manifest, "input_vocabulary")) !=
           c.inputVocabularySize ||
       std::stoll(manifestValue(manifest, "output_vocabulary")) !=
           c.outputVocabularySize ||
@@ -533,7 +522,7 @@ void GruRuntimeStateModel::exportTorchScript(
   manifest
       << "model_version=runtime-gru-v1\nbackend=torchscript-gru\nir_binary_"
          "version="
-      << kBinaryIrVersion
+      << LANGUAGE_VERSION
       << "\nopcode_vocabulary_version=felidae-ir-v13\nsymbol_encoding="
          "sentencepiece-sequence-v1\narchitecture=gru-runtime-v1\ntraining_"
          "schema=felidae-runtime-operation-v8\ninput_vocabulary="

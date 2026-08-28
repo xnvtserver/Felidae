@@ -8,7 +8,6 @@
 #include "form/BinaryIr.h"
 
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -37,17 +36,6 @@ std::optional<Options> parseInput(int argc, char** argv) {
     }
     if (options.input.empty()) throw std::runtime_error("felidae_compiler requires a .fx source file");
     return options;
-}
-
-std::string manifestValue(const fs::path& manifest, const char* key) {
-    std::ifstream input(manifest);
-    if (!input) throw std::runtime_error("cannot open mixfix model manifest: " + manifest.string());
-    std::string line;
-    while (std::getline(input, line)) {
-        const auto equals = line.find('=');
-        if (equals != std::string::npos && line.substr(0, equals) == key) return line.substr(equals + 1);
-    }
-    throw std::runtime_error(std::string("mixfix model manifest omits ") + key);
 }
 
 void printHelp() {
@@ -114,6 +102,8 @@ int main(int argc, char** argv) {
             throw std::runtime_error("felidae_compiler accepts only .fx source files");
         }
         CompilerOptions compilerOptions;
+        std::vector<AstDiagnostic> warnings;
+        compilerOptions.warnings = &warnings;
 #ifdef FELIDAE_HAS_TORCH
         std::optional<GruMixfixStateModel> mixfixModel;
         if (input->mixfixModelDirectory) {
@@ -130,6 +120,10 @@ int main(int argc, char** argv) {
         if (input->mixfixModelDirectory) throw std::runtime_error("this compiler build has no LibTorch mixfix support");
 #endif
         auto module = verifyIrModule(compileProgramFileToIr(source, compilerOptions));
+        for (const auto& warning : warnings) {
+            std::cerr << source.string() << ":" << warning.line << ":" << warning.column
+                      << ": warning: " << warning.message << " [" << warning.code << "]\n";
+        }
         // Build artifacts never modify example/source directories or a staged
         // distribution. The caller's existing build/ directory is the one
         // canonical artifact location for both a developer build and the
