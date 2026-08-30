@@ -165,11 +165,12 @@ int Felidae::runRuntimeGruTraining(int argc, char **argv) {
     const std::filesystem::path output(argv[2]);
     std::filesystem::create_directories(output);
     model.saveCheckpoint(output / "runtime-gru.ckpt");
-    model.exportTorchScript(output / "runtime-gru.pt");
+    const auto sentencePieceIdentity = felidaeSentencePieceModelIdentity();
+    model.exportTorchScript(output / "runtime-gru.pt", sentencePieceIdentity);
     // Treat export as successful only when the production manifest gate
     // can load these exact weights again.
     auto verified = Felidae::GruRuntimeStateModel::loadVersioned(
-        configuration, vocabulary, output);
+        configuration, vocabulary, output, sentencePieceIdentity);
     (void)verified;
     std::cout << std::filesystem::absolute(output / "runtime-gru.pt")
                      .lexically_normal()

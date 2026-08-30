@@ -218,8 +218,13 @@ public:
 };
 
 GruRuntimeStateModel::GruRuntimeStateModel(
+    Configuration c, std::vector<RuntimeOutputToken> vocabulary)
+    : GruRuntimeStateModel(std::move(c), std::move(vocabulary), {},
+                           VersionedArtifact{}) {}
+
+GruRuntimeStateModel::GruRuntimeStateModel(
     Configuration c, std::vector<RuntimeOutputToken> vocabulary,
-    const std::filesystem::path &artifact)
+    const std::filesystem::path &artifact, VersionedArtifact)
     : configuration_(c), outputVocabulary_(std::move(vocabulary)),
       implementation_(
           std::make_unique<Implementation>(configuration_, artifact)) {
@@ -244,39 +249,49 @@ GruRuntimeStateModel::GruRuntimeStateModel(GruRuntimeStateModel &&) noexcept =
 GruRuntimeStateModel &
 GruRuntimeStateModel::operator=(GruRuntimeStateModel &&) noexcept = default;
 
-GruRuntimeStateModel
-GruRuntimeStateModel::loadVersioned(Configuration c,
-                                    std::vector<RuntimeOutputToken> vocabulary,
-                                    const std::filesystem::path &directory) {
-  const auto manifest = directory / "runtime-manifest.txt";
-  const auto expect = [&](const char *key, const char *value) {
-    if (manifestValue(manifest, key) != value)
-      throw IrError(std::string("runtime SSM manifest is incompatible: ") +
-                    key);
-  };
-  expect("model_version", "runtime-gru-v1");
-  expect("backend", "torchscript-gru");
+GruRuntimeStateModel GruRuntimeStateModel::loadVersioned(
+    Configuration c, std::vector<RuntimeOutputToken> vocabulary,
+    const std::filesystem::path &directory,
+    std::string_view expectedSentencePieceIdentity) {
+  const auto manifest =
+      readModelManifest(directory / "runtime-manifest.txt");
+  constexpr std::string_view modelName = "runtime SSM";
+  requireManifestValue(manifest, "artifact_format_version",
+                       kRuntimeArtifactFormatVersion, modelName);
+  requireManifestValue(manifest, "model_family", kRuntimeModelFamily,
+                       modelName);
+  requireManifestValue(manifest, "model_version", kRuntimeModelVersion,
+                       modelName);
+  requireManifestValue(manifest, "backend", "torchscript-gru", modelName);
+  requireManifestValue(manifest, "tokenizer_contract",
+                       kRuntimeTokenizerContract, modelName);
+  requireManifestValue(manifest, "sentencepiece_model_identity",
+                       expectedSentencePieceIdentity, modelName);
+  requireManifestValue(manifest, "decoder_contract", kRuntimeDecoderContract,
+                       modelName);
   // Checked against LANGUAGE_VERSION (Version.h), the one source of truth
   // for every version this project reports -- there is no separate binary
   // IR format version to keep in sync with it.
-  expect("ir_binary_version", LANGUAGE_VERSION);
-  expect("opcode_vocabulary_version", "felidae-ir-v13");
-  expect("symbol_encoding", "sentencepiece-sequence-v1");
-  expect("architecture", "gru-runtime-v1");
-  expect("training_schema", "felidae-runtime-operation-v8");
-  if (std::stoll(manifestValue(manifest, "input_vocabulary")) !=
+  requireManifestValue(manifest, "ir_binary_version", LANGUAGE_VERSION,
+                       modelName);
+  requireManifestValue(manifest, "opcode_vocabulary_version", "felidae-ir-v13",
+                       modelName);
+  requireManifestValue(manifest, "training_schema",
+                       "felidae-runtime-operation-v8", modelName);
+  if (manifestInteger(manifest, "input_vocabulary", modelName) !=
           c.inputVocabularySize ||
-      std::stoll(manifestValue(manifest, "output_vocabulary")) !=
+      manifestInteger(manifest, "output_vocabulary", modelName) !=
           c.outputVocabularySize ||
-      std::stoll(manifestValue(manifest, "embedding_size")) !=
+      manifestInteger(manifest, "embedding_size", modelName) !=
           c.embeddingSize ||
-      std::stoll(manifestValue(manifest, "hidden_size")) != c.hiddenSize ||
-      std::stoll(manifestValue(manifest, "layer_count")) != c.layerCount)
+      manifestInteger(manifest, "hidden_size", modelName) != c.hiddenSize ||
+      manifestInteger(manifest, "layer_count", modelName) != c.layerCount)
     throw IrError("runtime SSM manifest configuration is incompatible");
   const auto artifact = directory / "runtime-gru.pt";
   if (!std::filesystem::is_regular_file(artifact))
     throw IrError("runtime SSM artifact is unavailable");
-  return GruRuntimeStateModel(std::move(c), std::move(vocabulary), artifact);
+  return GruRuntimeStateModel(std::move(c), std::move(vocabulary), artifact,
+                              VersionedArtifact{});
 }
 
 std::shared_ptr<void> GruRuntimeStateModel::createExecutionState() {
@@ -470,7 +485,8 @@ void GruRuntimeStateModel::saveCheckpoint(
 }
 
 void GruRuntimeStateModel::exportTorchScript(
-    const std::filesystem::path &artifactPath) const {
+    const std::filesystem::path &artifactPath,
+    std::string_view sentencePieceIdentity) const {
 #ifdef FELIDAE_HAS_TORCH
   if (!implementation_->network)
     throw IrError("runtime TorchScript export requires a training model");
@@ -478,6 +494,11 @@ void GruRuntimeStateModel::exportTorchScript(
     throw IrError("runtime TorchScript artifact path is empty");
   if (artifactPath.extension() != ".pt") {
     throw IrError("runtime TorchScript artifact must use the .pt extension");
+  }
+  if (!sentencePieceIdentity.starts_with("sha256:") ||
+      sentencePieceIdentity.size() != 71) {
+    throw IrError("runtime TorchScript export requires an exact SHA-256 "
+                  "SentencePiece identity");
   }
   const auto parent = artifactPath.parent_path();
   if (!parent.empty())
@@ -519,20 +540,24 @@ void GruRuntimeStateModel::exportTorchScript(
   std::ofstream manifest(parent / "runtime-manifest.txt", std::ios::trunc);
   if (!manifest)
     throw IrError("cannot write runtime SSM manifest");
-  manifest
-      << "model_version=runtime-gru-v1\nbackend=torchscript-gru\nir_binary_"
-         "version="
-      << LANGUAGE_VERSION
-      << "\nopcode_vocabulary_version=felidae-ir-v13\nsymbol_encoding="
-         "sentencepiece-sequence-v1\narchitecture=gru-runtime-v1\ntraining_"
-         "schema=felidae-runtime-operation-v8\ninput_vocabulary="
-      << configuration_.inputVocabularySize
-      << "\noutput_vocabulary=" << configuration_.outputVocabularySize
-      << "\nembedding_size=" << configuration_.embeddingSize
-      << "\nhidden_size=" << configuration_.hiddenSize
-      << "\nlayer_count=" << configuration_.layerCount << "\n";
+  manifest << "artifact_format_version=" << kRuntimeArtifactFormatVersion
+           << "\nmodel_family=" << kRuntimeModelFamily
+           << "\nmodel_version=" << kRuntimeModelVersion
+           << "\nbackend=torchscript-gru\ntokenizer_contract="
+           << kRuntimeTokenizerContract
+           << "\nsentencepiece_model_identity=" << sentencePieceIdentity
+           << "\ndecoder_contract=" << kRuntimeDecoderContract
+           << "\nir_binary_version=" << LANGUAGE_VERSION
+           << "\nopcode_vocabulary_version=felidae-ir-v13\ntraining_schema="
+              "felidae-runtime-operation-v8\ninput_vocabulary="
+           << configuration_.inputVocabularySize
+           << "\noutput_vocabulary=" << configuration_.outputVocabularySize
+           << "\nembedding_size=" << configuration_.embeddingSize
+           << "\nhidden_size=" << configuration_.hiddenSize
+           << "\nlayer_count=" << configuration_.layerCount << "\n";
 #else
   (void)artifactPath;
+  (void)sentencePieceIdentity;
   throw IrError(
       "runtime GRU TorchScript export requires FELIDAE_ENABLE_LIBTORCH=ON");
 #endif

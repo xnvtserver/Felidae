@@ -56,6 +56,14 @@ inline constexpr std::size_t kMaximumMixfixRegisters = 64;
 inline constexpr std::size_t kMaximumMixfixReferences = 64;
 inline constexpr std::string_view kMixfixIrVocabularyVersion =
     "felidae-compiler-ir-v4";
+inline constexpr std::string_view kMixfixArtifactFormatVersion = "1";
+inline constexpr std::string_view kMixfixModelFamily =
+    "felidae-compiler-mixfix-gru";
+inline constexpr std::string_view kMixfixModelVersion = "mixfix-gru-v2";
+inline constexpr std::string_view kMixfixTokenizerContract =
+    "sentencepiece-id-sequence-v1";
+inline constexpr std::string_view kMixfixDecoderContract =
+    "encode-once-decode-step-v1";
 // Three decisions, End, every real opcode, fixed registers, and four bounded
 // reference classes. Training artifacts must use this exact parser-owned
 // vocabulary.
@@ -91,12 +99,9 @@ public:
     bool allowRandomInitialization = false;
   };
 
-  // artifactPath is a production TorchScript module. Native C++ archives
-  // are training checkpoints only and are never accepted for inference.
-  // Constructing this backend in a build
-  // without FELIDAE_ENABLE_LIBTORCH gives a clear runtime error.
-  GruMixfixStateModel(Configuration configuration,
-                      const std::filesystem::path &artifactPath);
+  // Constructs only an explicitly enabled, randomly initialized training
+  // model. Persisted inference artifacts must pass through loadVersioned().
+  explicit GruMixfixStateModel(Configuration configuration);
   ~GruMixfixStateModel() override;
 
   GruMixfixStateModel(GruMixfixStateModel &&) noexcept;
@@ -108,7 +113,7 @@ public:
   transform(std::span<const SentencePieceId> input,
             const MixfixContext &context) override;
 
-  // Validates the C++-generated manifest and artifact hash before loading.
+  // Validates the complete C++-generated artifact contract before loading.
   // expectedSentencePieceIdentity is supplied by the parser/model owner.
   static GruMixfixStateModel
   loadVersioned(Configuration configuration,
@@ -133,6 +138,10 @@ public:
   void exportTorchScript(const std::filesystem::path &artifactPath) const;
 
 private:
+  struct VersionedArtifact {};
+  GruMixfixStateModel(Configuration configuration,
+                      const std::filesystem::path &artifactPath,
+                      VersionedArtifact);
   class Implementation;
   Configuration configuration_;
   std::unique_ptr<Implementation> implementation_;

@@ -849,11 +849,10 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
   byte_ = start;
   piece_ = startPiece;
   auto left = parseExpression();
-  std::vector<QualifiedName> designations;
   if (match(TokenId::AS)) {
-    do {
-      designations.push_back(consumeQualifiedName());
-    } while (match(TokenId::COMMA));
+    throw IntegerParserError(
+        "postfix 'as' fact designations are deprecated; use concrete fact "
+        "type where/select operations");
   }
   if (const auto comparison =
           std::dynamic_pointer_cast<OperatorExpression>(left);
@@ -880,10 +879,6 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
   if (!term)
     throw IntegerParserError("Expected a predicate call or comparison goal");
   Call call(term->name, term->nameId, term->args, term->builtinId);
-  for (auto &designation : designations) {
-    call.designations.push_back(std::move(designation.spelling));
-    call.designationIds.push_back(designation.nameId);
-  }
   auto result = std::make_shared<CallGoal>(std::move(call));
   stamp(result, begin, byte_);
   return result;
@@ -1016,11 +1011,9 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
   Call head(clauseName.spelling, clauseName.nameId, parseArguments(),
             clauseName.builtinId);
   if (match(TokenId::AS)) {
-    do {
-      const auto designation = consumeQualifiedName();
-      head.designations.push_back(designation.spelling);
-      head.designationIds.push_back(designation.nameId);
-    } while (match(TokenId::COMMA));
+    throw IntegerParserError(
+        "postfix 'as' fact designations are deprecated; use concrete fact "
+        "type where/select operations");
   }
   std::vector<std::shared_ptr<Goal>> body;
   std::vector<std::vector<std::shared_ptr<Goal>>> fallbackBranches;
@@ -1061,8 +1054,6 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
   auto result = std::make_shared<ClauseStmt>(
       std::move(head), std::move(parentNames), std::move(body),
       std::move(fallbackBranches), emptyDeclaration, kind);
-  result->designations = result->head.designations;
-  result->designationIds = result->head.designationIds;
   if (!annotations.empty() && result->clauseKind != ClauseKind::Method) {
     throw IntegerParserError(
         "Annotations can only be applied to complete method declarations");
@@ -1945,8 +1936,6 @@ IntegerParser::resolveMixfixMethod(const OperatorExpression &expression) const {
     if (const auto map = std::dynamic_pointer_cast<MapExpr>(expression);
         map && !map->factType.empty())
       return LanguageTypeId::Fact;
-    if (std::dynamic_pointer_cast<FactSelectionExpr>(expression))
-      return LanguageTypeId::Fact;
     if (const auto operation =
             std::dynamic_pointer_cast<OperatorExpression>(expression);
         operation && operation->coreOperator == CoreOperator::Unknown)
@@ -2056,12 +2045,6 @@ SourceSpan IntegerParser::span(std::size_t begin, std::size_t end) const {
   result.endLine = endLine;
   result.endColumn = endColumn;
   return result;
-}
-
-void IntegerParser::warn(std::size_t begin, std::size_t end, std::string code,
-                         std::string message) const {
-  warnings_.push_back(diagnosticForSpan(span(begin, end), "warning",
-                                        std::move(code), std::move(message)));
 }
 
 std::pair<int, int> IntegerParser::sourcePosition(std::size_t offset) const {

@@ -56,11 +56,6 @@ public:
                                           std::size_t pastLastPiece) const;
     bool startsQuery();
     const IntegerParserMetrics& metrics() const noexcept { return metrics_; }
-    // Non-fatal diagnostics accumulated while parsing (e.g. a discouraged but
-    // legal mixfix style). Distinct from IntegerParserError, which is always
-    // fatal; a caller that ignores this vector loses nothing it had before.
-    const std::vector<AstDiagnostic>& warnings() const noexcept { return warnings_; }
-
 private:
     struct QualifiedName {
         std::string spelling;
@@ -82,9 +77,6 @@ private:
     std::size_t byte_ = 0;
     std::size_t recursionDepth_ = 0;
     IntegerParserMetrics metrics_;
-    // mutable: a warning can originate from a const query such as
-    // resolveMixfixMethod(), which does not otherwise mutate parser state.
-    mutable std::vector<AstDiagnostic> warnings_;
     std::vector<std::size_t> lineStarts_;
     static constexpr std::size_t kMaximumRecursionDepth = 512;
     static constexpr std::size_t kMaximumIterations = 1'000'000;
@@ -143,7 +135,6 @@ private:
     std::size_t sourceLineIndent(std::size_t offset) const;
     void consumeStatementTerminator(std::size_t statementBegin);
     SourceSpan span(std::size_t begin, std::size_t end) const;
-    void warn(std::size_t begin, std::size_t end, std::string code, std::string message) const;
     std::pair<int, int> sourcePosition(std::size_t offset) const;
     std::size_t sourceOffset(int line, int column) const;
     void stamp(const std::shared_ptr<AstNode>& node, std::size_t begin, std::size_t end) const;

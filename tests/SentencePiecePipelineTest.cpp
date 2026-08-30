@@ -269,14 +269,14 @@ int main() {
       "\"root\"))\n");
   assert(std::get<double>(executeModule(hierarchyModule)) == 1.0);
 
-  const auto designatedHierarchyModule = Felidae::compileProgramTextToIr(
-      "Animal(name: \"root\") as animals\n"
+  const auto queriedHierarchyModule = Felidae::compileProgramTextToIr(
+      "Animal(name: \"root\")\n"
       "Dog extend Animal(name: \"dog\")\n"
       "keep(fact: any) => return fact\n"
-      "main() => return for_each_fact(animals, keep)\n");
-  const auto designatedFacts =
-      std::get<Felidae::VmArrayPtr>(executeModule(designatedHierarchyModule));
-  assert(designatedFacts && designatedFacts->values.size() == 2);
+      "main() => return for_each_fact(Animal, keep)\n");
+  const auto queriedFacts =
+      std::get<Felidae::VmArrayPtr>(executeModule(queriedHierarchyModule));
+  assert(queriedFacts && queriedFacts->values.size() == 2);
 
   const auto temporalModule = Felidae::compileProgramTextToIr(
       "Event(name: \"first\", effective_at: 10, priority: 1)\n"
@@ -784,6 +784,26 @@ int main() {
       executeModuleDirect(repeatedFactsModule, repeatedFactsRuntime);
   assert(displayModuleValue(repeatedFactsModule, repeatedFactsResult) ==
          "[red, blue]");
+
+  const auto concreteFactQueryModule = Felidae::compileProgramTextToIr(
+      "School(name: \"North\", city: \"BLR\", active: 1.0)\n"
+      "School(name: \"West\", city: \"MYS\", active: 0.0)\n"
+      "School(name: \"Lake\", city: \"BLR\", active: 1.0)\n"
+      "main() =>\n"
+      "  selected := School.where(city: \"BLR\", active: 1.0)\n"
+      "  return (all: School.all(), selected: selected, "
+      "all_count: School.count(), selected_count: count(data: selected))\n"
+      "end\n");
+  Felidae::FelidaeKnowledgeRuntime concreteFactQueryRuntime;
+  const auto concreteFactQueryResult = displayModuleValue(
+      concreteFactQueryModule,
+      executeModuleDirect(concreteFactQueryModule, concreteFactQueryRuntime));
+  assert(concreteFactQueryResult.find("all_count: 3.0") != std::string::npos);
+  assert(concreteFactQueryResult.find("selected_count: 2.0") !=
+         std::string::npos);
+  assert(concreteFactQueryResult.find("North") != std::string::npos);
+  assert(concreteFactQueryResult.find("Lake") != std::string::npos);
+  assert(concreteFactQueryResult.find("West") != std::string::npos);
 
   const auto repeatedFieldsModule = Felidae::compileProgramTextToIr(
       "Color(value: \"red\", tag: \"warm\", tag: \"primary\").\n"

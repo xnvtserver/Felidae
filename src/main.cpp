@@ -37,7 +37,6 @@ std::optional<Options> parseInput(int argc, char** argv) {
     if (options.input.empty()) throw std::runtime_error("felidae_compiler requires a .fx source file");
     return options;
 }
-
 void printHelp() {
     std::cout << LANGUAGE_NAME << " compiler v" << LANGUAGE_VERSION << "\n\n"
               << "Usage: felidae_compiler [--mixfix-model models/mixfix] program.fx\n"
@@ -102,16 +101,14 @@ int main(int argc, char** argv) {
             throw std::runtime_error("felidae_compiler accepts only .fx source files");
         }
         CompilerOptions compilerOptions;
-        std::vector<AstDiagnostic> warnings;
-        compilerOptions.warnings = &warnings;
 #ifdef FELIDAE_HAS_TORCH
         std::optional<GruMixfixStateModel> mixfixModel;
         if (input->mixfixModelDirectory) {
-            const auto manifest = *input->mixfixModelDirectory / "manifest.txt";
             GruMixfixStateModel::Configuration configuration;
-            configuration.inputVocabularySize = std::stoll(manifestValue(manifest, "input_vocabulary"));
-            configuration.outputVocabularySize = std::stoll(manifestValue(manifest, "output_vocabulary"));
-            configuration.beginToken = std::stoll(manifestValue(manifest, "begin_token"));
+            configuration.inputVocabularySize = felidaeSentencePieceModel().GetPieceSize();
+            configuration.outputVocabularySize =
+                static_cast<std::int64_t>(kMixfixStructuralVocabularySize);
+            configuration.beginToken = 0;
             mixfixModel.emplace(GruMixfixStateModel::loadVersioned(
                 configuration, *input->mixfixModelDirectory, felidaeSentencePieceModelIdentity()));
             compilerOptions.mixfixModel = &*mixfixModel;
@@ -120,10 +117,6 @@ int main(int argc, char** argv) {
         if (input->mixfixModelDirectory) throw std::runtime_error("this compiler build has no LibTorch mixfix support");
 #endif
         auto module = verifyIrModule(compileProgramFileToIr(source, compilerOptions));
-        for (const auto& warning : warnings) {
-            std::cerr << source.string() << ":" << warning.line << ":" << warning.column
-                      << ": warning: " << warning.message << " [" << warning.code << "]\n";
-        }
         // Build artifacts never modify example/source directories or a staged
         // distribution. The caller's existing build/ directory is the one
         // canonical artifact location for both a developer build and the

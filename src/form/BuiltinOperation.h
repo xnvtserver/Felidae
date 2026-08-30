@@ -64,18 +64,6 @@ enum class BuiltinId : std::uint16_t {
   FileAppendFile,
   FileExists,
   FileDeleteFile,
-  FactAll,
-  FactFind,
-  FactCount,
-  FactFirst,
-  FactTypes,
-  FactFields,
-  FactExists,
-  FactSelect,
-  FactMaterialize,
-  FactRelease,
-  FactTimeline,
-  FactReferences,
   DbSync,
   CommonAncestors,
   LowestCommonAncestor,
@@ -190,9 +178,17 @@ enum class BuiltinId : std::uint16_t {
 constexpr std::optional<std::size_t>
 builtinOperationArity(BuiltinId operation) noexcept {
   switch (operation) {
+  case BuiltinId::Count:
+  case BuiltinId::Sum:
+  case BuiltinId::Average:
+  case BuiltinId::Min:
+  case BuiltinId::Max:
+  case BuiltinId::ArrayLen:
+  case BuiltinId::FileReadFile:
   case BuiltinId::JsonParse:
   case BuiltinId::JsonKeys:
   case BuiltinId::JsonToText:
+  case BuiltinId::DbSync:
   case BuiltinId::CsvParse:
   case BuiltinId::CsvToText:
   case BuiltinId::SetUnion:
@@ -205,6 +201,7 @@ builtinOperationArity(BuiltinId operation) noexcept {
   case BuiltinId::SetDisjoint:
   case BuiltinId::SetCardinality:
     return 1;
+  case BuiltinId::ArrayGet:
   case BuiltinId::JsonGet:
   case BuiltinId::JsonHas:
   case BuiltinId::JsonRemove:
@@ -237,9 +234,25 @@ constexpr std::optional<std::size_t>
 builtinOperationArgumentIndex(BuiltinId operation,
                               std::string_view name) noexcept {
   switch (operation) {
+  case BuiltinId::Count:
+  case BuiltinId::Sum:
+  case BuiltinId::Average:
+  case BuiltinId::Min:
+  case BuiltinId::Max:
+  case BuiltinId::ArrayLen:
+    return name == "data" ? std::optional<std::size_t>{0} : std::nullopt;
+  case BuiltinId::FileReadFile:
+    return name == "file" ? std::optional<std::size_t>{0} : std::nullopt;
+  case BuiltinId::ArrayGet:
+    if (name == "data")
+      return 0;
+    return name == "position" ? std::optional<std::size_t>{1}
+                               : std::nullopt;
   case BuiltinId::JsonParse:
   case BuiltinId::CsvParse:
     return name == "data" ? std::optional<std::size_t>{0} : std::nullopt;
+  case BuiltinId::DbSync:
+    return name == "file" ? std::optional<std::size_t>{0} : std::nullopt;
   case BuiltinId::JsonGet:
   case BuiltinId::JsonHas:
   case BuiltinId::JsonRemove:

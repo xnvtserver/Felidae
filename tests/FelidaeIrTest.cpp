@@ -461,19 +461,37 @@ int main() {
       std::array<VmValue, 1>{testText("name,score\nAda,42\n")}, noSymbols,
       textCodec);
   assert(std::get<VmArrayPtr>(csvRows)->values.size() == 1);
+  assert(std::get<double>(Form::evaluateBuiltin(
+             BuiltinId::ArrayLen, std::array<VmValue, 1>{csvRows}, noSymbols,
+             textCodec)) == 1.0);
+  assert(std::get<VmTextMapPtr>(Form::evaluateBuiltin(
+             BuiltinId::ArrayGet,
+             std::array<VmValue, 2>{csvRows, VmValue{0.0}}, noSymbols,
+             textCodec))
+             ->entries.size() == 2);
+  auto aggregateValues = std::make_shared<VmArray>();
+  aggregateValues->values = {2.0, 4.0, 6.0};
+  assert(std::get<double>(Form::evaluateBuiltin(
+             BuiltinId::Sum, std::array<VmValue, 1>{aggregateValues},
+             noSymbols, textCodec)) == 12.0);
+  assert(std::get<double>(Form::evaluateBuiltin(
+             BuiltinId::Average, std::array<VmValue, 1>{aggregateValues},
+             noSymbols, textCodec)) == 4.0);
   const auto csvText = Form::evaluateBuiltin(BuiltinId::CsvToText,
                                              std::array<VmValue, 1>{csvRows},
                                              noSymbols, textCodec);
   assert(testTextCodec().decode(std::get<VmText>(csvText).pieces) ==
          "name,score\nAda,42\n");
-  const auto csvFacts = Form::evaluateBuiltin(
-      BuiltinId::CsvToFacts,
-      std::array<VmValue, 2>{testText("name,score\nAda,42\n"),
-                             testText("Person")},
-      noSymbols, textCodec);
+  assert(rejects([&] {
+    (void)Form::evaluateBuiltin(
+        BuiltinId::CsvToFacts,
+        std::array<VmValue, 2>{testText("name,score\nAda,42\n"),
+                               testText("Person")},
+        noSymbols, textCodec);
+  }));
   const auto felidaeFacts = Form::evaluateBuiltin(
       BuiltinId::CsvToFelidaeFacts,
-      std::array<VmValue, 2>{csvFacts, testText("Person")}, noSymbols,
+      std::array<VmValue, 2>{csvRows, testText("Person")}, noSymbols,
       textCodec);
   assert(testTextCodec().decode(std::get<VmText>(felidaeFacts).pieces) ==
          "Person(name: \"Ada\", score: \"42\")\n");

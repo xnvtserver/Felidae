@@ -222,24 +222,30 @@ int main() {
     const auto repeatedProgram = repeatedParser.parseProgram();
     assert(repeatedProgram.clauses.size() == 2);
 
-    // `as` is an atomic grammar ID, but may also appear as an integer piece
-    // inside a longer identifier.  Context and offsets must keep all three
-    // valid forms distinct without source-character matching.
+    // `as` remains legal as a named field, but postfix fact designations are
+    // deprecated in favor of concrete type where/select queries.
     const Felidae::IntegerTokenList designationTokens(
         model, "Assessment(as: \"field\") as audited, reviewed\n");
     Felidae::IntegerParser designationParser(designationTokens);
-    const auto designationProgram = designationParser.parseProgram();
-    assert(designationProgram.clauses.size() == 1);
-    assert(designationProgram.clauses.front()->head.name == "Assessment");
-    assert(designationProgram.clauses.front()->head.args.front().name == "as");
-    assert(designationProgram.clauses.front()->designationIds.size() == 2);
+    bool designationRejected = false;
+    try {
+      (void)designationParser.parseProgram();
+    } catch (const Felidae::IntegerParserError &error) {
+      designationRejected =
+          std::string(error.what()).find("deprecated") != std::string::npos;
+    }
+    assert(designationRejected);
     const Felidae::IntegerTokenList designationQueryTokens(
         model, "? Assessment(as: \"field\") as audited");
     Felidae::IntegerParser designationQueryParser(designationQueryTokens);
-    const auto designationGoals = designationQueryParser.parseQuery();
-    const auto designationGoal = std::dynamic_pointer_cast<Felidae::CallGoal>(
-        designationGoals.front());
-    assert(designationGoal && designationGoal->call.designationIds.size() == 1);
+    designationRejected = false;
+    try {
+      (void)designationQueryParser.parseQuery();
+    } catch (const Felidae::IntegerParserError &error) {
+      designationRejected =
+          std::string(error.what()).find("deprecated") != std::string::npos;
+    }
+    assert(designationRejected);
 
     const Felidae::IntegerTokenList dottedLabelTokens(
         model, "Event(fx.effective_at: \"2025-01-01\")\n");

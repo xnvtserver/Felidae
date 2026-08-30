@@ -363,6 +363,10 @@ public:
   virtual TensorRuntime *tensorRuntime();
   virtual std::string decodeText(std::span<const PieceId> pieces) const;
   virtual PieceSequence encodeText(std::string_view text) const;
+  virtual VmText readFile(std::span<const PieceId> path) const;
+  virtual VmValue importCsvFacts(std::span<const PieceId> data,
+                                 std::span<const PieceId> type);
+  virtual double syncDatabase(std::span<const PieceId> path);
   virtual void beginExecution();
   virtual void endExecution() noexcept;
   virtual RuntimeContext makeRuntimeContext(const VmValue &systemInput) const;
@@ -416,6 +420,10 @@ public:
   TensorRuntime *tensorRuntime() override;
   std::string decodeText(std::span<const PieceId> pieces) const override;
   PieceSequence encodeText(std::string_view text) const override;
+  VmText readFile(std::span<const PieceId> path) const override;
+  VmValue importCsvFacts(std::span<const PieceId> data,
+                         std::span<const PieceId> type) override;
+  double syncDatabase(std::span<const PieceId> path) override;
   void beginExecution() override;
   void endExecution() noexcept override;
   RuntimeContext makeRuntimeContext(const VmValue &systemInput) const override;
@@ -428,6 +436,7 @@ public:
   }
 
 private:
+  IrSymbolRef internRuntimeSymbol(PieceSequence pieces);
   // A frame has no AST payload and no shared registers. RegisterVm owns the
   // fresh register vector for every invocation; the runtime owns only the
   // procedure's lexical parameter/local bindings.
@@ -448,6 +457,7 @@ private:
   VmModuleState module_;
   std::map<PieceSequence, IrSymbolRef> runtimeSymbolIds_;
   std::vector<PieceSequence> runtimeSymbolTable_;
+  std::unordered_set<IrSymbolRef> registeredFactTypes_;
   std::shared_ptr<VmFactStore> factStore_;
   RuntimeStateModel *semanticModel_ = nullptr;
   TensorRuntime *tensorRuntime_ = nullptr;

@@ -98,13 +98,7 @@ Program parseProgramText(std::string text,
   // Mixfix declarations and uses share one parser-owned registry while each
   // physical source line is independently SentencePiece-encoded.
   IntegerParser parser(input, std::move(operators), options.mixfixModel);
-  auto program = parser.parseProgram();
-  if (options.warnings) {
-    const auto &collected = parser.warnings();
-    options.warnings->insert(options.warnings->end(), collected.begin(),
-                             collected.end());
-  }
-  return program;
+  return parser.parseProgram();
 }
 
 Program parseProgramFile(const fs::path &path, const CompilerOptions &options) {

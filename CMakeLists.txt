@@ -366,6 +366,7 @@ add_library(felidae_form STATIC
     src/form/RuntimeTraining.cpp
     src/form/libs/Builtin.cpp
     src/form/libs/Csv.cpp
+    src/form/libs/Db.cpp
     src/form/libs/Group.cpp
     src/form/libs/Json.cpp
     src/form/libs/Set.cpp)
@@ -772,10 +773,11 @@ if(FELIDAE_BUILD_TESTS)
         numeric_operations
         tensor_operations
         json_csv_operations
+        csv_fact_database
         group_operations
         set_operations
         degree_profiles
-        hierarchical_designation_filter
+        hierarchical_fact_filter
         fact_expression_result_contract
         where_guard_chain
         optional_end_blocks
@@ -790,6 +792,7 @@ if(FELIDAE_BUILD_TESTS)
                 "-DFELIDAE_VM=$<TARGET_FILE:felidae_vm>"
                 "-DFELIDAE_EXAMPLE=${CMAKE_SOURCE_DIR}/v2_examples/${example}.fx"
                 "-DFELIDAE_BINARY_DIR=$<TARGET_FILE_DIR:felidae_compiler>"
+                "-DFELIDAE_RUNTIME_WORKING_DIRECTORY=${CMAKE_SOURCE_DIR}"
                 -P "${CMAKE_SOURCE_DIR}/cmake/RunFelidaeExample.cmake")
         set_tests_properties(felidae_example_${example} PROPERTIES
             TIMEOUT 30
@@ -804,6 +807,8 @@ if(FELIDAE_BUILD_TESTS)
     endif()
     set_tests_properties(felidae_example_json_csv_operations PROPERTIES
         PASS_REGULAR_EXPRESSION "name: Ada")
+    set_tests_properties(felidae_example_csv_fact_database PROPERTIES
+        PASS_REGULAR_EXPRESSION "all_count: 4.0")
     set_tests_properties(felidae_example_group_operations PROPERTIES
         PASS_REGULAR_EXPRESSION "abelian: 1.0")
     set_tests_properties(felidae_example_set_operations PROPERTIES

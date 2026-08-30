@@ -6,12 +6,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <fstream>
 #include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace Felidae {
@@ -22,19 +24,58 @@ namespace Felidae {
 // reader for that format. Do not reintroduce a second copy in a model's own
 // .cpp -- the compiler and VM SSM loaders duplicated this by hand until both
 // were folded into this function.
-inline std::string manifestValue(const std::filesystem::path& manifestPath,
-                                 const std::string& wanted) {
+using ModelManifest = std::unordered_map<std::string, std::string>;
+
+inline ModelManifest readModelManifest(const std::filesystem::path& manifestPath) {
     std::ifstream manifest(manifestPath);
     if (!manifest)
         throw IrError("model manifest is unavailable: " + manifestPath.string());
+    ModelManifest values;
     std::string line;
     while (std::getline(manifest, line)) {
         const auto separator = line.find('=');
-        if (separator != std::string::npos && line.substr(0, separator) == wanted) {
-            return line.substr(separator + 1);
-        }
+        if (separator == std::string::npos || separator == 0)
+            throw IrError("model manifest contains an invalid field");
+        if (!values.emplace(line.substr(0, separator), line.substr(separator + 1)).second)
+            throw IrError("model manifest repeats " + line.substr(0, separator));
     }
-    throw IrError("model manifest omits " + wanted);
+    if (!manifest.eof())
+        throw IrError("model manifest cannot be read: " + manifestPath.string());
+    return values;
+}
+
+inline const std::string& manifestValue(const ModelManifest& manifest,
+                                        std::string_view wanted) {
+    const auto found = manifest.find(std::string(wanted));
+    if (found != manifest.end())
+        return found->second;
+    throw IrError("model manifest omits " + std::string(wanted));
+}
+
+inline void requireManifestValue(const ModelManifest& manifest,
+                                 std::string_view key,
+                                 std::string_view expected,
+                                 std::string_view modelName) {
+    if (manifestValue(manifest, key) != expected) {
+        throw IrError(std::string(modelName) +
+                      " manifest is incompatible: " + std::string(key));
+    }
+}
+
+inline std::int64_t manifestInteger(const ModelManifest& manifest,
+                                    std::string_view key,
+                                    std::string_view modelName) {
+    const auto& text = manifestValue(manifest, key);
+    try {
+        std::size_t consumed = 0;
+        const auto value = std::stoll(text, &consumed);
+        if (consumed != text.size())
+            throw std::invalid_argument("trailing data");
+        return value;
+    } catch (const std::exception&) {
+        throw IrError(std::string(modelName) + " manifest has invalid " +
+                      std::string(key));
+    }
 }
 
 // Training artifacts have two intentional destinations.  Keeping the model in

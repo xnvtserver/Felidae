@@ -595,35 +595,18 @@ the runtime raises a clear error. `examples/web_server.fx` starts a blocking
 static-response server for GET, POST, PUT, and DELETE `/` routes.
 `process.fx` is separate from `console.fx`: console handles stdin/stdout, while
 process handles explicit trusted test commands, OS detection, and sleeps.
-`csv.parse`, `csv.toFacts`, and `csv.toText` use the vendored header-only
-rapidcsv parser/writer. `csv.toFacts` adds a `__type` field so rows can behave
-like typed fact values during explicit lambda processing. Use Felidae code to
-filter/project rows, `csv.toFelidaeFacts` to create declaration text, and
-`file.writeFile` to persist declarations such as
-`School(student: "John", class: "10c")` for later import or querying.
-The interpreter itself is the in-memory OLAP fact store. Import ordinary `.fx`
-fact sources and rule libraries as needed, then use named fact goals,
-unification, inheritance-aware methods, and `lambda(FactType, ...)` for normal
-fact reasoning; use `lambda("model", ...)` when a dynamically named or
-lowercase `.fx` model must be selected. None of these require importing
-`db.fx`. Facts are built-in
-language values: use typed goals and `lambda(FactType, ...)` to query and
-filter them, then normal array operations when one selected value is needed.
-`Fact.select(...)` remains the low-level lazy-selection API for code that
-specifically needs a reusable cursor. Import `db` only for explicit `.fx`
-fact-file connection, mutation, save, and reload workflows such as
-`db.connect`, `db.insert`, `db.updateOne`, `db.deleteOne`, `db.save`, and
-`db.sync`. It deliberately provides no collection query, filter, sort, or
-aggregate API: reload with `db.sync`, then use Felidae goals, `lambda`, set,
-group, and aggregate expressions against the in-memory fact runtime.
-Command-line `? Fact(...)` queries remain available for ad hoc inspection.
+`csv.parse` returns ordinary row maps. `csv.toFacts(data: ..., type: "School")`
+instead creates immutable native facts of a type declared in the loaded IR;
+finite numeric cells become numbers and other cells remain text. Those facts
+immediately participate in hierarchy queries and concrete type operations:
+`School.all()`, `School.select(district: "central")`, and `School.count()`.
+There is no synthetic `Fact.*` namespace or lazy `FactSelection` value.
 
-Facts returned by `Fact.all`, `Fact.first`, or `Fact.materialize` retain an
-internal stable identity for `.depends(...)` and `.relate(...)`. This identity
-is not serialized and does not change structural equality. When two stored
-facts have identical visible fields, retrieve the intended row through one of
-these APIs before attaching knowledge; a reconstructed `Type(...)` map is
-intentionally rejected as ambiguous.
+`db.sync(file: ...)` is a VM-only persistence boundary. A `.fx` target is
+rewritten as fact declarations; a `.csv` target is written through the CSV
+serializer and requires one fact type with one stable schema. Compiler parsing
+does not perform database I/O. The VM uses an atomic replacement and raises an
+explicit error when the required text or database service is absent.
 
 `probability.fx` adds common probability and statistics helpers including
 mean, variance, standard deviation, normalization, entropy, covariance,
@@ -710,10 +693,9 @@ and opposing evidence are preserved rather than averaged away. Fuzzy degree,
 confidence, probability, and similarity are separate fields and never change
 the exact truth status automatically.
 
-`Fact.select(...)` returns a lazy, snapshot-bound `FactSelection`.
-`Fact.materialize(...)` is the explicit conversion to an array. Ordinary
-in-memory reasoning needs no `db.fx` import; `db.fx` is reserved for explicit
-`.fx` source connection, mutation, save/sync, and materialization workflows.
+Concrete fact queries return ordinary arrays of retained native facts. Query
+predicates use numeric `0.0`/`1.0` truth and execute through the verified VM
+fact-iteration path; no cursor wrapper or AST runtime is involved.
 
 ## Visual Data Analysis
 
