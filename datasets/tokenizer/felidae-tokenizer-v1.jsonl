@@ -34,3 +34,49 @@
 {"schema_version":1,"id":"tensor-properties","family":"tensor","source":"main() => return (size: tensor.size(value: [[1, 2], [3, 4]]), shape: tensor.shape(value: [[1, 2], [3, 4]]), dimensions: tensor.dimensions(value: [[1, 2], [3, 4]]))"}
 {"schema_version":1,"id":"tensor-comparison","family":"tensor","source":"main() => return (difference: tensor.difference(left: [1, 4], right: [3, 1]), similarity: tensor.cosineSimilarity(left: [1, 0], right: [1, 1]))"}
 {"schema_version":1,"id":"tensor-symmetry-copy","family":"tensor","source":"main() => return (transpose: tensor.transpose(value: [[1, 2], [3, 4]]), symmetric: tensor.isSymmetric(value: [[1, 2], [2, 1]]), copy: tensor.clone(value: [1, 2, 3]))"}
+{"schema_version":1,"id":"identifier-import-prefix","family":"identifiers","source":"main() =>\n    imported := 1\n    return imported"}
+{"schema_version":1,"id":"identifier-and-prefix","family":"identifiers","source":"main() =>\n    andCommittee := 2\n    return andCommittee"}
+{"schema_version":1,"id":"identifier-or-prefix","family":"identifiers","source":"main() =>\n    orangeCount := 3\n    return orangeCount"}
+{"schema_version":1,"id":"identifier-if-prefix","family":"identifiers","source":"main() =>\n    ifRequired := 4\n    return ifRequired"}
+{"schema_version":1,"id":"identifier-true-prefix","family":"identifiers","source":"main() =>\n    trueValue := 5\n    return trueValue"}
+{"schema_version":1,"id":"identifier-not-prefix","family":"identifiers","source":"main() =>\n    notFound := 6\n    return notFound"}
+{"schema_version":1,"id":"identifier-then-prefix","family":"identifiers","source":"main() =>\n    thenClause := 7\n    return thenClause"}
+{"schema_version":1,"id":"identifier-where-prefix","family":"identifiers","source":"main() =>\n    whereClause := 8\n    return whereClause"}
+{"schema_version":1,"id":"identifier-return-prefix","family":"identifiers","source":"main() =>\n    returnValue := 9\n    return returnValue"}
+{"schema_version":1,"id":"identifier-extend-prefix","family":"identifiers","source":"main() =>\n    extendedInfo := 10\n    return extendedInfo"}
+{"schema_version":1,"id":"identifier-lambda-prefix","family":"identifiers","source":"main() =>\n    lambdaExpr := 11\n    return lambdaExpr"}
+{"schema_version":1,"id":"identifier-nil-prefix","family":"identifiers","source":"main() =>\n    nilableField := 12\n    return nilableField"}
+{"schema_version":1,"id":"identifier-as-prefix","family":"identifiers","source":"main() =>\n    asType := 13\n    return asType"}
+{"schema_version":1,"id":"identifier-false-prefix","family":"identifiers","source":"main() =>\n    falseAlarm := 14\n    return falseAlarm"}
+{"schema_version":1,"id":"identifier-else-prefix","family":"identifiers","source":"main() =>\n    elseWherePolicy := 15\n    return elseWherePolicy"}
+{"schema_version":1,"id":"identifier-sequence","family":"identifiers","source":"main() =>\n    andFilter := 1\n    orFilter := 2\n    notFilter := 3\n    return (andFilter: andFilter, orFilter: orFilter, notFilter: notFilter)"}
+{"schema_version":1,"id":"identifier-second-position","family":"identifiers","source":"main() =>\n    plain := 1\n    orFilter := 2\n    return (plain: plain, orFilter: orFilter)"}
+{"schema_version":1,"id":"csv-import-basic","family":"persistence","source":"import \"csv\"\nSchool(name: \"Existing\", district: \"north\", students: 190, active: true)\nmain() =>\n    csvData := file.readFile(file: \"datasets/examples/schools.csv\")\n    imported := csv.toFacts(data: csvData, type: \"School\")\n    return imported"}
+{"schema_version":1,"id":"csv-import-with-source","family":"persistence","source":"import \"csv\"\nmain() =>\n    csvData := file.readFile(file: \"schools.csv\")\n    imported := csv.toFacts(data: csvData, type: \"School\", source: \"schools.csv\")\n    saved := db.sync(file: \"schools.csv\")\n    return (imported: imported, saved: saved)"}
+{"schema_version":1,"id":"csv-to-text","family":"persistence","source":"import \"csv\"\nmain() => return csv.toText(data: [{name: \"Ada\", age: 32}])"}
+{"schema_version":1,"id":"csv-to-felidae-facts","family":"persistence","source":"import \"csv\"\nmain() => return csv.toFelidaeFacts(data: [{name: \"Ada\"}], type: \"Person\")"}
+{"schema_version":1,"id":"fact-query-where","family":"queries","source":"School(name: \"North\", district: \"central\", active: true)\nmain() => return School.where(district: \"central\", active: true)"}
+{"schema_version":1,"id":"fact-query-all","family":"queries","source":"School(name: \"North\", district: \"central\")\nmain() => return School.all()"}
+{"schema_version":1,"id":"fact-query-count","family":"queries","source":"School(name: \"North\", district: \"central\")\nmain() => return School.count()"}
+{"schema_version":1,"id":"fact-query-select","family":"queries","source":"School(name: \"North\", district: \"central\")\nmain() => return School.select(district: \"central\")"}
+{"schema_version":1,"id":"fact-query-lambda-and","family":"queries","source":"School(name: \"North\", district: \"central\", students: 420)\nmain() =>\n    return lambda(School, s => s.district == \"central\" and s.students > 100)"}
+{"schema_version":1,"id":"fact-query-lambda-or","family":"queries","source":"School(name: \"North\", district: \"central\")\nSchool(name: \"West\", district: \"west\")\nmain() =>\n    return lambda(School, s => s.district == \"west\" or s.district == \"central\")"}
+{"schema_version":1,"id":"guard-and","family":"guards","source":"eligible(score: number, active: number) =>\n    where score >= 70 and active == 1.0\n    return true\nelse\n    return false"}
+{"schema_version":1,"id":"guard-or","family":"guards","source":"eligible(score: number, vip: number) =>\n    where score >= 70 or vip == 1.0\n    return true\nelse\n    return false"}
+{"schema_version":1,"id":"guard-sequential","family":"guards","source":"canEnroll(age: number, hasPrereq: number) =>\n    where age >= 18\n    where hasPrereq == 1.0\n    return true\nelse\n    return false"}
+{"schema_version":1,"id":"guard-composed","family":"guards","source":"isAdult(age: number) =>\n    where age >= 18\n    return true\nelse\n    return false\ncanEnroll(age: number) =>\n    where isAdult(age: age) == true\n    return true\nelse\n    return false"}
+{"schema_version":1,"id":"aggregation-sum","family":"aggregation","source":"main() =>\n    values := [3, 1, 2]\n    return (total: sum(data: values), biggest: max(data: values), smallest: min(data: values))"}
+{"schema_version":1,"id":"aggregation-sort","family":"aggregation","source":"main() =>\n    values := [3, 1, 2]\n    return sort(data: values)"}
+{"schema_version":1,"id":"aggregation-average","family":"aggregation","source":"main() =>\n    values := [2, 4, 6]\n    return average(data: values)"}
+{"schema_version":1,"id":"hierarchy-common-ancestors","family":"hierarchy","source":"Animal(name: \"root\")\nMammal extend Animal(name: \"mammal\")\nCat extend Mammal(name: \"cat\")\nDog extend Mammal(name: \"dog\")\nmain() => return commonAncestors(left: Cat(name: \"a\"), right: Dog(name: \"b\"))"}
+{"schema_version":1,"id":"hierarchy-lowest-common-ancestor","family":"hierarchy","source":"main() => return lowestCommonAncestor(left: Cat(name: \"a\"), right: Dog(name: \"b\"))"}
+{"schema_version":1,"id":"hierarchy-relation-compare","family":"hierarchy","source":"main() => return Relation.compare(left: Cat(name: \"a\"), right: Dog(name: \"b\"), max_depth: 5)"}
+{"schema_version":1,"id":"hierarchy-propagate-fact","family":"hierarchy","source":"main() => return propagateFact(parent: Mammal(name: \"m\"), child: Cat(name: \"c\"), changes: {habitat: \"wild\"})"}
+{"schema_version":1,"id":"mixfix-multi-capture","family":"mixfix","source":"@mixfix(pattern: \"{value:number} may be Above {minimum:number}\")\nkeepWhenAbove() => return value > minimum\nmain() => return 7 maybeAbove 5"}
+{"schema_version":1,"id":"mixfix-natural-query","family":"mixfix","source":"@mixfix(pattern: \"what is {subject:obj}\")\nexplain() => return subject.text\nmain() => return what is felidae"}
+{"schema_version":1,"id":"group-validate","family":"group-theory","source":"main() => return Group:validate(elements: [0, 1, 2], operation: \"add-mod-3\")"}
+{"schema_version":1,"id":"group-abelian","family":"group-theory","source":"main() => return Group:abelian(elements: [0, 1, 2], operation: \"add-mod-3\")"}
+{"schema_version":1,"id":"set-union","family":"set-theory","source":"main() => return Set:union(left: [1, 2], right: [2, 3])"}
+{"schema_version":1,"id":"set-contains","family":"set-theory","source":"main() => return Set:contains(data: [1, 2, 3], value: 2)"}
+{"schema_version":1,"id":"operators-compound-and-or","family":"operators","source":"main() => return (a: true and false or true, b: not (true and false), c: (1 < 2) and (3 > 2))"}
+{"schema_version":1,"id":"operators-nested-parens","family":"operators","source":"main() => return ((1 + 2) * (3 - 1)) / 2"}

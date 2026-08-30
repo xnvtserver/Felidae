@@ -764,6 +764,21 @@ if(FELIDAE_BUILD_TESTS)
     add_test(NAME felidae_ir COMMAND felidae_ir_test)
     set_tests_properties(felidae_ir PROPERTIES TIMEOUT 30)
 
+    # CSV <-> Fact, round trip, multi-file ownership, and atomic db.sync
+    # against real files in a temporary output directory (no mocked
+    # persistence).
+    add_executable(felidae_db_csv_test tests/FormDbCsvTest.cpp)
+    target_link_libraries(felidae_db_csv_test PRIVATE felidae_form
+        nlohmann_json::nlohmann_json)
+    target_compile_definitions(felidae_db_csv_test PRIVATE
+        FELIDAE_TEST_OUTPUT_DIR="${CMAKE_BINARY_DIR}/test-artifacts/db-csv")
+    target_compile_options(felidae_db_csv_test PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
+        $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
+    felidae_enable_msvc_exceptions(felidae_db_csv_test)
+    add_test(NAME felidae_db_csv COMMAND felidae_db_csv_test)
+    set_tests_properties(felidae_db_csv PROPERTIES TIMEOUT 30)
+
     # Exercise representative user programs through the public compiler and
     # VM executables. Keep generated .bin files in the active build tree.
     # External-service, training, and stress fixtures have separate
@@ -784,7 +799,11 @@ if(FELIDAE_BUILD_TESTS)
         end_then_pipeline
         coffee_vending_theorem_solver
         air_conditioner_theorem_solver
-        mixfix_ir_roundtrip)
+        mixfix_ir_roundtrip
+        operator_expression_inventory
+        standard_search_algorithms
+        deep_fact_reasoning_analysis
+        selective_relationship_reasoning)
     foreach(example IN LISTS FELIDAE_RUNNABLE_V2_EXAMPLES)
         add_test(NAME felidae_example_${example}
             COMMAND "${CMAKE_COMMAND}"
@@ -807,12 +826,24 @@ if(FELIDAE_BUILD_TESTS)
     endif()
     set_tests_properties(felidae_example_json_csv_operations PROPERTIES
         PASS_REGULAR_EXPRESSION "name: Ada")
+    # renderNumber() only forces a trailing .0 on exactly 0.0/1.0 (the
+    # boolean convention); an ordinary whole number like this count prints
+    # without one, so the assertion must match that, not assume every number
+    # gets ".0".
     set_tests_properties(felidae_example_csv_fact_database PROPERTIES
-        PASS_REGULAR_EXPRESSION "all_count: 4.0")
+        PASS_REGULAR_EXPRESSION "all_count: 4, active_central_count: 2")
     set_tests_properties(felidae_example_group_operations PROPERTIES
         PASS_REGULAR_EXPRESSION "abelian: 1.0")
     set_tests_properties(felidae_example_set_operations PROPERTIES
         PASS_REGULAR_EXPRESSION "contains: 1.0")
+    set_tests_properties(felidae_example_operator_expression_inventory PROPERTIES
+        PASS_REGULAR_EXPRESSION "precedence: 14, grouped: 20, unary: -7, ordered: 1.0, unequal: 1.0, eligible: 1.0, member: Ava, pipeline: 22")
+    set_tests_properties(felidae_example_standard_search_algorithms PROPERTIES
+        PASS_REGULAR_EXPRESSION "linear_last: 63, binary_last: 63, missing: \\{linear: -1, binary: -1\\}")
+    set_tests_properties(felidae_example_deep_fact_reasoning_analysis PROPERTIES
+        PASS_REGULAR_EXPRESSION "directed_cat_tiger: \\[\\], symmetric_tiger_cat: \\[\\{from:")
+    set_tests_properties(felidae_example_selective_relationship_reasoning PROPERTIES
+        PASS_REGULAR_EXPRESSION "connected_via_signal: 1.0\\}")
     set_tests_properties(felidae_example_where_guard_chain PROPERTIES
         PASS_REGULAR_EXPRESSION "passes: 82.0, lowScore: 0.0, inactive: 0.0")
     set_tests_properties(felidae_example_optional_end_blocks PROPERTIES
@@ -829,7 +860,8 @@ if(FELIDAE_BUILD_TESTS)
         felidae_mixfix_state_model_test
         felidae_form_binary_test
         felidae_form_isolation_test
-        felidae_ir_test)
+        felidae_ir_test
+        felidae_db_csv_test)
     if(TARGET felidae_libtorch_smoke_test)
         list(APPEND FELIDAE_TEST_TARGETS felidae_libtorch_smoke_test)
     endif()
