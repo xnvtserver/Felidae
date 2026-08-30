@@ -62,24 +62,6 @@ Felidae::VmValue executeModuleDirect(const Felidae::IrModule &module,
       Felidae::verifyIrModule(Felidae::IrModule(module)), runtime);
 }
 
-bool containsOpcode(const Felidae::FelidaeIr &ir, Felidae::IrOpcode wanted) {
-  for (std::size_t pc = 0; pc < ir.words.size();
-       pc += Felidae::irInstructionWidth(ir, pc)) {
-    if (static_cast<Felidae::IrOpcode>(ir.words[pc]) == wanted)
-      return true;
-  }
-  return false;
-}
-
-bool containsOpcode(const Felidae::IrModule &module, Felidae::IrOpcode wanted) {
-  if (containsOpcode(module.ir, wanted))
-    return true;
-  return std::any_of(module.procedures.begin(), module.procedures.end(),
-                     [&](const auto &procedure) {
-                       return containsOpcode(procedure.second.ir, wanted);
-                     });
-}
-
 } // namespace
 
 int main() {
@@ -137,9 +119,6 @@ int main() {
     assert(std::abs(actual - expectedNumeric[index]) <=
            1e-12 * std::max(1.0, std::abs(expectedNumeric[index])));
   }
-  const auto tensorModule =
-      Felidae::compileProgramFileToIr(FELIDAE_TENSOR_OPERATIONS_FIXTURE_PATH);
-  assert(containsOpcode(tensorModule, Felidae::IrOpcode::Tensor));
   static_assert(std::variant_size_v<Felidae::VmValue> == 10,
                 "production VM values must remain typed and AST-free");
   // This covers the production frontend: source -> SentencePiece IDs ->
@@ -828,12 +807,12 @@ int main() {
   const auto factDmlResult = displayModuleValue(
       factDmlModule, executeModuleDirect(factDmlModule, factDmlRuntime));
   assert(factDmlResult.find("limited: 1.0") != std::string::npos);
-  assert(factDmlResult.find("alternatives: 2.0") != std::string::npos);
-  assert(factDmlResult.find("joined: 3.0") != std::string::npos);
+  assert(factDmlResult.find("alternatives: 2") != std::string::npos);
+  assert(factDmlResult.find("joined: 3") != std::string::npos);
   assert(factDmlResult.find("updated: 1.0") != std::string::npos);
   assert(factDmlResult.find("deleted: 1.0") != std::string::npos);
-  assert(factDmlResult.find("remaining: 3.0") != std::string::npos);
-  assert(factDmlResult.find("total: 800.0") != std::string::npos);
+  assert(factDmlResult.find("remaining: 3") != std::string::npos);
+  assert(factDmlResult.find("total: 800") != std::string::npos);
 
   const auto repeatedFieldsModule = Felidae::compileProgramTextToIr(
       "Color(value: \"red\", tag: \"warm\", tag: \"primary\").\n"

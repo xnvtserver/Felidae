@@ -38,6 +38,7 @@ enum class IrOpcode : std::uint8_t {
   Similarity,
   Membership,
   ForEachFact,
+  FactJoin,
   HierarchyIsA,
   HierarchyCommonAncestors,
   HierarchyLeastCommonAncestors,

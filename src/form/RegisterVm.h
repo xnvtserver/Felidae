@@ -376,7 +376,8 @@ public:
                             std::span<const VmFactPtr> right,
                             std::span<const PieceId> leftField,
                             std::span<const PieceId> rightField,
-                            std::uint8_t kind);
+                            std::uint8_t kind, IrSymbolRef joinedType,
+                            IrSymbolRef joinedLeft, IrSymbolRef joinedRight);
   virtual void registerFactType(IrSymbolRef type,
                                 std::vector<IrSymbolRef> parents);
   virtual std::vector<VmFactPtr> snapshotFacts(IrSymbolRef type);
@@ -453,8 +454,9 @@ public:
   VmValue joinFacts(std::span<const VmFactPtr> left,
                     std::span<const VmFactPtr> right,
                     std::span<const PieceId> leftField,
-                    std::span<const PieceId> rightField,
-                    std::uint8_t kind) override;
+                    std::span<const PieceId> rightField, std::uint8_t kind,
+                    IrSymbolRef joinedType, IrSymbolRef joinedLeft,
+                    IrSymbolRef joinedRight) override;
   void registerFactType(IrSymbolRef type,
                         std::vector<IrSymbolRef> parents) override;
   std::vector<VmFactPtr> snapshotFacts(IrSymbolRef type) override;

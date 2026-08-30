@@ -130,7 +130,12 @@ int main(int argc, char **argv) {
     const VmTextEncoder encoder = [](std::string_view text) {
       std::vector<int> ids;
       const auto status = felidaeSentencePieceModel().Encode(text, &ids);
-      if (!status.ok() || ids.empty())
+      // An empty ids vector is a valid encoding of empty text (e.g. an
+      // empty CSV cell round-tripped through csv.toFacts), not an encoder
+      // failure -- only a non-ok status is a genuine error. Rejecting
+      // empty results here previously made every empty runtime string
+      // value (imported from CSV, computed, etc.) throw.
+      if (!status.ok())
         throw IrError("SentencePiece cannot encode VM text");
       PieceSequence pieces;
       pieces.reserve(ids.size());
