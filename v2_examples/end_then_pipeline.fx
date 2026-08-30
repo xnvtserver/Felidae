@@ -12,8 +12,9 @@ end
 
 evaluate(value: number) =>
     if value >= 0 then
-        return increment(value: value)
+        processed := increment(value: value)
             then double(value: system.result)
+        return processed
     else
         return 0.0
     end

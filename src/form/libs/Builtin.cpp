@@ -6,8 +6,11 @@
 #include "Set.h"
 #include "form/IrModule.h"
 
+#include <algorithm>
 #include <cmath>
+#include <numeric>
 #include <stdexcept>
+#include <vector>
 
 namespace Felidae::Form {
 namespace {
@@ -33,9 +36,11 @@ std::string textValue(const VmValue &value, const BuiltinTextCodec &codec,
   return decodeText(text->pieces, codec);
 }
 
-Json::Value toJson(const VmValue &value,
-                   std::span<const PieceSequence> symbolTable,
-                   const BuiltinTextCodec &codec) {
+} // namespace
+
+Json::Value vmValueToJson(const VmValue &value,
+                          std::span<const PieceSequence> symbolTable,
+                          const BuiltinTextCodec &codec) {
   if (std::holds_alternative<VmNil>(value))
     return nullptr;
   if (const auto number = std::get_if<double>(&value))
@@ -49,20 +54,21 @@ Json::Value toJson(const VmValue &value,
   if (const auto array = std::get_if<VmArrayPtr>(&value); array && *array) {
     auto result = Json::Value::array();
     for (const auto &item : (*array)->values)
-      result.push_back(toJson(item, symbolTable, codec));
+      result.push_back(vmValueToJson(item, symbolTable, codec));
     return result;
   }
   if (const auto map = std::get_if<VmTextMapPtr>(&value); map && *map) {
     auto result = Json::Value::object();
     for (const auto &[key, item] : (*map)->entries)
-      result[decodeText(key, codec)] = toJson(item, symbolTable, codec);
+      result[decodeText(key, codec)] =
+          vmValueToJson(item, symbolTable, codec);
     return result;
   }
   if (const auto map = std::get_if<VmMapPtr>(&value); map && *map) {
     auto result = Json::Value::object();
     for (const auto &[key, item] : (*map)->entries)
       result[decodeText(irSymbolPieces(symbolTable, key), codec)] =
-          toJson(item, symbolTable, codec);
+          vmValueToJson(item, symbolTable, codec);
     return result;
   }
   if (const auto fact = std::get_if<VmFactPtr>(&value); fact && *fact) {
@@ -71,13 +77,14 @@ Json::Value toJson(const VmValue &value,
         decodeText(irSymbolPieces(symbolTable, (*fact)->type), codec);
     for (const auto &[key, item] : (*fact)->fields)
       result[decodeText(irSymbolPieces(symbolTable, key), codec)] =
-          toJson(item, symbolTable, codec);
+          vmValueToJson(item, symbolTable, codec);
     return result;
   }
   throw IrError("VM builtin cannot convert this value to JSON");
 }
 
-VmValue fromJson(const Json::Value &value, const BuiltinTextCodec &codec) {
+VmValue jsonToVmValue(const Json::Value &value,
+                      const BuiltinTextCodec &codec) {
   if (value.is_null())
     return VmNil{};
   if (value.is_boolean())
@@ -95,7 +102,7 @@ VmValue fromJson(const Json::Value &value, const BuiltinTextCodec &codec) {
     auto result = std::make_shared<VmArray>();
     result->values.reserve(value.size());
     for (const auto &item : value)
-      result->values.push_back(fromJson(item, codec));
+      result->values.push_back(jsonToVmValue(item, codec));
     return result;
   }
   if (value.is_object()) {
@@ -103,13 +110,11 @@ VmValue fromJson(const Json::Value &value, const BuiltinTextCodec &codec) {
     result->entries.reserve(value.size());
     for (const auto &[key, item] : value.items())
       result->entries.emplace_back(encodeText(key, codec),
-                                   fromJson(item, codec));
+                                   jsonToVmValue(item, codec));
     return result;
   }
   throw IrError("JSON contains an unsupported value kind");
 }
-
-} // namespace
 
 VmValue evaluateBuiltin(BuiltinId operation, std::span<const VmValue> inputs,
                         std::span<const PieceSequence> symbolTable,
@@ -119,69 +124,119 @@ VmValue evaluateBuiltin(BuiltinId operation, std::span<const VmValue> inputs,
     throw IrError("VM builtin operation has an invalid ID or arity");
   try {
     switch (operation) {
+    case BuiltinId::ArrayGet: {
+      const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
+      const auto position = std::get_if<double>(&inputs[1]);
+      if (!array || !*array || !position || !std::isfinite(*position) ||
+          *position < 0.0 || std::trunc(*position) != *position ||
+          *position >= static_cast<double>((*array)->values.size())) {
+        throw IrError("array.get requires a valid array position");
+      }
+      return (*array)->values[static_cast<std::size_t>(*position)];
+    }
+    case BuiltinId::Count:
+    case BuiltinId::ArrayLen: {
+      const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
+      if (!array || !*array)
+        throw IrError("array length requires an array");
+      return static_cast<double>((*array)->values.size());
+    }
+    case BuiltinId::Sum:
+    case BuiltinId::Average:
+    case BuiltinId::Min:
+    case BuiltinId::Max: {
+      const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
+      if (!array || !*array)
+        throw IrError("numeric aggregation requires an array");
+      if ((*array)->values.empty()) {
+        if (operation == BuiltinId::Sum)
+          return 0.0;
+        throw IrError("numeric aggregation requires at least one value");
+      }
+      std::vector<double> values;
+      values.reserve((*array)->values.size());
+      for (const auto &item : (*array)->values) {
+        const auto number = std::get_if<double>(&item);
+        if (!number || !std::isfinite(*number))
+          throw IrError("numeric aggregation requires finite numbers");
+        values.push_back(*number);
+      }
+      if (operation == BuiltinId::Sum || operation == BuiltinId::Average) {
+        const auto total = std::accumulate(values.begin(), values.end(), 0.0);
+        return operation == BuiltinId::Sum
+                   ? total
+                   : total / static_cast<double>(values.size());
+      }
+      const auto bounds = std::minmax_element(values.begin(), values.end());
+      return operation == BuiltinId::Min ? *bounds.first : *bounds.second;
+    }
     case BuiltinId::JsonParse:
-      return fromJson(Json::parse(textValue(inputs[0], codec, "json.parse")),
-                      codec);
+      return jsonToVmValue(
+          Json::parse(textValue(inputs[0], codec, "json.parse")), codec);
     case BuiltinId::JsonGet: {
-      const auto data = toJson(inputs[0], symbolTable, codec);
-      return fromJson(Json::get(data, textValue(inputs[1], codec, "json.get")),
-                      codec);
+      const auto data = vmValueToJson(inputs[0], symbolTable, codec);
+      return jsonToVmValue(
+          Json::get(data, textValue(inputs[1], codec, "json.get")), codec);
     }
     case BuiltinId::JsonHas: {
-      const auto data = toJson(inputs[0], symbolTable, codec);
+      const auto data = vmValueToJson(inputs[0], symbolTable, codec);
       return Json::has(data, textValue(inputs[1], codec, "json.has")) ? 1.0
                                                                       : 0.0;
     }
     case BuiltinId::JsonKeys: {
       auto result = std::make_shared<VmArray>();
-      for (const auto &key : Json::keys(toJson(inputs[0], symbolTable, codec)))
+      for (const auto &key :
+           Json::keys(vmValueToJson(inputs[0], symbolTable, codec)))
         result->values.emplace_back(VmText{encodeText(key, codec)});
       return result;
     }
     case BuiltinId::JsonSet:
-      return fromJson(Json::set(toJson(inputs[0], symbolTable, codec),
-                                textValue(inputs[1], codec, "json.set"),
-                                toJson(inputs[2], symbolTable, codec)),
-                      codec);
+      return jsonToVmValue(
+          Json::set(vmValueToJson(inputs[0], symbolTable, codec),
+                    textValue(inputs[1], codec, "json.set"),
+                    vmValueToJson(inputs[2], symbolTable, codec)),
+          codec);
     case BuiltinId::JsonRemove:
-      return fromJson(Json::remove(toJson(inputs[0], symbolTable, codec),
-                                   textValue(inputs[1], codec, "json.remove")),
-                      codec);
+      return jsonToVmValue(
+          Json::remove(vmValueToJson(inputs[0], symbolTable, codec),
+                       textValue(inputs[1], codec, "json.remove")),
+          codec);
     case BuiltinId::JsonToText:
       return VmText{encodeText(
-          Json::toText(toJson(inputs[0], symbolTable, codec)), codec)};
+          Json::toText(vmValueToJson(inputs[0], symbolTable, codec)), codec)};
     case BuiltinId::CsvParse:
-      return fromJson(Csv::parse(textValue(inputs[0], codec, "csv.parse")),
-                      codec);
+      return jsonToVmValue(
+          Csv::parse(textValue(inputs[0], codec, "csv.parse")), codec);
     case BuiltinId::CsvToFacts:
-      return fromJson(Csv::toFacts(textValue(inputs[0], codec, "csv.toFacts"),
-                                   textValue(inputs[1], codec, "csv.toFacts")),
-                      codec);
+      throw IrError("csv.toFacts requires the VM fact service");
     case BuiltinId::CsvToText:
       return VmText{encodeText(
-          Csv::toText(toJson(inputs[0], symbolTable, codec)), codec)};
+          Csv::toText(vmValueToJson(inputs[0], symbolTable, codec)), codec)};
     case BuiltinId::CsvToFelidaeFacts:
       return VmText{
           encodeText(Csv::toFelidaeFacts(
-                         toJson(inputs[0], symbolTable, codec),
+                         vmValueToJson(inputs[0], symbolTable, codec),
                          textValue(inputs[1], codec, "csv.toFelidaeFacts")),
                      codec)};
     case BuiltinId::GroupClosed:
     case BuiltinId::GroupAssociative:
     case BuiltinId::GroupCommutative:
-      return fromJson(
-          Group::evaluate(operation, toJson(inputs[0], symbolTable, codec),
-                          toJson(inputs[1], symbolTable, codec), std::nullopt),
+      return jsonToVmValue(
+          Group::evaluate(operation,
+                          vmValueToJson(inputs[0], symbolTable, codec),
+                          vmValueToJson(inputs[1], symbolTable, codec),
+                          std::nullopt),
           codec);
     case BuiltinId::GroupValidate:
     case BuiltinId::GroupIdentity:
     case BuiltinId::GroupInverse:
     case BuiltinId::GroupAbelian:
-      return fromJson(Group::evaluate(operation,
-                                      toJson(inputs[0], symbolTable, codec),
-                                      toJson(inputs[1], symbolTable, codec),
-                                      toJson(inputs[2], symbolTable, codec)),
-                      codec);
+      return jsonToVmValue(
+          Group::evaluate(operation,
+                          vmValueToJson(inputs[0], symbolTable, codec),
+                          vmValueToJson(inputs[1], symbolTable, codec),
+                          vmValueToJson(inputs[2], symbolTable, codec)),
+          codec);
     case BuiltinId::SetUnion:
     case BuiltinId::SetIntersection:
     case BuiltinId::SetDifference:
@@ -190,13 +245,15 @@ VmValue evaluateBuiltin(BuiltinId operation, std::span<const VmValue> inputs,
     case BuiltinId::SetSubset:
     case BuiltinId::SetSuperset:
     case BuiltinId::SetDisjoint:
-      return fromJson(
-          Set::evaluate(operation, toJson(inputs[0], symbolTable, codec)),
+      return jsonToVmValue(
+          Set::evaluate(operation,
+                        vmValueToJson(inputs[0], symbolTable, codec)),
           codec);
     case BuiltinId::SetCardinality:
-      return fromJson(
-          Set::evaluate(operation, Json::Value::array({toJson(
-                                       inputs[0], symbolTable, codec)})),
+      return jsonToVmValue(
+          Set::evaluate(operation,
+                        Json::Value::array({vmValueToJson(
+                            inputs[0], symbolTable, codec)})),
           codec);
     case BuiltinId::SetIntersectionBy:
     case BuiltinId::SetDifferenceBy:
@@ -204,23 +261,27 @@ VmValue evaluateBuiltin(BuiltinId operation, std::span<const VmValue> inputs,
     case BuiltinId::SetEqualsBy:
     case BuiltinId::SetSubsetBy:
     case BuiltinId::SetDisjointBy:
-      return fromJson(
-          Set::evaluate(operation, toJson(inputs[0], symbolTable, codec),
-                        std::nullopt, toJson(inputs[1], symbolTable, codec)),
+      return jsonToVmValue(
+          Set::evaluate(operation,
+                        vmValueToJson(inputs[0], symbolTable, codec),
+                        std::nullopt,
+                        vmValueToJson(inputs[1], symbolTable, codec)),
           codec);
     case BuiltinId::SetContains:
-      return fromJson(Set::evaluate(operation,
-                                    Json::Value::array({toJson(
-                                        inputs[0], symbolTable, codec)}),
-                                    toJson(inputs[1], symbolTable, codec)),
-                      codec);
+      return jsonToVmValue(
+          Set::evaluate(operation,
+                        Json::Value::array({vmValueToJson(
+                            inputs[0], symbolTable, codec)}),
+                        vmValueToJson(inputs[1], symbolTable, codec)),
+          codec);
     case BuiltinId::SetContainsBy:
-      return fromJson(Set::evaluate(operation,
-                                    Json::Value::array({toJson(
-                                        inputs[0], symbolTable, codec)}),
-                                    toJson(inputs[1], symbolTable, codec),
-                                    toJson(inputs[2], symbolTable, codec)),
-                      codec);
+      return jsonToVmValue(
+          Set::evaluate(operation,
+                        Json::Value::array({vmValueToJson(
+                            inputs[0], symbolTable, codec)}),
+                        vmValueToJson(inputs[1], symbolTable, codec),
+                        vmValueToJson(inputs[2], symbolTable, codec)),
+          codec);
     default:
       break;
     }

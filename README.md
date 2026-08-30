@@ -590,27 +590,38 @@ This is useful for concepts such as:
 
 # Queries and fact traversal
 
-Facts can be designated for later queries.
-
-Example:
-
-```felidae
-Animal(name: "generic") as animals
-
-Dog extend Animal(name: "fido")
-
-Cat extend Animal(name: "milo")
-```
-
-A program can then operate over that designation:
+Fact types own their query operations. There is no separate `Fact` library or
+selection-object representation:
 
 ```felidae
-keep(fact: any) => return fact
+School(name: "North", district: "central", active: 1.0)
+School(name: "West", district: "west", active: 0.0)
 
-main() => return for_each_fact(animals, keep)
+main() =>
+    allSchools := School.all()
+    activeCentral := School.select(district: "central", active: 1.0)
+    return (all: allSchools, selected: activeCentral, count: School.count())
+end
 ```
 
-Because `Dog` and `Cat` extend `Animal`, the query can work with the hierarchy rather than only one exact concrete type.
+`Type.all()` and `Type.select(...)` compile to the same verified fact-iteration
+IR used by `lambda(Type, ...)`; hierarchy traversal includes assignable child
+facts. Exact truth values are numeric `0.0` and `1.0`.
+
+CSV rows can enter that same native fact store and be synchronized from the VM:
+
+```felidae
+rows := csv.toFacts(data: csvText, type: "School")
+saved := db.sync(file: "build/runtime/schools.csv")
+```
+
+`db.sync` accepts a fact-only `.fx` file or a homogeneous `.csv` table. CSV
+sync rejects mixed types or schemas rather than silently losing fields. See
+`v2_examples/csv_fact_database.fx` for the complete import, query, aggregate,
+and write-back flow.
+
+Because child types are assignable to their parents, a parent query can work
+with the hierarchy rather than only one exact concrete type.
 
 This gives Felidae a natural path for:
 
@@ -1530,10 +1541,9 @@ The examples are executable development artifacts rather than only conceptual do
 
 | Example                                | Covers                             |
 | -------------------------------------- | ---------------------------------- |
-| `hierarchical_designation_filter.fx`   | Queries across fact hierarchy      |
+| `hierarchical_fact_filter.fx`          | Concrete parent-type hierarchy query |
 | `direct_ancestor_analysis.fx`          | Ancestor relationships             |
 | `fact_degree_loop.fx`                  | Fact traversal with degree values  |
-| `fact_semantic_designations.fx`        | Fact designations                  |
 | `fact_similarity_requires_ancestry.fx` | Similarity constrained by ancestry |
 | `selective_fact_query.fx`              | Fact selection                     |
 | `selective_relationship_reasoning.fx`  | Relationship reasoning             |
@@ -2688,7 +2698,7 @@ Normal boolean conditions remain boolean.
 
 Yes.
 
-Facts, fact types, hierarchy, designations and traversal are central project areas.
+Facts, fact types, hierarchy, filtering, and traversal are central project areas.
 
 ---
 
@@ -2879,7 +2889,7 @@ For a developer:
 2. Build in test mode
 3. Run form_core_concepts.fx
 4. Explore degree_profiles.fx
-5. Explore hierarchical_designation_filter.fx
+5. Explore hierarchical_fact_filter.fx
 6. Read docs/
 ```
 

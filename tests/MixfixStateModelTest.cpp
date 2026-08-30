@@ -10,6 +10,7 @@
 #include <array>
 #include <cassert>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -37,6 +38,30 @@ template <typename Action> std::string rejectionMessage(Action &&action) {
     return error.what();
   }
   return {};
+}
+
+void writeMixfixManifest(
+    const std::filesystem::path &directory,
+    const Felidae::GruMixfixStateModel::Configuration &configuration,
+    std::string_view sentencePieceIdentity,
+    std::string_view modelVersion = Felidae::kMixfixModelVersion) {
+  std::ofstream manifest(directory / "manifest.txt", std::ios::trunc);
+  assert(manifest);
+  manifest << "artifact_format_version="
+           << Felidae::kMixfixArtifactFormatVersion
+           << "\nmodel_family=" << Felidae::kMixfixModelFamily
+           << "\nmodel_version=" << modelVersion
+           << "\nbackend=torchscript-gru\ntokenizer_contract="
+           << Felidae::kMixfixTokenizerContract
+           << "\nsentencepiece_model_identity=" << sentencePieceIdentity
+           << "\nir_vocabulary_version=" << Felidae::kMixfixIrVocabularyVersion
+           << "\ndecoder_contract=" << Felidae::kMixfixDecoderContract
+           << "\ninput_vocabulary=" << configuration.inputVocabularySize
+           << "\noutput_vocabulary=" << configuration.outputVocabularySize
+           << "\nbegin_token=" << configuration.beginToken
+           << "\nembedding_size=" << configuration.embeddingSize
+           << "\nhidden_size=" << configuration.hiddenSize
+           << "\nlayer_count=" << configuration.layerCount << '\n';
 }
 
 Felidae::VmValue
@@ -301,7 +326,7 @@ int main() {
   trainedCompilerConfiguration.maximumDecodeSteps =
       compilerTeacher.target.size() + 2;
   trainedCompilerConfiguration.allowRandomInitialization = true;
-  GruMixfixStateModel trainedCompiler(trainedCompilerConfiguration, {});
+  GruMixfixStateModel trainedCompiler(trainedCompilerConfiguration);
   std::vector<std::int64_t> compilerTarget(compilerTeacher.target.begin(),
                                            compilerTeacher.target.end());
   bool compilerSequenceLearned = false;
@@ -318,12 +343,18 @@ int main() {
     }
   }
   assert(compilerSequenceLearned);
-  const auto trainedCompilerArtifact =
+  const auto trainedCompilerDirectory =
       std::filesystem::path(FELIDAE_MODEL_TEST_OUTPUT_DIR) /
-      "compiler-ssm-e2e.pt";
+      "compiler-ssm-e2e";
+  std::filesystem::create_directories(trainedCompilerDirectory);
+  const auto trainedCompilerArtifact =
+      trainedCompilerDirectory / "mixfix-gru.pt";
   trainedCompiler.exportTorchScript(trainedCompilerArtifact);
-  GruMixfixStateModel reloadedCompiler(trainedCompilerConfiguration,
-                                       trainedCompilerArtifact);
+  writeMixfixManifest(trainedCompilerDirectory, trainedCompilerConfiguration,
+                      felidaeSentencePieceModelIdentity());
+  auto reloadedCompiler = GruMixfixStateModel::loadVersioned(
+      trainedCompilerConfiguration, trainedCompilerDirectory,
+      felidaeSentencePieceModelIdentity());
   CompilerOptions productionCompilerOptions;
   productionCompilerOptions.mixfixModel = &reloadedCompiler;
   const auto trainedCompilerIr =
@@ -353,12 +384,16 @@ int main() {
   gruConfiguration.beginToken = 0;
   gruConfiguration.maximumDecodeSteps = 2;
   gruConfiguration.allowRandomInitialization = true;
-  GruMixfixStateModel gruModel(gruConfiguration, {});
+  GruMixfixStateModel gruModel(gruConfiguration);
   MixfixContext gruContext;
   gruContext.maximumOutputWords = 2;
   gruContext.outputVocabulary = {{MixfixIrTokenKind::Reject, 0}};
   const auto gruTokens = gruModel.transform(input, gruContext);
   assert((gruTokens == std::vector<MixfixVocabularyId>{0}));
+  MixfixContext boundedGruContext;
+  boundedGruContext.maximumOutputWords = 2;
+  boundedGruContext.outputVocabulary = {{MixfixIrTokenKind::Opcode, 1}};
+  assert(gruModel.transform(input, boundedGruContext).size() == 2);
 
   // The VM recurrent backend has one shared finite output vocabulary for
   // both model loading and C++ training. It retains bounded references to
@@ -428,9 +463,22 @@ int main() {
   const auto mixfixCheckpoint = artifactRoot / "mixfix-gru.ckpt";
   gruModel.saveCheckpoint(mixfixCheckpoint);
   gruModel.exportTorchScript(mixfixArtifact);
-  GruMixfixStateModel loadedMixfix(gruConfiguration, mixfixArtifact);
+  writeMixfixManifest(artifactRoot, gruConfiguration,
+                      felidaeSentencePieceModelIdentity());
+  auto loadedMixfix = GruMixfixStateModel::loadVersioned(
+      gruConfiguration, artifactRoot, felidaeSentencePieceModelIdentity());
   assert((loadedMixfix.transform(input, gruContext) ==
           std::vector<MixfixVocabularyId>{0}));
+  assert(loadedMixfix.transform(input, boundedGruContext).size() == 2);
+  writeMixfixManifest(artifactRoot, gruConfiguration,
+                      felidaeSentencePieceModelIdentity(),
+                      "incompatible-version");
+  assert(rejects([&] {
+    (void)GruMixfixStateModel::loadVersioned(
+        gruConfiguration, artifactRoot, felidaeSentencePieceModelIdentity());
+  }));
+  writeMixfixManifest(artifactRoot, gruConfiguration,
+                      felidaeSentencePieceModelIdentity());
   bool productionCheckpointRejected = false;
   try {
     loadedMixfix.saveCheckpoint(artifactRoot / "production.ckpt");
@@ -438,32 +486,22 @@ int main() {
     productionCheckpointRejected = true;
   }
   assert(productionCheckpointRejected);
-  bool nativeMixfixRejected = false;
-  try {
-    GruMixfixStateModel invalidProduction(gruConfiguration, mixfixCheckpoint);
-  } catch (const IrError &) {
-    nativeMixfixRejected = true;
-  }
-  assert(nativeMixfixRejected);
-  const auto renamedMixfixCheckpoint = artifactRoot / "renamed-mixfix.pt";
-  std::filesystem::copy_file(mixfixCheckpoint, renamedMixfixCheckpoint,
+  std::filesystem::copy_file(mixfixCheckpoint, mixfixArtifact,
                              std::filesystem::copy_options::overwrite_existing);
-  bool renamedMixfixRejected = false;
-  try {
-    GruMixfixStateModel invalidProduction(gruConfiguration,
-                                          renamedMixfixCheckpoint);
-  } catch (const IrError &) {
-    renamedMixfixRejected = true;
-  }
-  assert(renamedMixfixRejected);
+  assert(rejects([&] {
+    (void)GruMixfixStateModel::loadVersioned(
+        gruConfiguration, artifactRoot, felidaeSentencePieceModelIdentity());
+  }));
+  gruModel.exportTorchScript(mixfixArtifact);
 
   const auto runtimeArtifact = artifactRoot / "runtime-gru.pt";
   const auto runtimeCheckpoint = artifactRoot / "runtime-gru.ckpt";
   runtimeGru.saveCheckpoint(runtimeCheckpoint);
-  runtimeGru.exportTorchScript(runtimeArtifact);
-  GruRuntimeStateModel loadedRuntime(
+  runtimeGru.exportTorchScript(runtimeArtifact,
+                               felidaeSentencePieceModelIdentity());
+  auto loadedRuntime = GruRuntimeStateModel::loadVersioned(
       runtimeGruConfiguration, {{RuntimeOutputTokenKind::InputReference, 0}},
-      runtimeArtifact);
+      artifactRoot, felidaeSentencePieceModelIdentity());
   RuntimeContext loadedRuntimeContext;
   loadedRuntimeContext.executionState = loadedRuntime.createExecutionState();
   assert(std::get<VmText>(
@@ -471,27 +509,14 @@ int main() {
                                         SemanticOperationId::Identity)},
                                     {&runtimeText, 1}, loadedRuntimeContext))
              .pieces == PieceSequence({101, 102, 103}));
-  bool nativeRuntimeRejected = false;
-  try {
-    GruRuntimeStateModel invalidProduction(
-        runtimeGruConfiguration, {{RuntimeOutputTokenKind::InputReference, 0}},
-        runtimeCheckpoint);
-  } catch (const IrError &) {
-    nativeRuntimeRejected = true;
-  }
-  assert(nativeRuntimeRejected);
-  const auto renamedRuntimeCheckpoint = artifactRoot / "renamed-runtime.pt";
-  std::filesystem::copy_file(runtimeCheckpoint, renamedRuntimeCheckpoint,
+  std::filesystem::copy_file(runtimeCheckpoint, runtimeArtifact,
                              std::filesystem::copy_options::overwrite_existing);
-  bool renamedRuntimeRejected = false;
-  try {
-    GruRuntimeStateModel invalidProduction(
-        runtimeGruConfiguration, {{RuntimeOutputTokenKind::InputReference, 0}},
-        renamedRuntimeCheckpoint);
-  } catch (const IrError &) {
-    renamedRuntimeRejected = true;
-  }
-  assert(renamedRuntimeRejected);
+  assert(rejects([&] {
+    (void)GruRuntimeStateModel::loadVersioned(
+        runtimeGruConfiguration,
+        {{RuntimeOutputTokenKind::InputReference, 0}}, artifactRoot,
+        felidaeSentencePieceModelIdentity());
+  }));
   std::filesystem::remove_all(artifactRoot);
 
   // Real compiler-produced SemanticEval -> verified FELBIR -> trained C++
@@ -570,13 +595,15 @@ int main() {
                                             0.01);
   }
   assert(trainedRuntime.predictTeacherToken(identityTeacher) == trainedTarget);
-  const std::filesystem::path trainedArtifactDirectory(
-      FELIDAE_MODEL_TEST_OUTPUT_DIR);
+  const auto trainedArtifactDirectory =
+      std::filesystem::path(FELIDAE_MODEL_TEST_OUTPUT_DIR) / "runtime-ssm-e2e";
   std::filesystem::create_directories(trainedArtifactDirectory);
-  const auto trainedArtifact = trainedArtifactDirectory / "runtime-ssm-e2e.pt";
-  trainedRuntime.exportTorchScript(trainedArtifact);
-  GruRuntimeStateModel reloadedTrainedRuntime(
-      trainedRuntimeConfiguration, trainedRuntimeVocabulary, trainedArtifact);
+  const auto trainedArtifact = trainedArtifactDirectory / "runtime-gru.pt";
+  trainedRuntime.exportTorchScript(trainedArtifact,
+                                   felidaeSentencePieceModelIdentity());
+  auto reloadedTrainedRuntime = GruRuntimeStateModel::loadVersioned(
+      trainedRuntimeConfiguration, trainedRuntimeVocabulary,
+      trainedArtifactDirectory, felidaeSentencePieceModelIdentity());
   const auto trainedRuntimeModule = loadBinaryIr(
       FELIDAE_RUNTIME_SSM_E2E_BINARY, felidaeSentencePieceModelIdentity());
   assert(containsRuntimeSemanticOperation(trainedRuntimeModule));

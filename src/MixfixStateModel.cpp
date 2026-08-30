@@ -221,14 +221,26 @@ public:
       torch::InferenceMode guard;
       const auto inputIds =
           torch::zeros({1, 1}, torch::TensorOptions().dtype(torch::kInt64));
-      const auto decoderIds = torch::full(
+      const auto decoderId = torch::full(
           {1, 1}, c.beginToken, torch::TensorOptions().dtype(torch::kInt64));
+      const auto encoderHidden =
+          production->get_method("encode")({inputIds}).toTensor();
       const auto output =
-          production->forward({inputIds, decoderIds}).toTensor();
-      if (output.dim() != 3 || output.size(0) != 1 || output.size(1) != 1 ||
-          output.size(2) != c.outputVocabularySize) {
+          production->get_method("decode_step")({decoderId, encoderHidden})
+              .toTuple();
+      if (output->elements().size() != 2) {
         throw IrError(
             "mixfix production artifact has an incompatible forward contract");
+      }
+      const auto logits = output->elements()[0].toTensor();
+      const auto decoderHidden = output->elements()[1].toTensor();
+      if (encoderHidden.dim() != 3 || encoderHidden.size(0) != c.layerCount ||
+          encoderHidden.size(1) != 1 || encoderHidden.size(2) != c.hiddenSize ||
+          logits.dim() != 1 || logits.size(0) != c.outputVocabularySize ||
+          decoderHidden.sizes() != encoderHidden.sizes()) {
+        throw IrError(
+            "mixfix production artifact has an incompatible incremental "
+            "decoder contract");
       }
     } catch (const c10::Error &error) {
       throw IrError("mixfix production artifact is not valid TorchScript: " +
@@ -257,8 +269,11 @@ public:
 #endif
 };
 
-GruMixfixStateModel::GruMixfixStateModel(Configuration c,
-                                         const std::filesystem::path &artifact)
+GruMixfixStateModel::GruMixfixStateModel(Configuration c)
+    : GruMixfixStateModel(std::move(c), {}, VersionedArtifact{}) {}
+
+GruMixfixStateModel::GruMixfixStateModel(
+    Configuration c, const std::filesystem::path &artifact, VersionedArtifact)
     : configuration_(c), implementation_(std::make_unique<Implementation>(
                              configuration_, artifact)) {}
 GruMixfixStateModel::~GruMixfixStateModel() = default;
@@ -271,31 +286,44 @@ GruMixfixStateModel GruMixfixStateModel::loadVersioned(
     Configuration configuration, const std::filesystem::path &artifactDirectory,
     std::string_view expectedSentencePieceIdentity,
     std::string_view expectedIrVocabularyVersion) {
-  const auto manifest = artifactDirectory / "manifest.txt";
-  if (manifestValue(manifest, "backend") != "torchscript-gru") {
-    throw IrError("mixfix model manifest backend is incompatible");
-  }
-  if (manifestValue(manifest, "ir_vocabulary_version") !=
-      expectedIrVocabularyVersion) {
-    throw IrError("mixfix model IR vocabulary version is incompatible");
-  }
+  const auto manifest = readModelManifest(artifactDirectory / "manifest.txt");
+  constexpr std::string_view modelName = "mixfix model";
+  requireManifestValue(manifest, "artifact_format_version",
+                       kMixfixArtifactFormatVersion, modelName);
+  requireManifestValue(manifest, "model_family", kMixfixModelFamily, modelName);
+  requireManifestValue(manifest, "model_version", kMixfixModelVersion,
+                       modelName);
+  requireManifestValue(manifest, "backend", "torchscript-gru", modelName);
+  requireManifestValue(manifest, "tokenizer_contract", kMixfixTokenizerContract,
+                       modelName);
+  requireManifestValue(manifest, "ir_vocabulary_version",
+                       expectedIrVocabularyVersion, modelName);
+  requireManifestValue(manifest, "decoder_contract", kMixfixDecoderContract,
+                       modelName);
   if (!expectedSentencePieceIdentity.empty() &&
       manifestValue(manifest, "sentencepiece_model_identity") !=
           expectedSentencePieceIdentity) {
     throw IrError("mixfix model SentencePiece vocabulary is incompatible");
   }
-  if (std::stoll(manifestValue(manifest, "input_vocabulary")) !=
+  if (manifestInteger(manifest, "input_vocabulary", modelName) !=
           configuration.inputVocabularySize ||
-      std::stoll(manifestValue(manifest, "output_vocabulary")) !=
+      manifestInteger(manifest, "output_vocabulary", modelName) !=
           configuration.outputVocabularySize ||
-      std::stoll(manifestValue(manifest, "begin_token")) !=
-          configuration.beginToken) {
+      manifestInteger(manifest, "begin_token", modelName) !=
+          configuration.beginToken ||
+      manifestInteger(manifest, "embedding_size", modelName) !=
+          configuration.embeddingSize ||
+      manifestInteger(manifest, "hidden_size", modelName) !=
+          configuration.hiddenSize ||
+      manifestInteger(manifest, "layer_count", modelName) !=
+          configuration.layerCount) {
     throw IrError("mixfix model vocabulary configuration is incompatible");
   }
   const auto artifact = artifactDirectory / "mixfix-gru.pt";
   if (!std::filesystem::is_regular_file(artifact))
     throw IrError("mixfix model artifact is unavailable");
-  return GruMixfixStateModel(std::move(configuration), artifact);
+  return GruMixfixStateModel(std::move(configuration), artifact,
+                             VersionedArtifact{});
 }
 
 std::vector<MixfixVocabularyId>
@@ -326,37 +354,37 @@ GruMixfixStateModel::transform(std::span<const SentencePieceId> input,
   std::vector<MixfixVocabularyId> tokens;
   const auto limit =
       std::min(configuration_.maximumDecodeSteps, context.maximumOutputWords);
-  std::vector<std::int64_t> decoderIds{configuration_.beginToken};
-  decoderIds.reserve(limit + 1);
   torch::Tensor decoderHidden;
-  if (!implementation_->production) {
+  if (implementation_->production) {
+    decoderHidden =
+        implementation_->production->get_method("encode")({inputIds})
+            .toTensor();
+  } else {
     decoderHidden = std::get<1>(implementation_->network->encoder->forward(
         implementation_->network->embedding->forward(inputIds)));
   }
+  std::int64_t decoderId = configuration_.beginToken;
   for (std::size_t step = 0; step < limit; ++step) {
     torch::Tensor logits;
+    const auto decoderInput =
+        torch::tensor({decoderId}, torch::TensorOptions().dtype(torch::kInt64))
+            .reshape({1, 1});
     if (implementation_->production) {
-      const auto decoderInput =
-          torch::tensor(decoderIds, torch::TensorOptions().dtype(torch::kInt64))
-              .reshape({-1, 1});
-      logits = implementation_->production->forward({inputIds, decoderInput})
-                   .toTensor();
+      const auto decoded =
+          implementation_->production
+              ->get_method("decode_step")({decoderInput, decoderHidden})
+              .toTuple();
+      logits = decoded->elements()[0].toTensor();
+      decoderHidden = decoded->elements()[1].toTensor();
     } else {
-      const auto decoderInput =
-          torch::tensor({decoderIds.back()},
-                        torch::TensorOptions().dtype(torch::kInt64))
-              .reshape({1, 1});
       auto decoderResult = implementation_->network->decoder->forward(
           implementation_->network->decoderEmbedding->forward(decoderInput),
           decoderHidden);
       decoderHidden = std::get<1>(decoderResult);
       logits = implementation_->network->projection->forward(
-          std::get<0>(decoderResult));
+          std::get<0>(decoderResult).select(0, 0).select(0, 0));
     }
-    const auto tokenId = logits.select(0, logits.size(0) - 1)
-                             .select(0, 0)
-                             .argmax()
-                             .item<std::int64_t>();
+    const auto tokenId = logits.argmax().item<std::int64_t>();
     if (tokenId < 0 ||
         static_cast<std::size_t>(tokenId) >= context.outputVocabulary.size()) {
       throw IrError("mixfix GRU emitted token outside finite vocabulary");
@@ -367,7 +395,7 @@ GruMixfixStateModel::transform(std::span<const SentencePieceId> input,
     if (kind == MixfixIrTokenKind::End || kind == MixfixIrTokenKind::Reject ||
         kind == MixfixIrTokenKind::Abstain)
       break;
-    decoderIds.push_back(tokenId);
+    decoderId = tokenId;
   }
   return tokens;
 #else
@@ -553,25 +581,32 @@ void GruMixfixStateModel::exportTorchScript(
   };
   registerGru(implementation_->network->encoder, "encoder", encoderParameters);
   registerGru(implementation_->network->decoder, "decoder", decoderParameters);
-  std::ostringstream source;
-  source << "def forward(self, input_ids: Tensor, decoder_ids: Tensor) -> "
-            "Tensor:\n"
-         << "    encoded_input = torch.embedding(self.encoder_embedding, "
-            "input_ids)\n"
-         << "    encoder_hidden = torch.zeros([" << configuration_.layerCount
-         << ", input_ids.size(1), " << configuration_.hiddenSize
-         << "], dtype=encoded_input.dtype)\n"
-         << "    encoded = torch.gru(encoded_input, encoder_hidden, ["
-         << encoderParameters.str() << "], True, " << configuration_.layerCount
-         << ", 0.0, False, False, False)\n"
-         << "    decoded_input = torch.embedding(self.decoder_embedding, "
-            "decoder_ids)\n"
-         << "    decoded = torch.gru(decoded_input, encoded[1], ["
-         << decoderParameters.str() << "], True, " << configuration_.layerCount
-         << ", 0.0, False, False, False)\n"
-         << "    return torch.linear(decoded[0], self.projection_weight, "
-            "self.projection_bias)\n";
-  module.define(source.str());
+  std::ostringstream encoderSource;
+  encoderSource
+      << "def encode(self, input_ids: Tensor) -> Tensor:\n"
+      << "    encoded_input = torch.embedding(self.encoder_embedding, "
+         "input_ids)\n"
+      << "    encoder_hidden = torch.zeros([" << configuration_.layerCount
+      << ", input_ids.size(1), " << configuration_.hiddenSize
+      << "], dtype=encoded_input.dtype)\n"
+      << "    encoded = torch.gru(encoded_input, encoder_hidden, ["
+      << encoderParameters.str() << "], True, " << configuration_.layerCount
+      << ", 0.0, False, False, False)\n"
+      << "    return encoded[1]\n";
+  module.define(encoderSource.str());
+  std::ostringstream decoderSource;
+  decoderSource
+      << "def decode_step(self, decoder_id: Tensor, hidden: Tensor) -> "
+         "Tuple[Tensor, Tensor]:\n"
+      << "    decoded_input = torch.embedding(self.decoder_embedding, "
+         "decoder_id)\n"
+      << "    decoded = torch.gru(decoded_input, hidden, ["
+      << decoderParameters.str() << "], True, " << configuration_.layerCount
+      << ", 0.0, False, False, False)\n"
+      << "    logits = torch.linear(decoded[0][-1][0], "
+         "self.projection_weight, self.projection_bias)\n"
+      << "    return logits, decoded[1]\n";
+  module.define(decoderSource.str());
   module.eval();
   module.save(artifactPath.string());
 #else

@@ -61,30 +61,6 @@ void addVarUse(const std::string &name, std::set<std::string> &uses) {
     uses.insert(name);
 }
 
-bool hasSuffix(const std::string &value, const std::string &suffix) {
-  return value.size() >= suffix.size() &&
-         value.compare(value.size() - suffix.size(), suffix.size(), suffix) ==
-             0;
-}
-
-void collectReferenceCallable(const Call &call, std::set<std::string> &calls) {
-  if (!hasSuffix(call.name, ":references"))
-    return;
-  calls.insert("Fact:references");
-  for (const auto &arg : call.args) {
-    if (arg.name != "by")
-      continue;
-    const auto callable = std::dynamic_pointer_cast<VarExpr>(arg.value);
-    if (!callable)
-      continue;
-    std::string name = callable->name;
-    const size_t separator = name.find("::");
-    if (separator != std::string::npos)
-      name.replace(separator, 2, ":");
-    calls.insert(std::move(name));
-  }
-}
-
 void collectExprUses(const std::shared_ptr<Expr> &expr,
                      std::set<std::string> &vars,
                      std::set<std::string> &calls) {
@@ -146,7 +122,6 @@ void collectGoalUses(const std::shared_ptr<Goal> &goal,
     return;
   if (auto call = std::dynamic_pointer_cast<CallGoal>(goal)) {
     calls.insert(call->call.name);
-    collectReferenceCallable(call->call, calls);
     if (call->call.name == "thread:createThread") {
       for (const auto &arg : call->call.args) {
         if (arg.name != "function" && arg.name != "name")
@@ -334,12 +309,6 @@ void validateReasoningExpr(const std::shared_ptr<Expr> &expr,
                                 "' must be between 0 and 1."));
         }
       }
-    } else if (term->name == "Fact:materialize" ||
-               term->name == "db:materialize") {
-      diagnostics.push_back(diagnosticFor(
-          owner, "warning", "felidae.selection.hidden_materialization",
-          "Materializing a FactSelection here creates an eager array; "
-          "keep the selection lazy unless an interop boundary requires it."));
     }
     for (const auto &argument : term->args) {
       validateReasoningExpr(argument.value, owner, diagnostics);

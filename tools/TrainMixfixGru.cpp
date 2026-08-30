@@ -216,7 +216,7 @@ int Felidae::runMixfixGruTraining(int argc, char **argv) {
     torch::manual_seed(0);
     const auto artifact = outputDirectory / "mixfix-gru.pt";
     const auto checkpoint = outputDirectory / "mixfix-gru.ckpt";
-    Felidae::GruMixfixStateModel model(config, {});
+    Felidae::GruMixfixStateModel model(config);
     std::mt19937 generator(0);
     // Keep one complete structural target shape in exactly one partition.
     // A random record split makes generated numeric variations of the same
@@ -358,15 +358,24 @@ int Felidae::runMixfixGruTraining(int argc, char **argv) {
     std::ofstream manifest(outputDirectory / "manifest.txt", std::ios::trunc);
     if (!manifest)
       throw std::runtime_error("cannot write compiler model manifest");
-    manifest << "model_version=gru-v1\n"
+    manifest << "artifact_format_version="
+             << Felidae::kMixfixArtifactFormatVersion << "\n"
+             << "model_family=" << Felidae::kMixfixModelFamily << "\n"
+             << "model_version=" << Felidae::kMixfixModelVersion << "\n"
              << "backend=torchscript-gru\n"
+             << "tokenizer_contract=" << Felidae::kMixfixTokenizerContract
+             << "\n"
              << "sentencepiece_model_identity=" << expectedSentencePieceIdentity
              << "\n"
              << "ir_vocabulary_version=" << Felidae::kMixfixIrVocabularyVersion
              << "\n"
+             << "decoder_contract=" << Felidae::kMixfixDecoderContract << "\n"
              << "input_vocabulary=" << config.inputVocabularySize << "\n"
              << "output_vocabulary=" << config.outputVocabularySize << "\n"
-             << "begin_token=" << config.beginToken << "\n";
+             << "begin_token=" << config.beginToken << "\n"
+             << "embedding_size=" << config.embeddingSize << "\n"
+             << "hidden_size=" << config.hiddenSize << "\n"
+             << "layer_count=" << config.layerCount << "\n";
     manifest.close();
     if (!manifest)
       throw std::runtime_error("cannot finalize compiler model manifest");

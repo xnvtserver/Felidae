@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 namespace Felidae {
@@ -31,6 +32,14 @@ struct RuntimeOutputToken {
 // against the current operation inputs before it enters a VM register.
 inline constexpr std::size_t kRuntimeModelReferenceLimit = 16;
 inline constexpr std::int64_t kRuntimeStructuralInputTokens = 32;
+inline constexpr std::string_view kRuntimeArtifactFormatVersion = "1";
+inline constexpr std::string_view kRuntimeModelFamily =
+    "felidae-vm-runtime-gru";
+inline constexpr std::string_view kRuntimeModelVersion = "runtime-gru-v1";
+inline constexpr std::string_view kRuntimeTokenizerContract =
+    "sentencepiece-id-sequence-v1";
+inline constexpr std::string_view kRuntimeDecoderContract =
+    "operation-sequence-hidden-state-v1";
 
 // Single production vocabulary contract used by both the VM loader and the
 // C++ trainer. A manifest's output_vocabulary is checked against this list.
@@ -48,8 +57,7 @@ public:
     };
 
     GruRuntimeStateModel(Configuration configuration,
-                         std::vector<RuntimeOutputToken> outputVocabulary,
-                         const std::filesystem::path& artifactPath = {});
+                         std::vector<RuntimeOutputToken> outputVocabulary);
     ~GruRuntimeStateModel() override;
     GruRuntimeStateModel(GruRuntimeStateModel&&) noexcept;
     GruRuntimeStateModel& operator=(GruRuntimeStateModel&&) noexcept;
@@ -59,7 +67,8 @@ public:
     std::shared_ptr<void> createExecutionState() override;
     static GruRuntimeStateModel loadVersioned(Configuration configuration,
                                               std::vector<RuntimeOutputToken> outputVocabulary,
-                                              const std::filesystem::path& artifactDirectory);
+                                              const std::filesystem::path& artifactDirectory,
+                                              std::string_view expectedSentencePieceIdentity);
     Value evaluate(const RuntimeOperation& operation, std::span<const Value> inputs,
                    RuntimeContext& context) override;
     double trainTeacherForced(const RuntimeTrainingRecord& record,
@@ -68,9 +77,15 @@ public:
     // a finite vocabulary index without constructing a runtime VmValue.
     std::size_t predictTeacherToken(const RuntimeTrainingRecord& record) const;
     void saveCheckpoint(const std::filesystem::path& checkpointPath) const;
-    void exportTorchScript(const std::filesystem::path& artifactPath) const;
+    void exportTorchScript(const std::filesystem::path& artifactPath,
+                           std::string_view sentencePieceIdentity) const;
 
 private:
+    struct VersionedArtifact {};
+    GruRuntimeStateModel(Configuration configuration,
+                         std::vector<RuntimeOutputToken> outputVocabulary,
+                         const std::filesystem::path& artifactPath,
+                         VersionedArtifact);
     class Implementation;
     Configuration configuration_;
     std::vector<RuntimeOutputToken> outputVocabulary_;

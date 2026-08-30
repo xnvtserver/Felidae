@@ -110,106 +110,6 @@
       }
     ]
   },
-  "Fact:all": {
-    "heading": "Fact.all",
-    "description": "Returns every currently loaded fact of the requested type as an array of rows.",
-    "example": "rows := Fact.all(type: \"Customer\")",
-    "params": [
-      {
-        "name": "type"
-      }
-    ]
-  },
-  "Fact:find": {
-    "heading": "Fact.find",
-    "description": "Returns rows of the requested type whose field equals the given value.",
-    "example": "rows := Fact.find(type: \"Customer\", field: \"city\", equals: \"SEA\")",
-    "params": [
-      {
-        "name": "type"
-      },
-      {
-        "name": "field"
-      },
-      {
-        "name": "equals"
-      }
-    ]
-  },
-  "Fact:first": {
-    "heading": "Fact.first",
-    "description": "Returns the first row of the requested type whose field equals the given value.",
-    "example": "row := Fact.first(type: \"Customer\", field: \"name\", equals: \"Ada\")",
-    "params": [
-      {
-        "name": "type"
-      },
-      {
-        "name": "field"
-      },
-      {
-        "name": "equals"
-      }
-    ]
-  },
-  "Fact:count": {
-    "heading": "Fact.count",
-    "description": "Returns the number of currently loaded facts of the requested type.",
-    "example": "total := Fact.count(type: \"Customer\")",
-    "params": [
-      {
-        "name": "type"
-      }
-    ]
-  },
-  "Fact:types": {
-    "heading": "Fact.types",
-    "description": "Returns an array of every fact type name currently loaded, including declared parent types.",
-    "example": "types := Fact.types()",
-    "params": []
-  },
-  "Fact:fields": {
-    "heading": "Fact.fields",
-    "description": "Returns an array of the field names used across facts of the requested type.",
-    "example": "fields := Fact.fields(type: \"Customer\")",
-    "params": [
-      {
-        "name": "type"
-      }
-    ]
-  },
-  "Fact:exists": {
-    "heading": "Fact.exists",
-    "description": "Returns true when at least one fact of the requested type has a field equal to the given value.",
-    "example": "found := Fact.exists(type: \"Customer\", field: \"name\", equals: \"Ada\")",
-    "params": [
-      {
-        "name": "type"
-      },
-      {
-        "name": "field"
-      },
-      {
-        "name": "equals"
-      }
-    ]
-  },
-  "Fact:select": {
-    "heading": "Fact.select",
-    "description": "Captures a snapshot FactSelection over the requested type for later Fact.materialize or Fact.release.",
-    "example": "selection := Fact.select(type: \"Customer\", field: \"status\", equals: \"active\")",
-    "params": [
-      {
-        "name": "type"
-      },
-      {
-        "name": "field"
-      },
-      {
-        "name": "equals"
-      }
-    ]
-  },
   "math:add": {
     "heading": "math.add",
     "description": "Adds two numbers and unifies the result with the output argument.",
@@ -864,7 +764,7 @@
   },
   "csv:toFacts": {
     "heading": "csv.toFacts",
-    "description": "Parses CSV text and returns typed fact-like row maps carrying the requested __type.",
+    "description": "Parses CSV text into retained native facts of a type declared in the loaded IR module.",
     "example": "schools := csv.toFacts(data: csvText, type: \"School\")",
     "params": [
       {
@@ -936,11 +836,11 @@
   },
   "file:readFile": {
     "heading": "file.readFile",
-    "description": "Reads a file as text through the native C++ file implementation.",
-    "example": "text := file.readFile(path: \"data.txt\")",
+    "description": "Reads a bounded file as text directly through the RegisterVm file service.",
+    "example": "text := file.readFile(file: \"data.txt\")",
     "params": [
       {
-        "name": "path"
+        "name": "file"
       }
     ]
   },

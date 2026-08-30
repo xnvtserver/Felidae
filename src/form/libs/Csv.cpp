@@ -1,5 +1,8 @@
 #include "Csv.h"
 
+#include <charconv>
+#include <cctype>
+#include <cmath>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -98,7 +101,26 @@ Json::Value parse(std::string_view text) { return parseRows(text, {}); }
 Json::Value toFacts(std::string_view text, std::string_view typeName) {
   if (typeName.empty())
     throw std::runtime_error("csv.toFacts requires a non-empty fact type");
-  return parseRows(text, typeName);
+  auto rows = parseRows(text, typeName);
+  for (auto &row : rows) {
+    for (auto &[name, value] : row.items()) {
+      if (name == "__type" || !value.is_string())
+        continue;
+      const auto &cell = value.get_ref<const std::string &>();
+      if (cell.empty() ||
+          (cell.size() > 1 && cell.front() == '0' &&
+           std::isdigit(static_cast<unsigned char>(cell[1]))))
+        continue;
+      double number = 0.0;
+      const auto parsed =
+          std::from_chars(cell.data(), cell.data() + cell.size(), number);
+      if (parsed.ec == std::errc{} && parsed.ptr == cell.data() + cell.size() &&
+          std::isfinite(number)) {
+        value = number;
+      }
+    }
+  }
+  return rows;
 }
 
 std::string toText(const Json::Value &rows) {

@@ -155,7 +155,8 @@ int main(int argc, char **argv) {
           static_cast<std::int64_t>(vocabulary.size());
       model = std::make_unique<GruRuntimeStateModel>(
           GruRuntimeStateModel::loadVersioned(
-              configuration, std::move(vocabulary), *options->modelDirectory));
+              configuration, std::move(vocabulary), *options->modelDirectory,
+              felidaeSentencePieceModelIdentity()));
     }
     LibTorchTensorRuntime tensorRuntime;
     display.tensorDecoder = [&](const VmTensor &tensor) {

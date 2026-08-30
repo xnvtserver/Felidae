@@ -3,11 +3,15 @@
 #include "IrModule.h"
 #include "SemanticOperation.h"
 #include "libs/Builtin.h"
+#include "libs/Csv.h"
+#include "libs/Db.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -1138,6 +1142,7 @@ VmFactPtr FelidaeKnowledgeRuntime::mutateFact(const VmFactPtr &fact,
 void FelidaeKnowledgeRuntime::registerFactType(
     IrSymbolRef type, std::vector<IrSymbolRef> parents) {
   factStore_->registerType(type, std::move(parents));
+  registeredFactTypes_.insert(type);
 }
 
 std::vector<VmFactPtr>
@@ -1180,16 +1185,23 @@ void FelidaeKnowledgeRuntime::installIrModule(const IrModule &module) {
       module_.runtimeSymbols.push_back(found->second);
       continue;
     }
-    if (runtimeSymbolTable_.size() ==
-        static_cast<std::size_t>(std::numeric_limits<IrSymbolRef>::max())) {
-      throw IrError("runtime symbol table exhausted its ID space");
-    }
-    runtimeSymbolTable_.push_back(pieces);
-    const auto runtimeSymbol =
-        static_cast<IrSymbolRef>(runtimeSymbolTable_.size());
-    runtimeSymbolIds_.emplace(runtimeSymbolTable_.back(), runtimeSymbol);
-    module_.runtimeSymbols.push_back(runtimeSymbol);
+    module_.runtimeSymbols.push_back(internRuntimeSymbol(pieces));
   }
+}
+
+IrSymbolRef
+FelidaeKnowledgeRuntime::internRuntimeSymbol(PieceSequence pieces) {
+  const auto found = runtimeSymbolIds_.find(pieces);
+  if (found != runtimeSymbolIds_.end())
+    return found->second;
+  if (runtimeSymbolTable_.size() ==
+      static_cast<std::size_t>(std::numeric_limits<IrSymbolRef>::max())) {
+    throw IrError("runtime symbol table exhausted its ID space");
+  }
+  runtimeSymbolTable_.push_back(std::move(pieces));
+  const auto symbol = static_cast<IrSymbolRef>(runtimeSymbolTable_.size());
+  runtimeSymbolIds_.emplace(runtimeSymbolTable_.back(), symbol);
+  return symbol;
 }
 
 IrSymbolRef
@@ -1287,6 +1299,70 @@ PieceSequence FelidaeKnowledgeRuntime::encodeText(std::string_view text) const {
   if (!textEncoder_)
     return VmRuntime::encodeText(text);
   return textEncoder_(text);
+}
+
+VmText FelidaeKnowledgeRuntime::readFile(
+    std::span<const PieceId> pathPieces) const {
+  constexpr std::uintmax_t kMaximumInputBytes = 64u * 1024u * 1024u;
+  const std::filesystem::path path(decodeText(pathPieces));
+  std::error_code error;
+  const auto size = std::filesystem::file_size(path, error);
+  if (error)
+    throw IrError("file.readFile cannot inspect file: " + path.string());
+  if (size > kMaximumInputBytes)
+    throw IrError("file.readFile input exceeds the 64 MiB limit");
+  std::ifstream input(path, std::ios::binary);
+  if (!input)
+    throw IrError("file.readFile cannot open file: " + path.string());
+  std::string text(static_cast<std::size_t>(size), '\0');
+  input.read(text.data(), static_cast<std::streamsize>(text.size()));
+  if (!input && !text.empty())
+    throw IrError("file.readFile cannot complete read: " + path.string());
+  return VmText{encodeText(text)};
+}
+
+VmValue FelidaeKnowledgeRuntime::importCsvFacts(
+    std::span<const PieceId> data, std::span<const PieceId> type) {
+  const auto typePieces = encodeText(decodeText(type));
+  const auto knownType = runtimeSymbolIds_.find(typePieces);
+  if (knownType == runtimeSymbolIds_.end() ||
+      !registeredFactTypes_.contains(knownType->second)) {
+    throw IrError("csv.toFacts type must be declared in the IR module");
+  }
+
+  const Form::BuiltinTextCodec codec{
+      [this](std::span<const PieceId> pieces) { return decodeText(pieces); },
+      [this](std::string_view text) { return encodeText(text); }};
+  const auto typeName = decodeText(type);
+  const auto rows = Form::Csv::toFacts(decodeText(data), typeName);
+  auto result = std::make_shared<VmArray>();
+  result->values.reserve(rows.size());
+  for (const auto &row : rows) {
+    if (!row.is_object())
+      throw IrError("csv.toFacts requires object rows");
+    auto fact = std::make_shared<VmFact>();
+    fact->type = knownType->second;
+    fact->origin = VmFact::Origin::Asserted;
+    fact->fields.reserve(row.size());
+    for (const auto &[name, value] : row.items()) {
+      if (name == "__type")
+        continue;
+      const auto field = internRuntimeSymbol(encodeText(name));
+      fact->fields.emplace_back(field, Form::jsonToVmValue(value, codec));
+    }
+    result->values.emplace_back(factStore_->retain(fact));
+  }
+  return result;
+}
+
+double FelidaeKnowledgeRuntime::syncDatabase(
+    std::span<const PieceId> path) {
+  const VmTextDecoder decoder = [this](std::span<const PieceId> pieces) {
+    return decodeText(pieces);
+  };
+  Form::Db::sync(std::filesystem::path(decodeText(path)),
+                 factStore_->snapshot(), runtimeSymbolTable_, decoder);
+  return 1.0;
 }
 
 void FelidaeKnowledgeRuntime::beginExecution() {
@@ -1747,6 +1823,19 @@ PieceSequence VmRuntime::encodeText(std::string_view) const {
   throw IrError("VM required text encoder service is absent");
 }
 
+VmText VmRuntime::readFile(std::span<const PieceId>) const {
+  throw IrError("VM file read service is absent");
+}
+
+VmValue VmRuntime::importCsvFacts(std::span<const PieceId>,
+                                  std::span<const PieceId>) {
+  throw IrError("VM CSV fact service is absent");
+}
+
+double VmRuntime::syncDatabase(std::span<const PieceId>) {
+  throw IrError("VM fact database service is absent");
+}
+
 void VmRuntime::beginExecution() {}
 
 void VmRuntime::endExecution() noexcept {}
@@ -2011,13 +2100,32 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
       inputs.reserve(count);
       for (std::size_t index = 0; index < count; ++index)
         inputs.push_back(registers.at(program.words.at(pc + 4 + index)));
-      const Form::BuiltinTextCodec codec{
-          [&](std::span<const PieceId> pieces) {
-            return runtime.decodeText(pieces);
-          },
-          [&](std::string_view text) { return runtime.encodeText(text); }};
-      auto result = Form::evaluateBuiltin(operation, inputs,
-                                          runtime.runtimeSymbolTable(), codec);
+      VmValue result;
+      if (operation == BuiltinId::FileReadFile) {
+        const auto path = std::get_if<VmText>(&inputs.front());
+        if (!path)
+          throw IrError("file.readFile path must be text");
+        result = runtime.readFile(path->pieces);
+      } else if (operation == BuiltinId::DbSync) {
+        const auto path = std::get_if<VmText>(&inputs.front());
+        if (!path)
+          throw IrError("db.sync path must be text");
+        result = runtime.syncDatabase(path->pieces);
+      } else if (operation == BuiltinId::CsvToFacts) {
+        const auto data = std::get_if<VmText>(&inputs[0]);
+        const auto type = std::get_if<VmText>(&inputs[1]);
+        if (!data || !type)
+          throw IrError("csv.toFacts data and type must be text");
+        result = runtime.importCsvFacts(data->pieces, type->pieces);
+      } else {
+        const Form::BuiltinTextCodec codec{
+            [&](std::span<const PieceId> pieces) {
+              return runtime.decodeText(pieces);
+            },
+            [&](std::string_view text) { return runtime.encodeText(text); }};
+        result = Form::evaluateBuiltin(operation, inputs,
+                                       runtime.runtimeSymbolTable(), codec);
+      }
       if (!validVmValue(result))
         throw IrError("builtin operation produced an invalid VM value");
       registers.at(program.words.at(pc + 1)) = std::move(result);
@@ -2181,9 +2289,19 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
           runtime.snapshotFacts(symbol(program.words.at(pc + 2)));
       auto values = std::make_shared<VmArray>();
       values->values.reserve(facts.size());
-      for (const auto &fact : facts)
-        values->values.push_back(
-            invoke(moduleSymbol(program.words.at(pc + 3)), {VmValue{fact}}));
+      for (const auto &fact : facts) {
+        auto value =
+            invoke(moduleSymbol(program.words.at(pc + 3)), {VmValue{fact}});
+        if (const auto selected = std::get_if<double>(&value)) {
+          if (*selected == 0.0)
+            continue;
+          if (*selected == 1.0) {
+            values->values.emplace_back(fact);
+            continue;
+          }
+        }
+        values->values.push_back(std::move(value));
+      }
       registers.at(program.words.at(pc + 1)) = std::move(values);
       break;
     }
