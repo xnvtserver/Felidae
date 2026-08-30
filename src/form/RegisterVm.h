@@ -269,8 +269,8 @@ public:
   // store -- it must never infer ownership from fact type alone, since two
   // different files can share one fact type. A fact with no recorded
   // source is simply excluded from any snapshotBySource() result; only
-  // recordSource() call sites (currently just CSV import) decide what
-  // counts as "belongs to this file".
+  // CSV import and explicitly/inferred persistent insert are the only paths
+  // that establish ownership. Queries and updates never invent it.
   void recordSource(IrFactRef fact, std::string source);
   std::optional<std::string> sourceOf(IrFactRef fact) const;
   std::vector<std::string> sourcesForType(IrSymbolRef type) const;
@@ -372,6 +372,9 @@ public:
   virtual double aggregateFacts(std::span<const VmFactPtr> facts,
                                 std::span<const PieceId> field,
                                 std::uint8_t operation);
+  virtual VmValue searchFacts(std::span<const VmFactPtr> facts,
+                              std::span<const PieceId> field,
+                              const VmMapPtr &options);
   virtual VmValue joinFacts(std::span<const VmFactPtr> left,
                             std::span<const VmFactPtr> right,
                             std::span<const PieceId> leftField,
@@ -451,6 +454,9 @@ public:
   double aggregateFacts(std::span<const VmFactPtr> facts,
                         std::span<const PieceId> field,
                         std::uint8_t operation) override;
+  VmValue searchFacts(std::span<const VmFactPtr> facts,
+                      std::span<const PieceId> field,
+                      const VmMapPtr &options) override;
   VmValue joinFacts(std::span<const VmFactPtr> left,
                     std::span<const VmFactPtr> right,
                     std::span<const PieceId> leftField,
@@ -499,6 +505,8 @@ public:
 
 private:
   IrSymbolRef internRuntimeSymbol(PieceSequence pieces);
+  double persistDatabaseSource(std::string_view source,
+                               const VmFactPtr &emptySchema = {});
   // A frame has no AST payload and no shared registers. RegisterVm owns the
   // fresh register vector for every invocation; the runtime owns only the
   // procedure's lexical parameter/local bindings.

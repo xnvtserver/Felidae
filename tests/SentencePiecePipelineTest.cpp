@@ -119,6 +119,19 @@ int main() {
     assert(std::abs(actual - expectedNumeric[index]) <=
            1e-12 * std::max(1.0, std::abs(expectedNumeric[index])));
   }
+  // Lowercase scalar min/max deliberately overload the established
+  // one-array aggregators by positional arity. Both paths must remain
+  // deterministic and preserve unrestricted signed floating-point values.
+  const auto numericOverloadModule = Felidae::compileProgramTextToIr(
+      "main() =>\n"
+      "  return (scalar: max(-345.345, -2.302), "
+      "aggregate: min(data: [3.432, -2.302]))\n"
+      "end\n");
+  const auto numericOverload =
+      std::get<Felidae::VmMapPtr>(executeModule(numericOverloadModule));
+  assert(numericOverload && numericOverload->entries.size() == 2);
+  assert(std::get<double>(numericOverload->entries[0].second) == -2.302);
+  assert(std::get<double>(numericOverload->entries[1].second) == -2.302);
   static_assert(std::variant_size_v<Felidae::VmValue> == 10,
                 "production VM values must remain typed and AST-free");
   // This covers the production frontend: source -> SentencePiece IDs ->
@@ -792,14 +805,19 @@ int main() {
       "Teacher(name: \"Grace\", school_id: 9)\n"
       "main() =>\n"
       "  limited := School.where(active: 1.0).AndWhere(city: \"BLR\").limit(records: 1)\n"
+      "  all_limited := School.all().limit(records: 2)\n"
       "  alternatives := School.where(city: \"MYS\").OrWhere(name: \"Lake\")\n"
       "  projected := School.select(fields: [\"name\", \"city\"], match: {active: 1.0})\n"
+      "  projected_limited := School.select(fields: [\"name\"], match: {active: 1.0}).limit(records: 1)\n"
       "  joined := School.leftJoin(type: Teacher, left: \"id\", right: \"school_id\")\n"
+      "  joined_limited := School.join(type: Teacher, left: \"id\", right: \"school_id\").limit(records: 2)\n"
+      "  none := School.all().limit(records: 0)\n"
       "  inserted := School.insert(values: {id: 4, name: \"Hill\", city: \"BLR\", students: 100, active: 1.0})\n"
-      "  updated := School.update(match: {id: 2}, values: {active: 1.0})\n"
-      "  deleted := School.delete(match: {id: 3})\n"
-      "  return (limited: count(data: limited), alternatives: count(data: alternatives), "
-      "projected: projected, joined: count(data: joined), inserted: inserted, "
+      "  updated := School.where(id: 2).AndWhere(city: \"MYS\").update(values: {active: 1.0})\n"
+      "  deleted := School.where(id: 3).delete()\n"
+      "  return (limited: count(data: limited), all_limited: count(data: all_limited), alternatives: count(data: alternatives), "
+      "projected: projected, projected_limited: count(data: projected_limited), joined: count(data: joined), "
+      "joined_limited: count(data: joined_limited), none: count(data: none), inserted: inserted, "
       "updated: count(data: updated), deleted: deleted, remaining: School.count(), "
       "total: School.sum(field: \"students\"), average: School.average(field: \"students\"))\n"
       "end\n");
@@ -807,12 +825,75 @@ int main() {
   const auto factDmlResult = displayModuleValue(
       factDmlModule, executeModuleDirect(factDmlModule, factDmlRuntime));
   assert(factDmlResult.find("limited: 1.0") != std::string::npos);
+  assert(factDmlResult.find("all_limited: 2") != std::string::npos);
   assert(factDmlResult.find("alternatives: 2") != std::string::npos);
+  assert(factDmlResult.find("projected_limited: 1.0") != std::string::npos);
   assert(factDmlResult.find("joined: 3") != std::string::npos);
+  assert(factDmlResult.find("joined_limited: 2") != std::string::npos);
+  assert(factDmlResult.find("none: 0.0") != std::string::npos);
   assert(factDmlResult.find("updated: 1.0") != std::string::npos);
   assert(factDmlResult.find("deleted: 1.0") != std::string::npos);
   assert(factDmlResult.find("remaining: 3") != std::string::npos);
   assert(factDmlResult.find("total: 800") != std::string::npos);
+
+  // Mutations are intentionally conditional: a direct type-wide update or
+  // delete is rejected before IR generation. Joins likewise require both
+  // key fields, preventing an accidental Cartesian operation.
+  const auto rejectsFactSource = [](std::string_view source) {
+    try {
+      (void)Felidae::compileProgramTextToIr(std::string(source));
+      return false;
+    } catch (const Felidae::IntegerParserError &) {
+      return true;
+    }
+  };
+  assert(rejectsFactSource(
+      "School(id: 1)\n"
+      "main() => return School.update(values: {id: 2})\nend\n"));
+  assert(rejectsFactSource(
+      "School(id: 1)\n"
+      "main() => return School.delete()\nend\n"));
+  assert(rejectsFactSource(
+      "School(id: 1)\nTeacher(school_id: 1)\n"
+      "main() => return School.join(type: Teacher)\nend\n"));
+
+  const auto rejectsLimitAtRuntime = [](std::string records) {
+    const auto module = Felidae::compileProgramTextToIr(
+        "School(id: 1)\nmain() => return School.all().limit(records: " +
+        records + ")\nend\n");
+    Felidae::FelidaeKnowledgeRuntime runtime;
+    try {
+      (void)executeModuleDirect(module, runtime);
+      return false;
+    } catch (const Felidae::IrError &) {
+      return true;
+    }
+  };
+  assert(rejectsLimitAtRuntime("-1"));
+  assert(rejectsLimitAtRuntime("1.5"));
+
+  const auto factSearchModule = Felidae::compileProgramTextToIr(
+      "Publication(name: \"\")\n"
+      "Book extend Publication(name: \"\")\n"
+      "Magazine extend Publication(name: \"\")\n"
+      "Catalog(title: \"Alpha Guide\", confidence: 0.82, category: Book)\n"
+      "Catalog(title: \"beta guide\", confidence: 0.74, category: Magazine)\n"
+      "Catalog(title: \"Reference\", confidence: 0.40, category: Publication)\n"
+      "main() =>\n"
+      "  exact := Catalog.search(field: \"title\", query: \"alpha guide\", mode: \"exact\", case: \"insensitive\")\n"
+      "  liked := Catalog.search(field: \"title\", query: \"%guide\", mode: \"like\", case: \"insensitive\")\n"
+      "  regexed := Catalog.search(field: \"title\", query: \"^[ab].*guide$\", mode: \"regex\", case: \"insensitive\")\n"
+      "  descendants := Catalog.search(field: \"category\", query: Publication, mode: \"hierarchy\", direction: \"descendants\", includeSelf: 0.0)\n"
+      "  ranged := Catalog.search(field: \"confidence\", mode: \"degree\", minimum: 0.70, maximum: 0.90)\n"
+      "  close := Catalog.search(field: \"confidence\", query: 0.80, tolerance: 0.08, mode: \"degree\")\n"
+      "  return (exact: count(data: exact), liked: count(data: liked), regexed: count(data: regexed), descendants: count(data: descendants), ranged: count(data: ranged), close: count(data: close))\n"
+      "end\n");
+  Felidae::FelidaeKnowledgeRuntime factSearchRuntime;
+  const auto factSearchResult = displayModuleValue(
+      factSearchModule,
+      executeModuleDirect(factSearchModule, factSearchRuntime));
+  assert(factSearchResult ==
+         "{exact: 1.0, liked: 2, regexed: 2, descendants: 2, ranged: 2, close: 2}");
 
   const auto repeatedFieldsModule = Felidae::compileProgramTextToIr(
       "Color(value: \"red\", tag: \"warm\", tag: \"primary\").\n"
