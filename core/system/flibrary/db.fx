@@ -1,7 +1,0 @@
-system.flibrary.db.serialize(rows: array, type: string) => ()
-system.flibrary.db.merge(rows: array, type: string, source: string) => ()
-system.flibrary.db.schema(rows: array, models: array) => ()
-system.flibrary.db.connect(rows: array, path: string, models: array) => ()
-system.flibrary.db.insertOneFile(rows: array, path: string, type: string, key: string, data: any) => ()
-system.flibrary.db.updateOneFile(rows: array, path: string, type: string, conditions: any, patch: any) => ()
-system.flibrary.db.deleteOneFile(rows: array, path: string, type: string, conditions: any) => ()

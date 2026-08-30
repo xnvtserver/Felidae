@@ -15,6 +15,11 @@
   allowed.
 - Do not repeatedly poll or stream routine build progress. Ask for the final
   failure block or success summary to avoid wasting context and tokens.
+- When a build/test command is backgrounded, do not block-wait on the task and
+  scan its full output. Redirect it to a log file, and once it's done, read
+  only the tail (and grep for `error`/`FAILED` if needed). Scanning entire
+  build logs (compiler warnings, dependency output, etc.) wastes context for
+  no benefit — the tail plus an error grep is enough to know what happened.
 - Keep compiler, VM, model training, checkpointing, and TorchScript export in
   C++. Do not introduce Python scripts or Python subprocesses into the build,
   training, inference, testing, or model-export pipeline.
