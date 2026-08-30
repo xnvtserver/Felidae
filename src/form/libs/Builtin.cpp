@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 #include <numeric>
 #include <random>
@@ -149,6 +150,23 @@ VmValue evaluateBuiltin(BuiltinId operation, std::span<const VmValue> inputs,
       if (!array || !*array)
         throw IrError("array length requires an array");
       return static_cast<double>((*array)->values.size());
+    }
+    case BuiltinId::ArrayLimit: {
+      const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
+      const auto records = std::get_if<double>(&inputs[1]);
+      if (!array || !*array)
+        throw IrError("limit requires an array query result");
+      if (!records || !std::isfinite(*records) || *records < 0.0 ||
+          std::trunc(*records) != *records)
+        throw IrError("limit records must be a finite non-negative integer");
+      if (*records > static_cast<double>(std::numeric_limits<std::size_t>::max()))
+        throw IrError("limit records exceeds the supported range");
+      auto result = std::make_shared<VmArray>();
+      const auto count = std::min((*array)->values.size(),
+                                  static_cast<std::size_t>(*records));
+      result->values.assign((*array)->values.begin(),
+                            (*array)->values.begin() + count);
+      return result;
     }
     case BuiltinId::Sum:
     case BuiltinId::Average:

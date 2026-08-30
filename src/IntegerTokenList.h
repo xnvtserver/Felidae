@@ -16,6 +16,12 @@ namespace Felidae {
 // independently so no learned piece can cross a statement line. Newline bytes
 // remain in the encoded slice and all returned offsets are rebased to the
 // original source. This type assigns no secondary token categories.
+//
+// `end` is a parser boundary, not a tokenizer boundary: discovering a safe
+// block requires first distinguishing syntax from strings, comments, and
+// mixfix anchors. Keep that decision in IntegerParser rather than duplicating
+// a partial parser here. Lazy line loading also bounds work after an early
+// syntax error while preserving one stable PieceId sequence per source line.
 class IntegerTokenList {
 public:
   struct Entry {
@@ -30,7 +36,7 @@ public:
 
   const std::string &source() const noexcept { return source_; }
   // Parser-facing lazy access. Requesting the first token beyond the loaded
-  // line encodes exactly the next physical line, never a block.
+  // line encodes exactly the next physical line.
   bool has(std::size_t index) const;
   const Entry &entry(std::size_t index) const;
   std::size_t loadedSize() const noexcept { return entries_.size(); }

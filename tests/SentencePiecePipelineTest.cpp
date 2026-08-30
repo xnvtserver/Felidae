@@ -805,6 +805,36 @@ int main() {
   assert(concreteFactQueryResult.find("Lake") != std::string::npos);
   assert(concreteFactQueryResult.find("West") != std::string::npos);
 
+  const auto factDmlModule = Felidae::compileProgramTextToIr(
+      "School(id: 1, name: \"North\", city: \"BLR\", students: 420, active: 1.0)\n"
+      "School(id: 2, name: \"West\", city: \"MYS\", students: 280, active: 0.0)\n"
+      "School(id: 3, name: \"Lake\", city: \"BLR\", students: 350, active: 1.0)\n"
+      "Teacher(name: \"Ada\", school_id: 1)\n"
+      "Teacher(name: \"Grace\", school_id: 9)\n"
+      "main() =>\n"
+      "  limited := School.where(active: 1.0).AndWhere(city: \"BLR\").limit(records: 1)\n"
+      "  alternatives := School.where(city: \"MYS\").OrWhere(name: \"Lake\")\n"
+      "  projected := School.select(fields: [\"name\", \"city\"], match: {active: 1.0})\n"
+      "  joined := School.leftJoin(type: Teacher, left: \"id\", right: \"school_id\")\n"
+      "  inserted := School.insert(values: {id: 4, name: \"Hill\", city: \"BLR\", students: 100, active: 1.0})\n"
+      "  updated := School.update(match: {id: 2}, values: {active: 1.0})\n"
+      "  deleted := School.delete(match: {id: 3})\n"
+      "  return (limited: count(data: limited), alternatives: count(data: alternatives), "
+      "projected: projected, joined: count(data: joined), inserted: inserted, "
+      "updated: count(data: updated), deleted: deleted, remaining: School.count(), "
+      "total: School.sum(field: \"students\"), average: School.average(field: \"students\"))\n"
+      "end\n");
+  Felidae::FelidaeKnowledgeRuntime factDmlRuntime;
+  const auto factDmlResult = displayModuleValue(
+      factDmlModule, executeModuleDirect(factDmlModule, factDmlRuntime));
+  assert(factDmlResult.find("limited: 1.0") != std::string::npos);
+  assert(factDmlResult.find("alternatives: 2.0") != std::string::npos);
+  assert(factDmlResult.find("joined: 3.0") != std::string::npos);
+  assert(factDmlResult.find("updated: 1.0") != std::string::npos);
+  assert(factDmlResult.find("deleted: 1.0") != std::string::npos);
+  assert(factDmlResult.find("remaining: 3.0") != std::string::npos);
+  assert(factDmlResult.find("total: 800.0") != std::string::npos);
+
   const auto repeatedFieldsModule = Felidae::compileProgramTextToIr(
       "Color(value: \"red\", tag: \"warm\", tag: \"primary\").\n"
       "Color(value: \"blue\", tag: \"cool\", tag: \"primary\").\n"

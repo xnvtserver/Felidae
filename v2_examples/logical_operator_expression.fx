@@ -3,8 +3,8 @@ explode(divisor: number) =>
 
 main() =>
     return (
-        conjunction: true and not false,
-        disjunction: false or true,
-        short_and: false and explode(divisor: 0),
-        short_or: true or explode(divisor: 0)
+        conjunction: 1.0 and not 0.0,
+        disjunction: 0.0 or 1.0,
+        short_and: 0.0 and explode(divisor: 0),
+        short_or: 1.0 or explode(divisor: 0)
     )

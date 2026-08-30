@@ -599,26 +599,34 @@ School(name: "West", district: "west", active: 0.0)
 
 main() =>
     allSchools := School.all()
-    activeCentral := School.select(district: "central", active: 1.0)
-    return (all: allSchools, selected: activeCentral, count: School.count())
+    activeCentral := School.where(district: "central", active: 1.0)
+        .limit(records: 100)
+    names := School.select(fields: ["name"], match: {active: 1.0})
+    return (all: allSchools, selected: activeCentral, names: names,
+            count: School.count())
 end
 ```
 
-`Type.all()` and `Type.select(...)` compile to the same verified fact-iteration
-IR used by `lambda(Type, ...)`; hierarchy traversal includes assignable child
-facts. Exact truth values are numeric `0.0` and `1.0`.
+`Type.all()` and `Type.where(...)` compile to the same verified fact-iteration
+IR used by `lambda(Type, ...)`; `select` projects named fields. Conditions may
+be extended with `.AndWhere(...)` and `.OrWhere(...)`. Hierarchy traversal
+includes assignable child facts. Exact truth values are numeric `0.0` and
+`1.0`.
 
 CSV rows can enter that same native fact store and be synchronized from the VM:
 
 ```felidae
-rows := csv.toFacts(data: csvText, type: "School")
-saved := db.sync(file: "build/runtime/schools.csv")
+rows := csv.toFacts(data: csvText, type: "School",
+                    source: "build/runtime/schools.csv")
+changed := School.update(match: {name: "North"},
+                         values: {active: 0.0})
 ```
 
-`db.sync` accepts a fact-only `.fx` file or a homogeneous `.csv` table. CSV
-sync rejects mixed types or schemas rather than silently losing fields. See
+Insert, update, and delete persist automatically when affected facts have CSV
+source ownership. Each source is staged and replaced independently; an
+in-memory fact has no implicit disk side effect. See
 `v2_examples/csv_fact_database.fx` for the complete import, query, aggregate,
-and write-back flow.
+and automatic write-back flow.
 
 Because child types are assignable to their parents, a parent query can work
 with the hierarchy rather than only one exact concrete type.

@@ -76,11 +76,6 @@ fact.contains_subfact(input: any, candidate: any, maximum_depth: number) =>
 fact.containsSubfact(input: any, candidate: any, maximumDepth: number) =>
     return (fact.contains_subfact(input: input, candidate: candidate, maximum_depth: maximumDepth))
 
-# Pair values are compared structurally. This is deliberately separate from
-# .relate(...) attachments and does not create or mutate fact relationships.
-Relation.properties(pairs: array) =>
-    return (system_library_loader(module: "fact", function: "relation_properties", args: {pairs: pairs}))
-
 # Enumerates typed fact values nested inside input in deterministic breadth-
 # first order. The root is excluded; depth/path identify each local neighbor.
 Fact.nearestSubfacts(input: any, maximumDepth: number) =>

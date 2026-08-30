@@ -4,40 +4,40 @@
 Knowledge(
     name: "",
     description: "",
-    learned: true
+    learned: 1.0
 )
 
 FelidaeKnowledge extend Knowledge(
     name: "felidae",
     description: "a deterministic logic language for executable facts",
-    learned: true
+    learned: 1.0
 )
 
 AnimalKnowledge extend Knowledge(
     name: "animal",
     description: "a living organism",
-    learned: true
+    learned: 1.0
 )
 
 CatKnowledge extend AnimalKnowledge(
     name: "cat",
     description: "a feline mammal",
     legs: 4,
-    learned: true
+    learned: 1.0
 )
 
 SonyKnowledge extend CatKnowledge(
     name: "sony",
     description: "a known cat",
     legs: 4,
-    learned: true
+    learned: 1.0
 )
 
 BankMeaning extend Knowledge(
     name: "",
     context: "",
     description: "",
-    learned: true
+    learned: 1.0
 )
 
 FinancialBank extend BankMeaning(
@@ -78,9 +78,9 @@ ResolutionEvidence(
 ContextualAnswer(
     query: "",
     state: "unknown",
-    learned: false,
+    learned: 0.0,
     confidence: 0,
-    crisp: false,
+    crisp: 0.0,
     answer: nil,
     candidates: [],
     evidence: []
@@ -89,9 +89,9 @@ ContextualAnswer(
 QuantityAnswer(
     query: "",
     state: "unknown",
-    learned: false,
+    learned: 0.0,
     confidence: 0,
-    crisp: false,
+    crisp: 0.0,
     subject: nil,
     property: "",
     value: nil,
@@ -123,9 +123,9 @@ explainLearnedTerm() =>
         return ContextualAnswer(
             query: term,
             state: "unknown",
-            learned: false,
+            learned: 0.0,
             confidence: 0,
-            crisp: false,
+            crisp: 0.0,
             answer: nil,
             candidates: [],
             evidence: []
@@ -136,9 +136,9 @@ explainLearnedTerm() =>
             return ContextualAnswer(
                 query: term,
                 state: "resolved",
-                learned: true,
+                learned: 1.0,
                 confidence: 1,
-                crisp: true,
+                crisp: 1.0,
                 answer: matched,
                 candidates: matches,
                 evidence: [ResolutionEvidence(
@@ -154,9 +154,9 @@ explainLearnedTerm() =>
             return ContextualAnswer(
                 query: term,
                 state: "ambiguous",
-                learned: true,
+                learned: 1.0,
                 confidence: 1 / matchCount,
-                crisp: false,
+                crisp: 0.0,
                 answer: nil,
                 candidates: matches,
                 evidence: []
@@ -171,9 +171,9 @@ explainLearnedContext() =>
         return ContextualAnswer(
             query: subject.term,
             state: "context-resolved",
-            learned: true,
+            learned: 1.0,
             confidence: 1,
-            crisp: true,
+            crisp: 1.0,
             answer: matched,
             candidates: matches,
             evidence: [ResolutionEvidence(
@@ -189,9 +189,9 @@ explainLearnedContext() =>
         return ContextualAnswer(
             query: subject.term,
             state: "unknown-context",
-            learned: false,
+            learned: 0.0,
             confidence: 0,
-            crisp: false,
+            crisp: 0.0,
             answer: nil,
             candidates: matches,
             evidence: []
@@ -209,9 +209,9 @@ answerLearnedQuantity() =>
         return QuantityAnswer(
             query: "how-many",
             state: "resolved",
-            learned: true,
+            learned: 1.0,
             confidence: 1,
-            crisp: true,
+            crisp: 1.0,
             subject: matched,
             property: propertyName,
             value: amount,
@@ -228,9 +228,9 @@ answerLearnedQuantity() =>
         return QuantityAnswer(
             query: "how-many",
             state: "unknown",
-            learned: false,
+            learned: 0.0,
             confidence: 0,
-            crisp: false,
+            crisp: 0.0,
             subject: nil,
             property: propertyName,
             value: nil,

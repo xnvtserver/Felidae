@@ -28,7 +28,8 @@ void IntegerTokenList::encodeNextLine() const {
       lineEnd < source_.size() && source_[lineEnd] == '\n') {
     ++lineEnd;
   }
-  const auto line = source_.substr(lineBegin, lineEnd - lineBegin);
+  const absl::string_view line(source_.data() + lineBegin,
+                               lineEnd - lineBegin);
   sentencepiece::SentencePieceText encoded;
   const auto status = processor_->Encode(line, &encoded);
   if (!status.ok()) {

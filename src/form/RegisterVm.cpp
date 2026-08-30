@@ -840,6 +840,17 @@ VmFactPtr VmFactStore::retain(const VmFactPtr &fact) {
   return retained;
 }
 
+void VmFactStore::recordInsert(IrFactRef fact) {
+  std::lock_guard lock(mutex_);
+  if (fact == 0 || std::none_of(facts_.begin(), facts_.end(),
+                                [&](const auto &item) {
+                                  return item->id == fact;
+                                }))
+    throw IrError("fact insertion record targets an unknown fact");
+  mutations_.push_back(VmFactMutation{nextSequence_++, fact, 0,
+                                      VmFactMutationKind::Insert});
+}
+
 VmFactPtr VmFactStore::mutate(const VmFactPtr &fact, IrSymbolRef field,
                               const VmValue &value, IrSymbolRef procedure) {
   if (!fact || fact->id == 0 || field == 0 || !validVmValue(value))
@@ -875,11 +886,106 @@ VmFactPtr VmFactStore::mutate(const VmFactPtr &fact, IrSymbolRef field,
     replace(byField_.at(indexedField));
   if (!hadField)
     byField_[field].push_back(updated);
-  mutations_.push_back(VmFactMutation{nextSequence_++, fact->id, field});
+  mutations_.push_back(VmFactMutation{nextSequence_++, fact->id, field,
+                                      VmFactMutationKind::Update});
   provenance_.push_back(VmFactProvenance{
       fact->id, procedure, fact->origin == VmFact::Origin::Derived});
   ++contentRevision_;
   return updated;
+}
+
+std::size_t VmFactStore::erase(std::span<const VmFactPtr> facts) {
+  std::lock_guard lock(mutex_);
+  std::unordered_set<IrFactRef> requested;
+  for (const auto &fact : facts)
+    if (fact && fact->id != 0)
+      requested.insert(fact->id);
+  if (requested.empty())
+    return 0;
+
+  std::vector<VmFactPtr> removed;
+  for (const auto &fact : facts_) {
+    if (requested.contains(fact->id))
+      removed.push_back(fact);
+  }
+  if (removed.size() != requested.size())
+    throw IrError("fact deletion targets a fact outside this knowledge runtime");
+
+  const auto removeIds = [&](auto &items) {
+    std::erase_if(items, [&](const auto &item) {
+      return item && requested.contains(item->id);
+    });
+  };
+  removeIds(facts_);
+  for (auto &[_, items] : byType_)
+    removeIds(items);
+  for (auto &[_, items] : byField_)
+    removeIds(items);
+  std::erase_if(byType_, [](const auto &entry) { return entry.second.empty(); });
+  std::erase_if(byField_, [](const auto &entry) { return entry.second.empty(); });
+  for (const auto &fact : removed) {
+    factSource_.erase(fact->id);
+    mutations_.push_back(VmFactMutation{nextSequence_++, fact->id, 0,
+                                        VmFactMutationKind::Delete});
+  }
+  ++membershipRevision_;
+  ++knowledgeRevision_;
+  return removed.size();
+}
+
+void VmFactStore::restore(const VmFactPtr &current,
+                          const VmFactPtr &previous) {
+  if (!current || !previous || current->id == 0 ||
+      current->id != previous->id || current->type != previous->type)
+    throw IrError("fact rollback snapshots are incompatible");
+  std::lock_guard lock(mutex_);
+  const auto replaceById = [&](auto &items) {
+    const auto found = std::find_if(items.begin(), items.end(), [&](const auto &item) {
+      return item && item->id == current->id;
+    });
+    if (found == items.end())
+      throw IrError("fact rollback target is absent");
+    *found = previous;
+  };
+  replaceById(facts_);
+  replaceById(byType_.at(current->type));
+  for (auto &[_, items] : byField_)
+    std::erase_if(items, [&](const auto &item) {
+      return item && item->id == current->id;
+    });
+  for (const auto &[field, _] : previous->fields)
+    byField_[field].push_back(previous);
+  std::erase_if(byField_, [](const auto &entry) { return entry.second.empty(); });
+  ++contentRevision_;
+  ++knowledgeRevision_;
+}
+
+void VmFactStore::restoreErased(const VmFactPtr &fact,
+                                std::optional<std::string> source) {
+  if (!fact || fact->id == 0)
+    throw IrError("deleted fact rollback snapshot is invalid");
+  std::lock_guard lock(mutex_);
+  if (std::any_of(facts_.begin(), facts_.end(), [&](const auto &existing) {
+        return existing->id == fact->id;
+      }))
+    throw IrError("deleted fact rollback would duplicate fact identity");
+  facts_.push_back(fact);
+  byType_[fact->type].push_back(fact);
+  for (const auto &[field, _] : fact->fields)
+    byField_[field].push_back(fact);
+  if (source)
+    factSource_[fact->id] = std::move(*source);
+  const auto order = [](auto &items) {
+    std::sort(items.begin(), items.end(), [](const auto &left, const auto &right) {
+      return left->createdSequence < right->createdSequence;
+    });
+  };
+  order(facts_);
+  order(byType_[fact->type]);
+  for (const auto &[field, _] : fact->fields)
+    order(byField_[field]);
+  ++membershipRevision_;
+  ++knowledgeRevision_;
 }
 
 std::vector<VmFactPtr> VmFactStore::snapshot() const {
@@ -904,6 +1010,28 @@ void VmFactStore::recordSource(IrFactRef fact, std::string source) {
     throw IrError(
         "fact source recorded for a fact outside this knowledge runtime");
   factSource_[fact] = std::move(source);
+}
+
+std::optional<std::string> VmFactStore::sourceOf(IrFactRef fact) const {
+  std::lock_guard lock(mutex_);
+  const auto found = factSource_.find(fact);
+  if (found == factSource_.end())
+    return std::nullopt;
+  return found->second;
+}
+
+std::vector<std::string> VmFactStore::sourcesForType(IrSymbolRef type) const {
+  std::lock_guard lock(mutex_);
+  std::set<std::string> unique;
+  const auto found = byType_.find(type);
+  if (found != byType_.end()) {
+    for (const auto &fact : found->second) {
+      const auto source = factSource_.find(fact->id);
+      if (source != factSource_.end())
+        unique.insert(source->second);
+    }
+  }
+  return {unique.begin(), unique.end()};
 }
 
 std::vector<VmFactPtr>
@@ -1076,6 +1204,20 @@ std::vector<VmFactProvenance> VmFactStore::provenance() const {
   return provenance_;
 }
 
+VmFactStoreJournalMark VmFactStore::journalMark() const {
+  std::lock_guard lock(mutex_);
+  return {mutations_.size(), provenance_.size()};
+}
+
+void VmFactStore::rollbackJournal(VmFactStoreJournalMark mark) {
+  std::lock_guard lock(mutex_);
+  if (mark.mutations > mutations_.size() ||
+      mark.provenance > provenance_.size())
+    throw IrError("fact mutation journal rollback mark is invalid");
+  mutations_.resize(mark.mutations);
+  provenance_.resize(mark.provenance);
+}
+
 VmKnowledgeSnapshot VmFactStore::knowledgeSnapshot() const {
   std::uint64_t revision = std::numeric_limits<std::uint64_t>::max();
   VmKnowledgeSnapshot result;
@@ -1171,6 +1313,240 @@ VmFactPtr FelidaeKnowledgeRuntime::mutateFact(const VmFactPtr &fact,
   return factStore_->mutate(
       fact, field, value,
       callFrames_.empty() ? 0 : callFrames_.back().procedure);
+}
+
+double FelidaeKnowledgeRuntime::deleteFacts(std::span<const VmFactPtr> facts) {
+  std::map<std::string, std::vector<VmFactPtr>> persistent;
+  std::vector<VmFactPtr> memory;
+  for (const auto &fact : facts) {
+    if (!fact)
+      throw IrError("fact deletion contains an invalid fact");
+    if (const auto source = factStore_->sourceOf(fact->id))
+      persistent[*source].push_back(fact);
+    else
+      memory.push_back(fact);
+  }
+  std::size_t deleted = factStore_->erase(memory);
+  std::vector<std::string> committed;
+  for (const auto &[source, owned] : persistent) {
+    const auto journal = factStore_->journalMark();
+    deleted += factStore_->erase(owned);
+    try {
+      (void)syncDatabase(encodeText(source));
+    } catch (const std::exception &error) {
+      for (const auto &fact : owned)
+        factStore_->restoreErased(fact, source);
+      factStore_->rollbackJournal(journal);
+      std::ostringstream message;
+      message << "fact deletion persistence failed for " << source;
+      if (!committed.empty()) {
+        message << " after committing";
+        for (const auto &path : committed)
+          message << ' ' << path;
+      }
+      message << ": " << error.what();
+      throw IrError(message.str());
+    }
+    committed.push_back(source);
+  }
+  return static_cast<double>(deleted);
+}
+
+VmFactPtr FelidaeKnowledgeRuntime::insertFact(
+    std::span<const PieceId> type, const VmMapPtr &values,
+    std::optional<std::span<const PieceId>> source) {
+  if (!values)
+    throw IrError("fact insertion requires a values map");
+  auto fact = std::make_shared<VmFact>();
+  fact->type = internRuntimeSymbol(PieceSequence(type.begin(), type.end()));
+  fact->fields = values->entries;
+  std::optional<std::string> owner;
+  if (source)
+    owner = decodeText(*source);
+  else {
+    const auto known = factStore_->sourcesForType(fact->type);
+    if (known.size() == 1)
+      owner = known.front();
+    else if (known.size() > 1)
+      throw IrError(
+          "fact insertion requires source when its type has multiple sources");
+  }
+  const auto journal = factStore_->journalMark();
+  auto retained = factStore_->retain(fact);
+  if (owner && !owner->empty()) {
+    factStore_->recordSource(retained->id, *owner);
+    try {
+      (void)syncDatabase(encodeText(*owner));
+    } catch (...) {
+      (void)factStore_->erase(std::array<VmFactPtr, 1>{retained});
+      factStore_->rollbackJournal(journal);
+      throw;
+    }
+  }
+  factStore_->recordInsert(retained->id);
+  return retained;
+}
+
+VmValue FelidaeKnowledgeRuntime::updateFacts(
+    std::span<const VmFactPtr> facts, const VmMapPtr &values) {
+  if (!values)
+    throw IrError("fact update requires a values map");
+  std::map<std::string, std::vector<VmFactPtr>> persistent;
+  std::vector<VmFactPtr> memory;
+  for (const auto &fact : facts) {
+    if (!fact)
+      throw IrError("fact update contains an invalid fact");
+    if (const auto source = factStore_->sourceOf(fact->id))
+      persistent[*source].push_back(fact);
+    else
+      memory.push_back(fact);
+  }
+  std::unordered_map<IrFactRef, VmFactPtr> updatedById;
+  const auto apply = [&](std::span<const VmFactPtr> selected) {
+    for (auto fact : selected) {
+      for (const auto &[field, value] : values->entries)
+        fact = mutateFact(fact, field, value);
+      updatedById[fact->id] = fact;
+    }
+  };
+  apply(memory);
+  std::vector<std::string> committed;
+  for (const auto &[source, owned] : persistent) {
+    const auto journal = factStore_->journalMark();
+    apply(owned);
+    try {
+      (void)syncDatabase(encodeText(source));
+    } catch (const std::exception &error) {
+      for (const auto &previous : owned) {
+        const auto current = updatedById.at(previous->id);
+        factStore_->restore(current, previous);
+        updatedById[previous->id] = previous;
+      }
+      factStore_->rollbackJournal(journal);
+      std::ostringstream message;
+      message << "fact update persistence failed for " << source;
+      if (!committed.empty()) {
+        message << " after committing";
+        for (const auto &path : committed)
+          message << ' ' << path;
+      }
+      message << ": " << error.what();
+      throw IrError(message.str());
+    }
+    committed.push_back(source);
+  }
+  auto result = std::make_shared<VmArray>();
+  result->values.reserve(facts.size());
+  for (const auto &fact : facts)
+    result->values.emplace_back(updatedById.at(fact->id));
+  return result;
+}
+
+VmValue FelidaeKnowledgeRuntime::projectFacts(
+    std::span<const VmFactPtr> facts, std::span<const VmText> fields) {
+  std::vector<IrSymbolRef> keys;
+  keys.reserve(fields.size());
+  for (const auto &field : fields)
+    keys.push_back(internRuntimeSymbol(field.pieces));
+  auto result = std::make_shared<VmArray>();
+  result->values.reserve(facts.size());
+  for (const auto &fact : facts) {
+    auto projected = std::make_shared<VmMap>();
+    for (const auto key : keys) {
+      const auto found = std::find_if(
+          fact->fields.begin(), fact->fields.end(),
+          [&](const auto &entry) { return entry.first == key; });
+      if (found == fact->fields.end())
+        throw IrError("fact projection references a missing field");
+      projected->entries.push_back(*found);
+    }
+    result->values.emplace_back(std::move(projected));
+  }
+  return result;
+}
+
+double FelidaeKnowledgeRuntime::aggregateFacts(
+    std::span<const VmFactPtr> facts, std::span<const PieceId> field,
+    std::uint8_t operation) {
+  if (operation > 3)
+    throw IrError("fact aggregate operation is invalid");
+  const auto key = internRuntimeSymbol(PieceSequence(field.begin(), field.end()));
+  std::vector<double> values;
+  values.reserve(facts.size());
+  for (const auto &fact : facts) {
+    const auto found = std::find_if(
+        fact->fields.begin(), fact->fields.end(),
+        [&](const auto &entry) { return entry.first == key; });
+    if (found == fact->fields.end())
+      throw IrError("fact aggregate references a missing field");
+    const auto number = std::get_if<double>(&found->second);
+    if (!number || !std::isfinite(*number))
+      throw IrError("fact aggregate field must contain finite numbers");
+    values.push_back(*number);
+  }
+  if (values.empty())
+    throw IrError("fact aggregate requires at least one matching fact");
+  if (operation == 0)
+    return std::accumulate(values.begin(), values.end(), 0.0);
+  if (operation == 1)
+    return std::accumulate(values.begin(), values.end(), 0.0) /
+           static_cast<double>(values.size());
+  if (operation == 2)
+    return *std::min_element(values.begin(), values.end());
+  return *std::max_element(values.begin(), values.end());
+}
+
+VmValue FelidaeKnowledgeRuntime::joinFacts(
+    std::span<const VmFactPtr> left, std::span<const VmFactPtr> right,
+    std::span<const PieceId> leftField,
+    std::span<const PieceId> rightField, std::uint8_t kind) {
+  if (kind > 3)
+    throw IrError("fact join kind is invalid");
+  const auto leftKey = internRuntimeSymbol(
+      PieceSequence(leftField.begin(), leftField.end()));
+  const auto rightKey = internRuntimeSymbol(
+      PieceSequence(rightField.begin(), rightField.end()));
+  const auto joinedType = internRuntimeSymbol(encodeText("Joined"));
+  const auto joinedLeft = internRuntimeSymbol(encodeText("left"));
+  const auto joinedRight = internRuntimeSymbol(encodeText("right"));
+  const auto read = [](const VmFactPtr &fact,
+                       IrSymbolRef field) -> const VmValue * {
+    if (!fact)
+      return nullptr;
+    const auto found = std::find_if(
+        fact->fields.begin(), fact->fields.end(),
+        [&](const auto &entry) { return entry.first == field; });
+    return found == fact->fields.end() ? nullptr : &found->second;
+  };
+  auto result = std::make_shared<VmArray>();
+  std::vector<bool> matchedRight(right.size(), false);
+  const auto append = [&](VmValue leftValue, VmValue rightValue) {
+    auto joined = std::make_shared<VmFact>();
+    joined->type = joinedType;
+    joined->fields = {{joinedLeft, std::move(leftValue)},
+                      {joinedRight, std::move(rightValue)}};
+    result->values.emplace_back(VmFactPtr{std::move(joined)});
+  };
+  for (const auto &leftFact : left) {
+    const auto *leftValue = read(leftFact, leftKey);
+    bool matchedLeft = false;
+    for (std::size_t index = 0; leftValue && index < right.size(); ++index) {
+      const auto &rightFact = right[index];
+      const auto *rightValue = read(rightFact, rightKey);
+      if (!rightValue || !vmValuesEqual(*leftValue, *rightValue))
+        continue;
+      matchedLeft = true;
+      matchedRight[index] = true;
+      append(leftFact, rightFact);
+    }
+    if (!matchedLeft && (kind == 1 || kind == 3))
+      append(leftFact, VmNil{});
+  }
+  if (kind == 2 || kind == 3)
+    for (std::size_t index = 0; index < right.size(); ++index)
+      if (!matchedRight[index])
+        append(VmNil{}, right[index]);
+  return result;
 }
 
 void FelidaeKnowledgeRuntime::registerFactType(
@@ -1371,8 +1747,7 @@ VmValue FelidaeKnowledgeRuntime::importCsvFacts(
   const auto typeName = decodeText(type);
   const auto rows = Form::Csv::toFacts(decodeText(data), typeName);
   // Empty means "no persistence source" (e.g. an anonymous csv.toFacts call
-  // never intended for db.sync); only a non-empty source is recorded, so
-  // db.sync's ownership lookup stays exact rather than matching on "".
+  // never intended for persistence); only a non-empty source is recorded.
   const std::optional<std::string> sourceText =
       source.empty() ? std::optional<std::string>{} : decodeText(source);
   auto result = std::make_shared<VmArray>();
@@ -1816,6 +2191,38 @@ VmFactPtr VmRuntime::mutateFact(const VmFactPtr &, IrSymbolRef,
   throw IrError("IR fact mutation is unavailable in this runtime");
 }
 
+double VmRuntime::deleteFacts(std::span<const VmFactPtr>) {
+  throw IrError("IR fact deletion is unavailable in this runtime");
+}
+
+VmFactPtr VmRuntime::insertFact(
+    std::span<const PieceId>, const VmMapPtr &,
+    std::optional<std::span<const PieceId>>) {
+  throw IrError("IR fact insertion is unavailable in this runtime");
+}
+
+VmValue VmRuntime::updateFacts(std::span<const VmFactPtr>, const VmMapPtr &) {
+  throw IrError("IR fact update is unavailable in this runtime");
+}
+
+VmValue VmRuntime::projectFacts(std::span<const VmFactPtr>,
+                                std::span<const VmText>) {
+  throw IrError("IR fact projection is unavailable in this runtime");
+}
+
+double VmRuntime::aggregateFacts(std::span<const VmFactPtr>,
+                                 std::span<const PieceId>, std::uint8_t) {
+  throw IrError("IR fact aggregation is unavailable in this runtime");
+}
+
+VmValue VmRuntime::joinFacts(std::span<const VmFactPtr>,
+                             std::span<const VmFactPtr>,
+                             std::span<const PieceId>,
+                             std::span<const PieceId>,
+                             std::uint8_t) {
+  throw IrError("IR fact join is unavailable in this runtime");
+}
+
 void VmRuntime::registerFactType(IrSymbolRef, std::vector<IrSymbolRef>) {
   throw IrError("IR fact hierarchy is unavailable in this runtime");
 }
@@ -2157,19 +2564,14 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
         if (!path)
           throw IrError("file.readFile path must be text");
         result = runtime.readFile(path->pieces);
-      } else if (operation == BuiltinId::DbSync) {
-        const auto path = std::get_if<VmText>(&inputs.front());
-        if (!path)
-          throw IrError("db.sync path must be text");
-        result = runtime.syncDatabase(path->pieces);
       } else if (operation == BuiltinId::CsvToFacts) {
         const auto data = std::get_if<VmText>(&inputs[0]);
         const auto type = std::get_if<VmText>(&inputs[1]);
         if (!data || !type)
           throw IrError("csv.toFacts data and type must be text");
         // The source-path overload (csv.toFacts(data, type, source)) is
-        // optional: db.sync ownership tracking only applies when a caller
-        // provides one, matching the two declared core/csv.fx arities.
+        // Source ownership is optional; DML auto-persistence applies only
+        // when a caller provides one.
         std::span<const PieceId> source;
         if (inputs.size() > 2) {
           const auto sourceText = std::get_if<VmText>(&inputs[2]);
@@ -2201,6 +2603,140 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
         for (const auto &[field, value] : (*changes)->entries)
           propagated = runtime.mutateFact(propagated, field, value);
         result = propagated;
+      } else if (operation == BuiltinId::FactDelete) {
+        const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
+        if (!array || !*array)
+          throw IrError("fact deletion requires a fact query result");
+        std::vector<VmFactPtr> facts;
+        facts.reserve((*array)->values.size());
+        for (const auto &item : (*array)->values) {
+          const auto fact = std::get_if<VmFactPtr>(&item);
+          if (!fact || !*fact)
+            throw IrError("fact deletion query contains a non-fact value");
+          facts.push_back(*fact);
+        }
+        result = runtime.deleteFacts(facts);
+      } else if (operation == BuiltinId::FactInsert) {
+        const auto type = std::get_if<VmText>(&inputs[0]);
+        const auto values = std::get_if<VmMapPtr>(&inputs[1]);
+        if (!type || !values || !*values)
+          throw IrError("fact insertion requires a type and values map");
+        std::optional<std::span<const PieceId>> source;
+        if (!std::holds_alternative<VmNil>(inputs[2])) {
+          const auto text = std::get_if<VmText>(&inputs[2]);
+          if (!text)
+            throw IrError("fact insertion source must be text or nil");
+          source = text->pieces;
+        }
+        result = runtime.insertFact(type->pieces, *values, source);
+      } else if (operation == BuiltinId::FactUpdate) {
+        const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
+        const auto values = std::get_if<VmMapPtr>(&inputs[1]);
+        if (!array || !*array || !values || !*values)
+          throw IrError("fact update requires a query and values map");
+        std::vector<VmFactPtr> facts;
+        facts.reserve((*array)->values.size());
+        for (const auto &item : (*array)->values) {
+          const auto fact = std::get_if<VmFactPtr>(&item);
+          if (!fact || !*fact)
+            throw IrError("fact update query contains a non-fact value");
+          facts.push_back(*fact);
+        }
+        result = runtime.updateFacts(facts, *values);
+      } else if (operation == BuiltinId::FactJoin) {
+        const auto left = std::get_if<VmArrayPtr>(&inputs[0]);
+        const auto right = std::get_if<VmArrayPtr>(&inputs[1]);
+        const auto leftField = std::get_if<VmText>(&inputs[2]);
+        const auto rightField = std::get_if<VmText>(&inputs[3]);
+        const auto kind = std::get_if<double>(&inputs[4]);
+        if (!left || !*left || !right || !*right || !leftField ||
+            !rightField || !kind || *kind < 0.0 || *kind > 3.0 ||
+            std::trunc(*kind) != *kind)
+          throw IrError(
+              "fact join requires two queries, two fields, and a join kind");
+        const auto facts = [](const VmArrayPtr &array) {
+          std::vector<VmFactPtr> result;
+          result.reserve(array->values.size());
+          for (const auto &item : array->values) {
+            const auto fact = std::get_if<VmFactPtr>(&item);
+            if (!fact || !*fact)
+              throw IrError("fact join query contains a non-fact value");
+            result.push_back(*fact);
+          }
+          return result;
+        };
+        const auto leftFacts = facts(*left);
+        const auto rightFacts = facts(*right);
+        result = runtime.joinFacts(leftFacts, rightFacts, leftField->pieces,
+                                   rightField->pieces,
+                                   static_cast<std::uint8_t>(*kind));
+      } else if (operation == BuiltinId::FactProject) {
+        const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
+        const auto fieldArray = std::get_if<VmArrayPtr>(&inputs[1]);
+        if (!array || !*array || !fieldArray || !*fieldArray)
+          throw IrError("fact projection requires facts and a field array");
+        std::vector<VmFactPtr> facts;
+        for (const auto &item : (*array)->values) {
+          const auto fact = std::get_if<VmFactPtr>(&item);
+          if (!fact || !*fact)
+            throw IrError("fact projection query contains a non-fact value");
+          facts.push_back(*fact);
+        }
+        std::vector<VmText> fields;
+        for (const auto &item : (*fieldArray)->values) {
+          const auto field = std::get_if<VmText>(&item);
+          if (!field)
+            throw IrError("fact projection fields must be text");
+          fields.push_back(*field);
+        }
+        result = runtime.projectFacts(facts, fields);
+      } else if (operation == BuiltinId::FactSetCombine) {
+        const auto left = std::get_if<VmArrayPtr>(&inputs[0]);
+        const auto right = std::get_if<VmArrayPtr>(&inputs[1]);
+        const auto mode = std::get_if<double>(&inputs[2]);
+        if (!left || !*left || !right || !*right || !mode ||
+            (*mode != 0.0 && *mode != 1.0))
+          throw IrError("fact condition combination arguments are invalid");
+        const auto factId = [](const VmValue &item) {
+          const auto fact = std::get_if<VmFactPtr>(&item);
+          if (!fact || !*fact || (*fact)->id == 0)
+            throw IrError(
+                "fact condition combination requires retained facts");
+          return (*fact)->id;
+        };
+        auto combined = std::make_shared<VmArray>();
+        std::unordered_set<IrFactRef> rightIds;
+        for (const auto &item : (*right)->values)
+          rightIds.insert(factId(item));
+        std::unordered_set<IrFactRef> emitted;
+        for (const auto &item : (*left)->values) {
+          const auto id = factId(item);
+          if ((*mode == 0.0 && rightIds.contains(id)) || *mode == 1.0) {
+            combined->values.push_back(item);
+            emitted.insert(id);
+          }
+        }
+        if (*mode == 1.0)
+          for (const auto &item : (*right)->values)
+            if (emitted.insert(factId(item)).second)
+              combined->values.push_back(item);
+        result = std::move(combined);
+      } else if (operation == BuiltinId::FactAggregate) {
+        const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
+        const auto field = std::get_if<VmText>(&inputs[1]);
+        const auto aggregate = std::get_if<double>(&inputs[2]);
+        if (!array || !*array || !field || !aggregate || *aggregate < 0.0 ||
+            *aggregate > 3.0 || std::trunc(*aggregate) != *aggregate)
+          throw IrError("fact aggregate arguments are invalid");
+        std::vector<VmFactPtr> facts;
+        for (const auto &item : (*array)->values) {
+          const auto fact = std::get_if<VmFactPtr>(&item);
+          if (!fact || !*fact)
+            throw IrError("fact aggregate query contains a non-fact value");
+          facts.push_back(*fact);
+        }
+        result = runtime.aggregateFacts(facts, field->pieces,
+                                        static_cast<std::uint8_t>(*aggregate));
       } else {
         const Form::BuiltinTextCodec codec{
             [&](std::span<const PieceId> pieces) {

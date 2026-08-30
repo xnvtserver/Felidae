@@ -1,3 +1,3 @@
 # Runtime SSM corpus fixture: heterogeneous non-boolean values stay intact.
 main() =>
-    return [true, 42, "fact-aware"]
+    return [1.0, 42, "fact-aware"]

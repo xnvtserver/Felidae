@@ -175,10 +175,12 @@ struct VmFact {
   std::vector<std::pair<IrSymbolRef, VmValue>> fields;
 };
 
+enum class VmFactMutationKind : std::uint8_t { Insert, Update, Delete };
 struct VmFactMutation {
   std::uint64_t sequence = 0;
   IrFactRef fact = 0;
   IrSymbolRef field = 0;
+  VmFactMutationKind kind = VmFactMutationKind::Update;
 };
 struct VmFactProvenance {
   IrFactRef fact = 0;
@@ -211,6 +213,10 @@ struct VmFactStoreRevisions {
 
   bool operator==(const VmFactStoreRevisions &) const = default;
 };
+struct VmFactStoreJournalMark {
+  std::size_t mutations = 0;
+  std::size_t provenance = 0;
+};
 
 // Process-resident append-only fact memory. It belongs to the Form runtime,
 // not to AST/parser services, and is shared by repeated VM executions in a
@@ -220,8 +226,13 @@ class VmFactStore {
 public:
   void registerType(IrSymbolRef type, std::vector<IrSymbolRef> parents);
   VmFactPtr retain(const VmFactPtr &fact);
+  void recordInsert(IrFactRef fact);
   VmFactPtr mutate(const VmFactPtr &fact, IrSymbolRef field,
                    const VmValue &value, IrSymbolRef procedure);
+  std::size_t erase(std::span<const VmFactPtr> facts);
+  void restore(const VmFactPtr &current, const VmFactPtr &previous);
+  void restoreErased(const VmFactPtr &fact,
+                     std::optional<std::string> source);
   std::vector<VmFactPtr> snapshot() const;
   std::vector<VmFactPtr> snapshot(IrSymbolRef type) const;
   std::vector<VmFactPtr> snapshotAssignableTo(IrSymbolRef type) const;
@@ -241,6 +252,8 @@ public:
   std::vector<VmFactPtr> snapshotByField(IrSymbolRef field) const;
   std::vector<VmFactMutation> mutations() const;
   std::vector<VmFactProvenance> provenance() const;
+  VmFactStoreJournalMark journalMark() const;
+  void rollbackJournal(VmFactStoreJournalMark mark);
   VmKnowledgeSnapshot knowledgeSnapshot() const;
   // Rebuilds `snapshot` only when fact/type state changed. Runtime SSM
   // dispatch uses this to avoid sorting the same knowledge graph on every
@@ -251,7 +264,7 @@ public:
   std::size_t size() const;
 
   // Persistence ownership: which source (e.g. a CSV file path) a fact was
-  // imported from, if any. db.sync consults this to serialize only the
+  // imported from, if any. Automatic DML persistence serializes only the
   // facts that actually belong to the target file, instead of the whole
   // store -- it must never infer ownership from fact type alone, since two
   // different files can share one fact type. A fact with no recorded
@@ -259,6 +272,8 @@ public:
   // recordSource() call sites (currently just CSV import) decide what
   // counts as "belongs to this file".
   void recordSource(IrFactRef fact, std::string source);
+  std::optional<std::string> sourceOf(IrFactRef fact) const;
+  std::vector<std::string> sourcesForType(IrSymbolRef type) const;
   std::vector<VmFactPtr> snapshotBySource(std::string_view source) const;
 
   // A Gaussian tail reaches 1% at each fade boundary.  Degenerate edge
@@ -346,6 +361,22 @@ public:
   virtual VmFactPtr retainFact(const VmFactPtr &fact);
   virtual VmFactPtr mutateFact(const VmFactPtr &fact, IrSymbolRef field,
                                const VmValue &value);
+  virtual double deleteFacts(std::span<const VmFactPtr> facts);
+  virtual VmFactPtr insertFact(std::span<const PieceId> type,
+                               const VmMapPtr &values,
+                               std::optional<std::span<const PieceId>> source);
+  virtual VmValue updateFacts(std::span<const VmFactPtr> facts,
+                              const VmMapPtr &values);
+  virtual VmValue projectFacts(std::span<const VmFactPtr> facts,
+                               std::span<const VmText> fields);
+  virtual double aggregateFacts(std::span<const VmFactPtr> facts,
+                                std::span<const PieceId> field,
+                                std::uint8_t operation);
+  virtual VmValue joinFacts(std::span<const VmFactPtr> left,
+                            std::span<const VmFactPtr> right,
+                            std::span<const PieceId> leftField,
+                            std::span<const PieceId> rightField,
+                            std::uint8_t kind);
   virtual void registerFactType(IrSymbolRef type,
                                 std::vector<IrSymbolRef> parents);
   virtual std::vector<VmFactPtr> snapshotFacts(IrSymbolRef type);
@@ -409,6 +440,21 @@ public:
   VmFactPtr retainFact(const VmFactPtr &fact) override;
   VmFactPtr mutateFact(const VmFactPtr &fact, IrSymbolRef field,
                        const VmValue &value) override;
+  double deleteFacts(std::span<const VmFactPtr> facts) override;
+  VmFactPtr insertFact(std::span<const PieceId> type, const VmMapPtr &values,
+                       std::optional<std::span<const PieceId>> source) override;
+  VmValue updateFacts(std::span<const VmFactPtr> facts,
+                      const VmMapPtr &values) override;
+  VmValue projectFacts(std::span<const VmFactPtr> facts,
+                       std::span<const VmText> fields) override;
+  double aggregateFacts(std::span<const VmFactPtr> facts,
+                        std::span<const PieceId> field,
+                        std::uint8_t operation) override;
+  VmValue joinFacts(std::span<const VmFactPtr> left,
+                    std::span<const VmFactPtr> right,
+                    std::span<const PieceId> leftField,
+                    std::span<const PieceId> rightField,
+                    std::uint8_t kind) override;
   void registerFactType(IrSymbolRef type,
                         std::vector<IrSymbolRef> parents) override;
   std::vector<VmFactPtr> snapshotFacts(IrSymbolRef type) override;

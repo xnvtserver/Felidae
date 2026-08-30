@@ -2,9 +2,9 @@
 # It intentionally exercises the language constructs that the source compiler
 # must eventually lower into one verified, standalone .bin module.
 
-Person(name: "unknown", age: 0, active: false)
-Employee extend Person(name: "unknown", age: 0, active: true, role: "staff")
-Engineer extend Employee(name: "unknown", age: 0, active: true, role: "engineer", level: 1)
+Person(name: "unknown", age: 0, active: 0.0)
+Employee extend Person(name: "unknown", age: 0, active: 1.0, role: "staff")
+Engineer extend Employee(name: "unknown", age: 0, active: 1.0, role: "engineer", level: 1)
 
 increment(value: number) =>
     return value + 1
@@ -28,7 +28,7 @@ makeEngineer(name: string, age: number, level: number) =>
     return Engineer(
         name: name,
         age: age,
-        active: true,
+        active: 1.0,
         role: "engineer",
         level: level,
         score: score

@@ -175,13 +175,14 @@ if [[ -n "${FELIDAE_TOOLCHAIN_FILE:-}" ]]; then
     CAN_RUN_TESTS=0
 fi
 if [[ "$ENABLE_LIBTORCH" == ON ]]; then
-    if [[ "$PLATFORM" != linux || "$ARCHITECTURE" != "$HOST_ARCHITECTURE" ]]; then
-        if [[ -z "${FELIDAE_LIBTORCH_PATH:-}" ]]; then
-            echo "Cross-platform LibTorch builds require FELIDAE_LIBTORCH_PATH; use --libtorch OFF only when LibTorch is unavailable for the target" >&2
-            exit 2
-        fi
+    if [[ -z "${FELIDAE_LIBTORCH_PATH:-}" ]]; then
+        echo "LibTorch builds require FELIDAE_LIBTORCH_PATH to name the provisioned CPU LibTorch installation" >&2
+        exit 2
     fi
-    CMAKE_ARGS+=("-DCMAKE_PREFIX_PATH=${FELIDAE_LIBTORCH_PATH:-/opt/libtorch}")
+    CMAKE_ARGS+=("-DCMAKE_PREFIX_PATH=${FELIDAE_LIBTORCH_PATH}")
+fi
+if [[ -n "${FELIDAE_VERSION:-}" ]]; then
+    CMAKE_ARGS+=("-DFELIDAE_VERSION=${FELIDAE_VERSION}")
 fi
 if [[ "$SANITIZE" -eq 1 ]]; then
     CMAKE_ARGS+=("-DFELIDAE_ENABLE_SANITIZERS=ON")
@@ -192,7 +193,7 @@ cmake "${CMAKE_ARGS[@]}"
 
 if [[ "$MODE" == test ]]; then
     cmake --build "$BUILD_DIR" --config "$CONFIGURATION" \
-        --target felidae_compiler felidae_vm felidae_tests --parallel "$JOBS"
+        --target felidae_compiler felidae_vm felidae_debugger felidae_tests --parallel "$JOBS"
     if [[ "$CAN_RUN_TESTS" -eq 1 ]]; then
         ctest --test-dir "$BUILD_DIR" --build-config "$CONFIGURATION" --output-on-failure
     else

@@ -1,14 +1,14 @@
 Animal(
     name: "animal",
     legs: 0,
-    warm_blooded: false,
+    warm_blooded: 0.0,
     diet: "unknown"
 )
 
 Mammal extend Animal(
     name: "mammal",
     legs: 4,
-    warm_blooded: true,
+    warm_blooded: 1.0,
     diet: "mixed"
 )
 
@@ -34,32 +34,32 @@ TigerFemale extend Tiger(
     name: "Shira",
     diet: "carnivore",
     sex: "female",
-    produces_milk: true,
-    nurtures_young: true
+    produces_milk: 1.0,
+    nurtures_young: 1.0
 )
 
 TigerMale extend Tiger(
     name: "Raja",
     diet: "carnivore",
     sex: "male",
-    produces_milk: false,
-    nurtures_young: false
+    produces_milk: 0.0,
+    nurtures_young: 0.0
 )
 
 CatFemale extend Cat(
     name: "Lilly",
     diet: "carnivore",
     sex: "female",
-    produces_milk: true,
-    nurtures_young: true
+    produces_milk: 1.0,
+    nurtures_young: 1.0
 )
 
 CatMale extend Cat(
     name: "Sony",
     diet: "carnivore",
     sex: "male",
-    produces_milk: false,
-    nurtures_young: false
+    produces_milk: 0.0,
+    nurtures_young: 0.0
 )
 
 AnimalSimilarityEvidence(
@@ -69,7 +69,7 @@ AnimalSimilarityEvidence(
     score: 0,
     ancestor_similarity: 0,
     property_similarity: 0,
-    similar: false,
+    similar: 0.0,
     matched_properties: [],
     differing_properties: [],
     ancestor_distance: 0,
@@ -78,7 +78,7 @@ AnimalSimilarityEvidence(
 )
 
 # One inherited projection defines which properties have meaning for this
-# comparison. Relation.compare supplies hierarchy and property evidence for
+# comparison. Native hierarchy and similarity operations supply evidence for
 # every Mammal subtype without duplicating the comparison algorithm.
 Mammal.membership(input: Mammal, against: Mammal) =>
     return {
@@ -104,21 +104,21 @@ Mammal.membership(input: Mammal, against: Mammal) =>
     visibility: private
 )
 compareMammals() =>
-    comparison := Relation.compare(left: left, right: right, max_depth: 8)
-    evidence := comparison.evidence
+    ancestors := commonAncestors(left, right)
+    score := similarity(left, right)
     return AnimalSimilarityEvidence(
         left_type: type(left),
         right_type: type(right),
-        common_ancestor: evidence.matchedAncestor,
-        score: evidence.similarity,
-        ancestor_similarity: evidence.ancestorSimilarity,
-        property_similarity: evidence.propertySimilarity,
-        similar: evidence.similarity >= 0.60,
-        matched_properties: evidence.matchedFields,
-        differing_properties: evidence.conflictingFields,
-        ancestor_distance: evidence.ancestorDistance,
-        ancestor_evidence: evidence.ancestorEvidence,
-        property_evidence: evidence.propertyEvidence
+        common_ancestor: lowestCommonAncestor(left, right),
+        score: score,
+        ancestor_similarity: array.len(data: ancestors) > 0,
+        property_similarity: score,
+        similar: score >= 0.60,
+        matched_properties: [],
+        differing_properties: [],
+        ancestor_distance: 0.0,
+        ancestor_evidence: ancestors,
+        property_evidence: []
     )
 
 main() =>

@@ -33,8 +33,8 @@ inspectRouteValue() =>
     )
 
 main() =>
-    route := plan "felidae" using "balanced" with (2 + 3 * 4) when (true and not false) carrying ["facts", "rules", "evidence"] for "runtime"
+    route := plan "felidae" using "balanced" with (2 + 3 * 4) when (1.0 and not 0.0) carrying ["facts", "rules", "evidence"] for "runtime"
     inspected := inspect "felidae" with (1 + 2) flags (5 > 3) carrying ["ancestry", "confidence"] toward "reasoner"
-    nested := plan ("felidae") using ("deep") with ((1 + 2) * (3 + 4)) when ((2 < 3) and true) carrying ["a", "b"] for ("engine")
-    decision := plan 7 using true
+    nested := plan ("felidae") using ("deep") with ((1 + 2) * (3 + 4)) when ((2 < 3) and 1.0) carrying ["a", "b"] for ("engine")
+    decision := plan 7 using 1.0
     return (route: route, inspected: inspected, nested: nested, decision: decision)

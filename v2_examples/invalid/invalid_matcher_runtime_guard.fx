@@ -1,7 +1,7 @@
 NumericRequirement extend OperatorRequirement(value: number)
 
 unsafeCheck() =>
-    return true
+    return 1.0
 
 @overload(
     operator: unsafeContext,
@@ -20,7 +20,7 @@ unsafeContextNumbers() =>
     produces: [numericRequirement: NumericRequirement]
 )
 matchWithRuntimeCall() =>
-    where unsafeCheck() == true
+    where unsafeCheck() == 1.0
     return RequirementMatch(
         numericRequirement: NumericRequirement(value: left)
     )

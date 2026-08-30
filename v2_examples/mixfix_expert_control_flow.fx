@@ -8,7 +8,7 @@ Applicant extend CreditProfile, IncomeProfile(
     name: "",
     credit: 0,
     income: 0,
-    verified: false
+    verified: 0.0
 )
 
 Policy(
@@ -28,7 +28,7 @@ Assessment(
     evidence: []
 )
 
-RuleEvidence(rule: "", satisfied: false, contribution: 0)
+RuleEvidence(rule: "", satisfied: 0.0, contribution: 0)
 ApprovalDecision(applicant: nil, policy: nil, score: 0, evidence: [])
 Error(reason: "", code: "", subject: nil)
 
@@ -45,7 +45,7 @@ incomeScore(subject: Applicant, policy: Policy) =>
         return 0.05
 
 verificationScore(subject: Applicant) =>
-    if subject.verified == true then
+    if subject.verified == 1.0 then
         return 0.20
     else
         return 0
@@ -77,7 +77,7 @@ assessApplicant() =>
             ),
             RuleEvidence(
                 rule: "verification",
-                satisfied: subject.verified == true,
+                satisfied: subject.verified == 1.0,
                 contribution: verification
             )
         ]
@@ -111,8 +111,8 @@ decide(subject: Applicant, policy: Policy) =>
             subject: subject
         )
 
-Applicant(name: "ava", credit: 780, income: 120000, verified: true)
-Applicant(name: "mira", credit: 580, income: 35000, verified: false)
+Applicant(name: "ava", credit: 780, income: 120000, verified: 1.0)
+Applicant(name: "mira", credit: 580, income: 35000, verified: 0.0)
 Policy(name: "prime", minimum_credit: 700, minimum_income: 80000, minimum_score: 0.80)
 
 main() =>

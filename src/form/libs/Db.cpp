@@ -262,10 +262,10 @@ std::string csvText(std::span<const VmFactPtr> facts,
   auto rows = Json::Value::array();
   for (const auto &fact : facts) {
     if (!fact || fact->type != type || fact->fields.size() != fields.size())
-      throw IrError("db.sync cannot mix CSV fact types or schemas");
+      throw IrError("CSV persistence cannot mix fact types or schemas");
     for (std::size_t index = 0; index < fields.size(); ++index) {
       if (fact->fields[index].first != fields[index])
-        throw IrError("db.sync requires one stable CSV field order");
+        throw IrError("CSV persistence requires one stable field order");
     }
     rows.push_back(vmValueToJson(VmValue{fact}, symbolTable, codec));
   }
@@ -280,9 +280,9 @@ void sync(const std::filesystem::path &path,
           const VmTextDecoder &decodeText) {
   if (path.empty() || (path.extension() != ".fx" &&
                        path.extension() != ".csv"))
-    throw IrError("db.sync requires a non-empty .fx or .csv database path");
+    throw IrError("fact persistence requires a non-empty .fx or .csv path");
   if (!decodeText)
-    throw IrError("db.sync requires the VM SentencePiece decoder");
+    throw IrError("fact persistence requires the VM SentencePiece decoder");
   std::string content;
   if (path.extension() == ".csv") {
     content = csvText(facts, symbolTable, decodeText);

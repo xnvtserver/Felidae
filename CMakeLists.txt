@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.21)
 project(felidae LANGUAGES CXX)
 
+set(FELIDAE_VERSION "0.2.3-beta.1" CACHE STRING
+    "Version recorded in staged Felidae distributions")
+
 # Keep all generated CMake state under one ignored repository directory.
 # Supported layouts include build/ itself and named configurations such as
 # build/debug, build/asan, and build/release.
@@ -43,8 +46,6 @@ option(FELIDAE_ENABLE_LIBTORCH
     ${FELIDAE_LIBTORCH_DEFAULT})
 option(FELIDAE_ENABLE_TRAINING
     "Build explicit compiler and VM C++ model-training commands" OFF)
-option(FELIDAE_BUILD_NATIVE_MODULES
-    "Build retired native-extension DLLs (not used by the compiler/Form VM)" OFF)
 
 if(FELIDAE_ENABLE_TRAINING AND NOT FELIDAE_ENABLE_LIBTORCH)
     message(FATAL_ERROR
@@ -56,10 +57,17 @@ endif()
 set(SPM_BUILD_TEST OFF CACHE BOOL "" FORCE)
 set(SPM_ENABLE_SHARED OFF CACHE BOOL "" FORCE)
 set(SPM_ENABLE_TCMALLOC OFF CACHE BOOL "" FORCE)
-# Felidae consumes SentencePiece's already-generated protobuf sources; it does
-# not need to build protoc/libprotoc just to train the fixed lexical model.
-set(protobuf_BUILD_PROTOC_BINARIES OFF CACHE BOOL "" FORCE)
-set(protobuf_BUILD_LIBPROTOC OFF CACHE BOOL "" FORCE)
+set(FELIDAE_HOST_PROTOC "" CACHE FILEPATH
+    "Native protoc used while cross-compiling SentencePiece")
+if(FELIDAE_HOST_PROTOC)
+    if(NOT EXISTS "${FELIDAE_HOST_PROTOC}")
+        message(FATAL_ERROR "FELIDAE_HOST_PROTOC does not exist")
+    endif()
+    set(SPM_PROTOC_EXECUTABLE "${FELIDAE_HOST_PROTOC}" CACHE FILEPATH "" FORCE)
+elseif(CMAKE_CROSSCOMPILING)
+    message(FATAL_ERROR
+        "Cross-compiling requires -DFELIDAE_HOST_PROTOC=/path/to/native/protoc")
+endif()
 # SentencePiece otherwise fetches these sources while configuring. Use their
 # pinned submodules when initialized; an archive/source-only checkout retains
 # SentencePiece's normal FetchContent behavior instead of referring to a
@@ -424,16 +432,19 @@ set(FELIDAE_DIST_COMMAND
     "-DFELIDAE_DIST_CONFIG=$<CONFIG>"
     "-DFELIDAE_DIST_EXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}"
     "-DFELIDAE_DIST_MODEL_DIR=${CMAKE_SOURCE_DIR}/models"
-    "-DFELIDAE_DIST_VERSION=0.2.3-beta.1")
-if(WIN32 AND FELIDAE_ENABLE_LIBTORCH)
+    "-DFELIDAE_DIST_LICENSE_DIR=${CMAKE_SOURCE_DIR}/third_party"
+    "-DFELIDAE_DIST_VERSION=${FELIDAE_VERSION}")
+if(FELIDAE_ENABLE_LIBTORCH)
     list(APPEND FELIDAE_DIST_COMMAND "-DFELIDAE_DIST_HAS_LIBTORCH=1")
+    list(APPEND FELIDAE_DIST_COMMAND
+        "-DFELIDAE_DIST_TORCH_ROOT=${TORCH_INSTALL_PREFIX}")
 else()
     list(APPEND FELIDAE_DIST_COMMAND "-DFELIDAE_DIST_HAS_LIBTORCH=0")
 endif()
 list(APPEND FELIDAE_DIST_COMMAND "-P" "${CMAKE_SOURCE_DIR}/cmake/StageDistribution.cmake")
 add_custom_target(felidae_dist
     COMMAND ${FELIDAE_DIST_COMMAND}
-    DEPENDS felidae_compiler felidae_vm felidae_sentencepiece_model
+    DEPENDS felidae_compiler felidae_vm felidae_debugger felidae_sentencepiece_model
     COMMENT "Staging portable Felidae distribution in ${FELIDAE_DIST_DIR}")
 
 # Explicit runtime-corpus boundary. The tool accepts only verified .bin input
@@ -502,7 +513,7 @@ if(FELIDAE_ENABLE_LIBTORCH)
 else()
     target_sources(felidae_compiler PRIVATE src/MixfixStateModel.cpp)
 endif()
-if(WIN32 AND FELIDAE_ENABLE_LIBTORCH)
+if(FELIDAE_ENABLE_LIBTORCH)
     foreach(FELIDAE_TORCH_EXECUTABLE felidae_compiler felidae_vm)
         add_custom_command(TARGET ${FELIDAE_TORCH_EXECUTABLE} POST_BUILD
             COMMAND "${CMAKE_COMMAND}"
@@ -541,26 +552,32 @@ set(FELIDAE_DEBUG_SOURCES
 # The source debugger is an explicit developer tool.  Leaving it out of ALL
 # prevents a normal Debug/RelWithDebInfo build from compiling a second copy of
 # the compiler frontend.
-add_executable(felidae_debug EXCLUDE_FROM_ALL ${FELIDAE_DEBUG_SOURCES})
-target_include_directories(felidae_debug PRIVATE src)
-target_include_directories(felidae_debug BEFORE PRIVATE
+add_executable(felidae_debugger EXCLUDE_FROM_ALL ${FELIDAE_DEBUG_SOURCES})
+set_target_properties(felidae_debugger PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}")
+target_include_directories(felidae_debugger PRIVATE src)
+target_include_directories(felidae_debugger BEFORE PRIVATE
     third_party/sentencepiece
     third_party/sentencepiece/src
     ${CMAKE_BINARY_DIR}/third_party/sentencepiece/src)
-target_include_directories(felidae_debug SYSTEM PRIVATE third_party)
-target_compile_definitions(felidae_debug PRIVATE
+target_include_directories(felidae_debugger SYSTEM PRIVATE third_party)
+target_compile_definitions(felidae_debugger PRIVATE
     FELIDAE_SENTENCEPIECE_MODEL_PATH="${FELIDAE_SENTENCEPIECE_MODEL_PATH}")
-target_link_libraries(felidae_debug PRIVATE felidae_form sentencepiece
+target_link_libraries(felidae_debugger PRIVATE felidae_form sentencepiece
     nlohmann_json::nlohmann_json)
-felidae_use_sentencepiece_model(felidae_debug)
+felidae_use_sentencepiece_model(felidae_debugger)
 if(TARGET OpenMP::OpenMP_CXX)
-    target_link_libraries(felidae_debug PRIVATE OpenMP::OpenMP_CXX)
+    target_link_libraries(felidae_debugger PRIVATE OpenMP::OpenMP_CXX)
 endif()
-target_compile_options(felidae_debug PRIVATE
+target_compile_options(felidae_debugger PRIVATE
     $<$<CXX_COMPILER_ID:Clang,GNU>:-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
-felidae_enable_sanitizers(felidae_debug)
+felidae_enable_sanitizers(felidae_debugger)
 
 if(FELIDAE_BUILD_TESTS)
     enable_testing()
@@ -764,7 +781,7 @@ if(FELIDAE_BUILD_TESTS)
     add_test(NAME felidae_ir COMMAND felidae_ir_test)
     set_tests_properties(felidae_ir PROPERTIES TIMEOUT 30)
 
-    # CSV <-> Fact, round trip, multi-file ownership, and atomic db.sync
+    # CSV <-> Fact, round trip, ownership, and atomic automatic persistence
     # against real files in a temporary output directory (no mocked
     # persistence).
     add_executable(felidae_db_csv_test tests/FormDbCsvTest.cpp)
@@ -869,112 +886,7 @@ if(FELIDAE_BUILD_TESTS)
         set_property(TARGET ${test_target} PROPERTY EXCLUDE_FROM_ALL TRUE)
     endforeach()
     add_custom_target(felidae_tests
-        DEPENDS ${FELIDAE_TEST_TARGETS} felidae_compiler felidae_vm)
-endif()
-
-# Form executes verified Felidae IR and has no production native-extension
-# dispatch path. Keep retired DLL experiments opt-in so ordinary builds do not
-# write generated binaries into source directories or ship parallel services.
-if(FELIDAE_BUILD_NATIVE_MODULES)
-add_library(felidae_smoke SHARED native_modules/smoke/NativeSmoke.cpp)
-set_target_properties(felidae_smoke PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/smoke"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/smoke"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/smoke"
-)
-
-add_library(db_native SHARED native_modules/db/NativeDb.cpp)
-add_library(http SHARED native_modules/http/NativeHttp.cpp)
-add_library(process SHARED native_modules/process/NativeProcess.cpp)
-add_library(set_native SHARED native_modules/set/NativeSet.cpp)
-add_library(group_native SHARED native_modules/group/NativeGroup.cpp)
-set_target_properties(db_native PROPERTIES OUTPUT_NAME db
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/db"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/db"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/db")
-set_target_properties(http PROPERTIES OUTPUT_NAME http
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/http"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/http"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/http")
-set_target_properties(process PROPERTIES OUTPUT_NAME process
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/process"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/process"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/process")
-set_target_properties(set_native PROPERTIES OUTPUT_NAME set
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/set"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/set"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/set")
-set_target_properties(group_native PROPERTIES OUTPUT_NAME group
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/group"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/group"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/group")
-
-add_library(wordnet SHARED native_modules/wordnet/NativeWordNet.cpp)
-target_include_directories(wordnet PRIVATE native_modules/wordnet)
-set_target_properties(wordnet PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/wordnet"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/wordnet"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/wordnet"
-)
-
-add_library(fact SHARED native_modules/fact/NativeFact.cpp)
-target_include_directories(fact PRIVATE native_modules/fact)
-set_target_properties(fact PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/fact"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/fact"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/fact"
-)
-
-add_library(plot SHARED native_modules/plot/NativePlot.cpp)
-target_include_directories(plot PRIVATE native_modules/plot)
-target_compile_definitions(plot PRIVATE FELIDAE_PLOT_BUILD=1)
-set_target_properties(plot PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/plot"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/plot"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/plot"
-)
-
-add_library(gtk SHARED native_modules/gtk/NativeGtk.cpp)
-target_include_directories(gtk PRIVATE native_modules/gtk native_modules/graphics)
-target_compile_definitions(gtk PRIVATE FELIDAE_GRAPHICS_BUILD=1)
-set_target_properties(gtk PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/gtk"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/gtk"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/gtk"
-)
-
-add_library(qt SHARED native_modules/qt/NativeQt.cpp)
-target_include_directories(qt PRIVATE native_modules/qt native_modules/graphics)
-target_compile_definitions(qt PRIVATE FELIDAE_GRAPHICS_BUILD=1)
-set_target_properties(qt PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/qt"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/qt"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/native_modules/qt"
-)
-
-# Native packages must declare their identity and capabilities from the DLL
-# itself.  The forced include keeps the ABI export uniform without duplicating
-# a boilerplate function in every package implementation.
-function(felidae_native_manifest target module role)
-    target_compile_definitions(${target} PRIVATE
-        FELIDAE_NATIVE_MANIFEST_MODULE="${module}"
-        FELIDAE_NATIVE_MANIFEST_${role}=1)
-    target_compile_options(${target} PRIVATE
-        $<$<CXX_COMPILER_ID:MSVC>:/FI${CMAKE_SOURCE_DIR}/native_modules/common/NativeManifest.h>
-        $<$<CXX_COMPILER_ID:GNU,Clang>:-include${CMAKE_SOURCE_DIR}/native_modules/common/NativeManifest.h>)
-endfunction()
-
-felidae_native_manifest(felidae_smoke smoke SMOKE)
-felidae_native_manifest(db_native db DB)
-felidae_native_manifest(http http HTTP)
-felidae_native_manifest(process process PROCESS)
-felidae_native_manifest(set_native set SET)
-felidae_native_manifest(group_native group GROUP)
-felidae_native_manifest(wordnet wordnet WORDNET)
-felidae_native_manifest(fact fact FACT)
-felidae_native_manifest(plot plot PLOT)
-felidae_native_manifest(gtk gtk GTK)
-felidae_native_manifest(qt qt QT)
+        DEPENDS ${FELIDAE_TEST_TARGETS} felidae_compiler felidae_vm felidae_debugger)
 endif()
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/Eigen/Eigen/Core")
@@ -991,11 +903,9 @@ endif()
 foreach(felidae_quality_target IN ITEMS
         felidae_sentencepiece_model_generator felidae_integer_parser_benchmark
         felidae_extract_mixfix_dataset
-        felidae_form felidae_mixfix_torch felidae_compiler felidae_vm felidae_debug
+        felidae_form felidae_mixfix_torch felidae_compiler felidae_vm felidae_debugger
         felidae_sentencepiece_model_test felidae_sentencepiece_pipeline_test
-        felidae_mixfix_state_model_test
-        felidae_smoke db_native http process set_native group_native wordnet
-        fact plot gtk qt)
+        felidae_mixfix_state_model_test)
     if(TARGET ${felidae_quality_target})
         felidae_enable_quality_warnings(${felidae_quality_target})
     endif()

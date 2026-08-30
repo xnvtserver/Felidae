@@ -10,11 +10,11 @@
 # fact-query sugar rather than an unrecognized bare lambda call.
 Relationship(from: nil, to: nil, name: "")
 
-Entity(name: "entity", active: true)
-Source extend Entity(name: "source", active: true)
-Target extend Entity(name: "target", active: true)
-Signal extend Entity(name: "signal", active: true)
-Decoration extend Entity(name: "decoration", active: true)
+Entity(name: "entity", active: 1.0)
+Source extend Entity(name: "source", active: 1.0)
+Target extend Entity(name: "target", active: 1.0)
+Signal extend Entity(name: "signal", active: 1.0)
+Decoration extend Entity(name: "decoration", active: 1.0)
 
 Source.membership(input: Source, against: Entity) =>
     return (active: input.active)

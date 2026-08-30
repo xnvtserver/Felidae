@@ -160,6 +160,15 @@ int main() {
     assert(lazyLines.encodeCount() == 2);
     assert(lazyLines.has(lazyLines.loadedSize()));
     assert(lazyLines.encodeCount() == 3);
+    const Felidae::IntegerTokenList firstLine(model, "first\n");
+    const auto &lazyEntries = lazyLines.entries();
+    const auto &firstEntries = firstLine.entries();
+    assert(lazyEntries.size() >= firstEntries.size());
+    for (std::size_t index = 0; index < firstEntries.size(); ++index) {
+      assert(lazyEntries[index].id == firstEntries[index].id);
+      assert(lazyEntries[index].begin == firstEntries[index].begin);
+      assert(lazyEntries[index].end == firstEntries[index].end);
+    }
     const Felidae::IntegerTokenList sourceTokens(model, completeSource);
     assert(!sourceTokens.entries().empty());
     assert(sourceTokens.encodeCount() == 2);
