@@ -1,8 +1,8 @@
 // Section-13 audit coverage: CSV <-> Fact, round trip, multi-file ownership,
-// and atomic db.sync, all against real files in a temporary test-output
+// and atomic persistence, all against real files in a temporary test-output
 // directory. No mocked persistence -- Form::Db::sync and Form::Csv perform
 // real disk I/O throughout, exercised the same way RegisterVm.cpp's Builtin
-// dispatch calls them for csv.toFacts/db.sync.
+// dispatch uses them for CSV import and automatic fact persistence.
 
 #include "form/IrModule.h"
 #include "form/RegisterVm.h"
@@ -222,7 +222,7 @@ int main() {
   // behind. Calls Form::Db::sync directly with a deliberately invalid
   // facts span to force the failure Form::Db::sync's own schema check
   // raises, bypassing the ownership tracking that would normally prevent
-  // this from ever being assembled through csv.toFacts/db.sync.
+  // this from ever being assembled through normal owned-fact persistence.
   // ---------------------------------------------------------------------
   {
     const auto path = outDir / "atomic.csv";

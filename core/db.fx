@@ -7,8 +7,6 @@
 
 import ("flibrary", "file", "system.flibrary.db")
 
-db.sync(path: string) => ()
-
 db.read(path: string) =>
     return file.readFile(path: path)
 

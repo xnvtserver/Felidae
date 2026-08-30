@@ -10,4 +10,4 @@
     visibility: private
 )
 replaceAnd() =>
-    return false
+    return 0.0

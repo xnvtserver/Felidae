@@ -1697,8 +1697,17 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
       piece_ = beforePiece;
       break;
     }
-    result =
-        std::make_shared<AccessExpr>(std::move(result), consumeNameRange());
+    const auto member = consumeNameRange(/*allowLoneKeyword=*/true);
+    if (at(TokenId::LPAREN)) {
+      auto arguments = parseArguments();
+      arguments.insert(arguments.begin(), Arg(std::string{}, std::move(result)));
+      auto call = std::make_shared<TermExpr>(
+          "__query:" + member, std::move(arguments), BuiltinId::Unknown);
+      stamp(call, beforeByte, byte_);
+      result = std::move(call);
+    } else {
+      result = std::make_shared<AccessExpr>(std::move(result), member);
+    }
   }
   return result;
 }

@@ -13,10 +13,10 @@ double(value: number) =>
 
 eligible(score: number, active: bool) =>
     where score >= 70
-    where active == true
-    return true
+    where active == 1.0
+    return 1.0
 else
-    return false
+    return 0.0
 
 main() =>
     point := {x: 3, y: 4}
@@ -33,7 +33,7 @@ main() =>
         unary: -(point.x + point.y),
         ordered: point.y > point.x,
         unequal: point.x != point.y,
-        eligible: eligible(score: 75, active: true),
+        eligible: eligible(score: 75, active: 1.0),
         member: record.owner.name,
         pipeline: piped
     )

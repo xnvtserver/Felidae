@@ -9,7 +9,7 @@ inspect(value: expr) =>
 validateDeclaration(target: stmt, body: stmts) =>
     where type(target) == "func"
     where type(body) == "stmts"
-    return true
+    return 1.0
 
 @validateDeclaration()
 decorated() =>

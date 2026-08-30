@@ -7,6 +7,6 @@ shortPlan(value:number, enabled:bool) =>
     return Plan(value: value, enabled: enabled)
 
 main() =>
-    a := plan "procedure" using "all-data" with 10 when true carrying ["x"] for "owner"
-    b := plan 7 using false
+    a := plan "procedure" using "all-data" with 10 when 1.0 carrying ["x"] for "owner"
+    b := plan 7 using 0.0
     return (a: a, b: b)

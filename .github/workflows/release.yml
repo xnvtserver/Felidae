@@ -7,29 +7,154 @@ on:
 
 permissions:
   contents: read
-  id-token: write
-  attestations: write
+
+env:
+  LIBTORCH_VERSION: "2.2.2"
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-
+  linux-x86_64:
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure
-        run: |
-          cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Show build outputs
-        run: find build -maxdepth 3 -type f
-
-      - name: Generate build provenance
-        uses: actions/attest@v4
+      - uses: actions/checkout@v4
         with:
-          subject-path: build/felidae
+          submodules: recursive
+      - name: Provision pinned CPU LibTorch
+        run: |
+          mkdir -p build/libtorch-install
+          curl --fail --location --output build/libtorch.zip \
+            "https://download.pytorch.org/libtorch/cpu/libtorch-cxx11-abi-shared-with-deps-${LIBTORCH_VERSION}%2Bcpu.zip"
+          unzip -q build/libtorch.zip -d build/libtorch-install
+      - name: Test
+        env:
+          FELIDAE_LIBTORCH_PATH: ${{ github.workspace }}/build/libtorch-install/libtorch
+          FELIDAE_VERSION: ${{ github.ref_name }}
+        run: ./build.sh --mode test --training OFF --libtorch ON --platform linux --arch x86_64
+      - name: Stage distribution
+        env:
+          FELIDAE_LIBTORCH_PATH: ${{ github.workspace }}/build/libtorch-install/libtorch
+          FELIDAE_VERSION: ${{ github.ref_name }}
+        run: ./build.sh --mode release --training OFF --libtorch ON --platform linux --arch x86_64
+      - name: Smoke-test staged binaries
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/build/release/dist/bin
+        run: |
+          build/release/dist/bin/felidae_compiler --version
+          build/release/dist/bin/felidae_vm --version
+          build/release/dist/bin/felidae_debugger --version
+      - name: Archive staged distribution
+        run: tar -C build/release/dist -czf build/felidae-linux-x86_64.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: felidae-linux-x86_64
+          path: build/felidae-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  windows-x86_64:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Provision pinned CPU LibTorch
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build | Out-Null
+          Invoke-WebRequest "https://download.pytorch.org/libtorch/cpu/libtorch-win-shared-with-deps-$env:LIBTORCH_VERSION%2Bcpu.zip" -OutFile build/libtorch.zip
+          Expand-Archive build/libtorch.zip -DestinationPath build/libtorch-install
+      - name: Test
+        shell: pwsh
+        env:
+          FELIDAE_LIBTORCH_PATH: ${{ github.workspace }}\build\libtorch-install\libtorch
+          FELIDAE_VERSION: ${{ github.ref_name }}
+        run: ./build.ps1 -Configuration release -Test
+      - name: Stage distribution
+        shell: pwsh
+        env:
+          FELIDAE_LIBTORCH_PATH: ${{ github.workspace }}\build\libtorch-install\libtorch
+          FELIDAE_VERSION: ${{ github.ref_name }}
+        run: ./build.ps1 -Configuration release -Dist
+      - name: Smoke-test staged binaries
+        shell: pwsh
+        run: |
+          build/windows-x64/release/dist/bin/felidae_compiler.exe --version
+          build/windows-x64/release/dist/bin/felidae_vm.exe --version
+          build/windows-x64/release/dist/bin/felidae_debugger.exe --version
+      - name: Archive staged distribution
+        shell: pwsh
+        run: Compress-Archive -Path build/windows-x64/release/dist/* -DestinationPath build/felidae-windows-x86_64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: felidae-windows-x86_64
+          path: build/felidae-windows-x86_64.zip
+          if-no-files-found: error
+
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            libtorch_archive: libtorch-macos-arm64-2.2.2.zip
+          - arch: x86_64
+            runner: macos-15-intel
+            libtorch_archive: libtorch-macos-x86_64-2.2.2.zip
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Provision pinned CPU LibTorch
+        run: |
+          mkdir -p build/libtorch-install
+          curl --fail --location --output build/libtorch.zip \
+            "https://download.pytorch.org/libtorch/cpu/${{ matrix.libtorch_archive }}"
+          unzip -q build/libtorch.zip -d build/libtorch-install
+      - name: Test
+        env:
+          FELIDAE_LIBTORCH_PATH: ${{ github.workspace }}/build/libtorch-install/libtorch
+          FELIDAE_VERSION: ${{ github.ref_name }}
+        run: ./build.sh --mode test --training OFF --libtorch ON --platform macos --arch ${{ matrix.arch }}
+      - name: Stage distribution
+        env:
+          FELIDAE_LIBTORCH_PATH: ${{ github.workspace }}/build/libtorch-install/libtorch
+          FELIDAE_VERSION: ${{ github.ref_name }}
+        run: ./build.sh --mode release --training OFF --libtorch ON --platform macos --arch ${{ matrix.arch }}
+      - name: Smoke-test staged binaries
+        env:
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/build/macos-${{ matrix.arch }}/release/dist/bin
+        run: |
+          build/macos-${{ matrix.arch }}/release/dist/bin/felidae_compiler --version
+          build/macos-${{ matrix.arch }}/release/dist/bin/felidae_vm --version
+          build/macos-${{ matrix.arch }}/release/dist/bin/felidae_debugger --version
+      - name: Archive staged distribution
+        run: tar -C build/macos-${{ matrix.arch }}/release/dist -czf build/felidae-macos-${{ matrix.arch }}.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: felidae-macos-${{ matrix.arch }}
+          path: build/felidae-macos-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [linux-x86_64, windows-x86_64, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: felidae-*
+          path: release-files
+          merge-multiple: true
+      - name: Verify release files and generate checksums
+        working-directory: release-files
+        run: |
+          test -f felidae-linux-x86_64.tar.gz
+          test -f felidae-windows-x86_64.zip
+          test -f felidae-macos-arm64.tar.gz
+          test -f felidae-macos-x86_64.tar.gz
+          sha256sum felidae-linux-x86_64.tar.gz felidae-windows-x86_64.zip felidae-macos-arm64.tar.gz felidae-macos-x86_64.tar.gz > SHA256SUMS.txt
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" release-files/* --title "${GITHUB_REF_NAME}" --generate-notes --verify-tag

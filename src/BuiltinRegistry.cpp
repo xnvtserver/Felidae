@@ -78,7 +78,6 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
     {BuiltinId::FileExists, "file:exists", BuiltinEffect::ReadsExternalState},
     {BuiltinId::FileDeleteFile, "file:deleteFile",
      BuiltinEffect::WritesExternalState},
-    {BuiltinId::DbSync, "db:sync", BuiltinEffect::WritesExternalState},
     {BuiltinId::CommonAncestors, "commonAncestors", BuiltinEffect::Pure},
     {BuiltinId::LowestCommonAncestor, "lowestCommonAncestor",
      BuiltinEffect::Pure},
@@ -86,11 +85,9 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
      BuiltinEffect::Pure},
     {BuiltinId::AncestorAnalysis, "ancestorAnalysis", BuiltinEffect::Pure},
     // Mutates the fact store (see the RegisterVm.cpp dispatch case) --
-    // WritesExternalState, not Pure, matching db.sync/csv.toFacts.
+    // WritesExternalState because it mutates the retained fact store.
     {BuiltinId::PropagateFact, "propagateFact",
      BuiltinEffect::WritesExternalState},
-    {BuiltinId::RelationCompare, "Relation:compare", BuiltinEffect::Pure},
-    {BuiltinId::RelationFind, "Relation:find", BuiltinEffect::Pure},
     {BuiltinId::DependencySatisfied, "Dependency:satisfied",
      BuiltinEffect::Pure},
     {BuiltinId::JsonObject, "json:object", BuiltinEffect::Pure},

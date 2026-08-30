@@ -1,4 +1,4 @@
 import "csv"
 
 main() =>
-    return (ok: true)
+    return (ok: 1.0)

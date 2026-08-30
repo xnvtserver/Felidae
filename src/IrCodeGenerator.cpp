@@ -150,6 +150,36 @@ public:
   }
 
 private:
+  std::optional<std::pair<std::string, SymbolId>>
+  queryRoot(const std::shared_ptr<Expr> &value) const {
+    const auto term = std::dynamic_pointer_cast<TermExpr>(value);
+    if (!term)
+      return std::nullopt;
+    if (term->name.rfind("__query:", 0) == 0 && !term->args.empty())
+      return queryRoot(term->args.front().value);
+    const auto separator = term->name.rfind('.');
+    if (separator == std::string::npos)
+      return std::nullopt;
+    const auto typeName = term->name.substr(0, separator);
+    const auto type = factTypes_.find(typeName);
+    if (type == factTypes_.end())
+      return std::nullopt;
+    return std::pair{typeName, type->second};
+  }
+
+  bool conditionChain(const std::shared_ptr<Expr> &value) const {
+    const auto term = std::dynamic_pointer_cast<TermExpr>(value);
+    if (!term)
+      return false;
+    if ((term->name == "__query:AndWhere" ||
+         term->name == "__query:OrWhere") &&
+        !term->args.empty())
+      return conditionChain(term->args.front().value);
+    const auto separator = term->name.rfind('.');
+    return separator != std::string::npos &&
+           term->name.substr(separator + 1) == "where";
+  }
+
   std::shared_ptr<Expr> iteration(std::string typeName, SymbolId typeId,
                                   std::string variable, SymbolId variableId,
                                   std::shared_ptr<Expr> body,
@@ -241,6 +271,46 @@ private:
       access->target = expression(access->target);
     } else if (const auto term =
                    std::dynamic_pointer_cast<TermExpr>(value)) {
+      if (term->name == "__query:limit") {
+        if (term->args.size() != 2 || term->args[1].name != "records")
+          throw IntegerParserError(
+              "limit requires exactly one named records argument");
+        auto result = std::make_shared<TermExpr>(
+            "array:limit",
+            std::vector<Arg>{Arg(std::string{}, expression(term->args[0].value)),
+                             Arg(std::string{}, expression(term->args[1].value))},
+            BuiltinId::ArrayLimit);
+        result->sourceSpan = term->sourceSpan;
+        return result;
+      }
+      if (term->name == "__query:AndWhere" ||
+          term->name == "__query:OrWhere") {
+        if (term->args.size() < 2)
+          throw IntegerParserError(term->name.substr(8) +
+                                   " requires a condition");
+        if (!conditionChain(term->args[0].value))
+          throw IntegerParserError(term->name.substr(8) +
+                                   " must follow where/AndWhere/OrWhere");
+        const auto root = queryRoot(term->args[0].value);
+        if (!root)
+          throw IntegerParserError(term->name.substr(8) +
+                                   " requires a fact query target");
+        std::vector<Arg> condition(term->args.begin() + 1, term->args.end());
+        auto next = std::make_shared<TermExpr>(
+            root->first + ".where", std::move(condition));
+        next->sourceSpan = term->sourceSpan;
+        auto result = std::make_shared<TermExpr>(
+            "fact:setCombine",
+            std::vector<Arg>{
+                Arg(std::string{}, expression(term->args[0].value)),
+                Arg(std::string{}, expression(std::move(next))),
+                Arg(std::string{}, std::make_shared<NumberExpr>(
+                                       term->name == "__query:AndWhere" ? 0.0
+                                                                         : 1.0))},
+            BuiltinId::FactSetCombine);
+        result->sourceSpan = term->sourceSpan;
+        return result;
+      }
       for (auto &argument : term->args)
         argument.value = expression(argument.value);
       if (term->name == "ancestorAnalysis") {
@@ -298,16 +368,142 @@ private:
         return value;
       const auto rowName = "__fact";
       const auto rowId = symbolIdForName(rowName);
+      const auto mapArguments = [&](const std::shared_ptr<Expr> &value,
+                                    std::string_view label) {
+        const auto map = std::dynamic_pointer_cast<MapExpr>(value);
+        if (!map)
+          throw IntegerParserError(typeName + "." + method + " " +
+                                   std::string(label) + " must be a map");
+        std::vector<Arg> result;
+        result.reserve(map->entries.size());
+        for (const auto &entry : map->entries)
+          result.emplace_back(entry.key, entry.keyId, entry.value);
+        return result;
+      };
+      const auto queryFromMatch = [&](const std::shared_ptr<Expr> &match) {
+        auto query = std::make_shared<TermExpr>(
+            typeName + ".where", mapArguments(match, "match"));
+        query->sourceSpan = term->sourceSpan;
+        return expression(std::move(query));
+      };
+      const auto named = [&](std::string_view name) -> std::shared_ptr<Expr> {
+        const auto found = std::find_if(term->args.begin(), term->args.end(),
+                                        [&](const Arg &argument) {
+                                          return argument.name == name;
+                                        });
+        return found == term->args.end() ? nullptr : found->value;
+      };
+      if (method == "insert") {
+        const auto values = named("values");
+        const auto source = named("source");
+        if (!values || term->args.size() != (source ? 2u : 1u))
+          throw IntegerParserError(
+              typeName + ".insert requires values and optional source");
+        auto result = std::make_shared<TermExpr>(
+            "fact:insert",
+            std::vector<Arg>{
+                Arg(std::string{}, std::make_shared<StringExpr>(
+                                       typeName, symbolPiecesForId(type->second))),
+                Arg(std::string{}, values),
+                Arg(std::string{}, source ? source
+                                          : std::make_shared<NilExpr>())},
+            BuiltinId::FactInsert);
+        result->sourceSpan = term->sourceSpan;
+        return result;
+      }
+      if (method == "update") {
+        const auto match = named("match");
+        const auto values = named("values");
+        if (!match || !values || term->args.size() != 2)
+          throw IntegerParserError(typeName +
+                                   ".update requires match and values maps");
+        auto result = std::make_shared<TermExpr>(
+            "fact:update",
+            std::vector<Arg>{Arg(std::string{}, queryFromMatch(match)),
+                             Arg(std::string{}, values)},
+            BuiltinId::FactUpdate);
+        result->sourceSpan = term->sourceSpan;
+        return result;
+      }
+      if (method == "delete") {
+        const auto match = named("match");
+        if (!match || term->args.size() != 1)
+          throw IntegerParserError(typeName + ".delete requires a match map");
+        auto result = std::make_shared<TermExpr>(
+            "fact:delete",
+            std::vector<Arg>{Arg(std::string{}, queryFromMatch(match))},
+            BuiltinId::FactDelete);
+        result->sourceSpan = term->sourceSpan;
+        return result;
+      }
+      if (method == "join" || method == "leftJoin" ||
+          method == "rightJoin" || method == "OuterJoin") {
+        const auto other = std::dynamic_pointer_cast<VarExpr>(named("type"));
+        const auto left = std::dynamic_pointer_cast<StringExpr>(named("left"));
+        const auto right = std::dynamic_pointer_cast<StringExpr>(named("right"));
+        if (!other || !factTypes_.contains(other->name) || !left || !right ||
+            term->args.size() != 3)
+          throw IntegerParserError(typeName +
+                                   "." + method +
+                                   " requires type, left, and right");
+        const auto kind = std::make_shared<NumberExpr>(
+            method == "join"        ? 0.0
+            : method == "leftJoin"  ? 1.0
+            : method == "rightJoin" ? 2.0
+                                      : 3.0);
+        auto leftRows = std::make_shared<TermExpr>(typeName + ".all",
+                                                   std::vector<Arg>{});
+        auto rightRows = std::make_shared<TermExpr>(other->name + ".all",
+                                                    std::vector<Arg>{});
+        auto result = std::make_shared<TermExpr>(
+            "fact:join",
+            std::vector<Arg>{Arg(std::string{}, expression(leftRows)),
+                             Arg(std::string{}, expression(rightRows)),
+                             Arg(std::string{}, left), Arg(std::string{}, right),
+                             Arg(std::string{}, kind)},
+            BuiltinId::FactJoin);
+        result->sourceSpan = term->sourceSpan;
+        return result;
+      }
+      const auto matchingRows = [&]() {
+        const auto match = named("match");
+        if (match)
+          return queryFromMatch(match);
+        return iteration(typeName, type->second, rowName, rowId,
+                         std::make_shared<VarExpr>(rowName, rowId),
+                         term->sourceSpan);
+      };
       if (method == "count") {
-        if (!term->args.empty())
-          throw IntegerParserError(typeName + ".count requires no arguments");
-        auto rows = iteration(typeName, type->second, rowName, rowId,
-                              std::make_shared<VarExpr>(rowName, rowId),
-                              term->sourceSpan);
+        if (term->args.size() > 1 ||
+            (term->args.size() == 1 && !named("match")))
+          throw IntegerParserError(
+              typeName + ".count accepts only an optional match map");
+        auto rows = matchingRows();
         auto result = std::make_shared<TermExpr>(
             "array:len",
             std::vector<Arg>{Arg(std::string{}, std::move(rows))},
             BuiltinId::ArrayLen);
+        result->sourceSpan = term->sourceSpan;
+        return result;
+      }
+      if (method == "sum" || method == "average" || method == "min" ||
+          method == "max") {
+        const auto field = std::dynamic_pointer_cast<StringExpr>(named("field"));
+        if (!field || term->args.size() > 2 ||
+            (term->args.size() == 2 && !named("match")))
+          throw IntegerParserError(typeName + "." + method +
+                                   " requires field and optional match");
+        const double operation = method == "sum"       ? 0.0
+                                 : method == "average" ? 1.0
+                                 : method == "min"     ? 2.0
+                                                        : 3.0;
+        auto result = std::make_shared<TermExpr>(
+            "fact:aggregate",
+            std::vector<Arg>{Arg(std::string{}, matchingRows()),
+                             Arg(std::string{}, field),
+                             Arg(std::string{},
+                                 std::make_shared<NumberExpr>(operation))},
+            BuiltinId::FactAggregate);
         result->sourceSpan = term->sourceSpan;
         return result;
       }
@@ -318,7 +514,44 @@ private:
                          std::make_shared<VarExpr>(rowName, rowId),
                          term->sourceSpan);
       }
-      if (method == "select" || method == "where") {
+      if (method == "select") {
+        const auto fields = std::dynamic_pointer_cast<ArrayExpr>(named("fields"));
+        if (!fields || term->args.size() > 2 ||
+            (term->args.size() == 2 && !named("match")))
+          throw IntegerParserError(typeName +
+                                   ".select requires fields and optional match");
+        if (std::any_of(fields->items.begin(), fields->items.end(),
+                        [](const auto &field) {
+                          return !std::dynamic_pointer_cast<StringExpr>(field);
+                        }))
+          throw IntegerParserError(typeName +
+                                   ".select fields must contain text names");
+        auto result = std::make_shared<TermExpr>(
+            "fact:project",
+            std::vector<Arg>{Arg(std::string{}, matchingRows()),
+                             Arg(std::string{}, fields)},
+            BuiltinId::FactProject);
+        result->sourceSpan = term->sourceSpan;
+        return result;
+      }
+      if (method == "where") {
+        if (term->args.size() == 1 &&
+            term->args.front().name == "using") {
+          const auto callback =
+              std::dynamic_pointer_cast<VarExpr>(term->args.front().value);
+          if (!callback)
+            throw IntegerParserError(typeName +
+                                     ".where using must name a procedure");
+          auto result = std::make_shared<TermExpr>(
+              "for_each_fact",
+              std::vector<Arg>{
+                  Arg(std::string{},
+                      std::make_shared<VarExpr>(typeName, type->second)),
+                  Arg(std::string{}, callback)},
+              BuiltinId::Unknown);
+          result->sourceSpan = term->sourceSpan;
+          return result;
+        }
         if (term->args.empty() ||
             std::any_of(term->args.begin(), term->args.end(),
                         [](const Arg &argument) {
@@ -2192,7 +2425,7 @@ IrModule IrCodeGenerator::compile(Program program) const {
   //
   // This list previously omitted array/math/str/file/db/system even though
   // every one of their declared calls (array.get, math:sqrt, str:upper,
-  // file.readFile, db.sync, system.print, ...) already compiles and runs
+  // file.readFile, system.print, ...) already compiles and runs
   // fine with no import statement at all -- an explicit `import "array"`
   // (etc.) was the only thing that broke the file, rejecting an otherwise
   // valid program. Names still absent here (process, http, gtk, qt,

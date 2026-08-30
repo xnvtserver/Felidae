@@ -64,14 +64,11 @@ enum class BuiltinId : std::uint16_t {
   FileAppendFile,
   FileExists,
   FileDeleteFile,
-  DbSync,
   CommonAncestors,
   LowestCommonAncestor,
   HighestCommonAncestor,
   AncestorAnalysis,
   PropagateFact,
-  RelationCompare,
-  RelationFind,
   DependencySatisfied,
   JsonObject,
   JsonParse,
@@ -169,6 +166,16 @@ enum class BuiltinId : std::uint16_t {
   SetCardinality,
   SetContains,
   SetContainsBy,
+  // Compiler-only fact/query operations. These have no public free-function
+  // spelling; Type.* lowering emits them directly into verified IR.
+  ArrayLimit,
+  FactInsert,
+  FactUpdate,
+  FactDelete,
+  FactJoin,
+  FactProject,
+  FactAggregate,
+  FactSetCombine,
   // Compiler-synthesized only (see desugarWhereGuardedClauses in
   // IrCodeGenerator.cpp): a where-guarded clause with no `else` compiles its
   // implicit else branch to this call instead of a compile-time rejection,
@@ -195,7 +202,6 @@ builtinOperationArity(BuiltinId operation) noexcept {
   case BuiltinId::JsonParse:
   case BuiltinId::JsonKeys:
   case BuiltinId::JsonToText:
-  case BuiltinId::DbSync:
   case BuiltinId::CsvParse:
   case BuiltinId::CsvToText:
   case BuiltinId::SetUnion:
@@ -221,6 +227,7 @@ builtinOperationArity(BuiltinId operation) noexcept {
   case BuiltinId::MathFloor:
   case BuiltinId::MathCeil:
   case BuiltinId::MathRound:
+  case BuiltinId::FactDelete:
     return 1;
   case BuiltinId::ArrayGet:
   case BuiltinId::JsonGet:
@@ -238,10 +245,19 @@ builtinOperationArity(BuiltinId operation) noexcept {
   case BuiltinId::SetSubsetBy:
   case BuiltinId::SetDisjointBy:
   case BuiltinId::SetContains:
+  case BuiltinId::ArrayLimit:
+  case BuiltinId::FactUpdate:
+  case BuiltinId::FactProject:
   case BuiltinId::MathRandom:
   case BuiltinId::MathPow:
   case BuiltinId::MathAtan2:
     return 2;
+  case BuiltinId::FactInsert:
+  case BuiltinId::FactAggregate:
+  case BuiltinId::FactSetCombine:
+    return 3;
+  case BuiltinId::FactJoin:
+    return 5;
   case BuiltinId::JsonSet:
   case BuiltinId::GroupValidate:
   case BuiltinId::GroupIdentity:
@@ -281,8 +297,6 @@ builtinOperationArgumentIndex(BuiltinId operation,
   case BuiltinId::JsonParse:
   case BuiltinId::CsvParse:
     return name == "data" ? std::optional<std::size_t>{0} : std::nullopt;
-  case BuiltinId::DbSync:
-    return name == "file" ? std::optional<std::size_t>{0} : std::nullopt;
   case BuiltinId::JsonGet:
   case BuiltinId::JsonHas:
   case BuiltinId::JsonRemove:

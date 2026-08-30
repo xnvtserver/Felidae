@@ -7,9 +7,9 @@
 planer(name: string, strategy: string) =>
     assertion := strategy == "direct"
     if assertion then
-        return Plan(name: name, strategy: strategy, asserted: true)
+        return Plan(name: name, strategy: strategy, asserted: 1.0)
     else
-        return Plan(name: name, strategy: strategy, asserted: false)
+        return Plan(name: name, strategy: strategy, asserted: 0.0)
 
 main() =>
     plan := "ordinary identifier"

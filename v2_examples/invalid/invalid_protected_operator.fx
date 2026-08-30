@@ -10,7 +10,7 @@
     visibility: private
 )
 replaceEquality() =>
-    return true
+    return 1.0
 
 main() =>
     return 1 == 2

@@ -1,4 +1,4 @@
-{"schema_version":1,"id":"facts-basic","family":"facts","source":"Person(name: \"Ada\", age: 32, active: true)\nPerson(name: \"Grace\", age: 37, active: false)"}
+{"schema_version":1,"id":"facts-basic","family":"facts","source":"Person(name: \"Ada\", age: 32, active: 1.0)\nPerson(name: \"Grace\", age: 37, active: 0.0)"}
 {"schema_version":1,"id":"facts-nested","family":"facts","source":"Employee(name: \"Lin\", address: {city: \"Delhi\", zip: 110001}, skills: [compiler, vm, isa])"}
 {"schema_version":1,"id":"facts-hierarchy","family":"hierarchy","source":"Animal(name: \"root\")\nMammal extend Animal(name: \"mammal\")\nCat extend Mammal(name: \"felidae\")"}
 {"schema_version":1,"id":"facts-multiple-parents","family":"hierarchy","source":"Engineer extend Employee, TechnicalPerson(name: \"Ada\", level: 5)\nmain() => return commonAncestors(left: Engineer(name: \"Ada\"), right: TechnicalPerson(name: \"Lin\"))"}
@@ -7,7 +7,7 @@
 {"schema_version":1,"id":"conditional","family":"control-flow","source":"classify(score: number) =>\n    if score >= 80 then\n        return \"high\"\n    else\n        return \"low\""}
 {"schema_version":1,"id":"where-fallback","family":"control-flow","source":"adult(person: Person) =>\n    where person.age >= 18\n    return 1.0.\nelse\n    return 0.0."}
 {"schema_version":1,"id":"optional-end","family":"control-flow","source":"classify(score: number) =>\n    if score >= 80 then\n        return 1.0\n    else\n        return 0.0\n    end\nend"}
-{"schema_version":1,"id":"boolean-logic","family":"operators","source":"main() => return {both: true and not false, either: false or true, exact: 4 == 4}"}
+{"schema_version":1,"id":"boolean-logic","family":"operators","source":"main() => return {both: 1.0 and not 0.0, either: 0.0 or 1.0, exact: 4 == 4}"}
 {"schema_version":1,"id":"arithmetic","family":"operators","source":"main() => return {add: 6 + 7, sub: 20 - 3, mul: 6 * 7, div: 84 / 2, mod: 17 % 5}"}
 {"schema_version":1,"id":"comparisons","family":"operators","source":"main() => return [1 < 2, 2 <= 2, 4 > 3, 5 >= 5, 6 != 7]"}
 {"schema_version":1,"id":"arrays-maps","family":"collections","source":"Values := [1, 2, 3, {name: \"four\", value: 4}]\nmain() => return {values: Values, count: count(Values)}"}
@@ -26,11 +26,11 @@
 {"schema_version":1,"id":"unicode-identifiers","family":"unicode","source":"Café(name: \"東京\", note: \"naïve façade λ calculus 🐈\")\nmain() => return Café(name: \"München\")"}
 {"schema_version":1,"id":"comments","family":"comments","source":"# deterministic compiler comment\nmain() => return 42 # trailing explanation"}
 {"schema_version":1,"id":"numbers","family":"literals","source":"main() => return [0, 1, -1, 3.1415926535, 0.001, 1000000, 6.02]"}
-{"schema_version":1,"id":"nil-truth","family":"literals","source":"main() => return {missing: nil, false_value: false, true_value: true, numeric_false: 0.0, numeric_true: 1.0}"}
+{"schema_version":1,"id":"nil-truth","family":"literals","source":"main() => return {missing: nil, false_value: 0.0, true_value: 1.0, numeric_false: 0.0, numeric_true: 1.0}"}
 {"schema_version":1,"id":"recursive-call","family":"recursion","source":"factorial(n: number) =>\n    if n == 0 then\n        return 1\n    else\n        return n * factorial(n: n - 1)\nmain() => return factorial(n: 6)"}
 {"schema_version":1,"id":"prolog-style","family":"logic","source":"Parent(parent: \"alice\", child: \"bob\")\nParent(parent: \"bob\", child: \"carol\")\nancestor(edge: Parent) => return edge.parent == \"alice\"\nmain() => return for_each_fact(Parent, ancestor)"}
 {"schema_version":1,"id":"temporal-facts","family":"temporal","source":"Event(name: \"deploy\", effective_at: 1724544000, priority: 10)\nEvent(name: \"review\", effective_at: 1724630400, priority: 5)"}
-{"schema_version":1,"id":"multiline-layout","family":"layout","source":"main() =>\n\tvalue := 21 * 2\r\n\treturn (\r\n\t\tanswer: value,\r\n\t\tready: true\r\n\t)"}
+{"schema_version":1,"id":"multiline-layout","family":"layout","source":"main() =>\n\tvalue := 21 * 2\r\n\treturn (\r\n\t\tanswer: value,\r\n\t\tready: 1.0\r\n\t)"}
 {"schema_version":1,"id":"tensor-properties","family":"tensor","source":"main() => return (size: tensor.size(value: [[1, 2], [3, 4]]), shape: tensor.shape(value: [[1, 2], [3, 4]]), dimensions: tensor.dimensions(value: [[1, 2], [3, 4]]))"}
 {"schema_version":1,"id":"tensor-comparison","family":"tensor","source":"main() => return (difference: tensor.difference(left: [1, 4], right: [3, 1]), similarity: tensor.cosineSimilarity(left: [1, 0], right: [1, 1]))"}
 {"schema_version":1,"id":"tensor-symmetry-copy","family":"tensor","source":"main() => return (transpose: tensor.transpose(value: [[1, 2], [3, 4]]), symmetric: tensor.isSymmetric(value: [[1, 2], [2, 1]]), copy: tensor.clone(value: [1, 2, 3]))"}
@@ -51,26 +51,25 @@
 {"schema_version":1,"id":"identifier-else-prefix","family":"identifiers","source":"main() =>\n    elseWherePolicy := 15\n    return elseWherePolicy"}
 {"schema_version":1,"id":"identifier-sequence","family":"identifiers","source":"main() =>\n    andFilter := 1\n    orFilter := 2\n    notFilter := 3\n    return (andFilter: andFilter, orFilter: orFilter, notFilter: notFilter)"}
 {"schema_version":1,"id":"identifier-second-position","family":"identifiers","source":"main() =>\n    plain := 1\n    orFilter := 2\n    return (plain: plain, orFilter: orFilter)"}
-{"schema_version":1,"id":"csv-import-basic","family":"persistence","source":"import \"csv\"\nSchool(name: \"Existing\", district: \"north\", students: 190, active: true)\nmain() =>\n    csvData := file.readFile(file: \"datasets/examples/schools.csv\")\n    imported := csv.toFacts(data: csvData, type: \"School\")\n    return imported"}
-{"schema_version":1,"id":"csv-import-with-source","family":"persistence","source":"import \"csv\"\nmain() =>\n    csvData := file.readFile(file: \"schools.csv\")\n    imported := csv.toFacts(data: csvData, type: \"School\", source: \"schools.csv\")\n    saved := db.sync(file: \"schools.csv\")\n    return (imported: imported, saved: saved)"}
+{"schema_version":1,"id":"csv-import-basic","family":"persistence","source":"import \"csv\"\nSchool(name: \"Existing\", district: \"north\", students: 190, active: 1.0)\nmain() =>\n    csvData := file.readFile(file: \"datasets/examples/schools.csv\")\n    imported := csv.toFacts(data: csvData, type: \"School\")\n    return imported"}
+{"schema_version":1,"id":"csv-import-with-source","family":"persistence","source":"import \"csv\"\nSchool(name: \"Existing\", active: 1.0)\nmain() =>\n    csvData := file.readFile(file: \"schools.csv\")\n    imported := csv.toFacts(data: csvData, type: \"School\", source: \"schools.csv\")\n    updated := School.update(match: {name: \"Existing\"}, values: {active: 0.0})\n    return (imported: imported, updated: updated)"}
 {"schema_version":1,"id":"csv-to-text","family":"persistence","source":"import \"csv\"\nmain() => return csv.toText(data: [{name: \"Ada\", age: 32}])"}
 {"schema_version":1,"id":"csv-to-felidae-facts","family":"persistence","source":"import \"csv\"\nmain() => return csv.toFelidaeFacts(data: [{name: \"Ada\"}], type: \"Person\")"}
-{"schema_version":1,"id":"fact-query-where","family":"queries","source":"School(name: \"North\", district: \"central\", active: true)\nmain() => return School.where(district: \"central\", active: true)"}
+{"schema_version":1,"id":"fact-query-where","family":"queries","source":"School(name: \"North\", district: \"central\", active: 1.0)\nmain() => return School.where(district: \"central\", active: 1.0)"}
 {"schema_version":1,"id":"fact-query-all","family":"queries","source":"School(name: \"North\", district: \"central\")\nmain() => return School.all()"}
 {"schema_version":1,"id":"fact-query-count","family":"queries","source":"School(name: \"North\", district: \"central\")\nmain() => return School.count()"}
 {"schema_version":1,"id":"fact-query-select","family":"queries","source":"School(name: \"North\", district: \"central\")\nmain() => return School.select(district: \"central\")"}
 {"schema_version":1,"id":"fact-query-lambda-and","family":"queries","source":"School(name: \"North\", district: \"central\", students: 420)\nmain() =>\n    return lambda(School, s => s.district == \"central\" and s.students > 100)"}
 {"schema_version":1,"id":"fact-query-lambda-or","family":"queries","source":"School(name: \"North\", district: \"central\")\nSchool(name: \"West\", district: \"west\")\nmain() =>\n    return lambda(School, s => s.district == \"west\" or s.district == \"central\")"}
-{"schema_version":1,"id":"guard-and","family":"guards","source":"eligible(score: number, active: number) =>\n    where score >= 70 and active == 1.0\n    return true\nelse\n    return false"}
-{"schema_version":1,"id":"guard-or","family":"guards","source":"eligible(score: number, vip: number) =>\n    where score >= 70 or vip == 1.0\n    return true\nelse\n    return false"}
-{"schema_version":1,"id":"guard-sequential","family":"guards","source":"canEnroll(age: number, hasPrereq: number) =>\n    where age >= 18\n    where hasPrereq == 1.0\n    return true\nelse\n    return false"}
-{"schema_version":1,"id":"guard-composed","family":"guards","source":"isAdult(age: number) =>\n    where age >= 18\n    return true\nelse\n    return false\ncanEnroll(age: number) =>\n    where isAdult(age: age) == true\n    return true\nelse\n    return false"}
+{"schema_version":1,"id":"guard-and","family":"guards","source":"eligible(score: number, active: number) =>\n    where score >= 70 and active == 1.0\n    return 1.0\nelse\n    return 0.0"}
+{"schema_version":1,"id":"guard-or","family":"guards","source":"eligible(score: number, vip: number) =>\n    where score >= 70 or vip == 1.0\n    return 1.0\nelse\n    return 0.0"}
+{"schema_version":1,"id":"guard-sequential","family":"guards","source":"canEnroll(age: number, hasPrereq: number) =>\n    where age >= 18\n    where hasPrereq == 1.0\n    return 1.0\nelse\n    return 0.0"}
+{"schema_version":1,"id":"guard-composed","family":"guards","source":"isAdult(age: number) =>\n    where age >= 18\n    return 1.0\nelse\n    return 0.0\ncanEnroll(age: number) =>\n    where isAdult(age: age) == 1.0\n    return 1.0\nelse\n    return 0.0"}
 {"schema_version":1,"id":"aggregation-sum","family":"aggregation","source":"main() =>\n    values := [3, 1, 2]\n    return (total: sum(data: values), biggest: max(data: values), smallest: min(data: values))"}
 {"schema_version":1,"id":"aggregation-sort","family":"aggregation","source":"main() =>\n    values := [3, 1, 2]\n    return sort(data: values)"}
 {"schema_version":1,"id":"aggregation-average","family":"aggregation","source":"main() =>\n    values := [2, 4, 6]\n    return average(data: values)"}
 {"schema_version":1,"id":"hierarchy-common-ancestors","family":"hierarchy","source":"Animal(name: \"root\")\nMammal extend Animal(name: \"mammal\")\nCat extend Mammal(name: \"cat\")\nDog extend Mammal(name: \"dog\")\nmain() => return commonAncestors(left: Cat(name: \"a\"), right: Dog(name: \"b\"))"}
 {"schema_version":1,"id":"hierarchy-lowest-common-ancestor","family":"hierarchy","source":"main() => return lowestCommonAncestor(left: Cat(name: \"a\"), right: Dog(name: \"b\"))"}
-{"schema_version":1,"id":"hierarchy-relation-compare","family":"hierarchy","source":"main() => return Relation.compare(left: Cat(name: \"a\"), right: Dog(name: \"b\"), max_depth: 5)"}
 {"schema_version":1,"id":"hierarchy-propagate-fact","family":"hierarchy","source":"main() => return propagateFact(parent: Mammal(name: \"m\"), child: Cat(name: \"c\"), changes: {habitat: \"wild\"})"}
 {"schema_version":1,"id":"mixfix-multi-capture","family":"mixfix","source":"@mixfix(pattern: \"{value:number} may be Above {minimum:number}\")\nkeepWhenAbove() => return value > minimum\nmain() => return 7 maybeAbove 5"}
 {"schema_version":1,"id":"mixfix-natural-query","family":"mixfix","source":"@mixfix(pattern: \"what is {subject:obj}\")\nexplain() => return subject.text\nmain() => return what is felidae"}
@@ -78,5 +77,9 @@
 {"schema_version":1,"id":"group-abelian","family":"group-theory","source":"main() => return Group:abelian(elements: [0, 1, 2], operation: \"add-mod-3\")"}
 {"schema_version":1,"id":"set-union","family":"set-theory","source":"main() => return Set:union(left: [1, 2], right: [2, 3])"}
 {"schema_version":1,"id":"set-contains","family":"set-theory","source":"main() => return Set:contains(data: [1, 2, 3], value: 2)"}
-{"schema_version":1,"id":"operators-compound-and-or","family":"operators","source":"main() => return (a: true and false or true, b: not (true and false), c: (1 < 2) and (3 > 2))"}
+{"schema_version":1,"id":"operators-compound-and-or","family":"operators","source":"main() => return (a: 1.0 and 0.0 or 1.0, b: not (1.0 and 0.0), c: (1 < 2) and (3 > 2))"}
 {"schema_version":1,"id":"operators-nested-parens","family":"operators","source":"main() => return ((1 + 2) * (3 - 1)) / 2"}
+{"schema_version":1,"id":"fact-query-chain","family":"queries","source":"School(name: \"North\", city: \"BLR\", active: 1.0)\nmain() => return School.where(active: 1.0).AndWhere(city: \"BLR\").limit(records: 100)"}
+{"schema_version":1,"id":"fact-query-or","family":"queries","source":"School(name: \"North\", city: \"BLR\")\nmain() => return School.where(city: \"BLR\").OrWhere(name: \"West\")"}
+{"schema_version":1,"id":"fact-dml","family":"persistence","source":"School(id: 1, active: 1.0)\nmain() =>\n    inserted := School.insert(values: {id: 2, active: 1.0})\n    updated := School.update(match: {id: 1}, values: {active: 0.0})\n    return School.delete(match: {id: 2})\nend"}
+{"schema_version":1,"id":"fact-joins","family":"queries","source":"School(id: 1)\nTeacher(school_id: 1)\nmain() => return School.leftJoin(type: Teacher, left: \"id\", right: \"school_id\").limit(records: 100)"}

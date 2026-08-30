@@ -9,13 +9,13 @@
 Relationship(from: nil, to: nil, name: "", degree: 0, confidence: 0)
 
 Living(name: "living")
-Animal extend Living(name: "animal", cellular: true)
+Animal extend Living(name: "animal", cellular: 1.0)
 WarmBlooded extend Animal(name: "warm", temperature: "regulated")
 FourLegged extend Animal(name: "four-legged", legs: 4)
-Mammal extend WarmBlooded, FourLegged(name: "mammal", nourishes_young: true)
+Mammal extend WarmBlooded, FourLegged(name: "mammal", nourishes_young: 1.0)
 
 Feline extend Mammal(name: "feline", family: "feline", diet: "carnivore")
-Carnivore extend Mammal(name: "carnivore", diet: "carnivore", hunts: true)
+Carnivore extend Mammal(name: "carnivore", diet: "carnivore", hunts: 1.0)
 Domestic extend Mammal(name: "domestic", habitat: "home")
 Wild extend Mammal(name: "wild", habitat: "wild")
 Nocturnal extend Mammal(name: "nocturnal", active_time: "night")
@@ -24,36 +24,36 @@ TigerFemale extend Feline, Carnivore, Wild, Nocturnal(
     name: "shira",
     species: "tiger",
     sex: "female",
-    produces_milk: true,
+    produces_milk: 1.0,
     territory: "forest",
-    hunts: true
+    hunts: 1.0
 )
 
 TigerMale extend Feline, Carnivore, Wild, Nocturnal(
     name: "raja",
     species: "tiger",
     sex: "male",
-    produces_milk: false,
+    produces_milk: 0.0,
     territory: "forest",
-    hunts: true
+    hunts: 1.0
 )
 
 CatFemale extend Feline, Carnivore, Domestic(
     name: "lilly",
     species: "cat",
     sex: "female",
-    produces_milk: true,
+    produces_milk: 1.0,
     territory: "home",
-    hunts: false
+    hunts: 0.0
 )
 
 DogMale extend Carnivore, Domestic(
     name: "max",
     species: "dog",
     sex: "male",
-    produces_milk: false,
+    produces_milk: 0.0,
     territory: "yard",
-    hunts: false
+    hunts: 0.0
 )
 
 # The source fact owns membership knowledge, so comparison is directional:

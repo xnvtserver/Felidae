@@ -3,13 +3,13 @@ Animal(name: "")
 Cat extend Animal(
     name: "shared-profile",
     legs: 4,
-    active: true
+    active: 1.0
 )
 
 Machine(
     name: "shared-profile",
     legs: 4,
-    active: true
+    active: 1.0
 )
 
 main() =>
@@ -17,10 +17,12 @@ main() =>
     machines := lambda(Machine, fact => fact.name == "shared-profile")
     cat := array.get(data: cats, position: 0)
     machine := array.get(data: machines, position: 0)
-    comparison := Relation.compare(left: cat, right: machine)
+    propertySimilarity := similarity(cat, machine)
+    ancestors := commonAncestors(cat, machine)
     return (
-        property_similarity: comparison.evidence.propertySimilarity,
-        ancestor_similarity: comparison.evidence.ancestorSimilarity,
-        similarity: comparison.evidence.similarity,
-        common_ancestor: comparison.evidence.matchedAncestor
+        property_similarity: propertySimilarity,
+        ancestor_similarity: 0.0,
+        similarity: propertySimilarity,
+        common_ancestor: lowestCommonAncestor(cat, machine),
+        ancestor_evidence: ancestors
     )

@@ -6,7 +6,7 @@ Living(name: "")
 
 WarmBlooded extend Living(
     name: "",
-    warm_blooded: true
+    warm_blooded: 1.0
 )
 
 FourLegged extend Living(
@@ -70,20 +70,20 @@ Mammal.membership(input: Mammal, against: Mammal) =>
     }
 
 buildSimilarityReport(left: Mammal, right: Mammal, context: string) =>
-    comparison := Relation.compare(left: left, right: right, max_depth: 6)
-    evidence := comparison.evidence
+    ancestors := commonAncestors(left, right)
+    score := similarity(left, right)
     return SimilarityReport(
         context: context,
         left_type: type(left),
         right_type: type(right),
-        common_ancestor: evidence.matchedAncestor,
-        score: evidence.similarity,
+        common_ancestor: lowestCommonAncestor(left, right),
+        score: score,
         evidence: [
-            evidence,
+            ancestorAnalysis(left: left, right: right),
             EvidenceSummary(
-                ancestor_count: array.len(data: evidence.ancestorEvidence),
-                matched_fields: evidence.matchedFields,
-                conflicting_fields: evidence.conflictingFields
+                ancestor_count: array.len(data: ancestors),
+                matched_fields: [],
+                conflicting_fields: []
             )
         ]
     )

@@ -8,5 +8,5 @@ numberPlan(value:number, enabled:bool) =>
 
 main() =>
     text := plan "procedure" using "all-data"
-    numeric := plan 7 using true
+    numeric := plan 7 using 1.0
     return (text: text, numeric: numeric)

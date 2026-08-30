@@ -2,7 +2,8 @@ if(NOT DEFINED FELIDAE_BETA_DIST_DIR OR NOT DEFINED FELIDAE_BETA_BUILD_DIR OR NO
     message(FATAL_ERROR "beta release check paths are incomplete")
 endif()
 
-foreach(required felidae_compiler.exe felidae_vm.exe models/felidae.model SHA256SUMS.txt README.txt)
+foreach(required bin/felidae_compiler.exe bin/felidae_vm.exe
+        bin/felidae_debugger.exe models/felidae.model SHA256SUMS.txt README.txt)
     if(NOT EXISTS "${FELIDAE_BETA_DIST_DIR}/${required}")
         message(FATAL_ERROR "beta distribution is missing ${required}")
     endif()
@@ -21,7 +22,7 @@ foreach(entry IN LISTS staged_entries)
     if(IS_DIRECTORY "${FELIDAE_BETA_DIST_DIR}/${entry}")
         continue()
     endif()
-    if(NOT entry MATCHES "^(felidae_compiler|felidae_vm)\\.exe$|^[^/]+\\.dll$|^(README|SHA256SUMS)\\.txt$|^models/.+\\.(model|pt|txt)$")
+    if(NOT entry MATCHES "^bin/(felidae_compiler|felidae_vm|felidae_debugger)\\.exe$|^bin/[^/]+\\.dll$|^(README|SHA256SUMS)\\.txt$|^models/.+\\.(model|pt|txt)$|^licenses/[^/]+\\.txt$")
         message(FATAL_ERROR "beta distribution contains an unapproved file: ${entry}")
     endif()
 endforeach()
