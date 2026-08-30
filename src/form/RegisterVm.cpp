@@ -69,7 +69,6 @@ std::size_t irInstructionWidth(const FelidaeIr &ir, std::size_t pc) {
   case IrOpcode::MakeFact:
   case IrOpcode::Return:
     return bounded(3);
-  case IrOpcode::ForEachFact:
   case IrOpcode::Add:
   case IrOpcode::Sub:
   case IrOpcode::Mul:
@@ -84,6 +83,13 @@ std::size_t irInstructionWidth(const FelidaeIr &ir, std::size_t pc) {
   case IrOpcode::HierarchyMostGeneralAncestors:
   case IrOpcode::TemporalRank:
     return bounded(4);
+  // One extra operand beyond type/callback: a register holding a map of
+  // outer-scope values the callback's predicate closes over (0 = none). The
+  // callback procedure itself still takes only the row parameter plus this
+  // one capture map, not one parameter per captured name -- see
+  // FactQueryNormalizer::iteration() in IrCodeGenerator.cpp.
+  case IrOpcode::ForEachFact:
+    return bounded(5);
   case IrOpcode::Compare:
     return bounded(5);
   case IrOpcode::Membership:
@@ -550,8 +556,11 @@ void verifyControlFlowInitialization(
     switch (op) {
     case IrOpcode::LoadConst:
     case IrOpcode::LoadSymbol:
-    case IrOpcode::ForEachFact:
     case IrOpcode::TemporalRank:
+      write(ir.words[pc + 1]);
+      break;
+    case IrOpcode::ForEachFact:
+      requireFlowRead(state, ir.words[pc + 4]);
       write(ir.words[pc + 1]);
       break;
     case IrOpcode::StoreSymbol:
@@ -882,6 +891,31 @@ std::vector<VmFactPtr> VmFactStore::snapshot(IrSymbolRef type) const {
   std::lock_guard lock(mutex_);
   const auto found = byType_.find(type);
   return found == byType_.end() ? std::vector<VmFactPtr>{} : found->second;
+}
+
+void VmFactStore::recordSource(IrFactRef fact, std::string source) {
+  if (fact == 0)
+    throw IrError("fact source cannot be recorded for an invalid fact");
+  std::lock_guard lock(mutex_);
+  const auto found = std::find_if(
+      facts_.begin(), facts_.end(),
+      [&](const auto &item) { return item->id == fact; });
+  if (found == facts_.end())
+    throw IrError(
+        "fact source recorded for a fact outside this knowledge runtime");
+  factSource_[fact] = std::move(source);
+}
+
+std::vector<VmFactPtr>
+VmFactStore::snapshotBySource(std::string_view source) const {
+  std::lock_guard lock(mutex_);
+  std::vector<VmFactPtr> result;
+  for (const auto &fact : facts_) {
+    const auto found = factSource_.find(fact->id);
+    if (found != factSource_.end() && found->second == source)
+      result.push_back(fact);
+  }
+  return result;
 }
 
 std::vector<IrSymbolRef>
@@ -1322,7 +1356,8 @@ VmText FelidaeKnowledgeRuntime::readFile(
 }
 
 VmValue FelidaeKnowledgeRuntime::importCsvFacts(
-    std::span<const PieceId> data, std::span<const PieceId> type) {
+    std::span<const PieceId> data, std::span<const PieceId> type,
+    std::span<const PieceId> source) {
   const auto typePieces = encodeText(decodeText(type));
   const auto knownType = runtimeSymbolIds_.find(typePieces);
   if (knownType == runtimeSymbolIds_.end() ||
@@ -1335,6 +1370,11 @@ VmValue FelidaeKnowledgeRuntime::importCsvFacts(
       [this](std::string_view text) { return encodeText(text); }};
   const auto typeName = decodeText(type);
   const auto rows = Form::Csv::toFacts(decodeText(data), typeName);
+  // Empty means "no persistence source" (e.g. an anonymous csv.toFacts call
+  // never intended for db.sync); only a non-empty source is recorded, so
+  // db.sync's ownership lookup stays exact rather than matching on "".
+  const std::optional<std::string> sourceText =
+      source.empty() ? std::optional<std::string>{} : decodeText(source);
   auto result = std::make_shared<VmArray>();
   result->values.reserve(rows.size());
   for (const auto &row : rows) {
@@ -1350,7 +1390,10 @@ VmValue FelidaeKnowledgeRuntime::importCsvFacts(
       const auto field = internRuntimeSymbol(encodeText(name));
       fact->fields.emplace_back(field, Form::jsonToVmValue(value, codec));
     }
-    result->values.emplace_back(factStore_->retain(fact));
+    const auto retained = factStore_->retain(fact);
+    if (sourceText)
+      factStore_->recordSource(retained->id, *sourceText);
+    result->values.emplace_back(retained);
   }
   return result;
 }
@@ -1360,8 +1403,13 @@ double FelidaeKnowledgeRuntime::syncDatabase(
   const VmTextDecoder decoder = [this](std::span<const PieceId> pieces) {
     return decodeText(pieces);
   };
-  Form::Db::sync(std::filesystem::path(decodeText(path)),
-                 factStore_->snapshot(), runtimeSymbolTable_, decoder);
+  const auto pathText = decodeText(path);
+  // Sync only the facts recorded as belonging to this source -- never the
+  // whole store, and never inferred from fact type alone, since two
+  // different files can share one fact type (see VmFactStore::recordSource).
+  Form::Db::sync(std::filesystem::path(pathText),
+                 factStore_->snapshotBySource(pathText), runtimeSymbolTable_,
+                 decoder);
   return 1.0;
 }
 
@@ -1480,11 +1528,13 @@ void IrVerifier::verify(const FelidaeIr &ir) {
       break;
     case IrOpcode::ForEachFact:
       requireRegister(ir, ir.words[pc + 1]);
+      requireRegister(ir, ir.words[pc + 4]);
+      requireInitialized(initialized, ir.words[pc + 4]);
       if (ir.words[pc + 2] >= ir.symbols.size() ||
           ir.words[pc + 3] >= ir.symbols.size())
         throw IrError("IR fact loop references an invalid symbol");
       initialized[ir.words[pc + 1]] = true;
-      pc += 4;
+      pc += 5;
       break;
     case IrOpcode::Add:
     case IrOpcode::Sub:
@@ -1828,6 +1878,7 @@ VmText VmRuntime::readFile(std::span<const PieceId>) const {
 }
 
 VmValue VmRuntime::importCsvFacts(std::span<const PieceId>,
+                                  std::span<const PieceId>,
                                   std::span<const PieceId>) {
   throw IrError("VM CSV fact service is absent");
 }
@@ -2116,7 +2167,40 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
         const auto type = std::get_if<VmText>(&inputs[1]);
         if (!data || !type)
           throw IrError("csv.toFacts data and type must be text");
-        result = runtime.importCsvFacts(data->pieces, type->pieces);
+        // The source-path overload (csv.toFacts(data, type, source)) is
+        // optional: db.sync ownership tracking only applies when a caller
+        // provides one, matching the two declared core/csv.fx arities.
+        std::span<const PieceId> source;
+        if (inputs.size() > 2) {
+          const auto sourceText = std::get_if<VmText>(&inputs[2]);
+          if (!sourceText)
+            throw IrError("csv.toFacts source must be text");
+          source = sourceText->pieces;
+        }
+        result = runtime.importCsvFacts(data->pieces, type->pieces, source);
+      } else if (operation == BuiltinId::PropagateFact) {
+        // Registered in BuiltinRegistry with no arity entry and no case here
+        // at all -- the same dead-registration pattern as sort/throw/math
+        // this session. A hierarchy-guarded variant of ordinary field
+        // mutation: apply `changes` to `child` only when `child`'s type
+        // actually descends from `parent`'s type, reusing the same
+        // mutateFact() an ordinary SetField already uses (see
+        // IrOpcode::SetField) rather than a second mutation path.
+        const auto parent = std::get_if<VmFactPtr>(&inputs[0]);
+        const auto child = std::get_if<VmFactPtr>(&inputs[1]);
+        const auto changes = std::get_if<VmMapPtr>(&inputs[2]);
+        if (!parent || !*parent || !child || !*child)
+          throw IrError("propagateFact requires parent and child facts");
+        if (!changes || !*changes)
+          throw IrError("propagateFact requires a changes map");
+        if (runtime.hierarchyProof((*child)->type, (*parent)->type).empty()) {
+          throw IrError(
+              "propagateFact requires child to descend from parent's type");
+        }
+        auto propagated = *child;
+        for (const auto &[field, value] : (*changes)->entries)
+          propagated = runtime.mutateFact(propagated, field, value);
+        result = propagated;
       } else {
         const Form::BuiltinTextCodec codec{
             [&](std::span<const PieceId> pieces) {
@@ -2287,11 +2371,31 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
     case IrOpcode::ForEachFact: {
       const auto facts =
           runtime.snapshotFacts(symbol(program.words.at(pc + 2)));
+      // The captures register always holds a (possibly empty) map of the
+      // predicate's outer-scope free variables, evaluated once here in the
+      // caller's own scope where they are actually defined, then threaded
+      // through to every invocation -- the synthesized callback procedure
+      // itself has no access to the caller's registers otherwise. See
+      // FactQueryNormalizer::iteration() in IrCodeGenerator.cpp. A callback
+      // written directly against the raw for_each_fact(type, callback) form
+      // (not through that sugar) still takes only the row parameter, so the
+      // captures argument is included only when the target actually
+      // declares a second parameter for it -- an older single-parameter
+      // callback keeps working unchanged.
+      const auto captures = registers.at(program.words.at(pc + 4));
+      const auto callbackSymbol = moduleSymbol(program.words.at(pc + 3));
+      const auto callbackProcedure = module.procedures.find(callbackSymbol);
+      if (callbackProcedure == module.procedures.end())
+        throw IrError("IR call target is not a procedure");
+      const auto callbackTakesCaptures =
+          callbackProcedure->second.positionalParameters.size() >= 2;
       auto values = std::make_shared<VmArray>();
       values->values.reserve(facts.size());
       for (const auto &fact : facts) {
         auto value =
-            invoke(moduleSymbol(program.words.at(pc + 3)), {VmValue{fact}});
+            callbackTakesCaptures
+                ? invoke(callbackSymbol, {VmValue{fact}, captures})
+                : invoke(callbackSymbol, {VmValue{fact}});
         if (const auto selected = std::get_if<double>(&value)) {
           if (*selected == 0.0)
             continue;

@@ -1,6 +1,12 @@
 # A deliberately non-trivial knowledge graph.  It contains overlapping
 # taxonomic paths, concrete facts with contradictory local evidence, and a
-# comparison contract whose source membership is directional.
+# relationship whose membership is directional by construction.
+
+# Declaring one placeholder instance registers "Relationship" as a known
+# fact type, the same way every other type below does -- required for
+# lambda(Relationship, ...) to be recognized as fact-query sugar rather than
+# an unrecognized bare lambda call.
+Relationship(from: nil, to: nil, name: "", degree: 0, confidence: 0)
 
 Living(name: "living")
 Animal extend Living(name: "animal", cellular: true)
@@ -50,8 +56,10 @@ DogMale extend Carnivore, Domestic(
     hunts: false
 )
 
-# The source fact owns membership knowledge.  That makes ordinary comparison
-# directional, while Relation.compare(mode: "symmetric") keeps both proofs.
+# The source fact owns membership knowledge, so comparison is directional:
+# relating tiger to cat does not also relate cat to tiger. Querying both
+# directions with plain field-equality lambdas makes that explicit instead of
+# hiding it behind a comparison engine.
 TigerFemale.membership(input: TigerFemale, against: Mammal) =>
     return {
         legs: input.legs,
@@ -84,9 +92,14 @@ main() =>
     dog_male := array.get(data: dog_males, position: 0)
     wild := array.get(data: wild_families, position: 0)
 
-    tiger_female.relate(
+    # A relationship is just an ordinary fact -- constructing one retains it
+    # immediately, the same as any other fact literal -- not a special
+    # relate() verb. from/to/degree/confidence are plain fields, queryable
+    # the same way as any other fact type.
+    tiger_cat_relationship := Relationship(
+        from: tiger_female,
         to: cat_female,
-        as: Relationship(name: "shared-carnivore-evidence"),
+        name: "shared-carnivore-evidence",
         degree: 0.78,
         confidence: 0.91
     )
@@ -101,24 +114,17 @@ main() =>
         changes: {habitat: "reserve", name: "wild-animal"}
     )
 
-    directed_tiger_cat := Relation.compare(
-        left: tiger_female,
-        right: cat_female,
-        max_depth: 5,
-        max_ancestor_depth: 2
-    )
-    directed_cat_tiger := Relation.compare(
-        left: cat_female,
-        right: tiger_female,
-        max_depth: 5
-    )
-    symmetric_tiger_cat := Relation.compare(
-        left: tiger_female,
-        right: cat_female,
-        max_depth: 5,
-        max_ancestor_depth: 2,
-        mode: "symmetric"
-    )
+    # Directed vs. symmetric relationship lookup is a plain field-equality
+    # query over the Relationship facts above -- the same lambda-based
+    # filtering every other fact type already uses, not a bespoke
+    # comparison engine.
+    directed_tiger_cat := lambda(Relationship,
+        r => r.from == tiger_female and r.to == cat_female)
+    directed_cat_tiger := lambda(Relationship,
+        r => r.from == cat_female and r.to == tiger_female)
+    symmetric_tiger_cat := lambda(Relationship,
+        r => (r.from == tiger_female and r.to == cat_female) or
+             (r.from == cat_female and r.to == tiger_female))
 
     return DeepReasoningReport(
         tied_lineage: tied_lineage,

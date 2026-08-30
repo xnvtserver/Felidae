@@ -169,7 +169,13 @@ enum class BuiltinId : std::uint16_t {
   SetCardinality,
   SetContains,
   SetContainsBy,
-  Last = SetContainsBy
+  // Compiler-synthesized only (see desugarWhereGuardedClauses in
+  // IrCodeGenerator.cpp): a where-guarded clause with no `else` compiles its
+  // implicit else branch to this call instead of a compile-time rejection,
+  // so a failed guard throws a clear runtime error rather than falling
+  // through silently. Never spelled directly in source.
+  WhereGuardFailed,
+  Last = WhereGuardFailed
 };
 
 // Operations currently executed as direct RegisterVm library calls. This
@@ -183,6 +189,7 @@ builtinOperationArity(BuiltinId operation) noexcept {
   case BuiltinId::Average:
   case BuiltinId::Min:
   case BuiltinId::Max:
+  case BuiltinId::Sort:
   case BuiltinId::ArrayLen:
   case BuiltinId::FileReadFile:
   case BuiltinId::JsonParse:
@@ -200,6 +207,20 @@ builtinOperationArity(BuiltinId operation) noexcept {
   case BuiltinId::SetSuperset:
   case BuiltinId::SetDisjoint:
   case BuiltinId::SetCardinality:
+  case BuiltinId::MathSqrt:
+  case BuiltinId::MathSin:
+  case BuiltinId::MathCos:
+  case BuiltinId::MathTan:
+  case BuiltinId::MathAsin:
+  case BuiltinId::MathAcos:
+  case BuiltinId::MathAtan:
+  case BuiltinId::MathLog:
+  case BuiltinId::MathLog10:
+  case BuiltinId::MathExp:
+  case BuiltinId::MathAbs:
+  case BuiltinId::MathFloor:
+  case BuiltinId::MathCeil:
+  case BuiltinId::MathRound:
     return 1;
   case BuiltinId::ArrayGet:
   case BuiltinId::JsonGet:
@@ -217,6 +238,9 @@ builtinOperationArity(BuiltinId operation) noexcept {
   case BuiltinId::SetSubsetBy:
   case BuiltinId::SetDisjointBy:
   case BuiltinId::SetContains:
+  case BuiltinId::MathRandom:
+  case BuiltinId::MathPow:
+  case BuiltinId::MathAtan2:
     return 2;
   case BuiltinId::JsonSet:
   case BuiltinId::GroupValidate:
@@ -224,7 +248,12 @@ builtinOperationArity(BuiltinId operation) noexcept {
   case BuiltinId::GroupInverse:
   case BuiltinId::GroupAbelian:
   case BuiltinId::SetContainsBy:
+  case BuiltinId::PropagateFact:
     return 3;
+  case BuiltinId::WhereGuardFailed:
+  case BuiltinId::MathPi:
+  case BuiltinId::MathE:
+    return 0;
   default:
     return std::nullopt;
   }
@@ -239,6 +268,7 @@ builtinOperationArgumentIndex(BuiltinId operation,
   case BuiltinId::Average:
   case BuiltinId::Min:
   case BuiltinId::Max:
+  case BuiltinId::Sort:
   case BuiltinId::ArrayLen:
     return name == "data" ? std::optional<std::size_t>{0} : std::nullopt;
   case BuiltinId::FileReadFile:
@@ -319,6 +349,39 @@ builtinOperationArgumentIndex(BuiltinId operation,
     return operation == BuiltinId::SetContainsBy && name == "fields"
                ? std::optional<std::size_t>{2}
                : std::nullopt;
+  case BuiltinId::MathSqrt:
+  case BuiltinId::MathSin:
+  case BuiltinId::MathCos:
+  case BuiltinId::MathTan:
+  case BuiltinId::MathAsin:
+  case BuiltinId::MathAcos:
+  case BuiltinId::MathAtan:
+  case BuiltinId::MathLog:
+  case BuiltinId::MathLog10:
+  case BuiltinId::MathExp:
+  case BuiltinId::MathAbs:
+  case BuiltinId::MathFloor:
+  case BuiltinId::MathCeil:
+  case BuiltinId::MathRound:
+    return name == "value" ? std::optional<std::size_t>{0} : std::nullopt;
+  case BuiltinId::MathRandom:
+    if (name == "min")
+      return 0;
+    return name == "max" ? std::optional<std::size_t>{1} : std::nullopt;
+  case BuiltinId::MathPow:
+    if (name == "base")
+      return 0;
+    return name == "exponent" ? std::optional<std::size_t>{1} : std::nullopt;
+  case BuiltinId::MathAtan2:
+    if (name == "y")
+      return 0;
+    return name == "x" ? std::optional<std::size_t>{1} : std::nullopt;
+  case BuiltinId::PropagateFact:
+    if (name == "parent")
+      return 0;
+    if (name == "child")
+      return 1;
+    return name == "changes" ? std::optional<std::size_t>{2} : std::nullopt;
   default:
     return std::nullopt;
   }
