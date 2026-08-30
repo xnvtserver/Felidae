@@ -251,6 +251,34 @@ inline constexpr std::string_view builtinTokenSpelling(TokenId::Id id) {
   return {};
 }
 
+// The word-spelled keyword IDs (as opposed to punctuation/operator builtin
+// IDs such as LPAREN or ARROW). Only these can plausibly be the leading
+// fragment of a longer identifier SentencePiece happened to split this way
+// (`import` inside `imported`, `if` inside `ifRequired`, ...); punctuation
+// IDs never need the same contiguity check.
+inline constexpr bool isKeywordWordTokenId(TokenId::Id id) {
+  switch (id) {
+  case TokenId::IMPORT:
+  case TokenId::NOT:
+  case TokenId::AND:
+  case TokenId::OR:
+  case TokenId::THEN:
+  case TokenId::AS:
+  case TokenId::IF:
+  case TokenId::ELSE:
+  case TokenId::RETURN:
+  case TokenId::WHERE:
+  case TokenId::EXTEND:
+  case TokenId::LAMBDA:
+  case TokenId::TRUE:
+  case TokenId::FALSE:
+  case TokenId::NIL:
+    return true;
+  default:
+    return false;
+  }
+}
+
 // These IDs end an already-started identifier range.  Keyword IDs are
 // intentionally absent: if SentencePiece emits (for example) the `or` ID in
 // the middle of `Record`, the contiguous IDs still represent one identifier.

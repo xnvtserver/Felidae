@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 #include <numeric>
+#include <random>
 #include <stdexcept>
 #include <vector>
 
@@ -34,6 +36,13 @@ std::string textValue(const VmValue &value, const BuiltinTextCodec &codec,
   if (!text)
     throw IrError(std::string(operation) + " requires text input");
   return decodeText(text->pieces, codec);
+}
+
+double numberValue(const VmValue &value, std::string_view operation) {
+  const auto number = std::get_if<double>(&value);
+  if (!number || !std::isfinite(*number))
+    throw IrError(std::string(operation) + " requires a finite number");
+  return *number;
 }
 
 } // namespace
@@ -170,6 +179,30 @@ VmValue evaluateBuiltin(BuiltinId operation, std::span<const VmValue> inputs,
       const auto bounds = std::minmax_element(values.begin(), values.end());
       return operation == BuiltinId::Min ? *bounds.first : *bounds.second;
     }
+    case BuiltinId::Sort: {
+      // Registered in BuiltinRegistry and documented in core/prelude.fx
+      // ("sort(array)") since the start, but had no arity entry and no case
+      // here -- every call compiled to "not yet lowered to IR". Numeric-only,
+      // ascending, matching the sibling aggregations (sum/min/max) it sits
+      // beside in both places.
+      const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
+      if (!array || !*array)
+        throw IrError("sort requires an array");
+      std::vector<double> values;
+      values.reserve((*array)->values.size());
+      for (const auto &item : (*array)->values) {
+        const auto number = std::get_if<double>(&item);
+        if (!number || !std::isfinite(*number))
+          throw IrError("sort requires an array of finite numbers");
+        values.push_back(*number);
+      }
+      std::sort(values.begin(), values.end());
+      auto result = std::make_shared<VmArray>();
+      result->values.reserve(values.size());
+      for (const auto value : values)
+        result->values.emplace_back(value);
+      return result;
+    }
     case BuiltinId::JsonParse:
       return jsonToVmValue(
           Json::parse(textValue(inputs[0], codec, "json.parse")), codec);
@@ -282,6 +315,77 @@ VmValue evaluateBuiltin(BuiltinId operation, std::span<const VmValue> inputs,
                         vmValueToJson(inputs[1], symbolTable, codec),
                         vmValueToJson(inputs[2], symbolTable, codec)),
           codec);
+    // math.* were registered in BuiltinRegistry (and declared in
+    // core/math.fx) with no arity entry and no case here at all -- every
+    // call compiled to "not yet lowered to IR", the same dead-registration
+    // pattern as the earlier sort/throw fixes this session.
+    case BuiltinId::MathPi:
+      return std::numbers::pi;
+    case BuiltinId::MathE:
+      return std::numbers::e;
+    case BuiltinId::MathRandom: {
+      const auto minimum = numberValue(inputs[0], "math.random");
+      const auto maximum = numberValue(inputs[1], "math.random");
+      if (minimum > maximum)
+        throw IrError("math.random requires min <= max");
+      thread_local std::mt19937 generator{std::random_device{}()};
+      std::uniform_real_distribution<double> distribution(minimum, maximum);
+      return distribution(generator);
+    }
+    case BuiltinId::MathPow:
+      return std::pow(numberValue(inputs[0], "math.pow"),
+                      numberValue(inputs[1], "math.pow"));
+    case BuiltinId::MathAtan2:
+      return std::atan2(numberValue(inputs[0], "math.atan2"),
+                        numberValue(inputs[1], "math.atan2"));
+    case BuiltinId::MathSqrt: {
+      const auto value = numberValue(inputs[0], "math.sqrt");
+      if (value < 0.0)
+        throw IrError("math.sqrt requires a non-negative number");
+      return std::sqrt(value);
+    }
+    case BuiltinId::MathSin:
+      return std::sin(numberValue(inputs[0], "math.sin"));
+    case BuiltinId::MathCos:
+      return std::cos(numberValue(inputs[0], "math.cos"));
+    case BuiltinId::MathTan:
+      return std::tan(numberValue(inputs[0], "math.tan"));
+    case BuiltinId::MathAsin:
+      return std::asin(numberValue(inputs[0], "math.asin"));
+    case BuiltinId::MathAcos:
+      return std::acos(numberValue(inputs[0], "math.acos"));
+    case BuiltinId::MathAtan:
+      return std::atan(numberValue(inputs[0], "math.atan"));
+    case BuiltinId::MathLog: {
+      const auto value = numberValue(inputs[0], "math.log");
+      if (value <= 0.0)
+        throw IrError("math.log requires a positive number");
+      return std::log(value);
+    }
+    case BuiltinId::MathLog10: {
+      const auto value = numberValue(inputs[0], "math.log10");
+      if (value <= 0.0)
+        throw IrError("math.log10 requires a positive number");
+      return std::log10(value);
+    }
+    case BuiltinId::MathExp:
+      return std::exp(numberValue(inputs[0], "math.exp"));
+    case BuiltinId::MathAbs:
+      return std::fabs(numberValue(inputs[0], "math.abs"));
+    case BuiltinId::MathFloor:
+      return std::floor(numberValue(inputs[0], "math.floor"));
+    case BuiltinId::MathCeil:
+      return std::ceil(numberValue(inputs[0], "math.ceil"));
+    case BuiltinId::MathRound:
+      return std::round(numberValue(inputs[0], "math.round"));
+    case BuiltinId::WhereGuardFailed:
+      // Compiler-synthesized only: the implicit else branch of a
+      // where-guarded clause with no explicit `else` (see
+      // desugarWhereGuardedClauses in IrCodeGenerator.cpp). Reaching this
+      // means every guard in the clause failed and there was nothing else
+      // to fall back to -- a clear runtime failure, not a silent nil.
+      throw IrError(
+          "where guard failed: no matching clause and no else branch");
     default:
       break;
     }

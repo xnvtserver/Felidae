@@ -17,14 +17,23 @@ std::vector<std::string> parseLine(std::string_view line) {
   bool quoted = false;
   for (std::size_t index = 0; index < line.size(); ++index) {
     const char current = line[index];
-    if (current == '"') {
-      if (quoted && index + 1 < line.size() && line[index + 1] == '"') {
-        field.push_back('"');
-        ++index;
+    if (quoted) {
+      if (current == '"') {
+        if (index + 1 < line.size() && line[index + 1] == '"') {
+          field.push_back('"');
+          ++index;
+        } else {
+          quoted = false;
+        }
       } else {
-        quoted = !quoted;
+        field.push_back(current);
       }
-    } else if (current == ',' && !quoted) {
+      // A quote only opens quoted mode as the first character of a field
+      // (RFC4180): a stray quote appearing mid-unquoted-field is literal
+      // text, not a toggle, and must not swallow a later comma.
+    } else if (current == '"' && field.empty()) {
+      quoted = true;
+    } else if (current == ',') {
       fields.push_back(std::move(field));
       field.clear();
     } else {
@@ -49,7 +58,12 @@ Json::Value parseRows(std::string_view text, std::string_view typeName) {
   while (std::getline(input, line)) {
     if (!line.empty() && line.back() == '\r')
       line.pop_back();
-    if (line.empty())
+    // A blank line is ambiguous for multi-column data (most commonly a
+    // harmless trailing blank line at end of file, so it's skipped), but for
+    // single-column data it's the only way to represent an intentional
+    // empty-string value and must become a real row, not be silently
+    // dropped.
+    if (line.empty() && headers.size() != 1)
       continue;
     const auto fields = parseLine(line);
     if (fields.size() != headers.size())

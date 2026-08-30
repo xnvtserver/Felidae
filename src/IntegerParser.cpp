@@ -223,8 +223,23 @@ void IntegerParser::skipTrivia() {
 std::size_t IntegerParser::builtinSequenceLength(TokenId::Id id) const {
   if (!input_.has(piece_))
     return 0;
-  if (input_.entry(piece_).id == id)
+  if (input_.entry(piece_).id == id) {
+    // A word keyword ID immediately followed (no separator) by another
+    // non-boundary piece is the leading fragment of one longer identifier
+    // (`import` inside `imported`, `if` inside `ifRequired`, `true` inside
+    // `trueValue`, ...), not a standalone reserved word here -- this mirrors
+    // how isIdentifierBoundaryId already treats a keyword ID appearing mid
+    // identifier, and how atNameRange() claims this same leading position.
+    // at()/match() must refuse the match so callers such as the `if`-goal
+    // and boolean-literal dispatch fall through to ordinary name parsing
+    // instead of misreading a longer identifier as the reserved word.
+    if (isKeywordWordTokenId(id) && input_.has(piece_ + 1) &&
+        input_.entry(piece_ + 1).begin == input_.entry(piece_).end &&
+        !isIdentifierBoundaryId(input_.entry(piece_ + 1).id)) {
+      return 0;
+    }
     return 1;
+  }
   if (!isFragmentableBuiltin(id))
     return 0;
   for (const auto &sequence : builtinPieceSequences(id)) {
@@ -310,21 +325,42 @@ bool IntegerParser::atEnd() {
   return ended;
 }
 
-bool IntegerParser::atNameRange() {
+bool IntegerParser::atNameRange(bool allowLoneKeyword) {
   skipTrivia();
   if (!input_.has(piece_))
     return false;
   const auto id = input_.entry(piece_).id;
-  // `as` is an atomic grammar ID when it stands alone after a fact or query.
-  // SentencePiece also emits that same ID as the prefix of identifiers such
-  // as `Assessment`; contiguous IDs are one identifier range, never a
-  // grammar boundary.
+  // A qualified-name segment right after `.`/`:`/`::` (School.where,
+  // Type.all, Type.select, ...) has no competing grammar interpretation: a
+  // separator is never followed by the start of a new statement, so a
+  // keyword spelling standing entirely alone there is unambiguously a name
+  // segment, not the reserved word. Callers outside that continuation loop
+  // never pass allowLoneKeyword, so `where`/`if`/... still open their normal
+  // constructs everywhere else.
+  if (allowLoneKeyword && isKeywordWordTokenId(id))
+    return true;
+  // A word keyword ID is atomic grammar vocabulary when it stands alone.
+  // SentencePiece also emits that same ID as the leading piece of a longer
+  // identifier -- `import` inside `imported`, `if` inside `ifRequired`,
+  // `and` inside `andy`, `or` inside `orange`, `not` inside `notice`, and so
+  // on for every word entry in kBuiltinTokens, not just `as`/`Assessment`.
+  // Restricted to word keywords, never punctuation/digit builtin IDs: `.`
+  // immediately followed by a digit (`190.0`) or a name (`csv.toFacts`) is
+  // not an identifier fragment, and isIdentifierBoundaryId's own comment
+  // already establishes that only keyword IDs get this treatment. A keyword
+  // ID already stops being a boundary once an identifier range is under way
+  // (see isIdentifierBoundaryId); the same contiguity test applies here so a
+  // keyword ID at the very start of a name position gets the same treatment
+  // instead of unconditionally reading as the reserved word.
+  if (isKeywordWordTokenId(id) && input_.has(piece_ + 1) &&
+      input_.entry(piece_ + 1).begin == input_.entry(piece_).end &&
+      !isIdentifierBoundaryId(input_.entry(piece_ + 1).id)) {
+    return true;
+  }
   if (id == TokenId::AS) {
-    if (input_.has(piece_ + 1) &&
-        input_.entry(piece_ + 1).begin == input_.entry(piece_).end &&
-        !isIdentifierBoundaryId(input_.entry(piece_ + 1).id)) {
-      return true;
-    }
+    // `foo(as: value)` uses `as` as a named-argument key: not merged with a
+    // following identifier piece, but still a name position here, set apart
+    // from the postfix `as` fact-designation keyword by the trailing colon.
     std::size_t following = piece_ + 1;
     while (input_.has(following) &&
            (input_.entry(following).id == TokenId::SPACE ||
@@ -388,9 +424,9 @@ void IntegerParser::consumeStatementTerminator(std::size_t statementBegin) {
       std::to_string(byte_));
 }
 
-std::string IntegerParser::consumeNameRange() {
+std::string IntegerParser::consumeNameRange(bool allowLoneKeyword) {
   skipTrivia();
-  if (!atNameRange()) {
+  if (!atNameRange(allowLoneKeyword)) {
     const auto id =
         input_.has(piece_) ? input_.entry(piece_).id : TokenId::UNKNOWN;
     throw IntegerParserError(
@@ -614,7 +650,11 @@ IntegerParser::consumeQualifiedName(bool allowNamespaceSeparators) {
     const auto separator = input_.entry(piece_).id;
     match(separator);
     const auto separatorEnd = byte_;
-    if (!atNameRange() || sourceContainsLineBreak(separatorEnd, byte_)) {
+    // A separator is never followed by the start of a new statement, so a
+    // keyword spelling standing entirely alone here (School.where,
+    // Type.all, Type.select, ...) is unambiguously a name segment.
+    if (!atNameRange(/*allowLoneKeyword=*/true) ||
+        sourceContainsLineBreak(separatorEnd, byte_)) {
       byte_ = beforeByte;
       piece_ = beforePiece;
       break;
@@ -622,7 +662,7 @@ IntegerParser::consumeQualifiedName(bool allowNamespaceSeparators) {
     name.spelling += separator == TokenId::DOT     ? "."
                      : separator == TokenId::COLON ? ":"
                                                    : "::";
-    name.spelling += consumeNameRange();
+    name.spelling += consumeNameRange(/*allowLoneKeyword=*/true);
   }
   std::vector<TokenId::Id> ids;
   ids.reserve(piece_ - firstPiece);
@@ -768,17 +808,29 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
   }
   if (match(TokenId::WHERE)) {
     auto expression = parseExpression();
-    const auto comparison =
-        std::dynamic_pointer_cast<OperatorExpression>(expression);
-    if (!comparison || comparison->captureCount() != 2 ||
-        !isComparisonOperator(comparison->coreOperator)) {
-      throw IntegerParserError("Expected comparison after 'where'");
+    // Mirrors the `if`-goal condition just above: a plain two-capture
+    // comparison lowers straight to a BinaryGoal, and anything else --
+    // `a and b`, `a or b`, a negation, a nested comparison chain -- lowers by
+    // comparing the whole expression's truth value against `true`, the same
+    // fallback `if` already relies on for compound conditions. `where` had
+    // no such fallback and rejected every compound condition outright; nothing
+    // else about guard-chain desugaring needed to change since it already
+    // just consumes `where->condition` as an ordinary Goal.
+    std::shared_ptr<Goal> condition;
+    if (const auto comparison =
+            std::dynamic_pointer_cast<OperatorExpression>(expression);
+        comparison && comparison->captureCount() == 2 &&
+        isComparisonOperator(comparison->coreOperator)) {
+      condition = std::make_shared<BinaryGoal>(
+          comparison->capture(0),
+          coreOperatorDefinition(comparison->coreOperator).token,
+          comparison->capture(1));
+    } else {
+      condition = std::make_shared<BinaryGoal>(
+          std::move(expression), TokenId::EQUAL,
+          std::make_shared<BoolExpr>(true));
     }
-    auto binary = std::make_shared<BinaryGoal>(
-        comparison->capture(0),
-        coreOperatorDefinition(comparison->coreOperator).token,
-        comparison->capture(1));
-    auto result = std::make_shared<WhereGoal>(std::move(binary));
+    auto result = std::make_shared<WhereGoal>(std::move(condition));
     stamp(result, begin, byte_);
     return result;
   }
@@ -1662,7 +1714,14 @@ std::shared_ptr<Expr> IntegerParser::parseBinaryExpression(
     if (!input_.has(piece_) || input_.entry(piece_).begin > byte_ ||
         input_.entry(piece_).end <= byte_)
       break;
-    if (stop != TokenId::UNKNOWN && input_.entry(piece_).id == stop)
+    // Both checks below must ask "is this ID standing alone here", not just
+    // compare the raw SentencePiece ID -- otherwise a keyword ID that is
+    // actually the leading fragment of a longer identifier on the next
+    // statement (`orFilter` after `plain := 1.0`, `thenable` as a `then`
+    // stop anchor, ...) gets misread as the reserved word/operator, matching
+    // the same contiguity rule atNameRange()/builtinSequenceLength() already
+    // apply. at() runs that same check for any ID, keyword or not.
+    if (stop != TokenId::UNKNOWN && at(stop))
       break;
     if (stopAnchor && atPatternAnchor(*stopAnchor))
       break;
@@ -1674,11 +1733,14 @@ std::shared_ptr<Expr> IntegerParser::parseBinaryExpression(
       left = std::move(pattern);
       continue;
     }
-    const auto definition = infixOperatorForId(input_.entry(piece_).id);
+    const auto candidateId = input_.entry(piece_).id;
+    if (!at(candidateId))
+      break;
+    const auto definition = infixOperatorForId(candidateId);
     if (!definition ||
         static_cast<int>(definition->precedence) < minimumPrecedence)
       break;
-    match(input_.entry(piece_).id);
+    match(candidateId);
     const int nextMinimum =
         definition->associativity == OperatorAssociativity::Right
             ? static_cast<int>(definition->precedence)

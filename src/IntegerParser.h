@@ -126,10 +126,10 @@ private:
     const OperatorPatternDefinition& registerOperatorPattern(OperatorPatternDefinition pattern);
     SymbolId resolveMixfixMethod(const OperatorExpression& expression) const;
     SymbolId resolveModelMixfixMethod(const std::shared_ptr<OperatorExpression>& expression) const;
-    std::string consumeNameRange();
+    std::string consumeNameRange(bool allowLoneKeyword = false);
     StringLiteral consumeString();
     double consumeNumber();
-    bool atNameRange();
+    bool atNameRange(bool allowLoneKeyword = false);
     bool sourceContainsLineBreak(std::size_t begin, std::size_t end) const;
     bool lineBreakBeforeNextSignificantPiece() const;
     std::size_t sourceLineIndent(std::size_t offset) const;
