@@ -1,20 +1,25 @@
 name: CodeQL Advanced
 
 on:
-  push:
-    branches:
-      - main
-
   pull_request:
     branches:
       - main
+    paths:
+      - "src/**"
+      - "include/**"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "third_party/**"
+      - ".gitmodules"
+      - ".github/workflows/codeql.yml"
+      - ".github/codeql/codeql-config.yml"
 
   schedule:
     - cron: "18 15 * * 3"
 
 jobs:
   analyze:
-    name: Analyze (${{ matrix.language }})
+    name: Analyze (c-cpp)
     runs-on: ubuntu-latest
 
     permissions:
@@ -23,49 +28,21 @@ jobs:
       actions: read
       contents: read
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - language: actions
-            build-mode: none
-
-          - language: c-cpp
-            build-mode: manual
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           submodules: recursive
 
-      - name: Install C++ build tools
-        if: matrix.language == 'c-cpp'
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build
-
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
-          queries: +security-and-quality
-
-      - name: Build Felidae
-        if: matrix.language == 'c-cpp'
-        shell: bash
-        run: |
-          cmake -S . -B build/codeql -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DFELIDAE_ENABLE_LIBTORCH=OFF \
-            -DFELIDAE_BUILD_TESTS=ON
-
-          cmake --build build/codeql \
-            --parallel "$(nproc)"
+          languages: c-cpp
+          build-mode: none
+          queries: security-extended
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
-          category: "/language:${{ matrix.language }}"
+          category: "/language:c-cpp"
