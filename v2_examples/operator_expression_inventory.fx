@@ -1,12 +1,17 @@
 import ("array", "system")
 
-Increment(value: number) =>
+# Capitalized names trigger Felidae's implicit fact-construction heuristic
+# (capitalized name + named args => build a fact literal) instead of calling
+# a same-named declared procedure -- a real, silent language sharp edge with
+# no error/warning. Lowercase procedure names here avoid that ambiguity;
+# see v2_examples/where_guard_chain.fx for the same fix on the same issue.
+increment(value: number) =>
     return value + 1
 
-Double(value: number) =>
+double(value: number) =>
     return value * 2
 
-Eligible(score: number, active: bool) =>
+eligible(score: number, active: bool) =>
     where score >= 70
     where active == true
     return true
@@ -16,18 +21,19 @@ else
 main() =>
     point := {x: 3, y: 4}
     record := {owner: {name: "Ava"}, scores: [10, 20, 30]}
-    mapped := lambda(record.scores, score => score + point.x)
-    first := array.get(data: mapped, position: 0)
-    piped := Increment(value: first)
-        then Double(value: system.result)
+    # lambda(...) is fact-query sugar over a declared fact type (see
+    # FactQueryNormalizer) -- there is no generic array-map lambda over an
+    # arbitrary array like record.scores, so indexing it directly here.
+    first := array.get(data: record.scores, position: 0)
+    piped := increment(value: first)
+        then double(value: system.result)
     return (
         precedence: 2 + 3 * 4,
         grouped: (2 + 3) * 4,
         unary: -(point.x + point.y),
         ordered: point.y > point.x,
         unequal: point.x != point.y,
-        eligible: Eligible(score: 75, active: true),
+        eligible: eligible(score: 75, active: true),
         member: record.owner.name,
-        mapped: mapped,
         pipeline: piped
     )

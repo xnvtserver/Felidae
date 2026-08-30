@@ -250,6 +250,17 @@ public:
   VmFactStoreRevisions revisions() const;
   std::size_t size() const;
 
+  // Persistence ownership: which source (e.g. a CSV file path) a fact was
+  // imported from, if any. db.sync consults this to serialize only the
+  // facts that actually belong to the target file, instead of the whole
+  // store -- it must never infer ownership from fact type alone, since two
+  // different files can share one fact type. A fact with no recorded
+  // source is simply excluded from any snapshotBySource() result; only
+  // recordSource() call sites (currently just CSV import) decide what
+  // counts as "belongs to this file".
+  void recordSource(IrFactRef fact, std::string source);
+  std::vector<VmFactPtr> snapshotBySource(std::string_view source) const;
+
   // A Gaussian tail reaches 1% at each fade boundary.  Degenerate edge
   // profiles (peak equal to one boundary) reuse the non-degenerate side so
   // ratings at 0 and 100 remain continuous on the closed input domain.
@@ -268,6 +279,7 @@ private:
   std::unordered_map<IrSymbolRef, std::vector<VmFactPtr>> byType_;
   std::unordered_map<IrSymbolRef, std::vector<VmFactPtr>> byField_;
   std::unordered_map<IrSymbolRef, std::vector<IrSymbolRef>> parents_;
+  std::unordered_map<IrFactRef, std::string> factSource_;
   std::vector<VmFactMutation> mutations_;
   std::vector<VmFactProvenance> provenance_;
   mutable std::unordered_map<
@@ -365,7 +377,8 @@ public:
   virtual PieceSequence encodeText(std::string_view text) const;
   virtual VmText readFile(std::span<const PieceId> path) const;
   virtual VmValue importCsvFacts(std::span<const PieceId> data,
-                                 std::span<const PieceId> type);
+                                 std::span<const PieceId> type,
+                                 std::span<const PieceId> source);
   virtual double syncDatabase(std::span<const PieceId> path);
   virtual void beginExecution();
   virtual void endExecution() noexcept;
@@ -422,7 +435,8 @@ public:
   PieceSequence encodeText(std::string_view text) const override;
   VmText readFile(std::span<const PieceId> path) const override;
   VmValue importCsvFacts(std::span<const PieceId> data,
-                         std::span<const PieceId> type) override;
+                         std::span<const PieceId> type,
+                         std::span<const PieceId> source) override;
   double syncDatabase(std::span<const PieceId> path) override;
   void beginExecution() override;
   void endExecution() noexcept override;

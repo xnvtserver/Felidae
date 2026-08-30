@@ -1,6 +1,11 @@
 import "math"
 
-SearchData := [
+# Lowercase procedure names throughout: a capitalized name called with named
+# arguments triggers Felidae's implicit fact-construction heuristic instead
+# of calling a same-named declared procedure (see
+# v2_examples/where_guard_chain.fx and operator_expression_inventory.fx for
+# the same fix on the same issue).
+searchData := [
     0, 1, 2, 3, 4, 5, 6, 7,
     8, 9, 10, 11, 12, 13, 14, 15,
     16, 17, 18, 19, 20, 21, 22, 23,
@@ -11,92 +16,95 @@ SearchData := [
     56, 57, 58, 59, 60, 61, 62, 63
 ]
 
-LinearSearchFrom(data: array, target: target, index: int, size: int) =>
-    index >= size
-        return -1
-    else
-        return LinearSearchAt(
-            data: data,
-            target: target,
-            index: index,
-            size: size
-        )
+linearSearchFrom(data: array, target: number, index: number, size: number) =>
+    where index >= size
+    return -1
+else
+    return linearSearchAt(
+        data: data,
+        target: target,
+        index: index,
+        size: size
+    )
 
-LinearSearchAt(data: array, target: target, index: int, size: int) =>
+linearSearchAt(data: array, target: number, index: number, size: number) =>
     current := array:get(data: data, position: index)
-    current == target
-        return index
-    else
-        return LinearSearchFrom(
-            data: data,
-            target: target,
-            index: index + 1,
-            size: size
-        )
+    where current == target
+    return index
+else
+    return linearSearchFrom(
+        data: data,
+        target: target,
+        index: index + 1,
+        size: size
+    )
 
-LinearSearch(data: array, target: target) =>
-    return LinearSearchFrom(
+linearSearch(data: array, target: number) =>
+    return linearSearchFrom(
         data: data,
         target: target,
         index: 0,
-        size: count(data)
+        size: count(data: data)
     )
 
-BinarySearchBetween(data: array, target: target, low: int, high: int) =>
-    low > high
-        return -1
+binarySearchBetween(data: array, target: number, low: number, high: number) =>
+    where low > high
+    return -1
+else
+    return binarySearchAt(
+        data: data,
+        target: target,
+        low: low,
+        high: high
+    )
+
+binarySearchAt(data: array, target: number, low: number, high: number) =>
+    middle := math.floor(value: (low + high) / 2)
+    current := array:get(data: data, position: middle)
+    where current == target
+    return middle
+else
+    # A where-guarded clause only carries one else branch (see
+    # desugarWhereGuardedClauses); the second, inner two-way choice is an
+    # ordinary nested if/then/else instead of a second where guard.
+    if current < target then
+        return binarySearchBetween(
+            data: data,
+            target: target,
+            low: middle + 1,
+            high: high
+        )
     else
-        return BinarySearchAt(
+        return binarySearchBetween(
             data: data,
             target: target,
             low: low,
-            high: high
+            high: middle - 1
         )
 
-BinarySearchAt(data: array, target: target, low: int, high: int) =>
-    middle := math.floor(value: (low + high) / 2)
-    current := array:get(data: data, position: middle)
-    current == target
-        return middle
-    else
-        current < target
-            return BinarySearchBetween(
-                data: data,
-                target: target,
-                low: middle + 1,
-                high: high
-            )
-        else
-            return BinarySearchBetween(
-                data: data,
-                target: target,
-                low: low,
-                high: middle - 1
-            )
-
-BinarySearch(data: array, target: target) =>
-    return BinarySearchBetween(
+binarySearch(data: array, target: number) =>
+    return binarySearchBetween(
         data: data,
         target: target,
         low: 0,
-        high: count(data) - 1
+        high: count(data: data) - 1
     )
 
-LinearSearchLast() =>
-    return LinearSearch(data: SearchData, target: 63)
+linearSearchLast() =>
+    return linearSearch(data: searchData, target: 63)
 
-BinarySearchLast() =>
-    return BinarySearch(data: SearchData, target: 63)
+binarySearchLast() =>
+    return binarySearch(data: searchData, target: 63)
 
-SearchMissing() =>
+searchMissing() =>
     return (
-        linear: LinearSearch(data: SearchData, target: 100),
-        binary: BinarySearch(data: SearchData, target: 100)
+        linear: linearSearch(data: searchData, target: 100),
+        binary: binarySearch(data: searchData, target: 100)
     )
 
 main() =>
     return (
-        linear_last: LinearSearchLast(),
-        binary_last: BinarySearchLast(),
-        missing: SearchMissing()
+        linear_last: linearSearchLast(),
+        binary_last: binarySearchLast(),
+        missing: searchMissing()
     )

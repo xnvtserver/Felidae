@@ -63,10 +63,11 @@ std::vector<std::shared_ptr<Goal>> desugarWhereGuards(
 
 // Rewrites every where-guarded clause in the program to its desugared
 // IfGoal-chain form, in place, before eligibility checks or lowering ever
-// see it. A where guard with no `else` is intentionally rejected here
-// (clear compile error) rather than guessing a runtime failure behavior --
-// see docs/compiler_form_audit.md's stabilization notes on not implementing
-// unstated semantics.
+// see it. `else`-without-`where` stays an explicit compile error (no
+// competing implicit-guard grammar); a `where` guard with no `else` compiles
+// to an implicit else branch that throws BuiltinId::WhereGuardFailed at
+// runtime -- a clear failure instead of a silent nil, and instead of
+// rejecting valid guard-only clauses at compile time.
 void desugarWhereGuardedClauses(Program &program) {
   for (auto &clause : program.clauses) {
     if (!clause || clause->isFact())
@@ -83,20 +84,39 @@ void desugarWhereGuardedClauses(Program &program) {
           std::to_string(clause->sourceSpan.startLine) + ":" +
           std::to_string(clause->sourceSpan.startColumn));
     }
-    if (clause->fallbackBranches.size() != 1) {
+    std::vector<std::shared_ptr<Goal>> elseBranch;
+    if (clause->fallbackBranches.empty()) {
+      auto failCall = std::make_shared<TermExpr>(
+          "where:guardFailed", std::vector<Arg>{}, BuiltinId::WhereGuardFailed);
+      failCall->sourceSpan = clause->sourceSpan;
+      auto returned =
+          std::make_shared<ReturnGoal>(std::vector<Arg>{Arg({}, failCall)});
+      returned->sourceSpan = clause->sourceSpan;
+      elseBranch.push_back(std::move(returned));
+    } else if (clause->fallbackBranches.size() == 1) {
+      elseBranch = clause->fallbackBranches.front();
+    } else {
       throw IntegerParserError(
-          "not yet lowered to IR: a where-guarded clause requires exactly "
+          "not yet lowered to IR: a where-guarded clause requires at most "
           "one else branch at " +
           std::to_string(clause->sourceSpan.startLine) + ":" +
           std::to_string(clause->sourceSpan.startColumn));
     }
     auto rewritten = std::make_shared<ClauseStmt>(*clause);
-    rewritten->body =
-        desugarWhereGuards(clause->body, clause->fallbackBranches.front());
+    rewritten->body = desugarWhereGuards(clause->body, elseBranch);
     rewritten->fallbackBranches.clear();
     clause = std::move(rewritten);
   }
 }
+
+// Defined later in this file, alongside resolveScopedAccess whose traversal
+// shape it mirrors; forward-declared here for FactQueryNormalizer::iteration().
+std::shared_ptr<Expr> substituteCaptures(
+    const std::shared_ptr<Expr> &expression, const std::string &rowParameter,
+    SymbolId rowParameterId, const std::string &capturesVariable,
+    SymbolId capturesVariableId,
+    std::vector<std::pair<std::string, SymbolId>> &captured,
+    std::unordered_set<SymbolId> &capturedIds);
 
 // Fact queries are source conveniences over the existing ForEachFact IR
 // operation. Each predicate becomes an ordinary compiler-generated procedure;
@@ -142,9 +162,25 @@ private:
     } while (occupied_.contains(procedureId));
     occupied_.insert(procedureId);
 
+    // A predicate that reads an outer-scope value (`r.from == tiger_female`,
+    // not just a literal) closes over it: the synthesized callback below has
+    // no access to the caller's own registers, so every such reference is
+    // rewritten to read from a second, explicit __captures parameter
+    // instead, and the caller builds that map from its own scope where the
+    // values are actually defined. See substituteCaptures() and
+    // IrOpcode::ForEachFact's fifth operand in RegisterVm.cpp.
+    const std::string capturesVariable = "__captures";
+    const SymbolId capturesVariableId = symbolIdForName(capturesVariable);
+    std::vector<std::pair<std::string, SymbolId>> captured;
+    std::unordered_set<SymbolId> capturedIds;
+    body = substituteCaptures(body, variable, variableId, capturesVariable,
+                              capturesVariableId, captured, capturedIds);
+
     Call head(procedureName, procedureId,
               {Arg(variable, variableId,
-                   std::make_shared<VarExpr>(typeName, typeId))});
+                   std::make_shared<VarExpr>(typeName, typeId)),
+               Arg(capturesVariable, capturesVariableId,
+                   std::make_shared<VarExpr>("any", symbolIdForName("any")))});
     auto returned = std::make_shared<ReturnGoal>(
         std::vector<Arg>{Arg(std::string{}, std::move(body))});
     returned->sourceSpan = sourceSpan;
@@ -156,13 +192,24 @@ private:
     procedure->sourceSpan = sourceSpan;
     generated_.push_back(std::move(procedure));
 
+    std::vector<MapEntry> captureEntries;
+    captureEntries.reserve(captured.size());
+    for (const auto &[name, id] : captured) {
+      auto reference = std::make_shared<VarExpr>(name, id);
+      reference->sourceSpan = sourceSpan;
+      captureEntries.emplace_back(name, id, std::move(reference));
+    }
+    auto capturesMap = std::make_shared<MapExpr>(std::move(captureEntries));
+    capturesMap->sourceSpan = sourceSpan;
+
     auto result = std::make_shared<TermExpr>(
         "for_each_fact",
         std::vector<Arg>{
             Arg(std::string{},
                 std::make_shared<VarExpr>(typeName, typeId)),
             Arg(std::string{},
-                std::make_shared<VarExpr>(procedureName, procedureId))});
+                std::make_shared<VarExpr>(procedureName, procedureId)),
+            Arg(std::string{}, std::move(capturesMap))});
     result->sourceSpan = sourceSpan;
     return result;
   }
@@ -196,6 +243,51 @@ private:
                    std::dynamic_pointer_cast<TermExpr>(value)) {
       for (auto &argument : term->args)
         argument.value = expression(argument.value);
+      if (term->name == "ancestorAnalysis") {
+        // A source convenience over the three already-real hierarchy
+        // intrinsics (commonAncestors/lowestCommonAncestor/
+        // highestCommonAncestor, each its own dedicated IrOpcode -- see
+        // IrOpcode::HierarchyCommonAncestors and friends), combined into one
+        // fact instead of a bespoke analysis opcode. Facts carry more
+        // reasoning context than a bare map, matching how every other
+        // multi-value result in this file returns a labeled record.
+        if (term->args.size() != 2)
+          throw IntegerParserError(
+              "ancestorAnalysis requires left and right arguments");
+        std::shared_ptr<Expr> leftArg;
+        std::shared_ptr<Expr> rightArg;
+        for (const auto &argument : term->args) {
+          if (argument.name == "left")
+            leftArg = argument.value;
+          else if (argument.name == "right")
+            rightArg = argument.value;
+        }
+        if (!leftArg || !rightArg) {
+          throw IntegerParserError(
+              "ancestorAnalysis requires named left and right arguments");
+        }
+        const auto hierarchyCall = [&](std::string name) {
+          std::vector<Arg> callArgs;
+          callArgs.emplace_back("left", symbolIdForName("left"), leftArg);
+          callArgs.emplace_back("right", symbolIdForName("right"), rightArg);
+          auto call = std::make_shared<TermExpr>(std::move(name),
+                                                  std::move(callArgs));
+          call->sourceSpan = term->sourceSpan;
+          return call;
+        };
+        std::vector<Arg> factArgs;
+        factArgs.emplace_back("common", symbolIdForName("common"),
+                              hierarchyCall("commonAncestors"));
+        factArgs.emplace_back("lowest", symbolIdForName("lowest"),
+                              hierarchyCall("lowestCommonAncestor"));
+        factArgs.emplace_back("highest", symbolIdForName("highest"),
+                              hierarchyCall("highestCommonAncestor"));
+        auto result = std::make_shared<TermExpr>(
+            "AncestorAnalysis", symbolIdForName("AncestorAnalysis"),
+            std::move(factArgs), BuiltinId::Unknown, /*capitalized=*/true);
+        result->sourceSpan = term->sourceSpan;
+        return result;
+      }
       const auto separator = term->name.rfind('.');
       if (separator == std::string::npos)
         return value;
@@ -391,6 +483,93 @@ resolveScopedAccess(const std::shared_ptr<Expr> &expression,
           operation->coreOperator,
           resolveScopedAccess(operation->capture(0), visible),
           resolveScopedAccess(operation->capture(1), visible));
+    }
+    rewritten->module = operation->module;
+    rewritten->sourceSpan = operation->sourceSpan;
+    return rewritten;
+  }
+  return expression;
+}
+
+// Rewrites every free-variable reference in a fact-query predicate body (any
+// VarExpr other than the row parameter itself) into a read from the
+// synthesized callback's captures map, and records each one captured
+// (deduplicated, first-seen order) into `captured`. Used by
+// FactQueryNormalizer::iteration() -- see the comment there for why this
+// exists. Mirrors resolveScopedAccess's traversal shape immediately above.
+std::shared_ptr<Expr> substituteCaptures(
+    const std::shared_ptr<Expr> &expression, const std::string &rowParameter,
+    SymbolId rowParameterId, const std::string &capturesVariable,
+    SymbolId capturesVariableId,
+    std::vector<std::pair<std::string, SymbolId>> &captured,
+    std::unordered_set<SymbolId> &capturedIds) {
+  if (!expression)
+    return expression;
+  if (const auto variable = std::dynamic_pointer_cast<VarExpr>(expression)) {
+    if (variable->nameId == rowParameterId || variable->nameId == 0)
+      return expression;
+    // This compiler pass runs before resolveScopedAccess ever splits a
+    // dotted name into an AccessExpr chain (see that function above), so the
+    // row parameter's own field access (`s.students`) still arrives here as
+    // one VarExpr spelled "s.students", not yet AccessExpr(s, "students").
+    // Recognize that shape by name prefix and leave it untouched -- only
+    // resolveScopedAccess is allowed to decide it means field access, this
+    // pass must not misread it as a free variable named "s.students".
+    if (variable->name.size() > rowParameter.size() &&
+        variable->name.compare(0, rowParameter.size(), rowParameter) == 0 &&
+        variable->name[rowParameter.size()] == '.') {
+      return expression;
+    }
+    if (capturedIds.insert(variable->nameId).second)
+      captured.emplace_back(variable->name, variable->nameId);
+    auto access = std::make_shared<AccessExpr>(
+        std::make_shared<VarExpr>(capturesVariable, capturesVariableId),
+        variable->name);
+    access->keyId = variable->nameId;
+    access->sourceSpan = variable->sourceSpan;
+    return access;
+  }
+  const auto recurse = [&](const std::shared_ptr<Expr> &child) {
+    return substituteCaptures(child, rowParameter, rowParameterId,
+                              capturesVariable, capturesVariableId, captured,
+                              capturedIds);
+  };
+  if (const auto array = std::dynamic_pointer_cast<ArrayExpr>(expression)) {
+    for (auto &item : array->items)
+      item = recurse(item);
+  } else if (const auto map = std::dynamic_pointer_cast<MapExpr>(expression)) {
+    for (auto &item : map->entries)
+      item.value = recurse(item.value);
+  } else if (const auto access =
+                 std::dynamic_pointer_cast<AccessExpr>(expression)) {
+    // The row parameter's own fields (r.from) stay untouched: substitution
+    // only ever replaces the target, and the row VarExpr itself is excluded
+    // above, so `r.from` recurses into `r` (unchanged) then stops.
+    access->target = recurse(access->target);
+  } else if (const auto term =
+                 std::dynamic_pointer_cast<TermExpr>(expression)) {
+    for (auto &argument : term->args)
+      argument.value = recurse(argument.value);
+  } else if (const auto operation =
+                 std::dynamic_pointer_cast<OperatorExpression>(expression)) {
+    std::shared_ptr<OperatorExpression> rewritten;
+    if (operation->coreOperator == CoreOperator::Unknown) {
+      std::vector<OperatorCapture> captures;
+      captures.reserve(operation->captureCount());
+      for (std::size_t index = 0; index < operation->captureCount(); ++index) {
+        captures.emplace_back(std::string(operation->captureName(index)),
+                              recurse(operation->capture(index)));
+      }
+      rewritten = std::make_shared<OperatorExpression>(
+          operation->operatorId, operation->patternId, std::move(captures),
+          operation->explicitlyGrouped, operation->resolvedMethodId);
+    } else if (operation->captureCount() == 1) {
+      rewritten = std::make_shared<OperatorExpression>(
+          operation->coreOperator, recurse(operation->capture(0)));
+    } else {
+      rewritten = std::make_shared<OperatorExpression>(
+          operation->coreOperator, recurse(operation->capture(0)),
+          recurse(operation->capture(1)));
     }
     rewritten->module = operation->module;
     rewritten->sourceSpan = operation->sourceSpan;
@@ -610,15 +789,24 @@ bool isDirectDeterministicExpression(
                  });
     }
     if (term->nameId == symbolIdForName("for_each_fact")) {
-      if (term->args.size() != 2)
+      // The third argument (a captures map) is optional: only
+      // FactQueryNormalizer::iteration()'s generated calls provide one, for
+      // predicates closing over an outer-scope value; a raw, hand-written
+      // for_each_fact(type, callback) call stays exactly as it was.
+      if (term->args.size() != 2 && term->args.size() != 3)
         return false;
       const auto type = std::dynamic_pointer_cast<VarExpr>(term->args[0].value);
       const auto callback =
           std::dynamic_pointer_cast<VarExpr>(term->args[1].value);
       const bool declaredType =
           type && context.factTypes.contains(type->nameId);
-      return declaredType && callback &&
-             context.procedures.contains(callback->nameId);
+      if (!declaredType || !callback ||
+          !context.procedures.contains(callback->nameId)) {
+        return false;
+      }
+      return term->args.size() == 2 ||
+             isDirectDeterministicExpression(term->args[2].value,
+                                             definedSymbols, context);
     }
     const bool hasNamedFields =
         !term->args.empty() &&
@@ -1080,7 +1268,8 @@ void appendFragment(FelidaeIr &target, FelidaeIr fragment,
       reg(fragment.words[pc + 1]);
       symbol(fragment.words[pc + 2]);
       symbol(fragment.words[pc + 3]);
-      width = 4;
+      reg(fragment.words[pc + 4]);
+      width = 5;
       break;
     case IrOpcode::Call:
     case IrOpcode::Builtin:
@@ -1411,9 +1600,15 @@ FelidaeIr IrCodeGenerator::lowerExpression(
                          static_cast<IrWord>(inputs.size())});
         ir.words.insert(ir.words.end(), inputs.begin(), inputs.end());
       } else if (term->nameId == symbolIdForName("for_each_fact")) {
-        if (term->args.size() != 2)
+        // The third argument (a captures map) is optional -- see the
+        // isDirectDeterministicExpression case above and
+        // FactQueryNormalizer::iteration() in this file. A raw two-argument
+        // call gets an empty map so IrOpcode::ForEachFact's fifth operand
+        // (see RegisterVm.cpp) is always a valid register either way.
+        if (term->args.size() != 2 && term->args.size() != 3) {
           throw IntegerParserError(
               "for_each_fact requires a fact type and callback");
+        }
         const auto type =
             std::dynamic_pointer_cast<VarExpr>(term->args[0].value);
         const auto callback =
@@ -1424,13 +1619,19 @@ FelidaeIr IrCodeGenerator::lowerExpression(
           throw IntegerParserError("for_each_fact requires a declared fact "
                                    "type and deterministic callback");
         }
+        const std::shared_ptr<Expr> capturesExpr =
+            term->args.size() == 3
+                ? term->args[2].value
+                : std::make_shared<MapExpr>(std::vector<MapEntry>{});
+        const auto capturesRegister = self(self, capturesExpr);
         ir.symbols.push_back(typeId);
         const auto typeSymbol = static_cast<IrWord>(ir.symbols.size() - 1);
         ir.symbols.push_back(callback->nameId);
         ir.words.insert(ir.words.end(),
                         {static_cast<IrWord>(IrOpcode::ForEachFact), result,
                          typeSymbol,
-                         static_cast<IrWord>(ir.symbols.size() - 1)});
+                         static_cast<IrWord>(ir.symbols.size() - 1),
+                         capturesRegister});
       } else if (term->nameId == symbolIdForName("similarity")) {
         if (term->args.size() != 2)
           throw IntegerParserError("similarity requires exactly two arguments");
@@ -1988,13 +2189,30 @@ IrModule IrCodeGenerator::compile(Program program) const {
   // dynamic-library dependencies. Their imports therefore need no secondary
   // parser/execution path. Other imports remain explicitly unsupported until
   // they have a verified IR module-linking contract.
+  //
+  // This list previously omitted array/math/str/file/db/system even though
+  // every one of their declared calls (array.get, math:sqrt, str:upper,
+  // file.readFile, db.sync, system.print, ...) already compiles and runs
+  // fine with no import statement at all -- an explicit `import "array"`
+  // (etc.) was the only thing that broke the file, rejecting an otherwise
+  // valid program. Names still absent here (process, http, gtk, qt,
+  // wordnet, plot, fact, fact_analysis, flibrary) route through the
+  // system_library_loader bridge, which has no implementation anywhere;
+  // allowlisting their import would let a file compile while its calls
+  // silently return nil, which is worse than the current explicit rejection.
   const bool builtinImports = std::all_of(
       program.imports.begin(), program.imports.end(), [](const auto &import) {
         return import && std::all_of(import->paths.begin(), import->paths.end(),
                                      [](const std::string &path) {
                                        return path == "json" || path == "csv" ||
                                               path == "group" ||
-                                              path == "set" || path == "ml";
+                                              path == "set" || path == "ml" ||
+                                              path == "array" ||
+                                              path == "math" ||
+                                              path == "str" ||
+                                              path == "file" ||
+                                              path == "db" ||
+                                              path == "system";
                                      });
       });
   bool directGlobals = builtinImports && !program.clauses.empty();

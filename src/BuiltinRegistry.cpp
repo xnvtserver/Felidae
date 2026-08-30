@@ -85,7 +85,10 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
     {BuiltinId::HighestCommonAncestor, "highestCommonAncestor",
      BuiltinEffect::Pure},
     {BuiltinId::AncestorAnalysis, "ancestorAnalysis", BuiltinEffect::Pure},
-    {BuiltinId::PropagateFact, "propagateFact", BuiltinEffect::Pure},
+    // Mutates the fact store (see the RegisterVm.cpp dispatch case) --
+    // WritesExternalState, not Pure, matching db.sync/csv.toFacts.
+    {BuiltinId::PropagateFact, "propagateFact",
+     BuiltinEffect::WritesExternalState},
     {BuiltinId::RelationCompare, "Relation:compare", BuiltinEffect::Pure},
     {BuiltinId::RelationFind, "Relation:find", BuiltinEffect::Pure},
     {BuiltinId::DependencySatisfied, "Dependency:satisfied",
@@ -211,7 +214,9 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
     {BuiltinId::SetDisjointBy, "Set:disjointBy", BuiltinEffect::Pure},
     {BuiltinId::SetCardinality, "Set:cardinality", BuiltinEffect::Pure},
     {BuiltinId::SetContains, "Set:contains", BuiltinEffect::Pure},
-    {BuiltinId::SetContainsBy, "Set:containsBy", BuiltinEffect::Pure}};
+    {BuiltinId::SetContainsBy, "Set:containsBy", BuiltinEffect::Pure},
+    {BuiltinId::WhereGuardFailed, "where:guardFailed",
+     BuiltinEffect::WritesExternalState}};
 
 constexpr std::size_t builtinInfoCount() {
   return static_cast<std::size_t>(BuiltinId::Last) + 1;
