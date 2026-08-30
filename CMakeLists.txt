@@ -819,6 +819,7 @@ if(FELIDAE_BUILD_TESTS)
         operator_expression_inventory
         standard_search_algorithms
         deep_fact_reasoning_analysis
+        fact_search_analysis
         selective_relationship_reasoning)
     foreach(example IN LISTS FELIDAE_RUNNABLE_V2_EXAMPLES)
         add_test(NAME felidae_example_${example}
@@ -840,7 +841,7 @@ if(FELIDAE_BUILD_TESTS)
     # without one, so the assertion must match that, not assume every number
     # gets ".0".
     set_tests_properties(felidae_example_csv_fact_database PROPERTIES
-        PASS_REGULAR_EXPRESSION "all_count: 4, active_central_count: 2")
+        PASS_REGULAR_EXPRESSION "all_count: 4, active_central_count: 2.*deleted: 1.0")
     set_tests_properties(felidae_example_group_operations PROPERTIES
         PASS_REGULAR_EXPRESSION "abelian: 1.0")
     set_tests_properties(felidae_example_set_operations PROPERTIES
@@ -851,6 +852,8 @@ if(FELIDAE_BUILD_TESTS)
         PASS_REGULAR_EXPRESSION "linear_last: 63, binary_last: 63, missing: \\{linear: -1, binary: -1\\}")
     set_tests_properties(felidae_example_deep_fact_reasoning_analysis PROPERTIES
         PASS_REGULAR_EXPRESSION "directed_cat_tiger: \\[\\], symmetric_tiger_cat: \\[\\{from:")
+    set_tests_properties(felidae_example_fact_search_analysis PROPERTIES
+        PASS_REGULAR_EXPRESSION "guides: 2, related: 2, confident: 2")
     set_tests_properties(felidae_example_selective_relationship_reasoning PROPERTIES
         PASS_REGULAR_EXPRESSION "connected_via_signal: 1.0\\}")
     set_tests_properties(felidae_example_where_guard_chain PROPERTIES

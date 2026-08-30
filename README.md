@@ -332,19 +332,19 @@ Felidae can still look familiar to someone who has used ordinary programming lan
 For example:
 
 ```felidae
-Person(name: "unknown", age: 0, active: false)
+Person(name: "unknown", age: 0, active: 0.0)
 
 Employee extend Person(
     name: "unknown",
     age: 0,
-    active: true,
+    active: 1.0,
     role: "staff"
 )
 
 Engineer extend Employee(
     name: "unknown",
     age: 0,
-    active: true,
+    active: 1.0,
     role: "engineer",
     level: 1
 )
@@ -393,7 +393,7 @@ And programs can return structured values:
 ```felidae
 return {
     name: "Felidae",
-    active: true,
+    active: 1.0,
     tags: ["facts", "reasoning", "degrees"]
 }
 ```
@@ -414,7 +414,7 @@ A declaration such as:
 Person(
     name: "Ada",
     age: 32,
-    active: true
+    active: 1.0
 )
 ```
 
@@ -424,7 +424,7 @@ A fact may contain:
 
 * names,
 * numbers,
-* boolean values,
+* numeric truth values (`0.0` and `1.0`),
 * strings,
 * arrays,
 * maps,
@@ -498,11 +498,11 @@ A system can work with the broader concept while still preserving the more speci
 
 # Degrees and fuzzy reasoning
 
-Ordinary boolean logic gives two values:
+Felidae represents crisp truth with floating-point values:
 
 ```text
-false
-true
+0.0
+1.0
 ```
 
 That is ideal for many problems.
@@ -510,7 +510,7 @@ That is ideal for many problems.
 For example:
 
 ```text
-Is 10 greater than 5? → true
+Is 10 greater than 5? → 1.0
 ```
 
 But other questions are naturally gradual.
@@ -601,6 +601,8 @@ main() =>
     allSchools := School.all()
     activeCentral := School.where(district: "central", active: 1.0)
         .limit(records: 100)
+    discovered := School.search(field: "name", query: "%north%",
+                                mode: "like", case: "insensitive")
     names := School.select(fields: ["name"], match: {active: 1.0})
     return (all: allSchools, selected: activeCentral, names: names,
             count: School.count())
@@ -613,13 +615,20 @@ be extended with `.AndWhere(...)` and `.OrWhere(...)`. Hierarchy traversal
 includes assignable child facts. Exact truth values are numeric `0.0` and
 `1.0`.
 
+`where` and `search` have different contracts. `where` performs structured
+equality filtering or invokes a verified predicate. `search` discovers facts
+through text (`exact`, `prefix`, `suffix`, `contains`, SQL `like`, or `regex`),
+hierarchy (`ancestors`, `descendants`, or `related`), or bounded degree
+matching. Search never changes a graded value into Boolean truth. See
+`v2_examples/fact_search_analysis.fx`.
+
 CSV rows can enter that same native fact store and be synchronized from the VM:
 
 ```felidae
 rows := csv.toFacts(data: csvText, type: "School",
                     source: "build/runtime/schools.csv")
-changed := School.update(match: {name: "North"},
-                         values: {active: 0.0})
+changed := School.where(name: "North")
+                 .update(values: {active: 0.0})
 ```
 
 Insert, update, and delete persist automatically when affected facts have CSV
@@ -627,6 +636,12 @@ source ownership. Each source is staged and replaced independently; an
 in-memory fact has no implicit disk side effect. See
 `v2_examples/csv_fact_database.fx` for the complete import, query, aggregate,
 and automatic write-back flow.
+
+Updates and deletes are deliberately conditional: they must be chained after
+`where`, `AndWhere`, or `OrWhere`. Direct type-wide mutation is rejected.
+Joins must provide both `left` and `right` key fields, so the normal
+`Type.join(...)` operation is an explicit inner equijoin rather than a
+conditionless Cartesian join.
 
 Because child types are assignable to their parents, a parent query can work
 with the hierarchy rather than only one exact concrete type.
@@ -737,19 +752,25 @@ Felidae includes deterministic numeric operations directly in the runtime.
 Current operations include functionality such as:
 
 ```text
-MIN
-MAX
-ABS
-AVG
-CLAMP
-SQRT
-POW
-LERP
+min
+max
+abs
+avg
+clamp
+sqrt
+pow
+lerp
 ```
 
 along with range and finite-value checks.
 
 These operations execute as ordinary runtime operations.
+
+Ordinary numbers are unrestricted finite floating-point values, not fuzzy
+degrees: negative values and values above `1.0` are preserved. Only predicate
+operations such as `in_range`, `is_finite`, and `is_nan` return exact numeric
+truth (`0.0` or `1.0`). Arithmetic operations return their full signed
+floating-point result.
 
 They do **not** require the optional semantic model.
 
@@ -854,7 +875,7 @@ Examples:
 ```text
 2 + 2
 
-MAX(10, 20)
+max(10.0, 20.0)
 
 array lookup
 
@@ -1654,17 +1675,11 @@ Felidae/
 ├── docs/
 │   └── Detailed documentation
 │
-├── examples/
-│   └── Additional examples
-│
 ├── ml/
 │   └── Model-related implementation
 │
 ├── models/
 │   └── Model/tokenizer assets
-│
-├── native_modules/
-│   └── Native integration modules
 │
 ├── scripts/
 │   └── Project utilities
@@ -2382,7 +2397,6 @@ There are also root-level technical references including:
 
 ```text
 docs_language.md
-docs_native_modules.md
 docs_github_linguist.md
 ```
 

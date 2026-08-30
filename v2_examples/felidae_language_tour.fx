@@ -91,8 +91,8 @@ joinExamples() =>
 # mutation, unlike a bare SQL UPDATE with no WHERE.
 mutationExamples() =>
     inserted := School.insert(values: {id: 40, name: "Riverside", district: "east", students: 210, active: 1.0})
-    updated := School.update(match: {district: "east"}, values: {students: 230})
-    deleted := School.delete(match: {name: "Riverside"})
+    updated := School.where(district: "east").update(values: {students: 230.0})
+    deleted := School.where(name: "Riverside").delete()
     return (
         inserted_name: inserted.name,
         updated_count: count(data: updated),

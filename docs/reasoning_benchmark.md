@@ -132,7 +132,7 @@ training. It is a capability baseline, not a trained-model score:
 | Temporal fact ranking | pass | 2025/priority-2 preceded both 2024/priority-1 facts |
 | Bounded controller proofs | 5/5 actions | coffee dispense/refund and HVAC cool/ventilate/lockout matched |
 | Deep fact analysis example | compile failure | unsupported typed-lambda lowering |
-| Multi-ancestor comparison example | compile failure | unsupported `Relation.compare` lowering |
+| Multi-ancestor comparison example | retired syntax | use hierarchy primitives and typed fact queries |
 | Heterogeneous fact-expression result contract | pass | crisp degree, probability, recoverable error, derived fact, and evidence-list results executed through FELBIR |
 
 This sample passes the two controller scenarios and the heterogeneous

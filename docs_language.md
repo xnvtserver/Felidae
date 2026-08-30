@@ -229,35 +229,35 @@ Person(name: "Default", age: 0, country: "India")
 Employee extend Person(name: "Ravi", age: 30, role: "Engineer")
 ```
 
-## Contextual Fact Comparison
+## Hierarchical Fact Queries
 
-`Relation.compare(left: ..., right: ...)` is a built-in fact-runtime operation;
-ordinary in-memory expert-system programs do not import `db.fx` for it. It
-returns a structured `Comparison` fact rather than a Boolean. The left fact
-provides contextual membership knowledge and the right fact family owns the
-rule that interprets that knowledge.
+Facts are first-class values. Query their declared type directly; no synthetic
+`Fact.*` or `Relation.*` namespace exists:
 
 ```Felidae
-Dog.membership(input: Dog, against: Animal) =>
-    return {living: input.living, breathes: input.breathes}
-
-Animal.compareMembership(context: Fact) =>
-    return {
-        state: "animal-member",
-        evidence: context.structuralEvidence
-    }
-
-result := Relation.compare(left: dog, right: animal)
-where result.state == "animal-member"
+active := School.where(city: "BLR", active: 1.0)
+limited := active.limit(records: 100)
+teachers := School.join(type: Teacher, left: "id", right: "school_id")
+changed := School.where(city: "BLR").update(values: {active: 0.0})
+removed := School.where(active: 0.0).delete()
+titles := School.search(field: "name", query: "%academy%", mode: "like",
+                        case: "insensitive")
 ```
 
-Dispatch is directional and resolves one method only: the most-specific source
-`membership` method compatible with the target, followed by the target's exact
-or inherited `compareMembership` method on a concrete target family. If no
-target-owned method applies, the runtime produces a resolved-field micro-fact
-and structural result (`exact-member`, `subset-member`, `partial-member`,
-`conflicting`, or `unknown`). A membership method must return a map/fact or
-`nil`; `nil` becomes an explicit `incomparable` comparison result.
+`where` uses named-field equality. `AndWhere` intersects with another
+condition and `OrWhere` forms a stable union. Hierarchy primitives and ordinary
+field comparisons provide explicit evidence-based reasoning without a second
+relationship interpreter.
+
+`update` and `delete` must follow `where`, `AndWhere`, or `OrWhere`; direct
+type-wide mutation is rejected. A join must name both key fields. These
+requirements prevent accidental blind updates, deletes, and Cartesian joins.
+
+`where` is deterministic structured filtering. `search` is a separate
+discovery operation for text patterns, hierarchy-valued properties, and degree
+ranges or closeness. Text search supports exact/prefix/suffix/contains, SQL
+LIKE (`%` and `_`), and regular-expression modes. Degree search preserves
+intermediate values and returns the matching facts in creation order.
 
 Use `.depends(on: Fact(...))` for hard existential requirements and
 `.relate(to: Fact(...), as: Relationship(...), degree: ..., confidence: ...)`
@@ -265,9 +265,8 @@ for generic relationship evidence. Dependencies are AND requirements for a
 stored fact and produce an `unresolved` comparison result when absent.
 Relationship names, degree combination, and domain judgment remain data and
 target-family rule decisions; the runtime does not impose similarity meaning.
-`Relation.find(input: context.relationships, name: "...")` returns a direct
-relationship fact or `nil`, and `Dependency.satisfied(input: fact)` returns an
-explicit Boolean for guards.
+Relationship evidence is queried as ordinary typed facts. Guards produce
+numeric truth (`0.0` or `1.0`).
 
 ### Dynamic method references
 
@@ -282,8 +281,8 @@ default-factor canonical result.
 Referenced methods must declare compatible typed `input` and `factor`
 parameters, return `ReferenceResult(result: TypedFact(...))`, and use only
 pure operations (typed exceptions may propagate). Reference results are kept
-outside ordinary fact lookup, unification, dependencies, and
-`Relation.compare`; user rules must retrieve and consume them deliberately.
+outside ordinary fact lookup, unification, and dependencies; user rules must
+retrieve and consume them deliberately.
 
 ```logic
 motion.references(
@@ -602,11 +601,11 @@ immediately participate in hierarchy queries and concrete type operations:
 `School.all()`, `School.select(district: "central")`, and `School.count()`.
 There is no synthetic `Fact.*` namespace or lazy `FactSelection` value.
 
-`db.sync(file: ...)` is a VM-only persistence boundary. A `.fx` target is
-rewritten as fact declarations; a `.csv` target is written through the CSV
-serializer and requires one fact type with one stable schema. Compiler parsing
-does not perform database I/O. The VM uses an atomic replacement and raises an
-explicit error when the required text or database service is absent.
+There is no public `db.sync()` operation. Facts imported from CSV with a source
+path retain that ownership. `Type.insert`, `Type.update`, and `Type.delete`
+automatically persist each affected CSV source through atomic replacement;
+compiler parsing never performs database I/O. Inserts without an inferred or
+explicit source remain in memory.
 
 `probability.fx` adds common probability and statistics helpers including
 mean, variance, standard deviation, normalization, entropy, covariance,
@@ -625,11 +624,10 @@ unsupported-operation error until cancellation semantics are implemented safely.
 bounded, explicit iteration over ordered data without growing one large
 mutable array.
 
-Native libraries and runtime support are deferred from the strict IR/Form VM
-path. CSV/HTTP support remains under `native_modules/`; when native services
-are migrated, their loader must map platform extensions explicitly
-(`.dll` on Windows, `.so` on Linux, `.dylib` on macOS) rather than assuming one
-operating system.
+Deterministic runtime libraries use verified builtin IDs and typed C++
+implementations under `src/form/libs`; the retired native-module bridge is not
+part of the build. A runtime reports an explicit error when an optional service
+is unavailable.
 
 `felidae.exe` is the optimized execution runtime and must not link AST analysis
 or editor diagnostics. `celidae.exe` is the debugger, analytics, and
@@ -696,6 +694,12 @@ the exact truth status automatically.
 Concrete fact queries return ordinary arrays of retained native facts. Query
 predicates use numeric `0.0`/`1.0` truth and execute through the verified VM
 fact-iteration path; no cursor wrapper or AST runtime is involved.
+
+Plain numeric values are finite doubles and may be negative, between zero and
+one, or greater than one. They are not clamped to a degree range. Classifiers
+and logical predicates return exact `0.0`/`1.0`; arithmetic functions such as
+`avg`, `diff`, `lerp`, `pow`, and `weighted_avg` preserve ordinary signed
+floating-point results.
 
 ## Visual Data Analysis
 

@@ -56,9 +56,10 @@ placeholder value.
 
 The variable-width `Numeric` instruction contains a destination register, a
 `NumericOperation`, and its bounded input-register list. `RegisterVm` executes
-MIN, MAX, ABS, DIFF, AVG, WEIGHTED_AVG, CLAMP, FLOOR, CEIL, ROUND, TRUNC,
-SQRT, CBRT, POW, EXP, LOG, LOG10, LERP, SIGN, RECIPROCAL, SQUARE, CUBE,
-IN_RANGE, IS_FINITE, and IS_NAN directly. The callable `MOD` form reuses the
+`min`, `max`, `abs`, `diff`, `avg`, `weighted_avg`, `clamp`, `floor`, `ceil`,
+`round`, `trunc`, `sqrt`, `cbrt`, `pow`, `exp`, `log`, `log10`, `lerp`,
+`sign`, `reciprocal`, `square`, `cube`, `in_range`, `is_finite`, and `is_nan`
+directly. The callable `mod` form reuses the
 existing `Mod` opcode and `std::fmod` implementation.
 
 ## Tensor operations
@@ -82,8 +83,10 @@ operations never invoke the runtime SSM.
 Ordinary numeric operations require finite numeric operands and a finite
 result. Invalid ranges, zero reciprocal or total weight, negative square-root
 inputs, non-positive logarithm inputs, and overflow/domain failures raise an
-`IrError`. IS_FINITE and IS_NAN deliberately inspect non-finite inputs and
-return numeric `0.0` or `1.0`; they do not introduce Boolean VM values. No
+`IrError`. Plain results are signed finite doubles and are never normalized to
+the interval from zero to one. `is_finite` and `is_nan` deliberately inspect
+non-finite inputs and return numeric `0.0` or `1.0`; they do not introduce
+Boolean VM values. No
 ordinary numeric operation invokes an SSM.
 
 ## Semantic operations
