@@ -14,7 +14,7 @@ on:
 
 jobs:
   analyze:
-    name: Analyze (c-cpp)
+    name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
 
     permissions:
@@ -23,6 +23,16 @@ jobs:
       actions: read
       contents: read
 
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+
+          - language: c-cpp
+            build-mode: manual
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -30,6 +40,7 @@ jobs:
           submodules: recursive
 
       - name: Install C++ build tools
+        if: matrix.language == 'c-cpp'
         shell: bash
         run: |
           sudo apt-get update
@@ -38,23 +49,23 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
-          languages: c-cpp
-          build-mode: manual
-          queries: security-extended
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: +security-and-quality
 
-      - name: Build Felidae production targets
+      - name: Build Felidae
+        if: matrix.language == 'c-cpp'
         shell: bash
         run: |
           cmake -S . -B build/codeql -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_BUILD_TYPE=Debug \
             -DFELIDAE_ENABLE_LIBTORCH=OFF \
-            -DFELIDAE_BUILD_TESTS=OFF
+            -DFELIDAE_BUILD_TESTS=ON
 
           cmake --build build/codeql \
-            --target felidae_compiler felidae_vm felidae_debugger \
             --parallel "$(nproc)"
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
-          category: "/language:c-cpp"
+          category: "/language:${{ matrix.language }}"
