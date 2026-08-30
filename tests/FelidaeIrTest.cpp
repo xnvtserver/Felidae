@@ -638,6 +638,11 @@ int main() {
   assert(std::get<double>(falseValue) == 0.0);
   assert(vmValueToDisplayString(falseValue) == "0.0");
 
+  assert(numericOperationForName("min") == NumericOperation::Min);
+  assert(numericOperationForName("weighted_avg") ==
+         NumericOperation::WeightedAverage);
+  assert(numericOperationForName("in_range") == NumericOperation::InRange);
+  assert(!numericOperationForName("MIN"));
   assert(close(executeNumeric(NumericOperation::Min, {0.8, 0.3}), 0.3));
   assert(close(executeNumeric(NumericOperation::Max, {0.8, 0.3}), 0.8));
   assert(close(executeNumeric(NumericOperation::Abs, {-4.5}), 4.5));
@@ -671,6 +676,10 @@ int main() {
   assert(close(executeNumeric(NumericOperation::Reciprocal, {4}), 0.25));
   assert(close(executeNumeric(NumericOperation::Square, {3}), 9));
   assert(close(executeNumeric(NumericOperation::Cube, {-2}), -8));
+  assert(close(executeNumeric(NumericOperation::Max, {-345.345, -2.302}),
+               -2.302));
+  assert(close(executeNumeric(NumericOperation::Average, {3.432, -2.302}),
+               0.565));
   assert(executeNumeric(NumericOperation::InRange, {0.7, 0, 1}) == 1.0);
   assert(executeNumeric(NumericOperation::InRange, {-0.1, 0, 1}) == 0.0);
   assert(executeNumeric(NumericOperation::InRange, {0, 0, 1}) == 1.0);

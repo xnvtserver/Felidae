@@ -175,6 +175,7 @@ enum class BuiltinId : std::uint16_t {
   FactJoin,
   FactProject,
   FactAggregate,
+  FactSearch,
   FactSetCombine,
   // Compiler-synthesized only (see desugarWhereGuardedClauses in
   // IrCodeGenerator.cpp): a where-guarded clause with no `else` compiles its
@@ -254,6 +255,7 @@ builtinOperationArity(BuiltinId operation) noexcept {
     return 2;
   case BuiltinId::FactInsert:
   case BuiltinId::FactAggregate:
+  case BuiltinId::FactSearch:
   case BuiltinId::FactSetCombine:
     return 3;
   case BuiltinId::FactJoin:

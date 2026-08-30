@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <numbers>
 #include <numeric>
 #include <random>
@@ -159,11 +158,14 @@ VmValue evaluateBuiltin(BuiltinId operation, std::span<const VmValue> inputs,
       if (!records || !std::isfinite(*records) || *records < 0.0 ||
           std::trunc(*records) != *records)
         throw IrError("limit records must be a finite non-negative integer");
-      if (*records > static_cast<double>(std::numeric_limits<std::size_t>::max()))
-        throw IrError("limit records exceeds the supported range");
       auto result = std::make_shared<VmArray>();
-      const auto count = std::min((*array)->values.size(),
-                                  static_cast<std::size_t>(*records));
+      // Clamp in floating-point space before converting to size_t. This
+      // avoids an out-of-range conversion for a very large but finite N,
+      // while preserving SQL LIMIT semantics: asking for more rows than are
+      // present simply returns the complete, stably ordered result.
+      const auto count = *records >= static_cast<double>((*array)->values.size())
+                             ? (*array)->values.size()
+                             : static_cast<std::size_t>(*records);
       result->values.assign((*array)->values.begin(),
                             (*array)->values.begin() + count);
       return result;

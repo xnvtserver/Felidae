@@ -243,15 +243,17 @@ void atomicWrite(const std::filesystem::path &path, std::string_view content) {
 
 std::string csvText(std::span<const VmFactPtr> facts,
                     std::span<const PieceSequence> symbolTable,
-                    const VmTextDecoder &decodeText) {
-  if (facts.empty())
+                    const VmTextDecoder &decodeText,
+                    const VmFactPtr &emptySchema) {
+  const auto schema = facts.empty() ? emptySchema : facts.front();
+  if (!schema)
     return {};
-  if (!facts.front())
+  if (!facts.empty() && !facts.front())
     throw IrError("CSV database contains an invalid retained fact");
-  const auto type = facts.front()->type;
+  const auto type = schema->type;
   std::vector<IrSymbolRef> fields;
-  fields.reserve(facts.front()->fields.size());
-  for (const auto &[field, _] : facts.front()->fields)
+  fields.reserve(schema->fields.size());
+  for (const auto &[field, _] : schema->fields)
     fields.push_back(field);
 
   const BuiltinTextCodec codec{
@@ -269,7 +271,11 @@ std::string csvText(std::span<const VmFactPtr> facts,
     }
     rows.push_back(vmValueToJson(VmValue{fact}, symbolTable, codec));
   }
-  return Csv::toText(rows);
+  std::vector<std::string> columns;
+  columns.reserve(fields.size());
+  for (const auto field : fields)
+    columns.push_back(decodeText(irSymbolPieces(symbolTable, field)));
+  return Csv::toText(rows, columns);
 }
 
 } // namespace
@@ -277,7 +283,8 @@ std::string csvText(std::span<const VmFactPtr> facts,
 void sync(const std::filesystem::path &path,
           std::span<const VmFactPtr> facts,
           std::span<const PieceSequence> symbolTable,
-          const VmTextDecoder &decodeText) {
+          const VmTextDecoder &decodeText,
+          const VmFactPtr &emptySchema) {
   if (path.empty() || (path.extension() != ".fx" &&
                        path.extension() != ".csv"))
     throw IrError("fact persistence requires a non-empty .fx or .csv path");
@@ -285,7 +292,7 @@ void sync(const std::filesystem::path &path,
     throw IrError("fact persistence requires the VM SentencePiece decoder");
   std::string content;
   if (path.extension() == ".csv") {
-    content = csvText(facts, symbolTable, decodeText);
+    content = csvText(facts, symbolTable, decodeText, emptySchema);
   } else {
     std::ostringstream source;
     source << "# Felidae fact database\n";

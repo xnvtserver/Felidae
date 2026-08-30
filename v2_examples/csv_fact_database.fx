@@ -12,13 +12,17 @@ main() =>
     activeCentral := School.where(district: "central", active: 1.0)
     allCount := School.count()
     activeCentralCount := count(data: activeCentral)
-    updated := School.update(match: {name: "North"}, values: {active: 0.0})
+    updated := School.where(name: "North School").update(values: {active: 0.0})
+    inserted := School.insert(values: {name: "Temporary School", district: "test", students: 1.0, active: 1.0})
+    deleted := School.where(name: "Temporary School").delete()
     return (
         imported: imported,
         all_schools: allSchools,
         active_central: activeCentral,
         all_count: allCount,
         active_central_count: activeCentralCount,
-        updated: updated
+        updated: updated,
+        inserted: inserted,
+        deleted: deleted
     )
 end

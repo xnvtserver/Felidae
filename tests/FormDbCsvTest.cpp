@@ -10,10 +10,12 @@
 #include "form/libs/Csv.h"
 #include "form/libs/Db.h"
 
+#include <array>
 #include <cassert>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <sstream>
 
 namespace {
@@ -76,6 +78,32 @@ VmFactPtr makeFact(IrSymbolRef type,
 int main() {
   const Form::BuiltinTextCodec codec = testTextCodec();
 
+  // LIMIT is an ordinary deterministic array operation after query lowering:
+  // it preserves order, clamps oversized requests, and rejects unsafe counts.
+  {
+    auto rows = std::make_shared<VmArray>();
+    rows->values = {10.0, 20.0, 30.0};
+    const std::span<const PieceSequence> noSymbols;
+    const auto limit = [&](double records) {
+      return std::get<VmArrayPtr>(Form::evaluateBuiltin(
+          BuiltinId::ArrayLimit,
+          std::array<VmValue, 2>{VmValue{rows}, VmValue{records}}, noSymbols,
+          codec));
+    };
+    const auto firstTwo = limit(2.0);
+    assert(firstTwo->values.size() == 2);
+    assert(std::get<double>(firstTwo->values[0]) == 10.0);
+    assert(std::get<double>(firstTwo->values[1]) == 20.0);
+    assert(limit(0.0)->values.empty());
+    assert(limit(1.0e100)->values.size() == rows->values.size());
+    assert(rejects([&] { (void)limit(-1.0); }));
+    assert(rejects([&] { (void)limit(1.5); }));
+    assert(rejects(
+        [&] { (void)limit(std::numeric_limits<double>::infinity()); }));
+    assert(rejects(
+        [&] { (void)limit(std::numeric_limits<double>::quiet_NaN()); }));
+  }
+
   const std::filesystem::path outDir(FELIDAE_TEST_OUTPUT_DIR);
   std::error_code ignored;
   std::filesystem::remove_all(outDir, ignored);
@@ -119,6 +147,75 @@ int main() {
     // An unterminated quoted field is a real parse error, not silently
     // truncated data.
     assert(rejects([&] { (void)Form::Csv::parse("a\n\"unterminated"); }));
+  }
+
+  // ---------------------------------------------------------------------
+  // Fact search is deliberately separate from equality/predicate `where`:
+  // it provides discovery over text patterns, hierarchy-valued properties,
+  // and graded numeric evidence while preserving stable fact order.
+  // ---------------------------------------------------------------------
+  {
+    FelidaeKnowledgeRuntime runtime(nullptr, 1024, 256, nullptr, nullptr,
+                                    codec.decode, codec.encode);
+    const std::vector<std::string> names{
+        "Catalog",   "title",       "confidence", "category",
+        "mode",      "query",       "case",       "direction",
+        "includeSelf", "minimum",   "maximum",    "tolerance",
+        "Publication", "Book",      "Magazine"};
+    IrModule module;
+    for (const auto &name : names)
+      module.symbolTable.push_back(codec.encode(name));
+    runtime.installIrModule(module);
+    const auto symbol = [&](std::size_t oneBased) {
+      return runtime.resolveSymbol(static_cast<IrSymbolRef>(oneBased));
+    };
+    runtime.registerFactType(symbol(13), {});
+    runtime.registerFactType(symbol(14), {symbol(13)});
+    runtime.registerFactType(symbol(15), {symbol(13)});
+    runtime.registerFactType(symbol(1), {});
+    const auto catalog = [&](std::string_view title, double confidence,
+                             IrSymbolRef category) {
+      auto fact = std::make_shared<VmFact>();
+      fact->type = symbol(1);
+      fact->fields = {
+          {symbol(2), VmText{codec.encode(title)}},
+          {symbol(3), confidence},
+          {symbol(4), VmSymbol{category}},
+      };
+      return runtime.retainFact(fact);
+    };
+    const std::array<VmFactPtr, 3> facts{
+        catalog("Alpha Guide", 0.82, symbol(14)),
+        catalog("beta guide", 0.74, symbol(15)),
+        catalog("Reference", 0.40, symbol(13))};
+    const auto options = [&](std::initializer_list<
+                                 std::pair<IrSymbolRef, VmValue>> entries) {
+      auto result = std::make_shared<VmMap>();
+      result->entries.assign(entries.begin(), entries.end());
+      return result;
+    };
+
+    const auto likeRows = std::get<VmArrayPtr>(runtime.searchFacts(
+        facts, codec.encode("title"),
+        options({{symbol(5), VmText{codec.encode("like")}},
+                 {symbol(6), VmText{codec.encode("%guide")}},
+                 {symbol(7), VmText{codec.encode("insensitive")}}})));
+    assert(likeRows && likeRows->values.size() == 2);
+
+    const auto hierarchyRows = std::get<VmArrayPtr>(runtime.searchFacts(
+        facts, codec.encode("category"),
+        options({{symbol(5), VmText{codec.encode("hierarchy")}},
+                 {symbol(6), VmSymbol{symbol(13)}},
+                 {symbol(8), VmText{codec.encode("descendants")}},
+                 {symbol(9), 0.0}})));
+    assert(hierarchyRows && hierarchyRows->values.size() == 2);
+
+    const auto degreeRows = std::get<VmArrayPtr>(runtime.searchFacts(
+        facts, codec.encode("confidence"),
+        options({{symbol(5), VmText{codec.encode("degree")}},
+                 {symbol(10), 0.70},
+                 {symbol(11), 0.90}})));
+    assert(degreeRows && degreeRows->values.size() == 2);
   }
 
   // ---------------------------------------------------------------------
@@ -214,6 +311,207 @@ int main() {
       assert(row.contains("subject"));
       assert(!row.contains("district"));
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Automatic DML persistence: update, inferred-source insert, and delete
+  // each commit the owning CSV without a public db.sync() call.
+  // ---------------------------------------------------------------------
+  {
+    FelidaeKnowledgeRuntime runtime(nullptr, 1024, 256, nullptr, nullptr,
+                                    codec.decode, codec.encode);
+    IrModule module;
+    module.symbolTable = {codec.encode("School")};
+    runtime.installIrModule(module);
+    runtime.registerFactType(/*type=*/1, /*parents=*/{});
+
+    const auto path = outDir / "automatic_dml.csv";
+    const auto source = codec.encode(path.string());
+    const auto type = codec.encode("School");
+    const auto imported = std::get<VmArrayPtr>(runtime.importCsvFacts(
+        codec.encode("name,students\nNorth,420\nWest,280\n"), type,
+        source));
+    assert(imported && imported->values.size() == 2);
+    const auto north = std::get<VmFactPtr>(imported->values[0]);
+    const auto west = std::get<VmFactPtr>(imported->values[1]);
+    assert(north && west && north->fields.size() == 2);
+
+    auto update = std::make_shared<VmMap>();
+    update->entries.emplace_back(north->fields[1].first, 425.0);
+    const std::array<VmFactPtr, 1> updateTargets{north};
+    (void)runtime.updateFacts(updateTargets, update);
+    auto rows = Form::Csv::toFacts(readFile(path), "School");
+    assert(rows.size() == 2 && rows[0]["students"] == 425.0);
+
+    auto insertedValues = std::make_shared<VmMap>();
+    insertedValues->entries.emplace_back(
+        north->fields[0].first, VmText{codec.encode("Lake")});
+    insertedValues->entries.emplace_back(north->fields[1].first, 350.0);
+    const auto inserted = runtime.insertFact(type, insertedValues, std::nullopt);
+    assert(inserted && runtime.factStore()->sourceOf(inserted->id) ==
+                           std::optional<std::string>{path.string()});
+    rows = Form::Csv::toFacts(readFile(path), "School");
+    assert(rows.size() == 3 && rows[2]["name"] == "Lake");
+
+    const std::array<VmFactPtr, 1> deleteTargets{west};
+    assert(runtime.deleteFacts(deleteTargets) == 1.0);
+    rows = Form::Csv::toFacts(readFile(path), "School");
+    assert(rows.size() == 2);
+    assert(rows[0]["name"] == "North");
+    assert(rows[1]["name"] == "Lake");
+
+    const auto remaining = runtime.factStore()->snapshot(/*type=*/1);
+    assert(runtime.deleteFacts(remaining) == 2.0);
+    assert(readFile(path) == "name,students\n");
+    assert(Form::Csv::toFacts(readFile(path), "School").empty());
+  }
+
+  // ---------------------------------------------------------------------
+  // Native .fx fact databases use the same ownership and transaction path
+  // as CSV. An explicit source establishes ownership for the first insert;
+  // later inserts infer the sole source for that fact type.
+  // ---------------------------------------------------------------------
+  {
+    FelidaeKnowledgeRuntime runtime(nullptr, 1024, 256, nullptr, nullptr,
+                                    codec.decode, codec.encode);
+    IrModule module;
+    module.symbolTable = {codec.encode("School"), codec.encode("name"),
+                          codec.encode("students")};
+    runtime.installIrModule(module);
+    runtime.registerFactType(/*type=*/1, /*parents=*/{});
+
+    const auto path = outDir / "automatic_dml.fx";
+    const auto type = codec.encode("School");
+    auto northValues = std::make_shared<VmMap>();
+    northValues->entries.emplace_back(2, VmText{codec.encode("North")});
+    northValues->entries.emplace_back(3, 420.0);
+    const auto source = codec.encode(path.string());
+    const auto north = runtime.insertFact(type, northValues, source);
+    assert(north && readFile(path).find("students: 420.0") !=
+                        std::string::npos);
+
+    auto westValues = std::make_shared<VmMap>();
+    westValues->entries.emplace_back(2, VmText{codec.encode("West")});
+    westValues->entries.emplace_back(3, 280.0);
+    const auto west = runtime.insertFact(type, westValues, std::nullopt);
+    assert(west && runtime.factStore()->sourceOf(west->id) ==
+                       std::optional<std::string>{path.string()});
+
+    auto update = std::make_shared<VmMap>();
+    update->entries.emplace_back(3, 425.0);
+    (void)runtime.updateFacts(std::array<VmFactPtr, 1>{north}, update);
+    auto sourceText = readFile(path);
+    assert(sourceText.find("students: 425.0") != std::string::npos);
+    assert(sourceText.find("students: 280.0") != std::string::npos);
+
+    assert(runtime.deleteFacts(std::array<VmFactPtr, 1>{west}) == 1.0);
+    sourceText = readFile(path);
+    assert(sourceText.find("West") == std::string::npos);
+    assert(sourceText.find("North") != std::string::npos);
+  }
+
+  // ---------------------------------------------------------------------
+  // Runtime transaction rollback. A source with an unsupported extension
+  // is accepted as import ownership metadata, but persistence must fail at
+  // the database boundary. Insert/update/delete must then leave the retained
+  // facts and mutation journal exactly as they were before the operation.
+  // ---------------------------------------------------------------------
+  {
+    FelidaeKnowledgeRuntime runtime(nullptr, 1024, 256, nullptr, nullptr,
+                                    codec.decode, codec.encode);
+    IrModule module;
+    module.symbolTable = {codec.encode("School"), codec.encode("name"),
+                          codec.encode("students")};
+    runtime.installIrModule(module);
+    runtime.registerFactType(/*type=*/1, /*parents=*/{});
+
+    const auto type = codec.encode("School");
+    const auto invalidSource = codec.encode((outDir / "invalid.txt").string());
+    const auto imported = std::get<VmArrayPtr>(runtime.importCsvFacts(
+        codec.encode("name,students\nNorth,420\n"), type, invalidSource));
+    const auto north = std::get<VmFactPtr>(imported->values.front());
+    const auto journalBefore = runtime.factStore()->mutations();
+
+    auto update = std::make_shared<VmMap>();
+    update->entries.emplace_back(3, 425.0);
+    assert(rejects([&] {
+      (void)runtime.updateFacts(std::array<VmFactPtr, 1>{north}, update);
+    }));
+    auto retained = runtime.factStore()->snapshot(/*type=*/1);
+    assert(retained.size() == 1);
+    assert(std::get<double>(retained.front()->fields[1].second) == 420.0);
+    assert(runtime.factStore()->mutations().size() == journalBefore.size());
+
+    assert(rejects([&] {
+      (void)runtime.deleteFacts(std::array<VmFactPtr, 1>{retained.front()});
+    }));
+    retained = runtime.factStore()->snapshot(/*type=*/1);
+    assert(retained.size() == 1 && retained.front()->id == north->id);
+    assert(runtime.factStore()->sourceOf(north->id).has_value());
+    assert(runtime.factStore()->mutations().size() == journalBefore.size());
+  }
+
+  {
+    FelidaeKnowledgeRuntime runtime(nullptr, 1024, 256, nullptr, nullptr,
+                                    codec.decode, codec.encode);
+    IrModule module;
+    module.symbolTable = {codec.encode("School"), codec.encode("name")};
+    runtime.installIrModule(module);
+    runtime.registerFactType(/*type=*/1, /*parents=*/{});
+    auto values = std::make_shared<VmMap>();
+    values->entries.emplace_back(2, VmText{codec.encode("North")});
+    const auto invalidSource = codec.encode((outDir / "insert.txt").string());
+    assert(rejects(
+        [&] { (void)runtime.insertFact(codec.encode("School"), values,
+                                      invalidSource); }));
+    assert(runtime.factStore()->snapshot(/*type=*/1).empty());
+    assert(runtime.factStore()->mutations().empty());
+  }
+
+  // ---------------------------------------------------------------------
+  // Multi-source transactions are deterministic and source-local. A valid
+  // earlier source remains committed if a later source fails, while facts
+  // owned by the failing source are restored to their previous snapshots.
+  // ---------------------------------------------------------------------
+  {
+    FelidaeKnowledgeRuntime runtime(nullptr, 1024, 256, nullptr, nullptr,
+                                    codec.decode, codec.encode);
+    IrModule module;
+    module.symbolTable = {codec.encode("School"), codec.encode("name"),
+                          codec.encode("students")};
+    runtime.installIrModule(module);
+    runtime.registerFactType(/*type=*/1, /*parents=*/{});
+
+    const auto committedPath = outDir / "a-committed.csv";
+    const auto failedPath = outDir / "z-failed.txt";
+    const auto type = codec.encode("School");
+    const auto committedRows = std::get<VmArrayPtr>(runtime.importCsvFacts(
+        codec.encode("name,students\nNorth,420\n"), type,
+        codec.encode(committedPath.string())));
+    const auto failedRows = std::get<VmArrayPtr>(runtime.importCsvFacts(
+        codec.encode("name,students\nWest,280\n"), type,
+        codec.encode(failedPath.string())));
+    const std::array<VmFactPtr, 2> targets{
+        std::get<VmFactPtr>(committedRows->values.front()),
+        std::get<VmFactPtr>(failedRows->values.front())};
+    auto update = std::make_shared<VmMap>();
+    update->entries.emplace_back(3, 500.0);
+    std::string failure;
+    try {
+      (void)runtime.updateFacts(targets, update);
+    } catch (const IrError &error) {
+      failure = error.what();
+    }
+    assert(!failure.empty());
+    assert(failure.find(failedPath.string()) != std::string::npos);
+    assert(failure.find(committedPath.string()) != std::string::npos);
+    const auto committed = Form::Csv::toFacts(readFile(committedPath),
+                                               "School");
+    assert(committed.size() == 1 && committed[0]["students"] == 500.0);
+    const auto retained = runtime.factStore()->snapshot(/*type=*/1);
+    assert(retained.size() == 2);
+    assert(std::get<double>(retained[0]->fields[1].second) == 500.0);
+    assert(std::get<double>(retained[1]->fields[1].second) == 280.0);
   }
 
   // ---------------------------------------------------------------------
