@@ -11,6 +11,7 @@ namespace Felidae::Form::Db {
 void sync(const std::filesystem::path &path,
           std::span<const VmFactPtr> facts,
           std::span<const PieceSequence> symbolTable,
-          const VmTextDecoder &decodeText);
+          const VmTextDecoder &decodeText,
+          const VmFactPtr &emptySchema = {});
 
 } // namespace Felidae::Form::Db

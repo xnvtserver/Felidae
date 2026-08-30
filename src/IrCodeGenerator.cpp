@@ -311,72 +311,39 @@ private:
         result->sourceSpan = term->sourceSpan;
         return result;
       }
-      if (term->name == "__query:where") {
-        // Type.update(values: {...}).where(...) / Type.delete().where(...):
-        // an alternative to the match: argument, for callers who prefer a
-        // SQL-style "verb, then condition" order. This intercepts the raw,
-        // not-yet-lowered receiver term directly and reuses the exact same
-        // Type.where(...) predicate construction (and the same fact:update/
-        // fact:delete BuiltinIds) as the match:-argument form below -- there
-        // is still exactly one place that builds an update/delete predicate.
+      if (term->name == "__query:update" ||
+          term->name == "__query:delete") {
+        // Mutations consume an explicit where/AndWhere/OrWhere selection.
+        // The compiler lowers the receiver directly to its existing fact
+        // array, so RegisterVm needs no mutable query-object representation.
         if (term->args.empty())
-          throw IntegerParserError("where requires a fact query target");
-        const auto receiver =
-            std::dynamic_pointer_cast<TermExpr>(term->args.front().value);
-        const auto dot =
-            receiver ? receiver->name.rfind('.') : std::string::npos;
-        const auto receiverMethod = dot == std::string::npos
-                                        ? std::string{}
-                                        : receiver->name.substr(dot + 1);
-        const bool isUpdate = receiverMethod == "update";
-        const bool isDelete = receiverMethod == "delete";
-        const bool hasMatch =
-            receiver &&
-            std::any_of(receiver->args.begin(), receiver->args.end(),
-                       [](const Arg &argument) {
-                         return argument.name == "match";
-                       });
-        if (receiver && (isUpdate || isDelete) && !hasMatch) {
-          const auto receiverTypeName = receiver->name.substr(0, dot);
-          if (!factTypes_.contains(receiverTypeName))
-            throw IntegerParserError("where requires a fact query target");
-          std::shared_ptr<Expr> values;
-          if (isUpdate) {
-            for (const auto &argument : receiver->args)
-              if (argument.name == "values")
-                values = argument.value;
-            if (!values || receiver->args.size() != 1)
-              throw IntegerParserError(receiverTypeName +
-                                       ".update requires a values map");
-          } else if (!receiver->args.empty()) {
+          throw IntegerParserError(
+              "fact mutation requires a preceding where condition");
+        if (!conditionChain(term->args.front().value))
+          throw IntegerParserError(
+              "update/delete must follow where/AndWhere/OrWhere");
+        auto rows = expression(term->args.front().value);
+        if (term->name == "__query:update") {
+          if (term->args.size() != 2 || term->args[1].name != "values")
             throw IntegerParserError(
-                receiverTypeName +
-                ".delete takes no arguments when chained with .where(...)");
-          }
-          std::vector<Arg> condition(term->args.begin() + 1, term->args.end());
-          auto whereCall = std::make_shared<TermExpr>(
-              receiverTypeName + ".where", std::move(condition));
-          whereCall->sourceSpan = term->sourceSpan;
-          auto rows = expression(std::move(whereCall));
-          if (isUpdate) {
-            auto result = std::make_shared<TermExpr>(
-                "fact:update",
-                std::vector<Arg>{Arg(std::string{}, std::move(rows)),
-                                 Arg(std::string{}, expression(values))},
-                BuiltinId::FactUpdate);
-            result->sourceSpan = term->sourceSpan;
-            return result;
-          }
+                "update requires exactly one named values map");
           auto result = std::make_shared<TermExpr>(
-              "fact:delete",
-              std::vector<Arg>{Arg(std::string{}, std::move(rows))},
-              BuiltinId::FactDelete);
+              "fact:update",
+              std::vector<Arg>{Arg(std::string{}, std::move(rows)),
+                               Arg(std::string{},
+                                   expression(term->args[1].value))},
+              BuiltinId::FactUpdate);
           result->sourceSpan = term->sourceSpan;
           return result;
         }
-        // Not an update/delete chain -- fall through to ordinary handling
-        // below (e.g. an unrelated __query:where use is simply unsupported,
-        // matching prior behavior).
+        if (term->args.size() != 1)
+          throw IntegerParserError("delete accepts no arguments");
+        auto result = std::make_shared<TermExpr>(
+            "fact:delete",
+            std::vector<Arg>{Arg(std::string{}, std::move(rows))},
+            BuiltinId::FactDelete);
+        result->sourceSpan = term->sourceSpan;
+        return result;
       }
       for (auto &argument : term->args)
         argument.value = expression(argument.value);
@@ -460,6 +427,82 @@ private:
                                         });
         return found == term->args.end() ? nullptr : found->value;
       };
+      if (method == "search") {
+        const auto field = std::dynamic_pointer_cast<StringExpr>(named("field"));
+        const auto mode = std::dynamic_pointer_cast<StringExpr>(named("mode"));
+        if (!field || !mode)
+          throw IntegerParserError(typeName +
+                                   ".search requires text field and mode");
+        static const std::unordered_set<std::string> allowedArguments{
+            "field",       "query",     "mode",      "case",
+            "direction",   "includeSelf", "minimum", "maximum",
+            "tolerance"};
+        for (const auto &argument : term->args)
+          if (!allowedArguments.contains(argument.name))
+            throw IntegerParserError(typeName +
+                                     ".search has an unknown argument " +
+                                     argument.name);
+
+        const auto textMode = mode->value;
+        const bool textSearch =
+            textMode == "exact" || textMode == "prefix" ||
+            textMode == "suffix" || textMode == "contains" ||
+            textMode == "like" || textMode == "regex";
+        if (textSearch) {
+          if (!std::dynamic_pointer_cast<StringExpr>(named("query")))
+            throw IntegerParserError(typeName + ".search " + textMode +
+                                     " mode requires a text query");
+          if (const auto caseMode =
+                  std::dynamic_pointer_cast<StringExpr>(named("case"));
+              caseMode && caseMode->value != "sensitive" &&
+              caseMode->value != "insensitive")
+            throw IntegerParserError(
+                typeName + ".search case must be sensitive or insensitive");
+        } else if (textMode == "hierarchy") {
+          if (!named("query"))
+            throw IntegerParserError(typeName +
+                                     ".search hierarchy mode requires query");
+          const auto direction =
+              std::dynamic_pointer_cast<StringExpr>(named("direction"));
+          if (!direction ||
+              (direction->value != "ancestors" &&
+               direction->value != "descendants" &&
+               direction->value != "related"))
+            throw IntegerParserError(
+                typeName + ".search hierarchy direction is invalid");
+        } else if (textMode == "degree") {
+          const bool closeness = named("query") && named("tolerance");
+          const bool range = named("minimum") || named("maximum");
+          if (closeness == range)
+            throw IntegerParserError(
+                typeName +
+                ".search degree mode requires either query+tolerance or a range");
+        } else {
+          throw IntegerParserError(typeName + ".search mode is invalid");
+        }
+
+        std::vector<MapEntry> optionEntries;
+        optionEntries.reserve(term->args.size() - 1);
+        for (const auto &argument : term->args) {
+          if (argument.name == "field")
+            continue;
+          optionEntries.emplace_back(argument.name, argument.nameId,
+                                     argument.value);
+        }
+        auto options = std::make_shared<MapExpr>(std::move(optionEntries));
+        options->sourceSpan = term->sourceSpan;
+        auto rows = iteration(typeName, type->second, rowName, rowId,
+                              std::make_shared<VarExpr>(rowName, rowId),
+                              term->sourceSpan);
+        auto result = std::make_shared<TermExpr>(
+            "fact:search",
+            std::vector<Arg>{Arg(std::string{}, std::move(rows)),
+                             Arg(std::string{}, field),
+                             Arg(std::string{}, std::move(options))},
+            BuiltinId::FactSearch);
+        result->sourceSpan = term->sourceSpan;
+        return result;
+      }
       if (method == "insert") {
         const auto values = named("values");
         const auto source = named("source");
@@ -479,29 +522,12 @@ private:
         return result;
       }
       if (method == "update") {
-        const auto match = named("match");
-        const auto values = named("values");
-        if (!match || !values || term->args.size() != 2)
-          throw IntegerParserError(typeName +
-                                   ".update requires match and values maps");
-        auto result = std::make_shared<TermExpr>(
-            "fact:update",
-            std::vector<Arg>{Arg(std::string{}, queryFromMatch(match)),
-                             Arg(std::string{}, values)},
-            BuiltinId::FactUpdate);
-        result->sourceSpan = term->sourceSpan;
-        return result;
+        throw IntegerParserError(typeName +
+                                 ".update must follow a where condition");
       }
       if (method == "delete") {
-        const auto match = named("match");
-        if (!match || term->args.size() != 1)
-          throw IntegerParserError(typeName + ".delete requires a match map");
-        auto result = std::make_shared<TermExpr>(
-            "fact:delete",
-            std::vector<Arg>{Arg(std::string{}, queryFromMatch(match))},
-            BuiltinId::FactDelete);
-        result->sourceSpan = term->sourceSpan;
-        return result;
+        throw IntegerParserError(typeName +
+                                 ".delete must follow a where condition");
       }
       if (method == "join" || method == "leftJoin" ||
           method == "rightJoin" || method == "OuterJoin") {
@@ -1006,8 +1032,18 @@ bool isDirectDeterministicExpression(
     return definedSymbols.contains(variable->nameId);
   }
   if (const auto term = std::dynamic_pointer_cast<TermExpr>(expression)) {
+    if (const auto operation = numericOperationForName(term->name);
+        operation && term->args.size() == numericOperationArity(*operation) &&
+        std::all_of(term->args.begin(), term->args.end(),
+                    [&](const Arg &argument) {
+                      return argument.name.empty() &&
+                             isDirectDeterministicExpression(
+                                 argument.value, definedSymbols, context);
+                    })) {
+      return true;
+    }
     // csv.toFacts has two declared core/csv.fx arities (with/without a
-    // source path for db.sync-equivalent ownership tracking -- see
+    // source path for automatic mutation persistence -- see
     // RegisterVm.cpp's csv.toFacts dispatch, which already handles both at
     // runtime). builtinOperationArity is one fixed value per BuiltinId, so
     // it cannot itself express "2 or 3"; this is the one deliberate
@@ -1055,7 +1091,7 @@ bool isDirectDeterministicExpression(
                                       argument.value, definedSymbols, context);
                          });
     }
-    if (term->name == "MOD") {
+    if (term->name == "mod") {
       return term->args.size() == 2 &&
              std::all_of(term->args.begin(), term->args.end(),
                          [&](const Arg &argument) {
@@ -1216,7 +1252,7 @@ firstUnsupportedExpression(const std::shared_ptr<Expr> &expression,
       }
       return expression->sourceSpan;
     }
-    if (numericOperationForName(term->name) || term->name == "MOD") {
+    if (numericOperationForName(term->name) || term->name == "mod") {
       for (const auto &argument : term->args) {
         if (!argument.name.empty() ||
             !isDirectDeterministicExpression(argument.value, definedSymbols,
@@ -1890,6 +1926,22 @@ FelidaeIr IrCodeGenerator::lowerExpression(
                          operands[0], operands[1], operands[2], operands[3],
                          operands[4], joinedTypeSymbol, joinedLeftSymbol,
                          joinedRightSymbol});
+      } else if (const auto operation = numericOperationForName(term->name);
+                 operation &&
+                 term->args.size() == numericOperationArity(*operation) &&
+                 std::all_of(term->args.begin(), term->args.end(),
+                             [](const Arg &argument) {
+                               return argument.name.empty();
+                             })) {
+        std::vector<RegisterId> operands;
+        operands.reserve(term->args.size());
+        for (const auto &argument : term->args)
+          operands.push_back(self(self, argument.value));
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::Numeric), result,
+                         static_cast<IrWord>(*operation),
+                         static_cast<IrWord>(operands.size())});
+        ir.words.insert(ir.words.end(), operands.begin(), operands.end());
       } else if (const auto arity = builtinOperationArity(term->builtinId)) {
         std::vector<std::string_view> names;
         names.reserve(term->args.size());
@@ -1961,13 +2013,13 @@ FelidaeIr IrCodeGenerator::lowerExpression(
                          static_cast<IrWord>(*operation),
                          static_cast<IrWord>(operands.size())});
         ir.words.insert(ir.words.end(), operands.begin(), operands.end());
-      } else if (term->name == "MOD") {
+      } else if (term->name == "mod") {
         if (term->args.size() != 2 ||
             std::any_of(
                 term->args.begin(), term->args.end(),
                 [](const Arg &argument) { return !argument.name.empty(); })) {
           throw IntegerParserError(
-              "MOD requires exactly two positional numeric arguments");
+              "mod requires exactly two positional numeric arguments");
         }
         const auto left = self(self, term->args[0].value);
         const auto right = self(self, term->args[1].value);

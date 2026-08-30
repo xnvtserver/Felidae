@@ -3,6 +3,7 @@
 #include <charconv>
 #include <cctype>
 #include <cmath>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -81,7 +82,8 @@ std::vector<std::vector<std::string>> splitCsvRows(std::string_view text) {
   return rows;
 }
 
-Json::Value parseRows(std::string_view text, std::string_view typeName) {
+Json::Value parseRows(std::string_view text,
+                      std::optional<std::string_view> typeName) {
   Json::Value result = Json::Value::array();
   const auto rows = splitCsvRows(text);
   if (rows.empty())
@@ -100,8 +102,8 @@ Json::Value parseRows(std::string_view text, std::string_view typeName) {
       throw std::runtime_error(
           "csv.parse row has a different field count than the header");
     Json::Value row = Json::Value::object();
-    if (!typeName.empty())
-      row["__type"] = typeName;
+    if (typeName && !typeName->empty())
+      row["__type"] = *typeName;
     for (std::size_t index = 0; index < headers.size(); ++index)
       row[headers[index]] = fields[index];
     result.push_back(std::move(row));
@@ -140,7 +142,7 @@ std::vector<std::string> headers(const Json::Value &rows) {
 
 } // namespace
 
-Json::Value parse(std::string_view text) { return parseRows(text, {}); }
+Json::Value parse(std::string_view text) { return parseRows(text, std::nullopt); }
 
 Json::Value toFacts(std::string_view text, std::string_view typeName) {
   if (typeName.empty())
@@ -167,10 +169,10 @@ Json::Value toFacts(std::string_view text, std::string_view typeName) {
   return rows;
 }
 
-std::string toText(const Json::Value &rows) {
-  const auto columns = headers(rows);
-  if (rows.empty())
-    return {};
+std::string toText(const Json::Value &rows,
+                   std::span<const std::string> columns) {
+  if (!rows.is_array())
+    throw std::runtime_error("csv.toText expects an array of rows");
   std::ostringstream output;
   for (std::size_t index = 0; index < columns.size(); ++index) {
     if (index)
@@ -191,6 +193,12 @@ std::string toText(const Json::Value &rows) {
     output << '\n';
   }
   return output.str();
+}
+
+std::string toText(const Json::Value &rows) {
+  if (rows.is_array() && rows.empty())
+    return {};
+  return toText(rows, headers(rows));
 }
 
 std::string toFelidaeFacts(const Json::Value &rows, std::string_view typeName) {

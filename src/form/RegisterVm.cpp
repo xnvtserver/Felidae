@@ -7,6 +7,7 @@
 #include "libs/Db.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <deque>
@@ -17,6 +18,7 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <string_view>
@@ -278,7 +280,7 @@ double evaluateNumericOperation(NumericOperation operation,
     const long double totalWeight =
         static_cast<long double>(operands[2]) + operands[3];
     if (totalWeight == 0.0L)
-      throw IrError("WEIGHTED_AVG total weight must not be zero");
+      throw IrError("weighted_avg total weight must not be zero");
     const long double weighted =
         static_cast<long double>(operands[2]) * operands[0] +
         static_cast<long double>(operands[3]) * operands[1];
@@ -287,7 +289,7 @@ double evaluateNumericOperation(NumericOperation operation,
   }
   case NumericOperation::Clamp:
     if (operands[1] > operands[2])
-      throw IrError("CLAMP minimum must not exceed maximum");
+      throw IrError("clamp minimum must not exceed maximum");
     result = std::clamp(operands[0], operands[1], operands[2]);
     break;
   case NumericOperation::Floor:
@@ -304,7 +306,7 @@ double evaluateNumericOperation(NumericOperation operation,
     break;
   case NumericOperation::Sqrt:
     if (operands[0] < 0.0)
-      throw IrError("SQRT operand must not be negative");
+      throw IrError("sqrt operand must not be negative");
     result = std::sqrt(operands[0]);
     break;
   case NumericOperation::Cbrt:
@@ -319,7 +321,7 @@ double evaluateNumericOperation(NumericOperation operation,
   case NumericOperation::Log:
   case NumericOperation::Log10:
     if (operands[0] <= 0.0)
-      throw IrError("LOG operand must be greater than zero");
+      throw IrError("log operand must be greater than zero");
     result = operation == NumericOperation::Log ? std::log(operands[0])
                                                 : std::log10(operands[0]);
     break;
@@ -331,7 +333,7 @@ double evaluateNumericOperation(NumericOperation operation,
     break;
   case NumericOperation::Reciprocal:
     if (operands[0] == 0.0)
-      throw IrError("RECIPROCAL operand must not be zero");
+      throw IrError("reciprocal operand must not be zero");
     result = 1.0 / operands[0];
     break;
   case NumericOperation::Square:
@@ -342,7 +344,7 @@ double evaluateNumericOperation(NumericOperation operation,
     break;
   case NumericOperation::InRange:
     if (operands[1] > operands[2])
-      throw IrError("IN_RANGE minimum must not exceed maximum");
+      throw IrError("in_range minimum must not exceed maximum");
     result =
         operands[0] >= operands[1] && operands[0] <= operands[2] ? 1.0 : 0.0;
     break;
@@ -1346,7 +1348,7 @@ double FelidaeKnowledgeRuntime::deleteFacts(std::span<const VmFactPtr> facts) {
     const auto journal = factStore_->journalMark();
     deleted += factStore_->erase(owned);
     try {
-      (void)syncDatabase(encodeText(source));
+      (void)persistDatabaseSource(source, owned.front());
     } catch (const std::exception &error) {
       for (const auto &fact : owned)
         factStore_->restoreErased(fact, source);
@@ -1515,6 +1517,229 @@ double FelidaeKnowledgeRuntime::aggregateFacts(
   if (operation == 2)
     return *std::min_element(values.begin(), values.end());
   return *std::max_element(values.begin(), values.end());
+}
+
+VmValue FelidaeKnowledgeRuntime::searchFacts(
+    std::span<const VmFactPtr> facts, std::span<const PieceId> field,
+    const VmMapPtr &options) {
+  if (!options)
+    throw IrError("fact search requires an options map");
+  const auto fieldKey =
+      internRuntimeSymbol(PieceSequence(field.begin(), field.end()));
+  const auto option = [&](std::string_view name) -> const VmValue * {
+    const auto key = internRuntimeSymbol(encodeText(name));
+    const auto found = std::find_if(
+        options->entries.begin(), options->entries.end(),
+        [&](const auto &entry) { return entry.first == key; });
+    return found == options->entries.end() ? nullptr : &found->second;
+  };
+  const auto textOption = [&](std::string_view name,
+                              bool required) -> std::optional<std::string> {
+    const auto *value = option(name);
+    if (!value) {
+      if (required)
+        throw IrError("fact search requires " + std::string(name));
+      return std::nullopt;
+    }
+    const auto text = std::get_if<VmText>(value);
+    if (!text)
+      throw IrError("fact search " + std::string(name) + " must be text");
+    return decodeText(text->pieces);
+  };
+  const auto numberOption = [&](std::string_view name)
+      -> std::optional<double> {
+    const auto *value = option(name);
+    if (!value)
+      return std::nullopt;
+    if (const auto number = std::get_if<double>(value)) {
+      if (!std::isfinite(*number))
+        throw IrError("fact search " + std::string(name) +
+                      " must be finite");
+      return *number;
+    }
+    if (const auto degree = std::get_if<VmDegree>(value))
+      return degree->value;
+    throw IrError("fact search " + std::string(name) +
+                  " must be numeric");
+  };
+  const auto valueType = [](const VmValue &value) -> std::optional<IrSymbolRef> {
+    if (const auto symbol = std::get_if<VmSymbol>(&value))
+      return symbol->value;
+    if (const auto fact = std::get_if<VmFactPtr>(&value); fact && *fact)
+      return (*fact)->type;
+    return std::nullopt;
+  };
+  const auto asciiLower = [](std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](char byte) {
+      const auto current = static_cast<unsigned char>(byte);
+      return static_cast<char>(current >= 'A' && current <= 'Z'
+                                   ? current - 'A' + 'a'
+                                   : current);
+    });
+    return value;
+  };
+  const auto like = [](std::string_view value, std::string_view pattern) {
+    std::vector<unsigned char> previous(value.size() + 1);
+    std::vector<unsigned char> current(value.size() + 1);
+    previous[0] = 1;
+    for (std::size_t patternIndex = 0; patternIndex < pattern.size();
+         ++patternIndex) {
+      std::fill(current.begin(), current.end(), 0);
+      char token = pattern[patternIndex];
+      bool escaped = false;
+      if (token == '\\') {
+        if (++patternIndex == pattern.size())
+          throw IrError("fact search LIKE pattern has a trailing escape");
+        token = pattern[patternIndex];
+        escaped = true;
+      }
+      if (!escaped && token == '%') {
+        current[0] = previous[0];
+        for (std::size_t index = 1; index <= value.size(); ++index)
+          current[index] = previous[index] || current[index - 1];
+      } else {
+        for (std::size_t index = 1; index <= value.size(); ++index)
+          current[index] =
+              previous[index - 1] &&
+              ((!escaped && token == '_') || value[index - 1] == token);
+      }
+      previous.swap(current);
+    }
+    return previous[value.size()] != 0;
+  };
+
+  const auto mode = *textOption("mode", true);
+  auto result = std::make_shared<VmArray>();
+  result->values.reserve(facts.size());
+  const auto appendMatching = [&](const auto &matches) {
+    for (const auto &fact : facts) {
+      if (!fact)
+        throw IrError("fact search contains an invalid fact");
+      const auto found = std::find_if(
+          fact->fields.begin(), fact->fields.end(),
+          [&](const auto &entry) { return entry.first == fieldKey; });
+      if (found != fact->fields.end() && matches(found->second))
+        result->values.emplace_back(fact);
+    }
+  };
+
+  if (mode == "exact" || mode == "prefix" || mode == "suffix" ||
+      mode == "contains" || mode == "like" || mode == "regex") {
+    auto query = *textOption("query", true);
+    const auto caseMode = textOption("case", false).value_or("sensitive");
+    if (caseMode != "sensitive" && caseMode != "insensitive")
+      throw IrError("fact search case must be sensitive or insensitive");
+    if (query.size() > 1024)
+      throw IrError("fact search pattern exceeds 1024 bytes");
+    const bool insensitive = caseMode == "insensitive";
+    const bool foldText = insensitive && mode != "regex";
+    if (foldText)
+      query = asciiLower(std::move(query));
+    std::optional<std::regex> expression;
+    if (mode == "regex") {
+      try {
+        auto flags = std::regex_constants::ECMAScript |
+                     std::regex_constants::optimize;
+        if (insensitive)
+          flags |= std::regex_constants::icase;
+        expression.emplace(query, flags);
+      } catch (const std::regex_error &) {
+        throw IrError("fact search regular expression is invalid");
+      }
+    }
+    appendMatching([&](const VmValue &value) {
+      const auto text = std::get_if<VmText>(&value);
+      if (!text)
+        return false;
+      auto candidate = decodeText(text->pieces);
+      if (candidate.size() > 64 * 1024)
+        throw IrError("fact search text exceeds 64 KiB");
+      if (foldText)
+        candidate = asciiLower(std::move(candidate));
+      if (mode == "exact")
+        return candidate == query;
+      if (mode == "prefix")
+        return candidate.starts_with(query);
+      if (mode == "suffix")
+        return candidate.ends_with(query);
+      if (mode == "contains")
+        return candidate.find(query) != std::string::npos;
+      if (mode == "like")
+        return like(candidate, query);
+      return std::regex_search(candidate, *expression);
+    });
+    return result;
+  }
+
+  if (mode == "hierarchy") {
+    const auto *query = option("query");
+    if (!query)
+      throw IrError("fact search hierarchy mode requires query");
+    const auto queryType = valueType(*query);
+    if (!queryType)
+      throw IrError("fact search hierarchy query must be a type or fact");
+    const auto direction = *textOption("direction", true);
+    const auto includeSelf = numberOption("includeSelf").value_or(1.0);
+    if (includeSelf != 0.0 && includeSelf != 1.0)
+      throw IrError("fact search includeSelf must be 0.0 or 1.0");
+    appendMatching([&](const VmValue &value) {
+      const auto candidate = valueType(value);
+      if (!candidate || (includeSelf == 0.0 && *candidate == *queryType))
+        return false;
+      if (direction == "descendants")
+        return !factStore_->hierarchyProof(*candidate, *queryType).empty();
+      if (direction == "ancestors")
+        return !factStore_->hierarchyProof(*queryType, *candidate).empty();
+      if (direction == "related")
+        return !factStore_->commonAncestors(*candidate, *queryType).empty();
+      throw IrError("fact search hierarchy direction is invalid");
+    });
+    return result;
+  }
+
+  if (mode == "degree") {
+    const auto query = numberOption("query");
+    const auto tolerance = numberOption("tolerance");
+    const auto minimum = numberOption("minimum");
+    const auto maximum = numberOption("maximum");
+    const bool closeness = query && tolerance;
+    const bool range = minimum || maximum;
+    if (closeness == range || (query.has_value() != tolerance.has_value()))
+      throw IrError(
+          "fact search degree requires query+tolerance or range bounds");
+    const auto requireDegree = [](double value, std::string_view name) {
+      if (value < 0.0 || value > 1.0)
+        throw IrError("fact search " + std::string(name) +
+                      " must be within [0.0, 1.0]");
+    };
+    if (query)
+      requireDegree(*query, "query");
+    if (tolerance)
+      requireDegree(*tolerance, "tolerance");
+    if (minimum)
+      requireDegree(*minimum, "minimum");
+    if (maximum)
+      requireDegree(*maximum, "maximum");
+    if (minimum && maximum && *minimum > *maximum)
+      throw IrError("fact search degree minimum exceeds maximum");
+    appendMatching([&](const VmValue &value) {
+      std::optional<double> candidate;
+      if (const auto number = std::get_if<double>(&value))
+        candidate = *number;
+      else if (const auto degree = std::get_if<VmDegree>(&value))
+        candidate = degree->value;
+      if (!candidate || !std::isfinite(*candidate) || *candidate < 0.0 ||
+          *candidate > 1.0)
+        return false;
+      if (closeness)
+        return std::fabs(*candidate - *query) <= *tolerance;
+      return (!minimum || *candidate >= *minimum) &&
+             (!maximum || *candidate <= *maximum);
+    });
+    return result;
+  }
+
+  throw IrError("fact search mode is invalid");
 }
 
 VmValue FelidaeKnowledgeRuntime::joinFacts(
@@ -1801,16 +2026,20 @@ VmValue FelidaeKnowledgeRuntime::importCsvFacts(
 
 double FelidaeKnowledgeRuntime::syncDatabase(
     std::span<const PieceId> path) {
+  return persistDatabaseSource(decodeText(path));
+}
+
+double FelidaeKnowledgeRuntime::persistDatabaseSource(
+    std::string_view source, const VmFactPtr &emptySchema) {
   const VmTextDecoder decoder = [this](std::span<const PieceId> pieces) {
     return decodeText(pieces);
   };
-  const auto pathText = decodeText(path);
   // Sync only the facts recorded as belonging to this source -- never the
   // whole store, and never inferred from fact type alone, since two
   // different files can share one fact type (see VmFactStore::recordSource).
-  Form::Db::sync(std::filesystem::path(pathText),
-                 factStore_->snapshotBySource(pathText), runtimeSymbolTable_,
-                 decoder);
+  Form::Db::sync(std::filesystem::path(source),
+                 factStore_->snapshotBySource(source), runtimeSymbolTable_,
+                 decoder, emptySchema);
   return 1.0;
 }
 
@@ -2258,6 +2487,11 @@ VmValue VmRuntime::projectFacts(std::span<const VmFactPtr>,
 double VmRuntime::aggregateFacts(std::span<const VmFactPtr>,
                                  std::span<const PieceId>, std::uint8_t) {
   throw IrError("IR fact aggregation is unavailable in this runtime");
+}
+
+VmValue VmRuntime::searchFacts(std::span<const VmFactPtr>,
+                               std::span<const PieceId>, const VmMapPtr &) {
+  throw IrError("IR fact search is unavailable in this runtime");
 }
 
 VmValue VmRuntime::joinFacts(std::span<const VmFactPtr>,
@@ -2755,6 +2989,21 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
         }
         result = runtime.aggregateFacts(facts, field->pieces,
                                         static_cast<std::uint8_t>(*aggregate));
+      } else if (operation == BuiltinId::FactSearch) {
+        const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
+        const auto field = std::get_if<VmText>(&inputs[1]);
+        const auto options = std::get_if<VmMapPtr>(&inputs[2]);
+        if (!array || !*array || !field || !options || !*options)
+          throw IrError("fact search requires facts, field, and options");
+        std::vector<VmFactPtr> facts;
+        facts.reserve((*array)->values.size());
+        for (const auto &item : (*array)->values) {
+          const auto fact = std::get_if<VmFactPtr>(&item);
+          if (!fact || !*fact)
+            throw IrError("fact search query contains a non-fact value");
+          facts.push_back(*fact);
+        }
+        result = runtime.searchFacts(facts, field->pieces, *options);
       } else {
         const Form::BuiltinTextCodec codec{
             [&](std::span<const PieceId> pieces) {
@@ -2807,17 +3056,20 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
     }
     case IrOpcode::Numeric: {
       const auto count = program.words.at(pc + 3);
-      std::vector<double> operands;
-      operands.reserve(count);
+      // NumericOperation has a verified maximum arity of four. Keep its hot
+      // path on the stack rather than allocating a vector for every scalar
+      // instruction.
+      std::array<double, 4> operands{};
       for (std::size_t index = 0; index < count; ++index) {
         const auto *number = std::get_if<double>(
             &registers.at(program.words.at(pc + 4 + index)));
         if (!number)
           throw IrError("numeric operation operands must be numbers");
-        operands.push_back(*number);
+        operands[index] = *number;
       }
       registers.at(program.words.at(pc + 1)) = evaluateNumericOperation(
-          static_cast<NumericOperation>(program.words.at(pc + 2)), operands);
+          static_cast<NumericOperation>(program.words.at(pc + 2)),
+          std::span<const double>(operands.data(), count));
       break;
     }
     case IrOpcode::Tensor: {

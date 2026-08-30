@@ -226,6 +226,7 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
     {BuiltinId::FactJoin, "fact:join", BuiltinEffect::Pure},
     {BuiltinId::FactProject, "fact:project", BuiltinEffect::Pure},
     {BuiltinId::FactAggregate, "fact:aggregate", BuiltinEffect::Pure},
+    {BuiltinId::FactSearch, "fact:search", BuiltinEffect::Pure},
     {BuiltinId::FactSetCombine, "fact:setCombine", BuiltinEffect::Pure},
     {BuiltinId::WhereGuardFailed, "where:guardFailed",
      BuiltinEffect::WritesExternalState}};
