@@ -311,6 +311,73 @@ private:
         result->sourceSpan = term->sourceSpan;
         return result;
       }
+      if (term->name == "__query:where") {
+        // Type.update(values: {...}).where(...) / Type.delete().where(...):
+        // an alternative to the match: argument, for callers who prefer a
+        // SQL-style "verb, then condition" order. This intercepts the raw,
+        // not-yet-lowered receiver term directly and reuses the exact same
+        // Type.where(...) predicate construction (and the same fact:update/
+        // fact:delete BuiltinIds) as the match:-argument form below -- there
+        // is still exactly one place that builds an update/delete predicate.
+        if (term->args.empty())
+          throw IntegerParserError("where requires a fact query target");
+        const auto receiver =
+            std::dynamic_pointer_cast<TermExpr>(term->args.front().value);
+        const auto dot =
+            receiver ? receiver->name.rfind('.') : std::string::npos;
+        const auto receiverMethod = dot == std::string::npos
+                                        ? std::string{}
+                                        : receiver->name.substr(dot + 1);
+        const bool isUpdate = receiverMethod == "update";
+        const bool isDelete = receiverMethod == "delete";
+        const bool hasMatch =
+            receiver &&
+            std::any_of(receiver->args.begin(), receiver->args.end(),
+                       [](const Arg &argument) {
+                         return argument.name == "match";
+                       });
+        if (receiver && (isUpdate || isDelete) && !hasMatch) {
+          const auto receiverTypeName = receiver->name.substr(0, dot);
+          if (!factTypes_.contains(receiverTypeName))
+            throw IntegerParserError("where requires a fact query target");
+          std::shared_ptr<Expr> values;
+          if (isUpdate) {
+            for (const auto &argument : receiver->args)
+              if (argument.name == "values")
+                values = argument.value;
+            if (!values || receiver->args.size() != 1)
+              throw IntegerParserError(receiverTypeName +
+                                       ".update requires a values map");
+          } else if (!receiver->args.empty()) {
+            throw IntegerParserError(
+                receiverTypeName +
+                ".delete takes no arguments when chained with .where(...)");
+          }
+          std::vector<Arg> condition(term->args.begin() + 1, term->args.end());
+          auto whereCall = std::make_shared<TermExpr>(
+              receiverTypeName + ".where", std::move(condition));
+          whereCall->sourceSpan = term->sourceSpan;
+          auto rows = expression(std::move(whereCall));
+          if (isUpdate) {
+            auto result = std::make_shared<TermExpr>(
+                "fact:update",
+                std::vector<Arg>{Arg(std::string{}, std::move(rows)),
+                                 Arg(std::string{}, expression(values))},
+                BuiltinId::FactUpdate);
+            result->sourceSpan = term->sourceSpan;
+            return result;
+          }
+          auto result = std::make_shared<TermExpr>(
+              "fact:delete",
+              std::vector<Arg>{Arg(std::string{}, std::move(rows))},
+              BuiltinId::FactDelete);
+          result->sourceSpan = term->sourceSpan;
+          return result;
+        }
+        // Not an update/delete chain -- fall through to ordinary handling
+        // below (e.g. an unrelated __query:where use is simply unsupported,
+        // matching prior behavior).
+      }
       for (auto &argument : term->args)
         argument.value = expression(argument.value);
       if (term->name == "ancestorAnalysis") {
@@ -939,6 +1006,20 @@ bool isDirectDeterministicExpression(
     return definedSymbols.contains(variable->nameId);
   }
   if (const auto term = std::dynamic_pointer_cast<TermExpr>(expression)) {
+    // csv.toFacts has two declared core/csv.fx arities (with/without a
+    // source path for db.sync-equivalent ownership tracking -- see
+    // RegisterVm.cpp's csv.toFacts dispatch, which already handles both at
+    // runtime). builtinOperationArity is one fixed value per BuiltinId, so
+    // it cannot itself express "2 or 3"; this is the one deliberate
+    // exception, not a general variable-arity mechanism.
+    if (term->builtinId == BuiltinId::CsvToFacts &&
+        (term->args.size() == 2 || term->args.size() == 3)) {
+      return std::all_of(term->args.begin(), term->args.end(),
+                         [&](const Arg &argument) {
+                           return isDirectDeterministicExpression(
+                               argument.value, definedSymbols, context);
+                         });
+    }
     if (builtinOperationArity(term->builtinId)) {
       std::vector<std::string_view> names;
       names.reserve(term->args.size());
@@ -1504,6 +1585,18 @@ void appendFragment(FelidaeIr &target, FelidaeIr fragment,
       reg(fragment.words[pc + 4]);
       width = 5;
       break;
+    case IrOpcode::FactJoin:
+      reg(fragment.words[pc + 1]);
+      reg(fragment.words[pc + 2]);
+      reg(fragment.words[pc + 3]);
+      reg(fragment.words[pc + 4]);
+      reg(fragment.words[pc + 5]);
+      reg(fragment.words[pc + 6]);
+      symbol(fragment.words[pc + 7]);
+      symbol(fragment.words[pc + 8]);
+      symbol(fragment.words[pc + 9]);
+      width = 10;
+      break;
     case IrOpcode::Call:
     case IrOpcode::Builtin:
     case IrOpcode::SemanticEval:
@@ -1737,7 +1830,67 @@ FelidaeIr IrCodeGenerator::lowerExpression(
                       {static_cast<IrWord>(IrOpcode::LoadSymbol), result,
                        static_cast<IrWord>(ir.symbols.size() - 1)});
     } else if (const auto term = std::dynamic_pointer_cast<TermExpr>(value)) {
-      if (const auto arity = builtinOperationArity(term->builtinId)) {
+      if (term->builtinId == BuiltinId::CsvToFacts &&
+          (term->args.size() == 2 || term->args.size() == 3)) {
+        // Mirrors the generic builtin-lowering block below, except the
+        // arity itself varies (2 or 3, matching the isDirectDeterministicExpression
+        // exception above) instead of being one fixed constant per
+        // BuiltinId, so it cannot reuse builtinOperationArity/
+        // builtinOperationArgumentOrder as-is.
+        std::vector<std::optional<RegisterId>> ordered(term->args.size());
+        for (const auto &argument : term->args) {
+          const std::optional<std::size_t> index =
+              argument.name == "data"     ? std::optional<std::size_t>{0}
+              : argument.name == "type"   ? std::optional<std::size_t>{1}
+              : argument.name == "source" ? std::optional<std::size_t>{2}
+                                          : std::nullopt;
+          if (!index || *index >= ordered.size() || ordered[*index]) {
+            throw IntegerParserError("csv.toFacts has invalid arguments");
+          }
+          ordered[*index] = self(self, argument.value);
+        }
+        std::vector<RegisterId> operands;
+        operands.reserve(ordered.size());
+        for (const auto operand : ordered)
+          operands.push_back(*operand);
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::Builtin), result,
+                         static_cast<IrWord>(term->builtinId),
+                         static_cast<IrWord>(operands.size())});
+        ir.words.insert(ir.words.end(), operands.begin(), operands.end());
+      } else if (term->builtinId == BuiltinId::FactJoin) {
+        // Dedicated opcode, not the generic Builtin encoding: a join
+        // synthesizes a "Joined" fact with "left"/"right" fields whose
+        // names never appear in the source program, so the VM cannot reuse
+        // a runtime text encoder for them (RegisterVm stays decoder-only --
+        // see FelidaeKnowledgeRuntime::joinFacts). Instead these three
+        // names are interned as ordinary compiler symbols here, exactly
+        // like ForEachFact's typeSymbol/callbackSymbol above; the
+        // CompilerFrontend module-symbol pass (compileProgramTextToIr)
+        // gives every such symbol a real SentencePiece encoding once, at
+        // compile time, and RegisterVm resolves them at dispatch time via
+        // resolveSymbol -- no runtime encodeText call.
+        if (term->args.size() != 5)
+          throw IntegerParserError("fact join requires five arguments");
+        std::vector<RegisterId> operands;
+        operands.reserve(5);
+        for (const auto &argument : term->args)
+          operands.push_back(self(self, argument.value));
+        ir.symbols.push_back(symbolIdForName("Joined"));
+        const auto joinedTypeSymbol =
+            static_cast<IrWord>(ir.symbols.size() - 1);
+        ir.symbols.push_back(symbolIdForName("left"));
+        const auto joinedLeftSymbol =
+            static_cast<IrWord>(ir.symbols.size() - 1);
+        ir.symbols.push_back(symbolIdForName("right"));
+        const auto joinedRightSymbol =
+            static_cast<IrWord>(ir.symbols.size() - 1);
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::FactJoin), result,
+                         operands[0], operands[1], operands[2], operands[3],
+                         operands[4], joinedTypeSymbol, joinedLeftSymbol,
+                         joinedRightSymbol});
+      } else if (const auto arity = builtinOperationArity(term->builtinId)) {
         std::vector<std::string_view> names;
         names.reserve(term->args.size());
         for (const auto &argument : term->args)

@@ -212,6 +212,21 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
     {BuiltinId::SetCardinality, "Set:cardinality", BuiltinEffect::Pure},
     {BuiltinId::SetContains, "Set:contains", BuiltinEffect::Pure},
     {BuiltinId::SetContainsBy, "Set:containsBy", BuiltinEffect::Pure},
+    // Compiler-only fact/query operations (see the enum comment in
+    // BuiltinOperation.h): Type.* lowering attaches these BuiltinIds
+    // directly, matching the display names already used in
+    // IrCodeGenerator.cpp's TermExpr construction and RegisterVm.cpp's error
+    // messages for each. This table entry was missing entirely for all
+    // eight, which fails the lockstep static_assert below and does not
+    // build.
+    {BuiltinId::ArrayLimit, "array:limit", BuiltinEffect::Pure},
+    {BuiltinId::FactInsert, "fact:insert", BuiltinEffect::WritesExternalState},
+    {BuiltinId::FactUpdate, "fact:update", BuiltinEffect::WritesExternalState},
+    {BuiltinId::FactDelete, "fact:delete", BuiltinEffect::WritesExternalState},
+    {BuiltinId::FactJoin, "fact:join", BuiltinEffect::Pure},
+    {BuiltinId::FactProject, "fact:project", BuiltinEffect::Pure},
+    {BuiltinId::FactAggregate, "fact:aggregate", BuiltinEffect::Pure},
+    {BuiltinId::FactSetCombine, "fact:setCombine", BuiltinEffect::Pure},
     {BuiltinId::WhereGuardFailed, "where:guardFailed",
      BuiltinEffect::WritesExternalState}};
 
