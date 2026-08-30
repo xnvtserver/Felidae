@@ -1,0 +1,10 @@
+name: Felidae CodeQL Configuration
+
+paths:
+  - "src/**"
+  - "include/**"
+
+paths-ignore:
+  - "third_party/**"
+  - "build/**"
+  - "tests/**"
