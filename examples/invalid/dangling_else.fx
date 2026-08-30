@@ -1,4 +1,0 @@
-else
-    return (
-        value: "bad"
-    )

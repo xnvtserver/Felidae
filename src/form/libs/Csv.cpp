@@ -11,15 +11,38 @@
 namespace Felidae::Form::Csv {
 namespace {
 
-std::vector<std::string> parseLine(std::string_view line) {
-  std::vector<std::string> fields;
+// Scans the whole input in one pass rather than splitting on newlines
+// first: RFC4180 allows a quoted field to contain literal CR/LF bytes, so a
+// newline can only be trusted as a row separator once it is known not to be
+// inside an open quote. Reading line-by-line (the previous implementation)
+// cannot make that distinction and misparses any field with an embedded
+// newline as "unterminated". A record here is "empty" only when it has no
+// fields at all (the position right after a preceding row terminator with
+// nothing following); a single empty *field* -- one comma with nothing
+// between it and the next comma/newline -- always counts as real content,
+// matching the blank-line-vs-single-empty-column distinction the caller
+// still needs to make.
+std::vector<std::vector<std::string>> splitCsvRows(std::string_view text) {
+  std::vector<std::vector<std::string>> rows;
+  std::vector<std::string> row;
   std::string field;
   bool quoted = false;
-  for (std::size_t index = 0; index < line.size(); ++index) {
-    const char current = line[index];
+  bool rowHasContent = false;
+  const auto endField = [&] {
+    row.push_back(std::move(field));
+    field.clear();
+    rowHasContent = true;
+  };
+  const auto endRow = [&] {
+    rows.push_back(std::move(row));
+    row.clear();
+    rowHasContent = false;
+  };
+  for (std::size_t index = 0; index < text.size(); ++index) {
+    const char current = text[index];
     if (quoted) {
       if (current == '"') {
-        if (index + 1 < line.size() && line[index + 1] == '"') {
+        if (index + 1 < text.size() && text[index + 1] == '"') {
           field.push_back('"');
           ++index;
         } else {
@@ -28,44 +51,51 @@ std::vector<std::string> parseLine(std::string_view line) {
       } else {
         field.push_back(current);
       }
-      // A quote only opens quoted mode as the first character of a field
-      // (RFC4180): a stray quote appearing mid-unquoted-field is literal
-      // text, not a toggle, and must not swallow a later comma.
-    } else if (current == '"' && field.empty()) {
+      continue;
+    }
+    // A quote only opens quoted mode as the first character of a field
+    // (RFC4180): a stray quote appearing mid-unquoted-field is literal
+    // text, not a toggle, and must not swallow a later comma.
+    if (current == '"' && field.empty()) {
       quoted = true;
     } else if (current == ',') {
-      fields.push_back(std::move(field));
-      field.clear();
+      endField();
+    } else if (current == '\r') {
+      if (index + 1 < text.size() && text[index + 1] == '\n')
+        continue;
+      endField();
+      endRow();
+    } else if (current == '\n') {
+      endField();
+      endRow();
     } else {
       field.push_back(current);
     }
   }
   if (quoted)
     throw std::runtime_error("csv.parse found an unterminated quoted field");
-  fields.push_back(std::move(field));
-  return fields;
+  if (!field.empty() || rowHasContent) {
+    endField();
+    endRow();
+  }
+  return rows;
 }
 
 Json::Value parseRows(std::string_view text, std::string_view typeName) {
-  std::istringstream input{std::string(text)};
-  std::string line;
   Json::Value result = Json::Value::array();
-  if (!std::getline(input, line))
+  const auto rows = splitCsvRows(text);
+  if (rows.empty())
     return result;
-  if (!line.empty() && line.back() == '\r')
-    line.pop_back();
-  const auto headers = parseLine(line);
-  while (std::getline(input, line)) {
-    if (!line.empty() && line.back() == '\r')
-      line.pop_back();
+  const auto &headers = rows.front();
+  for (std::size_t rowIndex = 1; rowIndex < rows.size(); ++rowIndex) {
+    const auto &fields = rows[rowIndex];
     // A blank line is ambiguous for multi-column data (most commonly a
     // harmless trailing blank line at end of file, so it's skipped), but for
     // single-column data it's the only way to represent an intentional
     // empty-string value and must become a real row, not be silently
     // dropped.
-    if (line.empty() && headers.size() != 1)
+    if (fields.size() == 1 && fields.front().empty() && headers.size() != 1)
       continue;
-    const auto fields = parseLine(line);
     if (fields.size() != headers.size())
       throw std::runtime_error(
           "csv.parse row has a different field count than the header");

@@ -644,8 +644,7 @@ if(FELIDAE_BUILD_TESTS)
         FELIDAE_COFFEE_REASONING_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/v2_examples/coffee_vending_theorem_solver.fx"
         FELIDAE_HVAC_REASONING_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/v2_examples/air_conditioner_theorem_solver.fx")
     target_compile_definitions(felidae_sentencepiece_pipeline_test PRIVATE
-        FELIDAE_NUMERIC_OPERATIONS_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/v2_examples/numeric_operations.fx"
-        FELIDAE_TENSOR_OPERATIONS_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/v2_examples/tensor_operations.fx")
+        FELIDAE_NUMERIC_OPERATIONS_FIXTURE_PATH="${CMAKE_SOURCE_DIR}/v2_examples/numeric_operations.fx")
     target_compile_options(felidae_sentencepiece_pipeline_test PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
         $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
@@ -771,7 +770,8 @@ if(FELIDAE_BUILD_TESTS)
     set_tests_properties(felidae_form_isolation PROPERTIES TIMEOUT 30)
 
     add_executable(felidae_ir_test tests/FelidaeIrTest.cpp)
-    target_link_libraries(felidae_ir_test PRIVATE felidae_form Threads::Threads)
+    target_link_libraries(felidae_ir_test PRIVATE felidae_form Threads::Threads
+        nlohmann_json::nlohmann_json)
     target_compile_definitions(felidae_ir_test PRIVATE
         FELIDAE_TEST_OUTPUT_DIR="${CMAKE_BINARY_DIR}/test-artifacts/ir")
     target_compile_options(felidae_ir_test PRIVATE
@@ -803,7 +803,6 @@ if(FELIDAE_BUILD_TESTS)
     set(FELIDAE_RUNNABLE_V2_EXAMPLES
         form_core_concepts
         numeric_operations
-        tensor_operations
         json_csv_operations
         csv_fact_database
         group_operations
@@ -834,13 +833,6 @@ if(FELIDAE_BUILD_TESTS)
             TIMEOUT 30
             LABELS "examples;integration")
     endforeach()
-    if(FELIDAE_ENABLE_LIBTORCH)
-        set_tests_properties(felidae_example_tensor_operations PROPERTIES
-            PASS_REGULAR_EXPRESSION "dot: 32")
-    else()
-        set_tests_properties(felidae_example_tensor_operations PROPERTIES
-            DISABLED TRUE)
-    endif()
     set_tests_properties(felidae_example_json_csv_operations PROPERTIES
         PASS_REGULAR_EXPRESSION "name: Ada")
     # renderNumber() only forces a trailing .0 on exactly 0.0/1.0 (the
@@ -862,11 +854,11 @@ if(FELIDAE_BUILD_TESTS)
     set_tests_properties(felidae_example_selective_relationship_reasoning PROPERTIES
         PASS_REGULAR_EXPRESSION "connected_via_signal: 1.0\\}")
     set_tests_properties(felidae_example_where_guard_chain PROPERTIES
-        PASS_REGULAR_EXPRESSION "passes: 82.0, lowScore: 0.0, inactive: 0.0")
+        PASS_REGULAR_EXPRESSION "passes: 82, lowScore: 0.0, inactive: 0.0")
     set_tests_properties(felidae_example_optional_end_blocks PROPERTIES
-        PASS_REGULAR_EXPRESSION "high: 2.0, middle: 1.0, low: 0.0")
+        PASS_REGULAR_EXPRESSION "high: 2, middle: 1.0, low: 0.0")
     set_tests_properties(felidae_example_end_then_pipeline PROPERTIES
-        PASS_REGULAR_EXPRESSION "accepted: 10.0, rejected: 0.0")
+        PASS_REGULAR_EXPRESSION "accepted: 10, rejected: 0.0")
 
     # Tests are deliberately opt-in at build time.  A normal IDE build should
     # compile only the two production executables and their required

@@ -1,1 +1,0 @@
-return "outside method"

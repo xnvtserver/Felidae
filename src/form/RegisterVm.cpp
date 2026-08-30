@@ -92,6 +92,12 @@ std::size_t irInstructionWidth(const FelidaeIr &ir, std::size_t pc) {
     return bounded(5);
   case IrOpcode::Compare:
     return bounded(5);
+  // result, five operand registers (left/right rows, left/right field
+  // text, kind), three symbol operands for the ephemeral "Joined"
+  // fact's synthesized type/left/right names -- see the FactJoin case in
+  // IrCodeGenerator.cpp's lowering.
+  case IrOpcode::FactJoin:
+    return bounded(10);
   case IrOpcode::Membership:
     return bounded(6);
   case IrOpcode::Call:
@@ -561,6 +567,14 @@ void verifyControlFlowInitialization(
       break;
     case IrOpcode::ForEachFact:
       requireFlowRead(state, ir.words[pc + 4]);
+      write(ir.words[pc + 1]);
+      break;
+    case IrOpcode::FactJoin:
+      requireFlowRead(state, ir.words[pc + 2]);
+      requireFlowRead(state, ir.words[pc + 3]);
+      requireFlowRead(state, ir.words[pc + 4]);
+      requireFlowRead(state, ir.words[pc + 5]);
+      requireFlowRead(state, ir.words[pc + 6]);
       write(ir.words[pc + 1]);
       break;
     case IrOpcode::StoreSymbol:
@@ -1484,8 +1498,15 @@ double FelidaeKnowledgeRuntime::aggregateFacts(
       throw IrError("fact aggregate field must contain finite numbers");
     values.push_back(*number);
   }
-  if (values.empty())
+  // Mirrors the existing array-based Sum/Average/Min/Max convention in
+  // Builtin.cpp exactly (see its BuiltinId::Sum/Average/Min/Max case): an
+  // empty Sum is 0.0, not an error -- every other empty aggregate throws.
+  // Do not duplicate a different empty-input rule here.
+  if (values.empty()) {
+    if (operation == 0)
+      return 0.0;
     throw IrError("fact aggregate requires at least one matching fact");
+  }
   if (operation == 0)
     return std::accumulate(values.begin(), values.end(), 0.0);
   if (operation == 1)
@@ -1498,17 +1519,22 @@ double FelidaeKnowledgeRuntime::aggregateFacts(
 
 VmValue FelidaeKnowledgeRuntime::joinFacts(
     std::span<const VmFactPtr> left, std::span<const VmFactPtr> right,
-    std::span<const PieceId> leftField,
-    std::span<const PieceId> rightField, std::uint8_t kind) {
+    std::span<const PieceId> leftField, std::span<const PieceId> rightField,
+    std::uint8_t kind, IrSymbolRef joinedType, IrSymbolRef joinedLeft,
+    IrSymbolRef joinedRight) {
   if (kind > 3)
     throw IrError("fact join kind is invalid");
+  // joinedType/joinedLeft/joinedRight (the "Joined"/"left"/"right" names
+  // synthesized for the ephemeral result fact) are resolved by the caller
+  // from compile-time symbol operands on IrOpcode::FactJoin -- see
+  // IrCodeGenerator.cpp's dedicated FactJoin lowering. RegisterVm never
+  // encodes text to pieces at runtime; only leftField/rightField (real
+  // field names from the source program's own string-literal constants)
+  // need interning here, exactly like every other query/aggregate path.
   const auto leftKey = internRuntimeSymbol(
       PieceSequence(leftField.begin(), leftField.end()));
   const auto rightKey = internRuntimeSymbol(
       PieceSequence(rightField.begin(), rightField.end()));
-  const auto joinedType = internRuntimeSymbol(encodeText("Joined"));
-  const auto joinedLeft = internRuntimeSymbol(encodeText("left"));
-  const auto joinedRight = internRuntimeSymbol(encodeText("right"));
   const auto read = [](const VmFactPtr &fact,
                        IrSymbolRef field) -> const VmValue * {
     if (!fact)
@@ -1911,6 +1937,19 @@ void IrVerifier::verify(const FelidaeIr &ir) {
       initialized[ir.words[pc + 1]] = true;
       pc += 5;
       break;
+    case IrOpcode::FactJoin:
+      requireRegister(ir, ir.words[pc + 1]);
+      for (const auto offset : {2u, 3u, 4u, 5u, 6u}) {
+        requireRegister(ir, ir.words[pc + offset]);
+        requireInitialized(initialized, ir.words[pc + offset]);
+      }
+      if (ir.words[pc + 7] >= ir.symbols.size() ||
+          ir.words[pc + 8] >= ir.symbols.size() ||
+          ir.words[pc + 9] >= ir.symbols.size())
+        throw IrError("IR fact join references an invalid symbol");
+      initialized[ir.words[pc + 1]] = true;
+      pc += 10;
+      break;
     case IrOpcode::Add:
     case IrOpcode::Sub:
     case IrOpcode::Mul:
@@ -1984,7 +2023,13 @@ void IrVerifier::verify(const FelidaeIr &ir) {
       const auto operation = static_cast<BuiltinId>(ir.words[pc + 2]);
       const auto arity = builtinOperationArity(operation);
       const auto count = ir.words[pc + 3];
-      if (!arity || count != *arity)
+      // csv.toFacts is the one deliberate exception to "one fixed arity per
+      // BuiltinId" (2 or 3 args -- see the matching exception in
+      // IrCodeGenerator.cpp's eligibility check and lowering).
+      const bool validCount =
+          operation == BuiltinId::CsvToFacts ? (count == 2 || count == 3)
+                                             : (arity && count == *arity);
+      if (!validCount)
         throw IrError("IR builtin operation ID or arity is invalid");
       const auto width = irInstructionWidth(ir, pc);
       for (std::size_t index = 0; index < count; ++index) {
@@ -2218,8 +2263,8 @@ double VmRuntime::aggregateFacts(std::span<const VmFactPtr>,
 VmValue VmRuntime::joinFacts(std::span<const VmFactPtr>,
                              std::span<const VmFactPtr>,
                              std::span<const PieceId>,
-                             std::span<const PieceId>,
-                             std::uint8_t) {
+                             std::span<const PieceId>, std::uint8_t,
+                             IrSymbolRef, IrSymbolRef, IrSymbolRef) {
   throw IrError("IR fact join is unavailable in this runtime");
 }
 
@@ -2643,33 +2688,6 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
           facts.push_back(*fact);
         }
         result = runtime.updateFacts(facts, *values);
-      } else if (operation == BuiltinId::FactJoin) {
-        const auto left = std::get_if<VmArrayPtr>(&inputs[0]);
-        const auto right = std::get_if<VmArrayPtr>(&inputs[1]);
-        const auto leftField = std::get_if<VmText>(&inputs[2]);
-        const auto rightField = std::get_if<VmText>(&inputs[3]);
-        const auto kind = std::get_if<double>(&inputs[4]);
-        if (!left || !*left || !right || !*right || !leftField ||
-            !rightField || !kind || *kind < 0.0 || *kind > 3.0 ||
-            std::trunc(*kind) != *kind)
-          throw IrError(
-              "fact join requires two queries, two fields, and a join kind");
-        const auto facts = [](const VmArrayPtr &array) {
-          std::vector<VmFactPtr> result;
-          result.reserve(array->values.size());
-          for (const auto &item : array->values) {
-            const auto fact = std::get_if<VmFactPtr>(&item);
-            if (!fact || !*fact)
-              throw IrError("fact join query contains a non-fact value");
-            result.push_back(*fact);
-          }
-          return result;
-        };
-        const auto leftFacts = facts(*left);
-        const auto rightFacts = facts(*right);
-        result = runtime.joinFacts(leftFacts, rightFacts, leftField->pieces,
-                                   rightField->pieces,
-                                   static_cast<std::uint8_t>(*kind));
       } else if (operation == BuiltinId::FactProject) {
         const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
         const auto fieldArray = std::get_if<VmArrayPtr>(&inputs[1]);
@@ -2943,6 +2961,40 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
         values->values.push_back(std::move(value));
       }
       registers.at(program.words.at(pc + 1)) = std::move(values);
+      break;
+    }
+    case IrOpcode::FactJoin: {
+      const auto facts = [](const VmValue &value) {
+        const auto array = std::get_if<VmArrayPtr>(&value);
+        if (!array || !*array)
+          throw IrError("fact join requires two queries, two fields, and a "
+                        "join kind");
+        std::vector<VmFactPtr> result;
+        result.reserve((*array)->values.size());
+        for (const auto &item : (*array)->values) {
+          const auto fact = std::get_if<VmFactPtr>(&item);
+          if (!fact || !*fact)
+            throw IrError("fact join query contains a non-fact value");
+          result.push_back(*fact);
+        }
+        return result;
+      };
+      const auto leftFacts = facts(registers.at(program.words.at(pc + 2)));
+      const auto rightFacts = facts(registers.at(program.words.at(pc + 3)));
+      const auto leftField =
+          std::get_if<VmText>(&registers.at(program.words.at(pc + 4)));
+      const auto rightField =
+          std::get_if<VmText>(&registers.at(program.words.at(pc + 5)));
+      const auto kind =
+          std::get_if<double>(&registers.at(program.words.at(pc + 6)));
+      if (!leftField || !rightField || !kind || *kind < 0.0 || *kind > 3.0 ||
+          std::trunc(*kind) != *kind)
+        throw IrError(
+            "fact join requires two queries, two fields, and a join kind");
+      registers.at(program.words.at(pc + 1)) = runtime.joinFacts(
+          leftFacts, rightFacts, leftField->pieces, rightField->pieces,
+          static_cast<std::uint8_t>(*kind), symbol(program.words.at(pc + 7)),
+          symbol(program.words.at(pc + 8)), symbol(program.words.at(pc + 9)));
       break;
     }
     case IrOpcode::HierarchyIsA:
