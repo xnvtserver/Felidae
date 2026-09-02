@@ -77,13 +77,14 @@ aggregateExamples() =>
         largest: School.max(field: "students")
     )
 
-# --- 6. Joins: join / leftJoin / rightJoin / OuterJoin -----------------------
+# --- 6. Joins ---------------------------------------------------------------
 # A join result is ephemeral: it never enters fact storage on its own, so
 # joining never inflates School.count() or Teacher.count(). Only an explicit
-# .insert() persists anything.
+# .insert() persists anything. join() is inner by default; kind selects an
+# outer variant without creating parallel method names.
 joinExamples() =>
     inner := School.join(type: Teacher, left: "id", right: "school_id")
-    left := School.leftJoin(type: Teacher, left: "id", right: "school_id")
+    left := School.join(type: Teacher, left: "id", right: "school_id", kind: "left")
     return (inner_count: count(data: inner), left_count: count(data: left))
 
 # --- 7. DML: insert / update / delete ----------------------------------------
@@ -100,16 +101,13 @@ mutationExamples() =>
     )
 
 # --- 8. Ancestry reasoning ---------------------------------------------------
-# commonAncestors/lowestCommonAncestor/highestCommonAncestor read the
-# `extend` graph declared in section 1: Mammal and Reptile both resolve back
-# to Animal without any fact-level relationship being declared between them.
+# commonAncestors reads the `extend` graph declared in section 1. Selecting
+# one candidate as contextually best belongs to the application or SSM.
 ancestryExamples() =>
     cat := Mammal(name: "cat")
     lizard := Reptile(name: "lizard")
     return (
-        common: commonAncestors(left: cat, right: lizard),
-        lowest: lowestCommonAncestor(left: cat, right: lizard),
-        highest: highestCommonAncestor(left: cat, right: lizard)
+        common: commonAncestors(left: cat, right: lizard)
     )
 
 # --- 9. Mixfix syntax --------------------------------------------------------

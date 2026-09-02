@@ -31,15 +31,15 @@ struct RuntimeOutputToken {
 // a finite decoder vocabulary and every selected position is range-checked
 // against the current operation inputs before it enters a VM register.
 inline constexpr std::size_t kRuntimeModelReferenceLimit = 16;
-inline constexpr std::int64_t kRuntimeStructuralInputTokens = 32;
-inline constexpr std::string_view kRuntimeArtifactFormatVersion = "1";
+inline constexpr std::int64_t kRuntimeStructuralInputTokens = 48;
+inline constexpr std::string_view kRuntimeArtifactFormatVersion = "2";
 inline constexpr std::string_view kRuntimeModelFamily =
     "felidae-vm-runtime-gru";
-inline constexpr std::string_view kRuntimeModelVersion = "runtime-gru-v1";
+inline constexpr std::string_view kRuntimeModelVersion = "runtime-gru-v2";
 inline constexpr std::string_view kRuntimeTokenizerContract =
-    "sentencepiece-id-sequence-v1";
+    "sentencepiece-structured-values-v2";
 inline constexpr std::string_view kRuntimeDecoderContract =
-    "operation-sequence-hidden-state-v1";
+    "typed-actions-plus-finite-score-v2";
 
 // Single production vocabulary contract used by both the VM loader and the
 // C++ trainer. A manifest's output_vocabulary is checked against this list.
@@ -73,9 +73,12 @@ public:
                    RuntimeContext& context) override;
     double trainTeacherForced(const RuntimeTrainingRecord& record,
                               std::size_t targetToken, double learningRate);
+    double trainScore(const RuntimeTrainingRecord& record,
+                      double learningRate);
     // Deterministic validation path for a persisted JSONL record. It returns
     // a finite vocabulary index without constructing a runtime VmValue.
     std::size_t predictTeacherToken(const RuntimeTrainingRecord& record) const;
+    double predictScore(const RuntimeTrainingRecord& record) const;
     void saveCheckpoint(const std::filesystem::path& checkpointPath) const;
     void exportTorchScript(const std::filesystem::path& artifactPath,
                            std::string_view sentencePieceIdentity) const;

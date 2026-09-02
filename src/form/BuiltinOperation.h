@@ -69,7 +69,6 @@ enum class BuiltinId : std::uint16_t {
   HighestCommonAncestor,
   AncestorAnalysis,
   PropagateFact,
-  DependencySatisfied,
   JsonObject,
   JsonParse,
   JsonGet,
@@ -109,24 +108,6 @@ enum class BuiltinId : std::uint16_t {
   MathMul,
   MathDiv,
   MathMod,
-  ProbabilityMean,
-  ProbabilityVariance,
-  ProbabilityStddev,
-  ProbabilityNormalize,
-  ProbabilityEntropy,
-  ProbabilityCovariance,
-  ProbabilityCorrelation,
-  ProbabilityBernoulli,
-  ProbabilityBinomialPmf,
-  ProbabilityBinomialCdf,
-  ProbabilityPoissonPmf,
-  ProbabilityPoissonCdf,
-  ProbabilityNormalPdf,
-  ProbabilityNormalCdf,
-  ProbabilityUniformPdf,
-  ProbabilityUniformCdf,
-  ProbabilitySample,
-  ProbabilityWeightedChoice,
   ReasoningContrary,
   ReasoningProve,
   ReasoningGrade,
@@ -198,6 +179,13 @@ builtinOperationArity(BuiltinId operation) noexcept {
   case BuiltinId::Min:
   case BuiltinId::Max:
   case BuiltinId::Sort:
+  case BuiltinId::Lower:
+  case BuiltinId::Upper:
+  case BuiltinId::Length:
+  case BuiltinId::StrLen:
+  case BuiltinId::StrLower:
+  case BuiltinId::StrUpper:
+  case BuiltinId::StrTrim:
   case BuiltinId::ArrayLen:
   case BuiltinId::FileReadFile:
   case BuiltinId::JsonParse:
@@ -231,6 +219,15 @@ builtinOperationArity(BuiltinId operation) noexcept {
   case BuiltinId::FactDelete:
     return 1;
   case BuiltinId::ArrayGet:
+  case BuiltinId::ArrayPush:
+  case BuiltinId::Search:
+  case BuiltinId::Contains:
+  case BuiltinId::StrContains:
+  case BuiltinId::StrConcat:
+  case BuiltinId::StrJoin:
+  case BuiltinId::StrSplit:
+  case BuiltinId::StrStartsWith:
+  case BuiltinId::StrEndsWith:
   case BuiltinId::JsonGet:
   case BuiltinId::JsonHas:
   case BuiltinId::JsonRemove:
@@ -248,6 +245,7 @@ builtinOperationArity(BuiltinId operation) noexcept {
   case BuiltinId::SetContains:
   case BuiltinId::ArrayLimit:
   case BuiltinId::FactUpdate:
+  case BuiltinId::AncestorAnalysis:
   case BuiltinId::FactProject:
   case BuiltinId::MathRandom:
   case BuiltinId::MathPow:
@@ -261,6 +259,7 @@ builtinOperationArity(BuiltinId operation) noexcept {
   case BuiltinId::FactJoin:
     return 5;
   case BuiltinId::JsonSet:
+  case BuiltinId::StrReplace:
   case BuiltinId::GroupValidate:
   case BuiltinId::GroupIdentity:
   case BuiltinId::GroupInverse:
@@ -289,6 +288,14 @@ builtinOperationArgumentIndex(BuiltinId operation,
   case BuiltinId::Sort:
   case BuiltinId::ArrayLen:
     return name == "data" ? std::optional<std::size_t>{0} : std::nullopt;
+  case BuiltinId::Lower:
+  case BuiltinId::Upper:
+  case BuiltinId::Length:
+  case BuiltinId::StrLen:
+  case BuiltinId::StrLower:
+  case BuiltinId::StrUpper:
+  case BuiltinId::StrTrim:
+    return name == "data" ? std::optional<std::size_t>{0} : std::nullopt;
   case BuiltinId::FileReadFile:
     return name == "file" ? std::optional<std::size_t>{0} : std::nullopt;
   case BuiltinId::ArrayGet:
@@ -296,6 +303,44 @@ builtinOperationArgumentIndex(BuiltinId operation,
       return 0;
     return name == "position" ? std::optional<std::size_t>{1}
                                : std::nullopt;
+  case BuiltinId::ArrayPush:
+    if (name == "data")
+      return 0;
+    return name == "value" ? std::optional<std::size_t>{1} : std::nullopt;
+  case BuiltinId::Search:
+  case BuiltinId::Contains:
+    if (name == "data" || name == "value")
+      return 0;
+    return name == "query" ? std::optional<std::size_t>{1} : std::nullopt;
+  case BuiltinId::StrContains:
+    if (name == "data")
+      return 0;
+    return name == "needle" ? std::optional<std::size_t>{1} : std::nullopt;
+  case BuiltinId::StrConcat:
+    if (name == "left")
+      return 0;
+    return name == "right" ? std::optional<std::size_t>{1} : std::nullopt;
+  case BuiltinId::StrJoin:
+  case BuiltinId::StrSplit:
+    if (name == "data")
+      return 0;
+    return name == "delimiter" ? std::optional<std::size_t>{1}
+                                : std::nullopt;
+  case BuiltinId::StrStartsWith:
+    if (name == "data")
+      return 0;
+    return name == "prefix" ? std::optional<std::size_t>{1} : std::nullopt;
+  case BuiltinId::StrEndsWith:
+    if (name == "data")
+      return 0;
+    return name == "suffix" ? std::optional<std::size_t>{1} : std::nullopt;
+  case BuiltinId::StrReplace:
+    if (name == "data")
+      return 0;
+    if (name == "search")
+      return 1;
+    return name == "replacement" ? std::optional<std::size_t>{2}
+                                  : std::nullopt;
   case BuiltinId::JsonParse:
   case BuiltinId::CsvParse:
     return name == "data" ? std::optional<std::size_t>{0} : std::nullopt;
@@ -392,6 +437,10 @@ builtinOperationArgumentIndex(BuiltinId operation,
     if (name == "y")
       return 0;
     return name == "x" ? std::optional<std::size_t>{1} : std::nullopt;
+  case BuiltinId::AncestorAnalysis:
+    if (name == "left")
+      return 0;
+    return name == "right" ? std::optional<std::size_t>{1} : std::nullopt;
   case BuiltinId::PropagateFact:
     if (name == "parent")
       return 0;

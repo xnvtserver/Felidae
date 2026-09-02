@@ -132,11 +132,22 @@ std::string mapText(const Entries &entries, KeyText keyText,
 std::string factText(const VmFact &fact,
                      std::span<const PieceSequence> symbolTable,
                      const VmTextDecoder &decodeText, std::size_t indent,
-                     std::size_t depth) {
+                     std::size_t depth,
+                     std::span<const IrSymbolRef> parents = {}) {
   const auto type =
       sourceName(decodeText(irSymbolPieces(symbolTable, fact.type)));
   std::ostringstream output;
-  output << type << '(';
+  output << type;
+  if (!parents.empty()) {
+    output << " extend ";
+    for (std::size_t index = 0; index < parents.size(); ++index) {
+      if (index != 0)
+        output << ", ";
+      output << sourceName(
+          decodeText(irSymbolPieces(symbolTable, parents[index])));
+    }
+  }
+  output << '(';
   if (!fact.fields.empty()) {
     output << '\n';
     for (std::size_t index = 0; index < fact.fields.size(); ++index) {
@@ -284,7 +295,8 @@ void sync(const std::filesystem::path &path,
           std::span<const VmFactPtr> facts,
           std::span<const PieceSequence> symbolTable,
           const VmTextDecoder &decodeText,
-          const VmFactPtr &emptySchema) {
+          const VmFactPtr &emptySchema,
+          const FactParentLookup &parentsOf) {
   if (path.empty() || (path.extension() != ".fx" &&
                        path.extension() != ".csv"))
     throw IrError("fact persistence requires a non-empty .fx or .csv path");
@@ -299,7 +311,11 @@ void sync(const std::filesystem::path &path,
     for (const auto &fact : facts) {
       if (!fact)
         throw IrError("fact database contains an invalid retained fact");
-      source << '\n' << factText(*fact, symbolTable, decodeText, 0, 0) << '\n';
+      const auto parents = parentsOf ? parentsOf(fact->type)
+                                     : std::vector<IrSymbolRef>{};
+      source << '\n'
+             << factText(*fact, symbolTable, decodeText, 0, 0, parents)
+             << '\n';
     }
     content = source.str();
   }

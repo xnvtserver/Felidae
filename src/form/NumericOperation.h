@@ -7,8 +7,9 @@
 
 namespace Felidae {
 
-// Stable operand selector for the executable IR Numeric instruction. Boolean
-// classifiers still return the VM's numeric truth values 0.0 and 1.0.
+// Stable operand selector for the executable IR Numeric instruction. Ordinary
+// operations preserve unrestricted floating-point results; only explicit
+// predicates return the VM's numeric truth values 0.0 and 1.0.
 enum class NumericOperation : std::uint8_t {
   Min = 0,
   Max,

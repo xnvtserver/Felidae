@@ -602,7 +602,7 @@ main() =>
     activeCentral := School.where(district: "central", active: 1.0)
         .limit(records: 100)
     discovered := School.search(field: "name", query: "%north%",
-                                mode: "like", case: "insensitive")
+                                type: "like", case: "insensitive")
     names := School.select(fields: ["name"], match: {active: 1.0})
     return (all: allSchools, selected: activeCentral, names: names,
             count: School.count())
@@ -632,8 +632,10 @@ changed := School.where(name: "North")
 ```
 
 Insert, update, and delete persist automatically when affected facts have CSV
-source ownership. Each source is staged and replaced independently; an
-in-memory fact has no implicit disk side effect. See
+source ownership or were linked from a fact-only `.fx` database import. Each
+source is staged and replaced independently; an in-memory fact has no implicit
+disk side effect. The compiler links `.fx` rows and ownership into IR; the VM
+does not parse source files. See
 `v2_examples/csv_fact_database.fx` for the complete import, query, aggregate,
 and automatic write-back flow.
 
@@ -641,7 +643,9 @@ Updates and deletes are deliberately conditional: they must be chained after
 `where`, `AndWhere`, or `OrWhere`. Direct type-wide mutation is rejected.
 Joins must provide both `left` and `right` key fields, so the normal
 `Type.join(...)` operation is an explicit inner equijoin rather than a
-conditionless Cartesian join.
+conditionless Cartesian join. Pass `kind: "left"`, `kind: "right"`, or
+`kind: "outer"` to the same operation when unmatched rows are required;
+separate `leftJoin`, `rightJoin`, and `OuterJoin` methods do not exist.
 
 Because child types are assignable to their parents, a parent query can work
 with the hierarchy rather than only one exact concrete type.
@@ -925,6 +929,11 @@ The VM contains a separate experimental recurrent model for explicit semantic ev
 This model is not used automatically for ordinary arithmetic, boolean logic, fact access, or tensor mathematics.
 
 Semantic evaluation must be explicitly represented.
+
+Application scoring uses `ssm.suggest(input: value)`. It returns an ordinary
+finite floating-point score and may be negative or greater than `1.0`; the VM
+does not normalize it or treat it as implicit truth. Deterministic arithmetic,
+queries, joins, and hierarchy traversal never invoke the model automatically.
 
 ---
 
@@ -2371,7 +2380,6 @@ docs/syntax.fx
 
 docs/facts.fx
 docs/queries.fx
-docs/probability.fx
 docs/methods.fx
 
 docs/native_modules.fx

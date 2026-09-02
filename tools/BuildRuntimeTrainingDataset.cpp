@@ -20,6 +20,7 @@ makeIdentityTeacher(const VmValue &value, const VmKnowledgeSnapshot &knowledge,
   record.operationId =
       static_cast<std::uint16_t>(SemanticOperationId::Identity);
   record.inputKinds = {runtimeValueKind(value)};
+  record.inputValues = {runtimeValueEncoding(value, symbolTable)};
   auto encoded = runtimeKnowledgePieces(knowledge, symbolTable);
   record.factTypes = std::move(encoded.factTypes);
   record.factTypeCounts = std::move(encoded.factTypeCounts);

@@ -79,7 +79,7 @@ import "directory"
 import "directory/*"
 import ("one.fx", "two.fx")
 import "math"
-import ("file", "math", "ml", "db", "probability")
+import ("file", "math", "ml", "db")
 import "system" # optional; system is available automatically
 ```
 
@@ -229,6 +229,31 @@ Person(name: "Default", age: 0, country: "India")
 Employee extend Person(name: "Ravi", age: 30, role: "Engineer")
 ```
 
+For an explicit reusable schema, declare a compiler-level fact class. Classes
+and methods nested inside them require `end`; instances remain ordinary facts:
+
+```Felidae
+class Person
+    name: string
+    age: number
+    index(name)
+    index(name, age)
+
+    adult(minimumAge: number) =>
+        where age >= minimumAge
+        return 1.0
+    else
+        return 0.0
+    end
+end
+
+Person(name: "Ada", age: 32)
+```
+
+Class fields constrain source fact rows, inherited fields are accepted, and
+index declarations are carried in the existing executable fact-type metadata.
+There is no runtime class object or second interpreter.
+
 ## Hierarchical Fact Queries
 
 Facts are first-class values. Query their declared type directly; no synthetic
@@ -240,7 +265,7 @@ limited := active.limit(records: 100)
 teachers := School.join(type: Teacher, left: "id", right: "school_id")
 changed := School.where(city: "BLR").update(values: {active: 0.0})
 removed := School.where(active: 0.0).delete()
-titles := School.search(field: "name", query: "%academy%", mode: "like",
+titles := School.search(field: "name", query: "%academy%", type: "like",
                         case: "insensitive")
 ```
 
@@ -259,51 +284,19 @@ ranges or closeness. Text search supports exact/prefix/suffix/contains, SQL
 LIKE (`%` and `_`), and regular-expression modes. Degree search preserves
 intermediate values and returns the matching facts in creation order.
 
-Use `.depends(on: Fact(...))` for hard existential requirements and
-`.relate(to: Fact(...), as: Relationship(...), degree: ..., confidence: ...)`
-for generic relationship evidence. Dependencies are AND requirements for a
-stored fact and produce an `unresolved` comparison result when absent.
-Relationship names, degree combination, and domain judgment remain data and
-target-family rule decisions; the runtime does not impose similarity meaning.
-Relationship evidence is queried as ordinary typed facts. Guards produce
-numeric truth (`0.0` or `1.0`).
+Relationships and dependency evidence are ordinary typed facts, not hidden
+verbs or a second relationship runtime. For example, declare
+`Relationship(from: ..., to: ..., name: ..., degree: ...)`, query it with
+`Relationship.where(...)`, and join it to the relevant entity type by explicit
+keys. Domain rules decide how graded evidence is combined. Facts, maps, arrays,
+strings, and arbitrary numbers are not implicitly Boolean: use an explicit
+comparison in `where` or `if` when a branch requires numeric truth.
 
-### Dynamic method references
-
-`.references(by: owner::method, factor: ..., as: Reference(...))` attaches a
-pure executable derivation to one stored fact. It is neither a hard dependency
-nor a semantic relationship. Evaluate it explicitly with
-`Fact.references(input: fact)`; this returns ordered `ReferenceResult` values
-whose `result` field is a typed fact. A temporary `factor:` supplied to
-`Fact.references` is an ephemeral override and never replaces the attachment's
-default-factor canonical result.
-
-Referenced methods must declare compatible typed `input` and `factor`
-parameters, return `ReferenceResult(result: TypedFact(...))`, and use only
-pure operations (typed exceptions may propagate). Reference results are kept
-outside ordinary fact lookup, unification, and dependencies; user rules must
-retrieve and consume them deliberately.
-
-```logic
-motion.references(
-    by: Physics::velocity,
-    factor: Time(seconds: 2.0),
-    as: Reference(name: "velocity")
-)
-velocity := Fact.references(input: motion, as: Reference(name: "velocity"))
-```
-
-The callable must be declared or imported before the attachment. Constructors,
-normal rule matching, Celidae, and debugger inspection never evaluate
-references.
-
-Comparison values can be passed through `then` and compared again. The built-in
-core `Comparison.membership` method provides the standard `previous*`
-micro-fact projection and returns `nil` for `unresolved` or `incomparable`
-results. A domain may declare its own normal `Comparison.membership` method
-before execution when it needs a different chained projection. Comparison
-facts, maps, arrays, strings, and numbers are not implicitly Boolean: use an
-explicit field comparison in `where` or `if`.
+`commonAncestors(left:, right:)` returns the complete deterministic candidate
+set in stable order. Felidae does not expose context-free “lowest” or “highest”
+ancestor choices. When an application needs a contextual score, it explicitly
+calls `ssm.suggest(input:)`; that result is a finite, unrestricted `double`,
+not a degree clamped to `[0, 1]`, and branching must compare it explicitly.
 
 Use `type(value: item, name: TypeName)` to read a value's concrete type, and
 `instanceof(value: item, type: Person)` to check whether a value is an instance
@@ -314,9 +307,9 @@ directly with `:=`:
 ```Felidae
 CheckPerson(input: any) =>
     instanceof(value: input, type: Person)
-    return (ok: true)
+    return (ok: 1.0)
 else
-    return (ok: false)
+    return (ok: 0.0)
 ```
 
 `lambda(Type, item => condition)` filters facts of a type, and
@@ -404,27 +397,26 @@ and branching without a separate `where`:
 main() =>
     x := 10
     if x == 10
-        return (ok: true)
+        return (ok: 1.0)
     else
-        return (ok: false)
+        return (ok: 0.0)
 ```
 
 ### Calling Conventions
 
-A method or native module call can be used two ways. The safest and most
-uniform is direct assignment, capturing the whole return tuple (or the single
-returned value, for a bare `return expr`):
+A method or compiler-known runtime-library call can be used in direct
+assignment, capturing the whole return tuple (or the single returned value,
+for a bare `return expr`):
 
 ```Felidae
 s := math.sin(value: 0)
 result := HotAdd(value: 1)
 ```
 
-User-defined predicates (and native module calls resolved by name rather than
-by a fixed builtin token) also accept an output-binding convenience: add a
-named argument whose name matches a field of the callee's `return` tuple and
-whose value is a fresh, not-yet-declared variable. That variable is bound to
-the matching field after the call:
+User-defined predicates also accept an output-binding convenience: add a named
+argument whose name matches a field of the callee's `return` tuple and whose
+value is a fresh, not-yet-declared variable. That variable is bound to the
+matching field after the call:
 
 ```Felidae
 HotAdd(value: int) =>
@@ -510,7 +502,7 @@ import "exception"
 
 CalculatorActions.handle(result: Result) =>
     if result.error.kind == "DivisionByZero" then
-        return exception.ok(value: {quotient: 0, recovered: true})
+        return exception.ok(value: {quotient: 0, recovered: 1.0})
     else
         return result
 
@@ -574,8 +566,6 @@ name := "Felidae"
 system.printf("Hello {name}\n")
 math.sqrt(value: 81)
 math.pow(base: 2, exponent: 8)
-probability.mean(data: [2, 4, 6, 8])
-probability.binomialPmf(trials: 10, successes: 3, p: 0.5)
 ml.dot(left: [1, 2, 3], right: [4, 5, 6])
 ml.meanSquaredError(left: [1, 2, 3], right: [1, 2, 5])
 http.get(url: "https://example.com")
@@ -602,17 +592,27 @@ immediately participate in hierarchy queries and concrete type operations:
 There is no synthetic `Fact.*` namespace or lazy `FactSelection` value.
 
 There is no public `db.sync()` operation. Facts imported from CSV with a source
-path retain that ownership. `Type.insert`, `Type.update`, and `Type.delete`
-automatically persist each affected CSV source through atomic replacement;
-compiler parsing never performs database I/O. Inserts without an inferred or
-explicit source remain in memory.
+path retain that ownership. A source file may also import a fact-only `.fx`
+database; the compiler links its rows into executable IR and records their
+source ownership without adding a runtime parser:
 
-`probability.fx` adds common probability and statistics helpers including
-mean, variance, standard deviation, normalization, entropy, covariance,
-correlation, Bernoulli, binomial, Poisson, normal, uniform, sample, and weighted
-choice.
-`ml.dot` and `ml.meanSquaredError` use Eigen when it is available at build time,
-with a portable C++ fallback for MVP builds.
+```Felidae
+import "schools.fx"
+
+main() =>
+    changed := School.where(id: 7).update(values: {active: 0.0})
+    return changed
+end
+```
+
+`Type.insert`, `Type.update`, and `Type.delete` automatically persist each
+affected CSV or `.fx` source through atomic replacement. Compiler parsing
+never writes a database. Inserts without an inferred or explicit source remain
+in memory.
+
+`ml.sigmoid`, `ml.relu`, `ml.dot`, and `ml.meanSquaredError` execute through the
+real LibTorch tensor backend. A build without that backend reports an explicit
+runtime error instead of substituting a fake or portable implementation.
 
 `thread.fx` declares the cooperative concurrency API. `thread.createThread`,
 `thread.start`, `thread.status`, and `thread.result` run methods on immutable

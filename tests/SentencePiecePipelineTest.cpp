@@ -93,6 +93,13 @@ int main() {
   display.symbolDecoder = [](Felidae::IrSymbolRef symbol) {
     return Felidae::symbolNameForId(symbol);
   };
+  const Felidae::VmTextEncoder textEncoder = [](std::string_view text) {
+    std::vector<int> encoded;
+    assert(Felidae::felidaeSentencePieceModel()
+               .Encode(std::string(text), &encoded)
+               .ok());
+    return Felidae::PieceSequence(encoded.begin(), encoded.end());
+  };
   const auto displayModuleValue = [&](const Felidae::IrModule &module,
                                       const Felidae::VmValue &value) {
     const auto verified = Felidae::verifyIrModule(Felidae::IrModule(module));
@@ -567,7 +574,7 @@ int main() {
   // explicit schema declaration. They remain typed facts after a binary
   // round-trip rather than being mis-lowered as an unknown call.
   const auto adHocFactModule = Felidae::compileProgramTextToIr(
-      "main() => return Plan(name: \"procedure\", enabled: true)\n");
+      "main() => return Plan(name: \"procedure\", enabled: 1.0)\n");
   const auto adHocFact =
       std::get<Felidae::VmFactPtr>(executeModule(adHocFactModule));
   assert(adHocFact && adHocFact->fields.size() == 2);
@@ -754,8 +761,8 @@ int main() {
   // guarding branch.
   const auto shortCircuitModule = Felidae::compileProgramTextToIr(
       "explode(divisor: number) => return 1 / divisor.\n"
-      "main() => return (both: false and explode(divisor: 0), "
-      "either: true or explode(divisor: 0)).\n");
+      "main() => return (both: 0.0 and explode(divisor: 0), "
+      "either: 1.0 or explode(divisor: 0)).\n");
   Felidae::FelidaeKnowledgeRuntime shortCircuitRuntime;
   const auto shortCircuitResult =
       executeModuleDirect(shortCircuitModule, shortCircuitRuntime);
@@ -809,14 +816,18 @@ int main() {
       "  alternatives := School.where(city: \"MYS\").OrWhere(name: \"Lake\")\n"
       "  projected := School.select(fields: [\"name\", \"city\"], match: {active: 1.0})\n"
       "  projected_limited := School.select(fields: [\"name\"], match: {active: 1.0}).limit(records: 1)\n"
-      "  joined := School.leftJoin(type: Teacher, left: \"id\", right: \"school_id\")\n"
+      "  inner_joined := School.join(type: Teacher, left: \"id\", right: \"school_id\")\n"
+      "  joined := School.join(type: Teacher, left: \"id\", right: \"school_id\", kind: \"left\")\n"
+      "  right_joined := School.join(type: Teacher, left: \"id\", right: \"school_id\", kind: \"right\")\n"
+      "  outer_joined := School.join(type: Teacher, left: \"id\", right: \"school_id\", kind: \"outer\")\n"
       "  joined_limited := School.join(type: Teacher, left: \"id\", right: \"school_id\").limit(records: 2)\n"
       "  none := School.all().limit(records: 0)\n"
       "  inserted := School.insert(values: {id: 4, name: \"Hill\", city: \"BLR\", students: 100, active: 1.0})\n"
       "  updated := School.where(id: 2).AndWhere(city: \"MYS\").update(values: {active: 1.0})\n"
       "  deleted := School.where(id: 3).delete()\n"
       "  return (limited: count(data: limited), all_limited: count(data: all_limited), alternatives: count(data: alternatives), "
-      "projected: projected, projected_limited: count(data: projected_limited), joined: count(data: joined), "
+      "projected: projected, projected_limited: count(data: projected_limited), inner_joined: count(data: inner_joined), joined: count(data: joined), "
+      "right_joined: count(data: right_joined), outer_joined: count(data: outer_joined), "
       "joined_limited: count(data: joined_limited), none: count(data: none), inserted: inserted, "
       "updated: count(data: updated), deleted: deleted, remaining: School.count(), "
       "total: School.sum(field: \"students\"), average: School.average(field: \"students\"))\n"
@@ -828,13 +839,127 @@ int main() {
   assert(factDmlResult.find("all_limited: 2") != std::string::npos);
   assert(factDmlResult.find("alternatives: 2") != std::string::npos);
   assert(factDmlResult.find("projected_limited: 1.0") != std::string::npos);
+  assert(factDmlResult.find("inner_joined: 1.0") != std::string::npos);
   assert(factDmlResult.find("joined: 3") != std::string::npos);
-  assert(factDmlResult.find("joined_limited: 2") != std::string::npos);
+  assert(factDmlResult.find("right_joined: 2") != std::string::npos);
+  assert(factDmlResult.find("outer_joined: 4") != std::string::npos);
+  assert(factDmlResult.find("joined_limited: 1.0") != std::string::npos);
   assert(factDmlResult.find("none: 0.0") != std::string::npos);
   assert(factDmlResult.find("updated: 1.0") != std::string::npos);
   assert(factDmlResult.find("deleted: 1.0") != std::string::npos);
   assert(factDmlResult.find("remaining: 3") != std::string::npos);
   assert(factDmlResult.find("total: 800") != std::string::npos);
+
+  // A fact-only .fx import is compile-time DDL. Its rows enter ordinary
+  // MakeFact IR with source ownership, so the existing DML transactions
+  // persist them without a runtime source parser or public db.sync call.
+  const auto ownedDatabase = testOutputDirectory / "owned-schools.fx";
+  const auto ownedProgram = testOutputDirectory / "owned-schools-main.fx";
+  {
+    std::ofstream out(ownedDatabase, std::ios::trunc);
+    out << "Entity(id: 0, name: \"root\", students: 0)\n"
+           "School extend Entity(id: 1, name: \"North\", students: 420)\n"
+           "School extend Entity(id: 2, name: \"West\", students: 280)\n";
+  }
+  {
+    std::ofstream out(ownedProgram, std::ios::trunc);
+    out << "import \"owned-schools.fx\"\n"
+           "main() =>\n"
+           "  updated := School.where(id: 1).update(values: {students: 425})\n"
+           "  inserted := School.insert(values: {id: 3, name: \"Hill\", students: 100})\n"
+           "  deleted := School.where(id: 2).delete()\n"
+           "  return (updated: count(data: updated), inserted: inserted, deleted: deleted, remaining: School.count())\n"
+           "end\n";
+  }
+  const auto ownedModule = Felidae::compileProgramFileToIr(ownedProgram);
+  Felidae::IrWord ownedSource = 0;
+  std::size_t ownedFactCount = 0;
+  for (std::size_t pc = 0; pc < ownedModule.ir.words.size();
+       pc += Felidae::irInstructionWidth(ownedModule.ir, pc)) {
+    if (ownedModule.ir.words[pc] ==
+            static_cast<Felidae::IrWord>(Felidae::IrOpcode::MakeFact) &&
+        ownedModule.ir.words[pc + 3] != 0) {
+      if (ownedSource == 0)
+        ownedSource = ownedModule.ir.words[pc + 3];
+      assert(ownedModule.ir.words[pc + 3] == ownedSource);
+      ++ownedFactCount;
+    }
+  }
+  assert(ownedFactCount == 3);
+  Felidae::FelidaeKnowledgeRuntime ownedRuntime(
+      nullptr, 1024, 256, {}, nullptr, display.textDecoder, textEncoder);
+  const auto ownedResult = displayModuleValue(
+      ownedModule, executeModuleDirect(ownedModule, ownedRuntime));
+  assert(ownedResult.find("updated: 1.0") != std::string::npos);
+  assert(ownedResult.find("deleted: 1.0") != std::string::npos);
+  assert(ownedResult.find("remaining: 2") != std::string::npos);
+  const auto persistedDatabase = Felidae::readSourceFile(ownedDatabase);
+  assert(persistedDatabase.find("students: 425.0") != std::string::npos);
+  assert(persistedDatabase.find("Hill") != std::string::npos);
+  assert(persistedDatabase.find("West") == std::string::npos);
+  assert(persistedDatabase.find("School extend Entity") != std::string::npos);
+  // The transaction writer's .fx output remains valid compiler input and
+  // retains hierarchy assignability after a fresh compile/runtime boundary.
+  {
+    std::ofstream out(ownedProgram, std::ios::trunc);
+    out << "import \"owned-schools.fx\"\n"
+           "main() => return (entities: Entity.count(), schools: School.count())\n"
+           "end\n";
+  }
+  const auto reloadedModule = Felidae::compileProgramFileToIr(ownedProgram);
+  Felidae::FelidaeKnowledgeRuntime reloadedRuntime(
+      nullptr, 1024, 256, {}, nullptr, display.textDecoder, textEncoder);
+  const auto reloadedResult = displayModuleValue(
+      reloadedModule, executeModuleDirect(reloadedModule, reloadedRuntime));
+  assert(reloadedResult == "{entities: 3, schools: 2}");
+
+  const auto invalidDatabase = testOutputDirectory / "invalid-database.fx";
+  const auto invalidProgram = testOutputDirectory / "invalid-database-main.fx";
+  {
+    std::ofstream out(invalidDatabase, std::ios::trunc);
+    out << "helper() => return 1\nend\n";
+  }
+  {
+    std::ofstream out(invalidProgram, std::ios::trunc);
+    out << "import \"invalid-database.fx\"\nmain() => return 0.0\nend\n";
+  }
+  bool nonFactDatabaseRejected = false;
+  try {
+    (void)Felidae::compileProgramFileToIr(invalidProgram);
+  } catch (const Felidae::IntegerParserError &) {
+    nonFactDatabaseRejected = true;
+  }
+  assert(nonFactDatabaseRejected);
+
+  const auto cyclicA = testOutputDirectory / "cyclic-a.fx";
+  const auto cyclicB = testOutputDirectory / "cyclic-b.fx";
+  {
+    std::ofstream out(cyclicA, std::ios::trunc);
+    out << "import \"cyclic-b.fx\"\nA(id: 1)\n";
+  }
+  {
+    std::ofstream out(cyclicB, std::ios::trunc);
+    out << "import \"cyclic-a.fx\"\nB(id: 1)\n";
+  }
+  {
+    std::ofstream out(invalidProgram, std::ios::trunc);
+    out << "import \"cyclic-a.fx\"\nmain() => return 0.0\nend\n";
+  }
+  bool cyclicDatabaseRejected = false;
+  try {
+    (void)Felidae::compileProgramFileToIr(invalidProgram);
+  } catch (const Felidae::IntegerParserError &) {
+    cyclicDatabaseRejected = true;
+  }
+  assert(cyclicDatabaseRejected);
+
+  removeTemporary(ownedProgram);
+  removeTemporary(ownedDatabase);
+  removeTemporary(ownedDatabase.string() + ".lock");
+  removeTemporary(invalidProgram);
+  removeTemporary(invalidDatabase);
+  removeTemporary(cyclicA);
+  removeTemporary(cyclicB);
 
   // Mutations are intentionally conditional: a direct type-wide update or
   // delete is rejected before IR generation. Joins likewise require both
@@ -856,6 +981,14 @@ int main() {
   assert(rejectsFactSource(
       "School(id: 1)\nTeacher(school_id: 1)\n"
       "main() => return School.join(type: Teacher)\nend\n"));
+  assert(rejectsFactSource(
+      "School(id: 1)\nTeacher(school_id: 1)\n"
+      "main() => return School.join(type: Teacher, left: \"id\", "
+      "right: \"school_id\", kind: \"cross\")\nend\n"));
+  assert(rejectsFactSource(
+      "School(id: 1)\nTeacher(school_id: 1)\n"
+      "main() => return School.leftJoin(type: Teacher, left: \"id\", "
+      "right: \"school_id\")\nend\n"));
 
   const auto rejectsLimitAtRuntime = [](std::string records) {
     const auto module = Felidae::compileProgramTextToIr(
@@ -880,12 +1013,12 @@ int main() {
       "Catalog(title: \"beta guide\", confidence: 0.74, category: Magazine)\n"
       "Catalog(title: \"Reference\", confidence: 0.40, category: Publication)\n"
       "main() =>\n"
-      "  exact := Catalog.search(field: \"title\", query: \"alpha guide\", mode: \"exact\", case: \"insensitive\")\n"
-      "  liked := Catalog.search(field: \"title\", query: \"%guide\", mode: \"like\", case: \"insensitive\")\n"
-      "  regexed := Catalog.search(field: \"title\", query: \"^[ab].*guide$\", mode: \"regex\", case: \"insensitive\")\n"
-      "  descendants := Catalog.search(field: \"category\", query: Publication, mode: \"hierarchy\", direction: \"descendants\", includeSelf: 0.0)\n"
-      "  ranged := Catalog.search(field: \"confidence\", mode: \"degree\", minimum: 0.70, maximum: 0.90)\n"
-      "  close := Catalog.search(field: \"confidence\", query: 0.80, tolerance: 0.08, mode: \"degree\")\n"
+      "  exact := Catalog.search(field: \"title\", query: \"alpha guide\", type: \"exact\", case: \"insensitive\")\n"
+      "  liked := Catalog.search(field: \"title\", query: \"%guide\", type: \"like\", case: \"insensitive\")\n"
+      "  regexed := Catalog.search(field: \"title\", query: \"^[ab].*guide$\", type: \"regex\", case: \"insensitive\")\n"
+      "  descendants := Catalog.search(field: \"category\", query: Publication, type: \"hierarchy\", direction: \"descendants\", includeSelf: 0.0)\n"
+      "  ranged := Catalog.search(field: \"confidence\", type: \"degree\", minimum: 0.70, maximum: 0.90)\n"
+      "  close := Catalog.search(field: \"confidence\", query: 0.80, tolerance: 0.08, type: \"degree\")\n"
       "  return (exact: count(data: exact), liked: count(data: liked), regexed: count(data: regexed), descendants: count(data: descendants), ranged: count(data: ranged), close: count(data: close))\n"
       "end\n");
   Felidae::FelidaeKnowledgeRuntime factSearchRuntime;
@@ -905,6 +1038,32 @@ int main() {
                             executeModuleDirect(repeatedFieldsModule,
                                                 repeatedFieldsRuntime)) ==
          "[[warm, primary], [cool, primary]]");
+
+  // Classes are compiler-only schemas over the existing fact type table.
+  // Both the class and its nested methods require explicit end boundaries;
+  // RegisterVm still receives only ordinary fact/procedure IR.
+  const auto classModule = Felidae::compileProgramTextToIr(
+      "class Animal\n"
+      "  name: string\n"
+      "  index(name)\n"
+      "end\n"
+      "class Human extend Animal\n"
+      "  age: number\n"
+      "  index(name, age)\n"
+      "  eligible(minimumAge: number) =>\n"
+      "    where age >= minimumAge\n"
+      "    return 1.0\n"
+      "  else\n"
+      "    return 0.0\n"
+      "  end\n"
+      "end\n"
+      "Human(name: \"Ada\", age: 32)\n"
+      "main() => return Human.all()\n"
+      "end\n");
+  Felidae::FelidaeKnowledgeRuntime classRuntime;
+  assert(displayModuleValue(classModule,
+                            executeModuleDirect(classModule, classRuntime)) ==
+         "[{name: Ada, age: 32}]");
 
   // Real source semantic intrinsic -> structured compiler IR
   // operation ID -> typed runtime-model result. No tokenizer or symbol ID
@@ -928,6 +1087,26 @@ int main() {
   Felidae::FelidaeKnowledgeRuntime semanticRuntime(&identityModel);
   assert(std::get<double>(Felidae::RegisterVm{}.executeMain(
              semanticIr, semanticRuntime)) == 42.0);
+
+  const auto suggestModule = Felidae::compileProgramTextToIr(
+      "Candidate(name: \"Mammal\")\n"
+      "main() => return ssm.suggest(input: Candidate.all())\n"
+      "end\n");
+  class SuggestRuntimeModel final : public Felidae::RuntimeStateModel {
+  public:
+    Felidae::VmValue evaluate(const Felidae::RuntimeOperation &operation,
+                              std::span<const Felidae::VmValue> inputs,
+                              Felidae::RuntimeContext &) override {
+      assert(operation.id == static_cast<std::uint16_t>(
+                                 Felidae::SemanticOperationId::Suggest));
+      assert(inputs.size() == 1);
+      return -212.421;
+    }
+  } suggestModel;
+  Felidae::FelidaeKnowledgeRuntime suggestRuntime(&suggestModel);
+  assert(std::get<double>(Felidae::RegisterVm{}.executeMain(
+             Felidae::verifyIrModule(Felidae::IrModule(suggestModule)),
+             suggestRuntime)) == -212.421);
   const auto executeBinaryModule = [&](const Felidae::IrModule &candidate) {
     const auto path =
         testOutputDirectory / "felidae_pipeline_feature_roundtrip.bin";
@@ -1069,7 +1248,7 @@ int main() {
   assert(comparisonIr);
   assert(std::get<double>(executeIrDirect(*comparisonIr, noRuntime)) == 1.0);
   const auto logicIr =
-      Felidae::tryCompileExpressionTextToIr("not false and true");
+      Felidae::tryCompileExpressionTextToIr("not 0.0 and 1.0");
   assert(logicIr);
   assert(std::get<double>(executeIrDirect(*logicIr, noRuntime)) == 1.0);
   const auto moduloIr = Felidae::tryCompileExpressionTextToIr("17 % 5");
@@ -1097,7 +1276,7 @@ int main() {
   assert(array && array->values.size() == 3 &&
          std::get<double>(array->values[2]) == 3.0);
   const auto mapIr =
-      Felidae::tryCompileExpressionTextToIr("{answer: 42, enabled: true}");
+      Felidae::tryCompileExpressionTextToIr("{answer: 42, enabled: 1.0}");
   assert(mapIr);
   const auto map =
       std::get<Felidae::VmMapPtr>(executeIrDirect(*mapIr, noRuntime));

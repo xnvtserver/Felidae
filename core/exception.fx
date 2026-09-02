@@ -9,12 +9,12 @@ Exception(kind: string, message: string, source: string) => ()
 Result(ok: bool, value: any, error: any) => ()
 
 exception.ok(value: any) =>
-    return {__type: "Result", ok: true, value: value, error: nil}
+    return {__type: "Result", ok: 1.0, value: value, error: nil}
 
 exception.failure(kind: string, message: string, source: string) =>
     return {
         __type: "Result",
-        ok: false,
+        ok: 0.0,
         value: nil,
         error: {
             __type: "Exception",
@@ -28,4 +28,4 @@ exception.from(value: any, error: any) =>
     if error == nil then
         return exception.ok(value: value)
     else
-        return {__type: "Result", ok: false, value: value, error: error}
+        return {__type: "Result", ok: 0.0, value: value, error: error}

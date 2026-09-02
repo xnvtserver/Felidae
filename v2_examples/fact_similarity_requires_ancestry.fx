@@ -23,6 +23,6 @@ main() =>
         property_similarity: propertySimilarity,
         ancestor_similarity: 0.0,
         similarity: propertySimilarity,
-        common_ancestor: lowestCommonAncestor(cat, machine),
+        common_ancestors: ancestors,
         ancestor_evidence: ancestors
     )

@@ -34,6 +34,10 @@ BuiltinEffect builtinEffect(BuiltinId id);
 BuiltinEffect builtinEffect(const std::string& name);
 bool isBuiltinPure(BuiltinId id);
 bool isBuiltinPure(const std::string& name);
+// Compiler-known namespaces do not identify source files and need no module
+// linking. Keep this decision beside the builtin registry so frontend import
+// resolution and IR lowering cannot maintain divergent allowlists.
+bool isBuiltinModuleName(std::string_view name);
 
 // Every registered builtin except the Unknown sentinel, in table order.
 const std::vector<BuiltinInfo>& allBuiltins();

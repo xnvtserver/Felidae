@@ -68,7 +68,6 @@ std::size_t irInstructionWidth(const FelidaeIr &ir, std::size_t pc) {
   case IrOpcode::StoreSymbol:
   case IrOpcode::Move:
   case IrOpcode::JumpIfFalse:
-  case IrOpcode::MakeFact:
   case IrOpcode::Return:
     return bounded(3);
   case IrOpcode::Add:
@@ -84,12 +83,13 @@ std::size_t irInstructionWidth(const FelidaeIr &ir, std::size_t pc) {
   case IrOpcode::HierarchyLeastCommonAncestors:
   case IrOpcode::HierarchyMostGeneralAncestors:
   case IrOpcode::TemporalRank:
+  case IrOpcode::MakeFact:
     return bounded(4);
   // One extra operand beyond type/callback: a register holding a map of
   // outer-scope values the callback's predicate closes over (0 = none). The
   // callback procedure itself still takes only the row parameter plus this
   // one capture map, not one parameter per captured name -- see
-  // FactQueryNormalizer::iteration() in IrCodeGenerator.cpp.
+  // FactDmlLowerer::iteration() in IrCodeGenerator.cpp.
   case IrOpcode::ForEachFact:
     return bounded(5);
   case IrOpcode::Compare:
@@ -240,7 +240,7 @@ bool vmValuesEqualAtDepth(const VmValue &left, const VmValue &right,
   throw IrError("VM equality received an unsupported value variant");
 }
 
-bool vmValuesEqual(const VmValue &left, const VmValue &right) {
+bool vmValuesEqualInternal(const VmValue &left, const VmValue &right) {
   return vmValuesEqualAtDepth(left, right, 0);
 }
 
@@ -504,6 +504,8 @@ bool validSemanticInputs(std::uint16_t operation,
   case SemanticOperationId::EvaluateDegree:
     return std::holds_alternative<double>(inputs.front()) ||
            std::holds_alternative<VmDegree>(inputs.front());
+  case SemanticOperationId::Suggest:
+    return true;
   }
   return false;
 }
@@ -522,6 +524,10 @@ bool validSemanticOutput(std::uint16_t operation,
            std::holds_alternative<VmFactPtr>(output);
   case SemanticOperationId::EvaluateDegree:
     return std::holds_alternative<VmDegree>(output);
+  case SemanticOperationId::Suggest: {
+    const auto score = std::get_if<double>(&output);
+    return score && std::isfinite(*score);
+  }
   }
   return false;
 }
@@ -675,6 +681,10 @@ void verifyControlFlowInitialization(
 }
 } // namespace
 
+bool vmValuesEqual(const VmValue &left, const VmValue &right) {
+  return vmValuesEqualInternal(left, right);
+}
+
 std::string vmValueToDisplayString(const VmValue &value,
                                    const VmDisplayContext &context) {
   const auto renderNumber = [](double number) {
@@ -807,12 +817,13 @@ bool VmFactStore::isAssignableToLocked(IrSymbolRef candidate,
 }
 
 void VmFactStore::registerType(IrSymbolRef type,
-                               std::vector<IrSymbolRef> parents) {
+                               std::vector<IrSymbolRef> parents,
+                               std::vector<std::vector<IrSymbolRef>> indexes) {
   if (type == 0)
     throw IrError("fact hierarchy type is invalid");
   std::lock_guard lock(mutex_);
   if (const auto existing = parents_.find(type); existing != parents_.end()) {
-    if (existing->second != parents)
+    if (existing->second != parents || declaredIndexes_.at(type) != indexes)
       throw IrError("fact hierarchy type has conflicting parents");
     return;
   }
@@ -826,6 +837,7 @@ void VmFactStore::registerType(IrSymbolRef type,
       throw IrError("fact hierarchy contains a cycle");
   }
   parents_.emplace(type, std::move(parents));
+  declaredIndexes_.emplace(type, std::move(indexes));
   ++hierarchyRevision_;
   ++knowledgeRevision_;
 }
@@ -1093,6 +1105,43 @@ VmFactStore::hierarchyProof(IrSymbolRef child, IrSymbolRef ancestor) const {
   return {};
 }
 
+std::vector<std::vector<IrSymbolRef>>
+VmFactStore::hierarchyProofs(IrSymbolRef child, IrSymbolRef ancestor) const {
+  constexpr std::size_t kMaximumProofPaths = 4096;
+  std::lock_guard lock(mutex_);
+  if (child == 0 || ancestor == 0 ||
+      !isAssignableToLocked(child, ancestor))
+    return {};
+  std::vector<std::vector<IrSymbolRef>> result;
+  std::vector<IrSymbolRef> path{child};
+  const auto visit = [&](const auto &self, IrSymbolRef current) -> void {
+    if (result.size() == kMaximumProofPaths)
+      throw IrError("fact hierarchy proof-path limit exceeded");
+    if (current == ancestor) {
+      result.push_back(path);
+      return;
+    }
+    const auto found = parents_.find(current);
+    if (found == parents_.end())
+      return;
+    auto parents = found->second;
+    std::sort(parents.begin(), parents.end());
+    for (const auto parent : parents) {
+      path.push_back(parent);
+      self(self, parent);
+      path.pop_back();
+    }
+  };
+  visit(visit, child);
+  std::sort(result.begin(), result.end(), [](const auto &left,
+                                             const auto &right) {
+    if (left.size() != right.size())
+      return left.size() < right.size();
+    return left < right;
+  });
+  return result;
+}
+
 std::vector<IrSymbolRef> VmFactStore::commonAncestors(IrSymbolRef left,
                                                       IrSymbolRef right) const {
   std::lock_guard lock(mutex_);
@@ -1109,6 +1158,24 @@ std::vector<IrSymbolRef> VmFactStore::commonAncestors(IrSymbolRef left,
     if (rightAncestors.contains(candidate))
       result.push_back(candidate);
   std::sort(result.begin(), result.end());
+  return result;
+}
+
+std::vector<VmCommonAncestorEvidence>
+VmFactStore::commonAncestorEvidence(IrSymbolRef left,
+                                    IrSymbolRef right) const {
+  std::vector<VmCommonAncestorEvidence> result;
+  for (const auto ancestor : commonAncestors(left, right)) {
+    auto leftProofs = hierarchyProofs(left, ancestor);
+    auto rightProofs = hierarchyProofs(right, ancestor);
+    if (leftProofs.empty() || rightProofs.empty())
+      continue;
+    result.push_back(
+        {ancestor, std::move(leftProofs), std::move(rightProofs), 0, 0});
+    auto &evidence = result.back();
+    evidence.leftDistance = evidence.leftProofs.front().size() - 1;
+    evidence.rightDistance = evidence.rightProofs.front().size() - 1;
+  }
   return result;
 }
 
@@ -1203,6 +1270,13 @@ VmFactStore::snapshotAssignableTo(IrSymbolRef type) const {
               return left->id < right->id;
             });
   return result;
+}
+
+std::vector<IrSymbolRef> VmFactStore::parentsOf(IrSymbolRef type) const {
+  std::lock_guard lock(mutex_);
+  const auto found = parents_.find(type);
+  return found == parents_.end() ? std::vector<IrSymbolRef>{}
+                                 : found->second;
 }
 
 std::vector<VmFactPtr> VmFactStore::snapshotByField(IrSymbolRef field) const {
@@ -1323,6 +1397,16 @@ VmFactPtr FelidaeKnowledgeRuntime::retainFact(const VmFactPtr &fact) {
   return factStore_->retain(fact);
 }
 
+VmFactPtr FelidaeKnowledgeRuntime::retainPersistentFact(
+    const VmFactPtr &fact, std::span<const PieceId> source) {
+  const auto path = decodeText(source);
+  if (path.empty())
+    throw IrError("persistent fact source path must not be empty");
+  auto retained = factStore_->retain(fact);
+  factStore_->recordSource(retained->id, path);
+  return retained;
+}
+
 VmFactPtr FelidaeKnowledgeRuntime::mutateFact(const VmFactPtr &fact,
                                               IrSymbolRef field,
                                               const VmValue &value) {
@@ -1377,9 +1461,11 @@ VmFactPtr FelidaeKnowledgeRuntime::insertFact(
   fact->type = internRuntimeSymbol(PieceSequence(type.begin(), type.end()));
   fact->fields = values->entries;
   std::optional<std::string> owner;
-  if (source)
+  if (source) {
     owner = decodeText(*source);
-  else {
+    if (owner->empty())
+      throw IrError("fact insertion source path must not be empty");
+  } else {
     const auto known = factStore_->sourcesForType(fact->type);
     if (known.size() == 1)
       owner = known.front();
@@ -1392,7 +1478,7 @@ VmFactPtr FelidaeKnowledgeRuntime::insertFact(
   if (owner && !owner->empty()) {
     factStore_->recordSource(retained->id, *owner);
     try {
-      (void)syncDatabase(encodeText(*owner));
+      (void)persistDatabaseSource(*owner);
     } catch (...) {
       (void)factStore_->erase(std::array<VmFactPtr, 1>{retained});
       factStore_->rollbackJournal(journal);
@@ -1431,7 +1517,7 @@ VmValue FelidaeKnowledgeRuntime::updateFacts(
     const auto journal = factStore_->journalMark();
     apply(owned);
     try {
-      (void)syncDatabase(encodeText(source));
+      (void)persistDatabaseSource(source);
     } catch (const std::exception &error) {
       for (const auto &previous : owned) {
         const auto current = updatedById.at(previous->id);
@@ -1509,11 +1595,17 @@ double FelidaeKnowledgeRuntime::aggregateFacts(
       return 0.0;
     throw IrError("fact aggregate requires at least one matching fact");
   }
-  if (operation == 0)
-    return std::accumulate(values.begin(), values.end(), 0.0);
-  if (operation == 1)
-    return std::accumulate(values.begin(), values.end(), 0.0) /
-           static_cast<double>(values.size());
+  if (operation == 0 || operation == 1) {
+    const auto total = std::accumulate(
+        values.begin(), values.end(), 0.0L,
+        [](long double sum, double value) { return sum + value; });
+    const auto result = static_cast<double>(
+        operation == 0 ? total
+                       : total / static_cast<long double>(values.size()));
+    if (!std::isfinite(result))
+      throw IrError("fact aggregate produced a non-finite result");
+    return result;
+  }
   if (operation == 2)
     return *std::min_element(values.begin(), values.end());
   return *std::max_element(values.begin(), values.end());
@@ -1608,7 +1700,7 @@ VmValue FelidaeKnowledgeRuntime::searchFacts(
     return previous[value.size()] != 0;
   };
 
-  const auto mode = *textOption("mode", true);
+  const auto searchType = *textOption("type", true);
   auto result = std::make_shared<VmArray>();
   result->values.reserve(facts.size());
   const auto appendMatching = [&](const auto &matches) {
@@ -1623,8 +1715,9 @@ VmValue FelidaeKnowledgeRuntime::searchFacts(
     }
   };
 
-  if (mode == "exact" || mode == "prefix" || mode == "suffix" ||
-      mode == "contains" || mode == "like" || mode == "regex") {
+  if (searchType == "exact" || searchType == "prefix" ||
+      searchType == "suffix" || searchType == "contains" ||
+      searchType == "like" || searchType == "regex") {
     auto query = *textOption("query", true);
     const auto caseMode = textOption("case", false).value_or("sensitive");
     if (caseMode != "sensitive" && caseMode != "insensitive")
@@ -1632,11 +1725,11 @@ VmValue FelidaeKnowledgeRuntime::searchFacts(
     if (query.size() > 1024)
       throw IrError("fact search pattern exceeds 1024 bytes");
     const bool insensitive = caseMode == "insensitive";
-    const bool foldText = insensitive && mode != "regex";
+    const bool foldText = insensitive && searchType != "regex";
     if (foldText)
       query = asciiLower(std::move(query));
     std::optional<std::regex> expression;
-    if (mode == "regex") {
+    if (searchType == "regex") {
       try {
         auto flags = std::regex_constants::ECMAScript |
                      std::regex_constants::optimize;
@@ -1656,25 +1749,25 @@ VmValue FelidaeKnowledgeRuntime::searchFacts(
         throw IrError("fact search text exceeds 64 KiB");
       if (foldText)
         candidate = asciiLower(std::move(candidate));
-      if (mode == "exact")
+      if (searchType == "exact")
         return candidate == query;
-      if (mode == "prefix")
+      if (searchType == "prefix")
         return candidate.starts_with(query);
-      if (mode == "suffix")
+      if (searchType == "suffix")
         return candidate.ends_with(query);
-      if (mode == "contains")
+      if (searchType == "contains")
         return candidate.find(query) != std::string::npos;
-      if (mode == "like")
+      if (searchType == "like")
         return like(candidate, query);
       return std::regex_search(candidate, *expression);
     });
     return result;
   }
 
-  if (mode == "hierarchy") {
+  if (searchType == "hierarchy") {
     const auto *query = option("query");
     if (!query)
-      throw IrError("fact search hierarchy mode requires query");
+      throw IrError("fact search hierarchy type requires query");
     const auto queryType = valueType(*query);
     if (!queryType)
       throw IrError("fact search hierarchy query must be a type or fact");
@@ -1697,7 +1790,7 @@ VmValue FelidaeKnowledgeRuntime::searchFacts(
     return result;
   }
 
-  if (mode == "degree") {
+  if (searchType == "degree") {
     const auto query = numberOption("query");
     const auto tolerance = numberOption("tolerance");
     const auto minimum = numberOption("minimum");
@@ -1739,7 +1832,7 @@ VmValue FelidaeKnowledgeRuntime::searchFacts(
     return result;
   }
 
-  throw IrError("fact search mode is invalid");
+  throw IrError("fact search type is invalid");
 }
 
 VmValue FelidaeKnowledgeRuntime::joinFacts(
@@ -1801,8 +1894,9 @@ VmValue FelidaeKnowledgeRuntime::joinFacts(
 }
 
 void FelidaeKnowledgeRuntime::registerFactType(
-    IrSymbolRef type, std::vector<IrSymbolRef> parents) {
-  factStore_->registerType(type, std::move(parents));
+    IrSymbolRef type, std::vector<IrSymbolRef> parents,
+    std::vector<std::vector<IrSymbolRef>> indexes) {
+  factStore_->registerType(type, std::move(parents), std::move(indexes));
   registeredFactTypes_.insert(type);
 }
 
@@ -1816,9 +1910,60 @@ FelidaeKnowledgeRuntime::hierarchyProof(IrSymbolRef child,
                                         IrSymbolRef ancestor) {
   return factStore_->hierarchyProof(child, ancestor);
 }
+
+std::vector<std::vector<IrSymbolRef>>
+FelidaeKnowledgeRuntime::hierarchyProofs(IrSymbolRef child,
+                                         IrSymbolRef ancestor) {
+  return factStore_->hierarchyProofs(child, ancestor);
+}
 std::vector<IrSymbolRef>
 FelidaeKnowledgeRuntime::commonAncestors(IrSymbolRef left, IrSymbolRef right) {
   return factStore_->commonAncestors(left, right);
+}
+
+std::vector<VmCommonAncestorEvidence>
+FelidaeKnowledgeRuntime::commonAncestorEvidence(IrSymbolRef left,
+                                                IrSymbolRef right) {
+  return factStore_->commonAncestorEvidence(left, right);
+}
+
+VmValue FelidaeKnowledgeRuntime::ancestorAnalysis(IrSymbolRef left,
+                                                  IrSymbolRef right) {
+  const auto candidateType = internRuntimeSymbol(encodeText("AncestorCandidate"));
+  const auto ancestorField = internRuntimeSymbol(encodeText("ancestor"));
+  const auto leftProofsField = internRuntimeSymbol(encodeText("leftProofs"));
+  const auto rightProofsField = internRuntimeSymbol(encodeText("rightProofs"));
+  const auto leftDistanceField = internRuntimeSymbol(encodeText("leftDistance"));
+  const auto rightDistanceField =
+      internRuntimeSymbol(encodeText("rightDistance"));
+  const auto paths = [](const std::vector<std::vector<IrSymbolRef>> &proofs) {
+    auto result = std::make_shared<VmArray>();
+    result->values.reserve(proofs.size());
+    for (const auto &proof : proofs) {
+      auto path = std::make_shared<VmArray>();
+      path->values.reserve(proof.size());
+      for (const auto symbol : proof)
+        path->values.emplace_back(VmSymbol{symbol});
+      result->values.emplace_back(std::move(path));
+    }
+    return result;
+  };
+  auto result = std::make_shared<VmArray>();
+  const auto evidence = factStore_->commonAncestorEvidence(left, right);
+  result->values.reserve(evidence.size());
+  for (const auto &candidate : evidence) {
+    auto fact = std::make_shared<VmFact>();
+    fact->type = candidateType;
+    fact->origin = VmFact::Origin::Derived;
+    fact->fields = {
+        {ancestorField, VmSymbol{candidate.ancestor}},
+        {leftProofsField, paths(candidate.leftProofs)},
+        {rightProofsField, paths(candidate.rightProofs)},
+        {leftDistanceField, static_cast<double>(candidate.leftDistance)},
+        {rightDistanceField, static_cast<double>(candidate.rightDistance)}};
+    result->values.emplace_back(std::move(fact));
+  }
+  return result;
 }
 std::vector<IrSymbolRef>
 FelidaeKnowledgeRuntime::leastCommonAncestors(IrSymbolRef left,
@@ -2024,11 +2169,6 @@ VmValue FelidaeKnowledgeRuntime::importCsvFacts(
   return result;
 }
 
-double FelidaeKnowledgeRuntime::syncDatabase(
-    std::span<const PieceId> path) {
-  return persistDatabaseSource(decodeText(path));
-}
-
 double FelidaeKnowledgeRuntime::persistDatabaseSource(
     std::string_view source, const VmFactPtr &emptySchema) {
   const VmTextDecoder decoder = [this](std::span<const PieceId> pieces) {
@@ -2039,7 +2179,10 @@ double FelidaeKnowledgeRuntime::persistDatabaseSource(
   // different files can share one fact type (see VmFactStore::recordSource).
   Form::Db::sync(std::filesystem::path(source),
                  factStore_->snapshotBySource(source), runtimeSymbolTable_,
-                 decoder, emptySchema);
+                 decoder, emptySchema,
+                 [this](IrSymbolRef type) {
+                   return factStore_->parentsOf(type);
+                 });
   return 1.0;
 }
 
@@ -2389,8 +2532,13 @@ void IrVerifier::verify(const FelidaeIr &ir) {
       requireRegister(ir, ir.words[pc + 1]);
       if (ir.words[pc + 2] >= ir.symbols.size())
         throw IrError("IR fact references an invalid symbol");
+      if (ir.words[pc + 3] > ir.texts.size())
+        throw IrError("IR fact references an invalid source text");
+      if (ir.words[pc + 3] != 0 &&
+          ir.texts[ir.words[pc + 3] - 1].empty())
+        throw IrError("IR fact source text must not be empty");
       initialized[ir.words[pc + 1]] = true;
-      pc += 3;
+      pc += 4;
       break;
     case IrOpcode::GetField:
       requireRegister(ir, ir.words[pc + 1]);
@@ -2460,6 +2608,11 @@ VmFactPtr VmRuntime::retainFact(const VmFactPtr &) {
   throw IrError("IR fact retention is unavailable in this runtime");
 }
 
+VmFactPtr VmRuntime::retainPersistentFact(const VmFactPtr &,
+                                          std::span<const PieceId>) {
+  throw IrError("persistent IR fact retention is unavailable in this runtime");
+}
+
 VmFactPtr VmRuntime::mutateFact(const VmFactPtr &, IrSymbolRef,
                                 const VmValue &) {
   throw IrError("IR fact mutation is unavailable in this runtime");
@@ -2502,7 +2655,8 @@ VmValue VmRuntime::joinFacts(std::span<const VmFactPtr>,
   throw IrError("IR fact join is unavailable in this runtime");
 }
 
-void VmRuntime::registerFactType(IrSymbolRef, std::vector<IrSymbolRef>) {
+void VmRuntime::registerFactType(IrSymbolRef, std::vector<IrSymbolRef>,
+                                 std::vector<std::vector<IrSymbolRef>>) {
   throw IrError("IR fact hierarchy is unavailable in this runtime");
 }
 
@@ -2513,7 +2667,18 @@ std::vector<VmFactPtr> VmRuntime::snapshotFacts(IrSymbolRef) {
 std::vector<IrSymbolRef> VmRuntime::hierarchyProof(IrSymbolRef, IrSymbolRef) {
   throw IrError("IR hierarchy is unavailable in this runtime");
 }
+std::vector<std::vector<IrSymbolRef>>
+VmRuntime::hierarchyProofs(IrSymbolRef, IrSymbolRef) {
+  throw IrError("IR hierarchy is unavailable in this runtime");
+}
 std::vector<IrSymbolRef> VmRuntime::commonAncestors(IrSymbolRef, IrSymbolRef) {
+  throw IrError("IR hierarchy is unavailable in this runtime");
+}
+std::vector<VmCommonAncestorEvidence>
+VmRuntime::commonAncestorEvidence(IrSymbolRef, IrSymbolRef) {
+  throw IrError("IR hierarchy is unavailable in this runtime");
+}
+VmValue VmRuntime::ancestorAnalysis(IrSymbolRef, IrSymbolRef) {
   throw IrError("IR hierarchy is unavailable in this runtime");
 }
 std::vector<IrSymbolRef> VmRuntime::leastCommonAncestors(IrSymbolRef,
@@ -2569,10 +2734,6 @@ VmValue VmRuntime::importCsvFacts(std::span<const PieceId>,
   throw IrError("VM CSV fact service is absent");
 }
 
-double VmRuntime::syncDatabase(std::span<const PieceId>) {
-  throw IrError("VM fact database service is absent");
-}
-
 void VmRuntime::beginExecution() {}
 
 void VmRuntime::endExecution() noexcept {}
@@ -2599,8 +2760,16 @@ VmValue RegisterVm::executeMain(const VerifiedIrModule &verified,
     parents.reserve(type.parents.size());
     for (const auto parent : type.parents)
       parents.push_back(runtime.resolveSymbol(parent));
+    std::vector<std::vector<IrSymbolRef>> indexes;
+    indexes.reserve(type.indexes.size());
+    for (const auto &index : type.indexes) {
+      auto &resolved = indexes.emplace_back();
+      resolved.reserve(index.size());
+      for (const auto field : index)
+        resolved.push_back(runtime.resolveSymbol(field));
+    }
     runtime.registerFactType(runtime.resolveSymbol(type.symbol),
-                             std::move(parents));
+                             std::move(parents), std::move(indexes));
   }
   runtime.beginExecution();
   struct Scope {
@@ -2859,6 +3028,9 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
           source = sourceText->pieces;
         }
         result = runtime.importCsvFacts(data->pieces, type->pieces, source);
+      } else if (operation == BuiltinId::AncestorAnalysis) {
+        result = runtime.ancestorAnalysis(typeSymbol(inputs[0]),
+                                          typeSymbol(inputs[1]));
       } else if (operation == BuiltinId::PropagateFact) {
         // Registered in BuiltinRegistry with no arity entry and no case here
         // at all -- the same dead-registration pattern as sort/throw/math
@@ -3093,7 +3265,12 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
     case IrOpcode::MakeFact: {
       auto fact = std::make_shared<VmFact>();
       fact->type = symbol(program.words.at(pc + 2));
-      registers.at(program.words.at(pc + 1)) = runtime.retainFact(fact);
+      const auto source = program.words.at(pc + 3);
+      registers.at(program.words.at(pc + 1)) =
+          source == 0
+              ? runtime.retainFact(fact)
+              : runtime.retainPersistentFact(fact,
+                                             program.texts.at(source - 1));
       break;
     }
     case IrOpcode::MakeArray: {
@@ -3182,7 +3359,7 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
       // caller's own scope where they are actually defined, then threaded
       // through to every invocation -- the synthesized callback procedure
       // itself has no access to the caller's registers otherwise. See
-      // FactQueryNormalizer::iteration() in IrCodeGenerator.cpp. A callback
+      // FactDmlLowerer::iteration() in IrCodeGenerator.cpp. A callback
       // written directly against the raw for_each_fact(type, callback) form
       // (not through that sugar) still takes only the row parameter, so the
       // captures argument is included only when the target actually

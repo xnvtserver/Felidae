@@ -207,6 +207,10 @@ void writeBinaryIr(const std::filesystem::path &path,
     for (const auto &type : module.factTypes) {
       writeLe<std::uint32_t>(out, static_cast<std::uint32_t>(type.symbol));
       writeSymbols(out, type.parents);
+      writeLe<std::uint32_t>(out,
+                             count(type.indexes.size(), "fact index count"));
+      for (const auto &index : type.indexes)
+        writeSymbols(out, index);
       writeSpan(out, type.sourceSpan);
     }
     for (const auto &pieces : module.symbolTable)
@@ -288,6 +292,12 @@ loadBinaryIr(const std::filesystem::path &path,
     IrFactType type;
     type.symbol = readLe<std::uint32_t>(in);
     type.parents = readSymbols(in);
+    const auto indexCount = readLe<std::uint32_t>(in);
+    if (indexCount > kMaximumItems)
+      throw IrError("FELBIR fact index count is invalid");
+    type.indexes.reserve(indexCount);
+    for (std::uint32_t item = 0; item < indexCount; ++item)
+      type.indexes.push_back(readSymbols(in));
     type.sourceSpan = readSpan(in);
     module.factTypes.push_back(std::move(type));
   }

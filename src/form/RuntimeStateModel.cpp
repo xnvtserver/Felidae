@@ -5,6 +5,7 @@
 #include "SemanticOperation.h"
 #include "../ModelStore.h"
 
+#include <cmath>
 #include <fstream>
 #include <optional>
 #include <sstream>
@@ -19,6 +20,7 @@ namespace Felidae {
 namespace {
 std::vector<std::int64_t> runtimeInputIds(
     std::uint16_t operation, std::span<const RuntimeValueKind> inputKinds,
+    std::span<const std::vector<std::uint32_t>> inputValues,
     std::span<const PieceSequence> factTypes,
     std::span<const std::pair<PieceSequence, std::uint32_t>> factTypeCounts,
     std::span<const std::pair<PieceSequence, PieceSequence>> hierarchyEdges,
@@ -28,6 +30,23 @@ std::vector<std::int64_t> runtimeInputIds(
     throw IrError("runtime GRU input vocabulary is invalid");
   const auto structural = [&](std::int64_t value) {
     return vocabularySize - kRuntimeStructuralInputTokens + value;
+  };
+  const auto appendValueTokens = [&](std::vector<std::int64_t> &ids,
+                                     const auto &tokens) {
+    constexpr std::uint32_t kStructuralBit = 0x80000000u;
+    for (const auto token : tokens) {
+      if ((token & kStructuralBit) != 0) {
+        const auto marker = token & ~kStructuralBit;
+        if (marker >= kRuntimeStructuralInputTokens)
+          throw IrError("runtime GRU value marker exceeds its vocabulary");
+        ids.push_back(structural(marker));
+      } else {
+        if (token >= static_cast<std::uint32_t>(
+                         vocabularySize - kRuntimeStructuralInputTokens))
+          throw IrError("runtime GRU value PieceId exceeds its vocabulary");
+        ids.push_back(token);
+      }
+    }
   };
   const auto appendPieces = [&](std::vector<std::int64_t> &ids,
                                 const PieceSequence &pieces) {
@@ -41,11 +60,12 @@ std::vector<std::int64_t> runtimeInputIds(
       ids.push_back(piece);
     }
   };
-  const auto kFactTypesMarker = structural(4);
-  const auto kHierarchyMarker = structural(5);
-  const auto kInputsMarker = structural(6);
+  const auto kFactTypesMarker = structural(8);
+  const auto kHierarchyMarker = structural(9);
+  const auto kInputsMarker = structural(10);
   if (!isKnownSemanticOperation(operation) ||
       !semanticOperationAcceptsArity(operation, inputKinds.size()) ||
+      (!inputValues.empty() && inputValues.size() != inputKinds.size()) ||
       inputKinds.size() > kMaximumContextItems ||
       factTypes.size() > kMaximumContextItems ||
       factTypeCounts.size() > kMaximumContextItems ||
@@ -68,6 +88,8 @@ std::vector<std::int64_t> runtimeInputIds(
       throw IrError("runtime GRU degree operation requires a numeric input");
     }
     break;
+  case SemanticOperationId::Suggest:
+    break;
   }
   std::vector<std::int64_t> ids;
   ids.reserve(2 + inputKinds.size() + factTypes.size() +
@@ -78,10 +100,10 @@ std::vector<std::int64_t> runtimeInputIds(
     appendPieces(ids, type);
   // Counts distinguish current fact population while keeping a fixed
   // integer vocabulary: one, two-to-four, and five-or-more facts.
-  const auto kFactCountsMarker = structural(7);
-  const auto kOneFactMarker = structural(8);
-  const auto kSeveralFactsMarker = structural(9);
-  const auto kManyFactsMarker = structural(10);
+  const auto kFactCountsMarker = structural(11);
+  const auto kOneFactMarker = structural(12);
+  const auto kSeveralFactsMarker = structural(13);
+  const auto kManyFactsMarker = structural(14);
   ids.push_back(kFactCountsMarker);
   for (const auto &[type, count] : factTypeCounts) {
     appendPieces(ids, type);
@@ -99,8 +121,12 @@ std::vector<std::int64_t> runtimeInputIds(
     if (kind < RuntimeValueKind::Nil || kind > RuntimeValueKind::TextMap) {
       throw IrError("runtime GRU input value kind is invalid");
     }
-    ids.push_back(structural(11 + static_cast<std::int64_t>(kind)));
+    ids.push_back(structural(15 + static_cast<std::int64_t>(kind)));
   }
+  for (const auto &value : inputValues)
+    appendValueTokens(ids, value);
+  if (ids.size() > 4096)
+    throw IrError("runtime GRU input sequence exceeds its bound");
   return ids;
 }
 } // namespace
@@ -141,10 +167,13 @@ public:
       projection = register_module(
           "projection",
           torch::nn::Linear(c.hiddenSize, c.outputVocabularySize));
+      scoreProjection = register_module("score_projection",
+                                        torch::nn::Linear(c.hiddenSize, 1));
     }
     torch::nn::Embedding embedding{nullptr};
     torch::nn::GRU recurrent{nullptr};
     torch::nn::Linear projection{nullptr};
+    torch::nn::Linear scoreProjection{nullptr};
   };
   struct ExecutionState {
     torch::Tensor hidden;
@@ -177,13 +206,15 @@ public:
           torch::zeros({1, 1}, torch::TensorOptions().dtype(torch::kInt64));
       const auto hidden = torch::zeros({c.layerCount, 1, c.hiddenSize});
       const auto output = production->forward({input, hidden}).toTuple();
-      if (output->elements().size() != 2) {
+      if (output->elements().size() != 3) {
         throw IrError(
             "runtime production artifact has an incompatible forward contract");
       }
       const auto logits = output->elements()[0].toTensor();
-      const auto nextHidden = output->elements()[1].toTensor();
+      const auto score = output->elements()[1].toTensor();
+      const auto nextHidden = output->elements()[2].toTensor();
       if (logits.dim() != 1 || logits.size(0) != c.outputVocabularySize ||
+          score.numel() != 1 ||
           nextHidden.dim() != 3 || nextHidden.size(0) != c.layerCount ||
           nextHidden.size(1) != 1 || nextHidden.size(2) != c.hiddenSize) {
         throw IrError(
@@ -277,7 +308,7 @@ GruRuntimeStateModel GruRuntimeStateModel::loadVersioned(
   requireManifestValue(manifest, "opcode_vocabulary_version", "felidae-ir-v13",
                        modelName);
   requireManifestValue(manifest, "training_schema",
-                       "felidae-runtime-operation-v8", modelName);
+                       "felidae-runtime-operation-v9", modelName);
   if (manifestInteger(manifest, "input_vocabulary", modelName) !=
           c.inputVocabularySize ||
       manifestInteger(manifest, "output_vocabulary", modelName) !=
@@ -319,14 +350,20 @@ Value GruRuntimeStateModel::evaluate(const RuntimeOperation &operation,
       context.symbolTable ? std::span<const PieceSequence>(*context.symbolTable)
                           : std::span<const PieceSequence>{};
   const auto knowledge = runtimeKnowledgePieces(context.knowledge, symbols);
+  std::vector<std::vector<std::uint32_t>> inputValues;
+  inputValues.reserve(inputs.size());
+  for (const auto &value : inputs)
+    inputValues.push_back(runtimeValueEncoding(value, symbols));
   const auto ids = runtimeInputIds(
-      operation.id, inputKinds, knowledge.factTypes, knowledge.factTypeCounts,
-      knowledge.hierarchyEdges, configuration_.inputVocabularySize);
+      operation.id, inputKinds, inputValues, knowledge.factTypes,
+      knowledge.factTypeCounts, knowledge.hierarchyEdges,
+      configuration_.inputVocabularySize);
   torch::InferenceMode guard;
   const auto input =
       torch::tensor(ids, torch::TensorOptions().dtype(torch::kInt64))
           .reshape({-1, 1});
   torch::Tensor logits;
+  torch::Tensor score;
   if (implementation_->production) {
     if (!state->hidden.defined())
       state->hidden = torch::zeros(
@@ -334,7 +371,8 @@ Value GruRuntimeStateModel::evaluate(const RuntimeOperation &operation,
     auto output =
         implementation_->production->forward({input, state->hidden}).toTuple();
     logits = output->elements().at(0).toTensor();
-    state->hidden = output->elements().at(1).toTensor().detach();
+    score = output->elements().at(1).toTensor();
+    state->hidden = output->elements().at(2).toTensor().detach();
   } else {
     const auto result =
         state->hidden.defined()
@@ -344,10 +382,17 @@ Value GruRuntimeStateModel::evaluate(const RuntimeOperation &operation,
             : implementation_->network->recurrent->forward(
                   implementation_->network->embedding->forward(input));
     state->hidden = std::get<1>(result).detach();
-    logits = implementation_->network->projection->forward(
-        std::get<0>(result)
-            .select(0, std::get<0>(result).size(0) - 1)
-            .select(0, 0));
+    const auto last = std::get<0>(result)
+                          .select(0, std::get<0>(result).size(0) - 1)
+                          .select(0, 0);
+    logits = implementation_->network->projection->forward(last);
+    score = implementation_->network->scoreProjection->forward(last);
+  }
+  if (operation.id == static_cast<std::uint16_t>(SemanticOperationId::Suggest)) {
+    const auto value = score.item<double>();
+    if (!std::isfinite(value))
+      throw IrError("runtime GRU scoring head produced a non-finite value");
+    return value;
   }
   const auto outputId = logits.argmax().item<std::int64_t>();
   if (outputId < 0 ||
@@ -371,6 +416,8 @@ Value GruRuntimeStateModel::evaluate(const RuntimeOperation &operation,
     return inferred;
   }
   case RuntimeOutputTokenKind::DegreeMilli:
+    if (operation.id == static_cast<std::uint16_t>(SemanticOperationId::Suggest))
+      return static_cast<double>(token.value) / 1000.0;
     return VmDegree(static_cast<double>(token.value) / 1000.0);
   case RuntimeOutputTokenKind::Nil:
     return VmNil{};
@@ -395,7 +442,8 @@ GruRuntimeStateModel::trainTeacherForced(const RuntimeTrainingRecord &record,
   if (targetToken >= outputVocabulary_.size() || learningRate <= 0.0)
     throw IrError("runtime GRU training target or learning rate is invalid");
   const auto ids =
-      runtimeInputIds(record.operationId, record.inputKinds, record.factTypes,
+      runtimeInputIds(record.operationId, record.inputKinds, record.inputValues,
+                      record.factTypes,
                       record.factTypeCounts, record.hierarchyEdges,
                       configuration_.inputVocabularySize);
   if (ids.size() > 4096)
@@ -429,6 +477,49 @@ GruRuntimeStateModel::trainTeacherForced(const RuntimeTrainingRecord &record,
 #endif
 }
 
+double GruRuntimeStateModel::trainScore(const RuntimeTrainingRecord &record,
+                                        double learningRate) {
+#ifdef FELIDAE_HAS_TORCH
+  verifyRuntimeTrainingRecord(record);
+  if (record.operationId !=
+          static_cast<std::uint16_t>(SemanticOperationId::Suggest) ||
+      record.targetKind != RuntimeTrainingTargetKind::Score ||
+      !std::isfinite(record.targetScore) || learningRate <= 0.0)
+    throw IrError("runtime GRU score target or learning rate is invalid");
+  const auto ids = runtimeInputIds(
+      record.operationId, record.inputKinds, record.inputValues, record.factTypes,
+      record.factTypeCounts, record.hierarchyEdges,
+      configuration_.inputVocabularySize);
+  implementation_->prepareOptimizer(learningRate);
+  implementation_->network->train();
+  implementation_->optimizer->zero_grad();
+  const auto input =
+      torch::tensor(ids, torch::TensorOptions().dtype(torch::kInt64))
+          .reshape({-1, 1});
+  const auto recurrent = implementation_->network->recurrent->forward(
+      implementation_->network->embedding->forward(input));
+  const auto last = std::get<0>(recurrent)
+                        .select(0, std::get<0>(recurrent).size(0) - 1)
+                        .select(0, 0);
+  const auto predicted =
+      implementation_->network->scoreProjection->forward(last).reshape({});
+  const auto expected =
+      torch::tensor(record.targetScore, predicted.options());
+  const auto loss = torch::mse_loss(predicted, expected);
+  const auto lossValue = loss.item<double>();
+  if (!std::isfinite(lossValue))
+    throw IrError("runtime GRU score training produced non-finite loss");
+  loss.backward();
+  implementation_->optimizer->step();
+  implementation_->network->eval();
+  return lossValue;
+#else
+  (void)record;
+  (void)learningRate;
+  throw IrError("runtime GRU score training requires FELIDAE_ENABLE_LIBTORCH=ON");
+#endif
+}
+
 std::size_t GruRuntimeStateModel::predictTeacherToken(
     const RuntimeTrainingRecord &record) const {
 #ifdef FELIDAE_HAS_TORCH
@@ -436,7 +527,8 @@ std::size_t GruRuntimeStateModel::predictTeacherToken(
     throw IrError("runtime teacher prediction requires a training model");
   verifyRuntimeTrainingRecord(record);
   const auto ids =
-      runtimeInputIds(record.operationId, record.inputKinds, record.factTypes,
+      runtimeInputIds(record.operationId, record.inputKinds, record.inputValues,
+                      record.factTypes,
                       record.factTypeCounts, record.hierarchyEdges,
                       configuration_.inputVocabularySize);
   torch::InferenceMode guard;
@@ -457,6 +549,38 @@ std::size_t GruRuntimeStateModel::predictTeacherToken(
     throw IrError("runtime GRU validation emitted an invalid token");
   }
   return static_cast<std::size_t>(output);
+#else
+  (void)record;
+  throw IrError("runtime GRU backend requires FELIDAE_ENABLE_LIBTORCH=ON");
+#endif
+}
+
+double GruRuntimeStateModel::predictScore(
+    const RuntimeTrainingRecord &record) const {
+#ifdef FELIDAE_HAS_TORCH
+  if (!implementation_->network ||
+      record.operationId !=
+          static_cast<std::uint16_t>(SemanticOperationId::Suggest))
+    throw IrError("runtime score prediction requires a Suggest training record");
+  verifyRuntimeTrainingRecord(record);
+  const auto ids = runtimeInputIds(
+      record.operationId, record.inputKinds, record.inputValues, record.factTypes,
+      record.factTypeCounts, record.hierarchyEdges,
+      configuration_.inputVocabularySize);
+  torch::InferenceMode guard;
+  const auto input =
+      torch::tensor(ids, torch::TensorOptions().dtype(torch::kInt64))
+          .reshape({-1, 1});
+  const auto recurrent = implementation_->network->recurrent->forward(
+      implementation_->network->embedding->forward(input));
+  const auto value = implementation_->network->scoreProjection
+                         ->forward(std::get<0>(recurrent)
+                                       .select(0, std::get<0>(recurrent).size(0) - 1)
+                                       .select(0, 0))
+                         .item<double>();
+  if (!std::isfinite(value))
+    throw IrError("runtime GRU scoring head produced a non-finite value");
+  return value;
 #else
   (void)record;
   throw IrError("runtime GRU backend requires FELIDAE_ENABLE_LIBTORCH=ON");
@@ -513,6 +637,13 @@ void GruRuntimeStateModel::exportTorchScript(
   module.register_parameter(
       "projection_bias",
       implementation_->network->projection->bias.detach().clone(), false);
+  module.register_parameter(
+      "score_projection_weight",
+      implementation_->network->scoreProjection->weight.detach().clone(),
+      false);
+  module.register_parameter(
+      "score_projection_bias",
+      implementation_->network->scoreProjection->bias.detach().clone(), false);
   std::ostringstream parameters;
   bool first = true;
   for (const auto &parameter :
@@ -526,14 +657,16 @@ void GruRuntimeStateModel::exportTorchScript(
   }
   std::ostringstream source;
   source << "def forward(self, input_ids: Tensor, hidden: Tensor) -> "
-            "Tuple[Tensor, Tensor]:\n"
+            "Tuple[Tensor, Tensor, Tensor]:\n"
          << "    embedded = torch.embedding(self.embedding, input_ids)\n"
          << "    recurrent = torch.gru(embedded, hidden, [" << parameters.str()
          << "], True, " << configuration_.layerCount
          << ", 0.0, False, False, False)\n"
          << "    logits = torch.linear(recurrent[0][-1][0], "
             "self.projection_weight, self.projection_bias)\n"
-         << "    return logits, recurrent[1]\n";
+         << "    score = torch.linear(recurrent[0][-1][0], "
+            "self.score_projection_weight, self.score_projection_bias)\n"
+         << "    return logits, score, recurrent[1]\n";
   module.define(source.str());
   module.eval();
   module.save(artifactPath.string());
@@ -549,7 +682,7 @@ void GruRuntimeStateModel::exportTorchScript(
            << "\ndecoder_contract=" << kRuntimeDecoderContract
            << "\nir_binary_version=" << LANGUAGE_VERSION
            << "\nopcode_vocabulary_version=felidae-ir-v13\ntraining_schema="
-              "felidae-runtime-operation-v8\ninput_vocabulary="
+              "felidae-runtime-operation-v9\ninput_vocabulary="
            << configuration_.inputVocabularySize
            << "\noutput_vocabulary=" << configuration_.outputVocabularySize
            << "\nembedding_size=" << configuration_.embeddingSize

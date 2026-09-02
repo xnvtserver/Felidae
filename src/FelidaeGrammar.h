@@ -165,8 +165,6 @@ inline constexpr BuiltinTokenDefinition kBuiltinTokens[] = {
     {"where", "WHERE"},
     {"extend", "EXTEND"},
     {"lambda", "LAMBDA"},
-    {"true", "TRUE"},
-    {"false", "FALSE"},
     {"nil", "NIL"},
     {"(", "LPAREN"},
     {")", "RPAREN"},
@@ -270,8 +268,6 @@ inline constexpr bool isKeywordWordTokenId(TokenId::Id id) {
   case TokenId::WHERE:
   case TokenId::EXTEND:
   case TokenId::LAMBDA:
-  case TokenId::TRUE:
-  case TokenId::FALSE:
   case TokenId::NIL:
     return true;
   default:

@@ -11,6 +11,7 @@ namespace Felidae {
 struct IrFactType {
   IrSymbolRef symbol = 0;
   std::vector<IrSymbolRef> parents;
+  std::vector<std::vector<IrSymbolRef>> indexes;
   IrSourceMapEntry::Span sourceSpan;
 };
 
