@@ -13,6 +13,9 @@ enum class SemanticOperationId : std::uint16_t {
   SelectFact = 0x0002,
   DeriveFact = 0x0003,
   EvaluateDegree = 0x0004,
+  // Explicit application-facing scoring hook. Unlike EvaluateDegree, its
+  // result is an ordinary finite double and is never clamped to [0, 1].
+  Suggest = 0x0005,
 };
 
 inline bool isKnownSemanticOperation(std::uint16_t operation) noexcept {
@@ -21,6 +24,7 @@ inline bool isKnownSemanticOperation(std::uint16_t operation) noexcept {
   case SemanticOperationId::SelectFact:
   case SemanticOperationId::DeriveFact:
   case SemanticOperationId::EvaluateDegree:
+  case SemanticOperationId::Suggest:
     return true;
   }
   return false;
@@ -41,6 +45,8 @@ semanticOperationForName(std::string_view name) noexcept {
     return SemanticOperationId::DeriveFact;
   if (name == "semantic_evaluate_degree")
     return SemanticOperationId::EvaluateDegree;
+  if (name == "ssm.suggest" || name == "ssm:suggest")
+    return SemanticOperationId::Suggest;
   return std::nullopt;
 }
 

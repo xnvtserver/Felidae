@@ -76,6 +76,7 @@ private:
     std::size_t piece_ = 0;
     std::size_t byte_ = 0;
     std::size_t recursionDepth_ = 0;
+    bool lastClauseUsedBlockEnd_ = false;
     IntegerParserMetrics metrics_;
     std::vector<std::size_t> lineStarts_;
     static constexpr std::size_t kMaximumRecursionDepth = 512;
@@ -120,6 +121,7 @@ private:
     std::shared_ptr<Goal> parseGoal();
     std::vector<std::shared_ptr<Goal>> parseGoalList(TokenId::Id terminator);
     std::shared_ptr<Statement> parseStatement();
+    std::shared_ptr<ClassStmt> parseClassStatement(std::size_t begin);
     Call parseAnnotation();
     void prepareOperatorAnnotation(const Call& annotation);
     void registerOperatorImplementation(const Call& annotation, const ClauseStmt& method);

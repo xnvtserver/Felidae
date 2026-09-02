@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -30,6 +31,8 @@ std::size_t targetFor(const RuntimeTrainingRecord &record,
       return token.kind == RuntimeOutputTokenKind::Nil;
     case RuntimeTrainingTargetKind::NumericTruth:
       return token.kind == RuntimeOutputTokenKind::NumericTruth;
+    case RuntimeTrainingTargetKind::Score:
+      return false;
     }
     return false;
   };
@@ -79,7 +82,9 @@ int Felidae::runRuntimeGruTraining(int argc, char **argv) {
     std::map<StructuralFamily, std::vector<std::size_t>> families;
     for (std::size_t index = 0; index < records.size(); ++index) {
       families[{records[index].operationId, records[index].inputKinds,
-                targetFor(records[index], vocabulary)}]
+                records[index].targetKind == RuntimeTrainingTargetKind::Score
+                    ? vocabulary.size()
+                    : targetFor(records[index], vocabulary)}]
           .push_back(index);
     }
     if (families.size() < 3)
@@ -115,15 +120,27 @@ int Felidae::runRuntimeGruTraining(int argc, char **argv) {
       double totalLoss = 0.0;
       for (const auto index : training) {
         const auto &record = records[index];
-        totalLoss += model.trainTeacherForced(
-            record, targetFor(record, vocabulary), rate);
+        totalLoss += record.targetKind == RuntimeTrainingTargetKind::Score
+                         ? model.trainScore(record, rate)
+                         : model.trainTeacherForced(
+                               record, targetFor(record, vocabulary), rate);
       }
       std::size_t correct = 0;
+      std::size_t validationClassifications = 0;
+      std::size_t scoreCount = 0;
+      double scoreAbsoluteError = 0.0;
       std::map<EvaluationBucket, std::pair<std::size_t, std::size_t>>
           bucketMetrics;
       for (const auto index : validation) {
         const auto &record = records[index];
+        if (record.targetKind == RuntimeTrainingTargetKind::Score) {
+          scoreAbsoluteError +=
+              std::abs(model.predictScore(record) - record.targetScore);
+          ++scoreCount;
+          continue;
+        }
         const auto target = targetFor(record, vocabulary);
+        ++validationClassifications;
         const auto predicted = model.predictTeacherToken(record);
         auto &metric = bucketMetrics[{record.operationId, target}];
         ++metric.second;
@@ -138,7 +155,12 @@ int Felidae::runRuntimeGruTraining(int argc, char **argv) {
       std::cout << "epoch=" << (epoch + 1)
                 << " train_loss=" << (totalLoss / training.size())
                 << " validation_accuracy="
-                << (static_cast<double>(correct) / validation.size())
+                << (validationClassifications
+                        ? static_cast<double>(correct) /
+                              validationClassifications
+                        : 0.0)
+                << " validation_score_mae="
+                << (scoreCount ? scoreAbsoluteError / scoreCount : 0.0)
                 << " seconds=" << epochSeconds << " train_samples_per_second="
                 << (epochSeconds > 0.0
                         ? static_cast<double>(training.size()) / epochSeconds
@@ -152,16 +174,31 @@ int Felidae::runRuntimeGruTraining(int argc, char **argv) {
       }
     }
     std::size_t testCorrect = 0;
+    std::size_t testClassifications = 0;
+    std::size_t testScores = 0;
+    double testScoreAbsoluteError = 0.0;
     for (const auto index : test) {
       const auto &record = records[index];
-      testCorrect +=
-          model.predictTeacherToken(record) == targetFor(record, vocabulary)
-              ? 1u
-              : 0u;
+      if (record.targetKind == RuntimeTrainingTargetKind::Score) {
+        testScoreAbsoluteError +=
+            std::abs(model.predictScore(record) - record.targetScore);
+        ++testScores;
+      } else {
+        ++testClassifications;
+        testCorrect +=
+            model.predictTeacherToken(record) == targetFor(record, vocabulary)
+                ? 1u
+                : 0u;
+      }
     }
     std::cout << "test_accuracy="
-              << (static_cast<double>(testCorrect) / test.size())
-              << " correct=" << testCorrect << '/' << test.size() << "\n";
+              << (testClassifications
+                      ? static_cast<double>(testCorrect) / testClassifications
+                      : 0.0)
+              << " correct=" << testCorrect << '/' << testClassifications
+              << " test_score_mae="
+              << (testScores ? testScoreAbsoluteError / testScores : 0.0)
+              << " score_records=" << testScores << "\n";
     const std::filesystem::path output(argv[2]);
     std::filesystem::create_directories(output);
     model.saveCheckpoint(output / "runtime-gru.ckpt");

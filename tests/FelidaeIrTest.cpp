@@ -214,6 +214,7 @@ double executeKeyedEquality(bool facts) {
                          {static_cast<IrWord>(IrOpcode::MakeFact),
                           0,
                           0,
+                          0,
                           static_cast<IrWord>(IrOpcode::SetField),
                           0,
                           1,
@@ -224,6 +225,7 @@ double executeKeyedEquality(bool facts) {
                           3,
                           static_cast<IrWord>(IrOpcode::MakeFact),
                           1,
+                          0,
                           0,
                           static_cast<IrWord>(IrOpcode::SetField),
                           1,
@@ -265,9 +267,39 @@ int main() {
   assert(rejects(
       [&] { unsupportedRuntime.retainFact(std::make_shared<VmFact>()); }));
   assert(rejects([&] {
+    const std::array<PieceId, 1> source{1};
+    unsupportedRuntime.retainPersistentFact(std::make_shared<VmFact>(),
+                                           source);
+  }));
+  assert(rejects([&] {
     unsupportedRuntime.mutateFact(std::make_shared<VmFact>(), 1, 1.0);
   }));
   assert(rejects([&] { unsupportedRuntime.registerFactType(1, {}); }));
+
+  // Fact averages use an extended accumulator, so two individually finite
+  // large values do not overflow merely while being averaged. A sum whose
+  // final double result is genuinely non-finite is rejected.
+  {
+    FelidaeKnowledgeRuntime aggregateRuntime;
+    IrModule module;
+    module.symbolTable = {{1}, {2}};
+    aggregateRuntime.installIrModule(module);
+    const auto type = aggregateRuntime.resolveSymbol(1);
+    const auto field = aggregateRuntime.resolveSymbol(2);
+    aggregateRuntime.registerFactType(type, {});
+    const auto makeLarge = [&] {
+      auto fact = std::make_shared<VmFact>();
+      fact->type = type;
+      fact->fields = {{field, std::numeric_limits<double>::max()}};
+      return aggregateRuntime.retainFact(fact);
+    };
+    const std::array<VmFactPtr, 2> facts{makeLarge(), makeLarge()};
+    const PieceSequence fieldPieces{2};
+    assert(aggregateRuntime.aggregateFacts(facts, fieldPieces, 1) ==
+           std::numeric_limits<double>::max());
+    assert(rejects(
+        [&] { (void)aggregateRuntime.aggregateFacts(facts, fieldPieces, 0); }));
+  }
 
   VmFactStore hierarchy;
   hierarchy.registerType(1, {});
@@ -296,6 +328,24 @@ int main() {
   assert((hierarchy.hierarchyProof(3, 1) == std::vector<IrSymbolRef>{3, 2, 1}));
   assert((hierarchy.commonAncestors(2, 3) == std::vector<IrSymbolRef>{1, 2}));
   assert((hierarchy.leastCommonAncestors(2, 3) == std::vector<IrSymbolRef>{2}));
+
+  VmFactStore diamond;
+  diamond.registerType(1, {});
+  diamond.registerType(2, {1});
+  diamond.registerType(3, {1});
+  diamond.registerType(4, {3, 2});
+  diamond.registerType(5, {2});
+  assert((diamond.hierarchyProofs(4, 1) ==
+          std::vector<std::vector<IrSymbolRef>>{{4, 2, 1}, {4, 3, 1}}));
+  const auto evidence = diamond.commonAncestorEvidence(4, 5);
+  assert(evidence.size() == 2);
+  assert(evidence[0].ancestor == 1);
+  assert(evidence[0].leftProofs.size() == 2);
+  assert(evidence[0].leftDistance == 2 && evidence[0].rightDistance == 2);
+  assert(evidence[1].ancestor == 2);
+  assert((evidence[1].leftProofs ==
+          std::vector<std::vector<IrSymbolRef>>{{4, 2}}));
+  assert(evidence[1].leftDistance == 1 && evidence[1].rightDistance == 1);
   assert((hierarchy.mostGeneralCommonAncestors(2, 3) ==
           std::vector<IrSymbolRef>{1}));
   // Prime the per-type closure before adding type 5. Registering hierarchy

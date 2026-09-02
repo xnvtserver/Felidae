@@ -104,6 +104,10 @@ struct VmTensor {
   std::vector<std::int64_t> shape;
 };
 using VmTensorPtr = std::shared_ptr<VmTensor>;
+// `double` is Felidae's unrestricted numeric value. Never normalize or clamp
+// it merely because the value is used by this non-Boolean language. Only
+// operations whose contract is a truth result (comparisons and predicates)
+// return exactly 0.0 or 1.0. VmDegree is a distinct, explicitly bounded value.
 using VmValue =
     std::variant<VmNil, double, VmDegree, VmText, VmSymbol, VmArrayPtr,
                  VmMapPtr, VmFactPtr, VmTensorPtr, VmTextMapPtr>;
@@ -116,6 +120,10 @@ static_assert(
     "VM truth values must be double 0.0 or 1.0, never bool");
 // Public runtime spelling for canonical VM values.
 using Value = VmValue;
+
+// One authoritative structural equality implementation shared by VM opcode
+// dispatch and direct runtime-library operations such as array membership.
+bool vmValuesEqual(const VmValue &left, const VmValue &right);
 
 // Stable model/dataset contract.  Do not persist VmValue::index(): changing
 // the in-memory variant layout must never reinterpret an existing corpus or
@@ -218,13 +226,22 @@ struct VmFactStoreJournalMark {
   std::size_t provenance = 0;
 };
 
+struct VmCommonAncestorEvidence {
+  IrSymbolRef ancestor = 0;
+  std::vector<std::vector<IrSymbolRef>> leftProofs;
+  std::vector<std::vector<IrSymbolRef>> rightProofs;
+  std::size_t leftDistance = 0;
+  std::size_t rightDistance = 0;
+};
+
 // Process-resident append-only fact memory. It belongs to the Form runtime,
 // not to AST/parser services, and is shared by repeated VM executions in a
 // daemon. Type and field indexes are authoritative; callers must not mutate a
 // retained fact directly.
 class VmFactStore {
 public:
-  void registerType(IrSymbolRef type, std::vector<IrSymbolRef> parents);
+  void registerType(IrSymbolRef type, std::vector<IrSymbolRef> parents,
+                    std::vector<std::vector<IrSymbolRef>> indexes = {});
   VmFactPtr retain(const VmFactPtr &fact);
   void recordInsert(IrFactRef fact);
   VmFactPtr mutate(const VmFactPtr &fact, IrSymbolRef field,
@@ -236,10 +253,15 @@ public:
   std::vector<VmFactPtr> snapshot() const;
   std::vector<VmFactPtr> snapshot(IrSymbolRef type) const;
   std::vector<VmFactPtr> snapshotAssignableTo(IrSymbolRef type) const;
+  std::vector<IrSymbolRef> parentsOf(IrSymbolRef type) const;
   std::vector<IrSymbolRef> hierarchyProof(IrSymbolRef child,
                                           IrSymbolRef ancestor) const;
+  std::vector<std::vector<IrSymbolRef>>
+  hierarchyProofs(IrSymbolRef child, IrSymbolRef ancestor) const;
   std::vector<IrSymbolRef> commonAncestors(IrSymbolRef left,
                                            IrSymbolRef right) const;
+  std::vector<VmCommonAncestorEvidence>
+  commonAncestorEvidence(IrSymbolRef left, IrSymbolRef right) const;
   std::vector<IrSymbolRef> leastCommonAncestors(IrSymbolRef left,
                                                 IrSymbolRef right) const;
   std::vector<IrSymbolRef> mostGeneralCommonAncestors(IrSymbolRef left,
@@ -269,8 +291,9 @@ public:
   // store -- it must never infer ownership from fact type alone, since two
   // different files can share one fact type. A fact with no recorded
   // source is simply excluded from any snapshotBySource() result; only
-  // CSV import and explicitly/inferred persistent insert are the only paths
-  // that establish ownership. Queries and updates never invent it.
+  // CSV import, compiler-linked fact-only .fx rows, and explicit/inferred
+  // persistent insert are the only paths that establish ownership. Queries
+  // and updates never invent it.
   void recordSource(IrFactRef fact, std::string source);
   std::optional<std::string> sourceOf(IrFactRef fact) const;
   std::vector<std::string> sourcesForType(IrSymbolRef type) const;
@@ -294,6 +317,8 @@ private:
   std::unordered_map<IrSymbolRef, std::vector<VmFactPtr>> byType_;
   std::unordered_map<IrSymbolRef, std::vector<VmFactPtr>> byField_;
   std::unordered_map<IrSymbolRef, std::vector<IrSymbolRef>> parents_;
+  std::unordered_map<IrSymbolRef, std::vector<std::vector<IrSymbolRef>>>
+      declaredIndexes_;
   std::unordered_map<IrFactRef, std::string> factSource_;
   std::vector<VmFactMutation> mutations_;
   std::vector<VmFactProvenance> provenance_;
@@ -359,6 +384,11 @@ public:
   virtual VmValue loadSymbol(IrSymbolRef symbol);
   virtual void storeSymbol(IrSymbolRef symbol, const VmValue &value);
   virtual VmFactPtr retainFact(const VmFactPtr &fact);
+  // Establishes persistent ownership for a compiler-linked fact database
+  // row. The base runtime rejects it; only a runtime with a fact store and a
+  // text codec may accept source-owned facts.
+  virtual VmFactPtr retainPersistentFact(const VmFactPtr &fact,
+                                         std::span<const PieceId> source);
   virtual VmFactPtr mutateFact(const VmFactPtr &fact, IrSymbolRef field,
                                const VmValue &value);
   virtual double deleteFacts(std::span<const VmFactPtr> facts);
@@ -382,12 +412,18 @@ public:
                             std::uint8_t kind, IrSymbolRef joinedType,
                             IrSymbolRef joinedLeft, IrSymbolRef joinedRight);
   virtual void registerFactType(IrSymbolRef type,
-                                std::vector<IrSymbolRef> parents);
+                                std::vector<IrSymbolRef> parents,
+                                std::vector<std::vector<IrSymbolRef>> indexes = {});
   virtual std::vector<VmFactPtr> snapshotFacts(IrSymbolRef type);
   virtual std::vector<IrSymbolRef> hierarchyProof(IrSymbolRef child,
                                                   IrSymbolRef ancestor);
+  virtual std::vector<std::vector<IrSymbolRef>>
+  hierarchyProofs(IrSymbolRef child, IrSymbolRef ancestor);
   virtual std::vector<IrSymbolRef> commonAncestors(IrSymbolRef left,
                                                    IrSymbolRef right);
+  virtual std::vector<VmCommonAncestorEvidence>
+  commonAncestorEvidence(IrSymbolRef left, IrSymbolRef right);
+  virtual VmValue ancestorAnalysis(IrSymbolRef left, IrSymbolRef right);
   virtual std::vector<IrSymbolRef> leastCommonAncestors(IrSymbolRef left,
                                                         IrSymbolRef right);
   virtual std::vector<IrSymbolRef>
@@ -414,7 +450,6 @@ public:
   virtual VmValue importCsvFacts(std::span<const PieceId> data,
                                  std::span<const PieceId> type,
                                  std::span<const PieceId> source);
-  virtual double syncDatabase(std::span<const PieceId> path);
   virtual void beginExecution();
   virtual void endExecution() noexcept;
   virtual RuntimeContext makeRuntimeContext(const VmValue &systemInput) const;
@@ -442,6 +477,8 @@ public:
   VmValue loadSymbol(IrSymbolRef symbol) override;
   void storeSymbol(IrSymbolRef symbol, const VmValue &value) override;
   VmFactPtr retainFact(const VmFactPtr &fact) override;
+  VmFactPtr retainPersistentFact(const VmFactPtr &fact,
+                                 std::span<const PieceId> source) override;
   VmFactPtr mutateFact(const VmFactPtr &fact, IrSymbolRef field,
                        const VmValue &value) override;
   double deleteFacts(std::span<const VmFactPtr> facts) override;
@@ -464,12 +501,18 @@ public:
                     IrSymbolRef joinedType, IrSymbolRef joinedLeft,
                     IrSymbolRef joinedRight) override;
   void registerFactType(IrSymbolRef type,
-                        std::vector<IrSymbolRef> parents) override;
+                        std::vector<IrSymbolRef> parents,
+                        std::vector<std::vector<IrSymbolRef>> indexes = {}) override;
   std::vector<VmFactPtr> snapshotFacts(IrSymbolRef type) override;
   std::vector<IrSymbolRef> hierarchyProof(IrSymbolRef child,
                                           IrSymbolRef ancestor) override;
+  std::vector<std::vector<IrSymbolRef>>
+  hierarchyProofs(IrSymbolRef child, IrSymbolRef ancestor) override;
   std::vector<IrSymbolRef> commonAncestors(IrSymbolRef left,
                                            IrSymbolRef right) override;
+  std::vector<VmCommonAncestorEvidence>
+  commonAncestorEvidence(IrSymbolRef left, IrSymbolRef right) override;
+  VmValue ancestorAnalysis(IrSymbolRef left, IrSymbolRef right) override;
   std::vector<IrSymbolRef> leastCommonAncestors(IrSymbolRef left,
                                                 IrSymbolRef right) override;
   std::vector<IrSymbolRef>
@@ -491,7 +534,6 @@ public:
   VmValue importCsvFacts(std::span<const PieceId> data,
                          std::span<const PieceId> type,
                          std::span<const PieceId> source) override;
-  double syncDatabase(std::span<const PieceId> path) override;
   void beginExecution() override;
   void endExecution() noexcept override;
   RuntimeContext makeRuntimeContext(const VmValue &systemInput) const override;

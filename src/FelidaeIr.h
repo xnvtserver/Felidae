@@ -30,6 +30,9 @@ enum class IrOpcode : std::uint8_t {
   CallNamed,
   Builtin,
   SemanticEval,
+  // [opcode, destination, type-symbol-table index, source-text index]. The
+  // source index is one-based; zero creates an in-memory fact. A nonzero
+  // source is emitted only for compiler-linked fact-only .fx database rows.
   MakeFact,
   MakeArray,
   MakeMap,

@@ -47,7 +47,7 @@ enum class GoalKind {
   Or
 };
 
-enum class StatementKind { Import, Clause, GlobalBinding };
+enum class StatementKind { Import, Clause, GlobalBinding, Class };
 
 enum class ClauseKind { Fact, Rule, Method, NativeDeclaration, EntryCall };
 
@@ -943,6 +943,11 @@ public:
   bool emptyDeclaration = false;
   ClauseKind clauseKind = ClauseKind::Rule;
   std::string module;
+  // Non-empty only for a fact row linked from a fact-only .fx database.
+  // Compiler lowering carries these already-encoded path pieces into
+  // MakeFact; the AST itself remains compiler-only and the VM never parses a
+  // source file to recover ownership.
+  std::shared_ptr<const std::vector<std::uint32_t>> persistenceSource;
   // An annotation is a normal method application evaluated against this
   // declaration. Built-in annotations and user annotations share this AST.
   std::vector<Call> annotations;
@@ -1009,12 +1014,78 @@ public:
   }
 };
 
+struct ClassFieldDecl {
+  std::string name;
+  SymbolId nameId = 0;
+  std::string typeName;
+  SourceSpan sourceSpan;
+};
+
+struct ClassIndexDecl {
+  std::vector<std::string> fields;
+  std::vector<SymbolId> fieldIds;
+  SourceSpan sourceSpan;
+};
+
+// Compiler-only fact schema. It lowers into the existing IrFactType table;
+// RegisterVm never receives or interprets this syntax-shaped declaration.
+class ClassStmt final : public Statement {
+public:
+  ClassStmt(std::string name, SymbolId nameId,
+            std::vector<std::string> parentNames,
+            std::vector<ClassFieldDecl> fields,
+            std::vector<ClassIndexDecl> indexes = {},
+            std::vector<std::shared_ptr<ClauseStmt>> methods = {})
+      : name(std::move(name)), nameId(nameId),
+        parentNames(std::move(parentNames)), fields(std::move(fields)),
+        indexes(std::move(indexes)),
+        methods(std::move(methods)) {}
+
+  std::string name;
+  SymbolId nameId = 0;
+  std::vector<std::string> parentNames;
+  std::vector<ClassFieldDecl> fields;
+  std::vector<ClassIndexDecl> indexes;
+  std::vector<std::shared_ptr<ClauseStmt>> methods;
+
+  StatementKind kind() const override { return StatementKind::Class; }
+  std::string debug() const override {
+    std::ostringstream oss;
+    oss << "class " << name;
+    if (!parentNames.empty()) {
+      oss << " extend ";
+      for (std::size_t i = 0; i < parentNames.size(); ++i) {
+        if (i)
+          oss << ", ";
+        oss << parentNames[i];
+      }
+    }
+    oss << '\n';
+    for (const auto &field : fields)
+      oss << "  " << field.name << ": " << field.typeName << '\n';
+    for (const auto &index : indexes) {
+      oss << "  index(";
+      for (std::size_t i = 0; i < index.fields.size(); ++i) {
+        if (i)
+          oss << ", ";
+        oss << index.fields[i];
+      }
+      oss << ")\n";
+    }
+    for (const auto &method : methods)
+      oss << "  " << method->debug() << '\n';
+    oss << "end";
+    return oss.str();
+  }
+};
+
 class Program final : public AstNode {
 public:
   std::vector<std::shared_ptr<Statement>> statements;
   std::vector<std::shared_ptr<ImportStmt>> imports;
   std::vector<std::shared_ptr<ClauseStmt>> clauses;
   std::vector<std::shared_ptr<GlobalBindingStmt>> globals;
+  std::vector<std::shared_ptr<ClassStmt>> classes;
 
   void addStatement(std::shared_ptr<Statement> statement) {
     switch (statement->kind()) {
@@ -1026,6 +1097,11 @@ public:
       break;
     case StatementKind::GlobalBinding:
       globals.push_back(std::static_pointer_cast<GlobalBindingStmt>(statement));
+      break;
+    case StatementKind::Class:
+      classes.push_back(std::static_pointer_cast<ClassStmt>(statement));
+      for (const auto &method : classes.back()->methods)
+        clauses.push_back(method);
       break;
     }
     statements.push_back(std::move(statement));

@@ -398,7 +398,7 @@ main() =>
   for (std::size_t seed = 1; seed <= 24; ++seed) {
     result.emplace_back("generated-plan-" + std::to_string(seed),
                         std::string(plan) + "plan " + std::to_string(seed * 3) +
-                            " using " + (seed % 2 == 0 ? "true\n" : "false\n"));
+                            " using " + (seed % 2 == 0 ? "1.0\n" : "0.0\n"));
   }
   for (std::size_t seed = 1; seed <= 16; ++seed) {
     std::string expression = std::to_string(seed + 7);
@@ -426,7 +426,7 @@ main() =>
     // abstention teachers, not fabricated calls to either implementation.
     result.emplace_back("generated-typed-abstain-" + std::to_string(seed),
                         std::string(typed) + "classify candidate using " +
-                            (seed % 2 == 0 ? "true\n" : "false\n"));
+                            (seed % 2 == 0 ? "1.0\n" : "0.0\n"));
   }
   return result;
 }

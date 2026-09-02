@@ -427,6 +427,8 @@ int main() {
       runtimeGruConfiguration, {{RuntimeOutputTokenKind::InputReference, 0}});
   RuntimeContext runtimeGruContext;
   runtimeGruContext.executionState = runtimeGru.createExecutionState();
+  const std::vector<PieceSequence> runtimeSymbols{{42}};
+  runtimeGruContext.symbolTable = &runtimeSymbols;
   const VmValue runtimeText = VmText{{101, 102, 103}};
   assert(std::get<VmText>(
              runtimeGru.evaluate(RuntimeOperation{static_cast<std::uint16_t>(
@@ -434,13 +436,13 @@ int main() {
                                  {&runtimeText, 1}, runtimeGruContext))
              .pieces == PieceSequence({101, 102, 103}));
   auto runtimeFact = std::make_shared<VmFact>();
-  runtimeFact->type = 42;
+  runtimeFact->type = 1;
   const VmValue runtimeFactValue = runtimeFact;
   assert(std::get<VmFactPtr>(
              runtimeGru.evaluate(RuntimeOperation{static_cast<std::uint16_t>(
                                      SemanticOperationId::SelectFact)},
                                  {&runtimeFactValue, 1}, runtimeGruContext))
-             ->type == 42);
+             ->type == 1);
   GruRuntimeStateModel softRuntimeGru(
       runtimeGruConfiguration, {{RuntimeOutputTokenKind::DegreeMilli, 725}});
   RuntimeContext softRuntimeContext;
@@ -451,6 +453,15 @@ int main() {
                                   SemanticOperationId::EvaluateDegree)},
                               {&degreeInput, 1}, softRuntimeContext);
   assert(std::get<VmDegree>(softResult).value == 0.725);
+  RuntimeContext suggestContext;
+  suggestContext.executionState = runtimeGru.createExecutionState();
+  suggestContext.symbolTable = &runtimeSymbols;
+  const auto suggested = runtimeGru.evaluate(
+      RuntimeOperation{static_cast<std::uint16_t>(
+          SemanticOperationId::Suggest)},
+      {&runtimeFactValue, 1}, suggestContext);
+  assert(std::holds_alternative<double>(suggested));
+  assert(std::isfinite(std::get<double>(suggested)));
 
   // Production artifacts are genuine TorchScript modules. Native training
   // checkpoints remain separate and must not load through the inference
@@ -549,6 +560,7 @@ int main() {
   identityTeacher.operationId =
       static_cast<std::uint16_t>(SemanticOperationId::Identity);
   identityTeacher.inputKinds = {RuntimeValueKind::Number};
+  identityTeacher.inputValues = {runtimeValueEncoding(VmValue{42.0}, {})};
   identityTeacher.targetKind = RuntimeTrainingTargetKind::InputReference;
   identityTeacher.targetValue = 0;
   verifyRuntimeTrainingRecord(identityTeacher);
@@ -556,17 +568,31 @@ int main() {
   serializedTeacher.factTypes = {{10, 11}};
   serializedTeacher.factTypeCounts = {{{10, 11}, 2}};
   serializedTeacher.hierarchyEdges = {{{10, 11}, {12}}};
+  RuntimeTrainingRecord scoreTeacher;
+  scoreTeacher.operationId =
+      static_cast<std::uint16_t>(SemanticOperationId::Suggest);
+  scoreTeacher.inputKinds = {RuntimeValueKind::Number};
+  scoreTeacher.inputValues = {runtimeValueEncoding(VmValue{3.432}, {})};
+  assert(scoreTeacher.inputValues.front() !=
+         runtimeValueEncoding(VmValue{-2.302}, {}));
+  scoreTeacher.targetKind = RuntimeTrainingTargetKind::Score;
+  scoreTeacher.targetScore = -212.421;
+  verifyRuntimeTrainingRecord(scoreTeacher);
   const auto runtimeDataset =
       std::filesystem::path(FELIDAE_MODEL_TEST_OUTPUT_DIR) /
       "runtime-sequence-roundtrip.jsonl";
-  writeRuntimeTrainingDataset(runtimeDataset, {&serializedTeacher, 1});
+  const std::array<RuntimeTrainingRecord, 2> runtimeTeachers{
+      serializedTeacher, scoreTeacher};
+  writeRuntimeTrainingDataset(runtimeDataset, runtimeTeachers);
   const auto loadedTeachers = loadRuntimeTrainingDataset(runtimeDataset);
-  assert(loadedTeachers.size() == 1);
+  assert(loadedTeachers.size() == 2);
   assert(loadedTeachers.front().factTypes == serializedTeacher.factTypes);
   assert(loadedTeachers.front().factTypeCounts ==
          serializedTeacher.factTypeCounts);
   assert(loadedTeachers.front().hierarchyEdges ==
          serializedTeacher.hierarchyEdges);
+  assert(loadedTeachers[1].targetKind == RuntimeTrainingTargetKind::Score);
+  assert(loadedTeachers[1].targetScore == -212.421);
   std::filesystem::remove(runtimeDataset);
   auto invalidTeacher = identityTeacher;
   invalidTeacher.operationId = 0xffffu;
@@ -679,6 +705,7 @@ int main() {
       static_cast<IrWord>(IrOpcode::MakeFact),
       0,
       0,
+      0,
       static_cast<IrWord>(IrOpcode::LoadConst),
       1,
       0,
@@ -691,6 +718,9 @@ int main() {
       0,
       static_cast<IrWord>(IrOpcode::End),
   };
+  auto invalidFactSource = factProgram;
+  invalidFactSource.words[3] = 1;
+  assert(rejects([&] { IrVerifier::verify(invalidFactSource); }));
   const auto factValue = executeDirect(factProgram, noRuntime);
   const auto fact = std::get<VmFactPtr>(factValue);
   assert(fact->type == 50 && fact->fields.size() == 1);
@@ -858,6 +888,7 @@ int main() {
   knowledgeProgram.symbols = {77};
   knowledgeProgram.words = {
       static_cast<IrWord>(IrOpcode::MakeFact),
+      0,
       0,
       0,
       static_cast<IrWord>(IrOpcode::SemanticEval),

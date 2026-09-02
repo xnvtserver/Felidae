@@ -178,10 +178,10 @@ int main() {
     }
 
     const Felidae::IntegerTokenList expressionTokens(
-        model, "# ignored\n[\"value\", café, (true)]");
+        model, "# ignored\n[\"value\", café, (1.0)]");
     Felidae::IntegerParser integerParser(expressionTokens);
     const auto expression = integerParser.parseExpressionText();
-    assert(expression->debug() == "[\"value\", café, true]");
+    assert(expression->debug() == "[\"value\", café, 1]");
     assert(integerParser.metrics().sourceEncodeCount == 2);
     assert(integerParser.metrics().tokenCount == expressionTokens.entries().size());
     assert(integerParser.metrics().iterations > 0);
@@ -306,14 +306,14 @@ int main() {
     assert(decodedQuery && decodedQuery->value == queryText);
 
     const Felidae::IntegerTokenList conditionalTokens(
-        model, "choose(value: number) =>\n    if value > 0 then\n        return (result: true)\n    else\n        return (result: false)\n");
+        model, "choose(value: number) =>\n    if value > 0 then\n        return (result: 1.0)\n    else\n        return (result: 0.0)\n");
     Felidae::IntegerParser conditionalParser(conditionalTokens);
     const auto conditionalProgram = conditionalParser.parseProgram();
     assert(conditionalProgram.clauses.size() == 1);
     assert(!conditionalProgram.clauses.front()->body.empty());
 
     const Felidae::IntegerTokenList fallbackTokens(
-        model, "choose() =>\n    return (result: true)\nelse\n    return (result: false)\n");
+        model, "choose() =>\n    return (result: 1.0)\nelse\n    return (result: 0.0)\n");
     Felidae::IntegerParser fallbackParser(fallbackTokens);
     const auto fallbackProgram = fallbackParser.parseProgram();
     assert(fallbackProgram.clauses.size() == 1);
@@ -382,9 +382,9 @@ int main() {
     const Felidae::IntegerTokenList sameAnchorTokens(model,
         "@mixfix(pattern: \"plan {name: string} using {strategy: string} with {budget: number}\")\n"
         "longPlan() => return (value: name)\n"
-        "@mixfix(pattern: \"plan {value: number} using {enabled: bool}\")\n"
+        "@mixfix(pattern: \"plan {value: number} using {enabled: number}\")\n"
         "shortPlan() => return (value: value)\n"
-        "main() => return (long: plan \"x\" using \"y\" with 1, short: plan 7 using true)\n");
+        "main() => return (long: plan \"x\" using \"y\" with 1, short: plan 7 using 1.0)\n");
     Felidae::IntegerParser sameAnchorParser(sameAnchorTokens, sameAnchorOperators);
     const auto sameAnchorProgram = sameAnchorParser.parseProgram();
     assert(sameAnchorProgram.clauses.size() == 3);

@@ -190,237 +190,6 @@
       }
     ]
   },
-  "probability:mean": {
-    "heading": "probability.mean",
-    "description": "Returns the arithmetic mean of a numeric array.",
-    "example": "average := probability.mean(data: [2, 4, 6])",
-    "params": [
-      {
-        "name": "data"
-      }
-    ]
-  },
-  "probability:variance": {
-    "heading": "probability.variance",
-    "description": "Returns the variance of a numeric array.",
-    "example": "spread := probability.variance(data: values)",
-    "params": [
-      {
-        "name": "data"
-      }
-    ]
-  },
-  "probability:stddev": {
-    "heading": "probability.stddev",
-    "description": "Returns the standard deviation of a numeric array.",
-    "example": "spread := probability.stddev(data: values)",
-    "params": [
-      {
-        "name": "data"
-      }
-    ]
-  },
-  "probability:normalize": {
-    "heading": "probability.normalize",
-    "description": "Scales a numeric array so its values sum to 1, producing a probability distribution.",
-    "example": "distribution := probability.normalize(data: values)",
-    "params": [
-      {
-        "name": "data"
-      }
-    ]
-  },
-  "probability:entropy": {
-    "heading": "probability.entropy",
-    "description": "Returns the Shannon entropy of a probability distribution array.",
-    "example": "spread := probability.entropy(data: distribution)",
-    "params": [
-      {
-        "name": "data"
-      }
-    ]
-  },
-  "probability:covariance": {
-    "heading": "probability.covariance",
-    "description": "Returns the covariance between two numeric arrays of equal length.",
-    "example": "value := probability.covariance(left: xs, right: ys)",
-    "params": [
-      {
-        "name": "left"
-      },
-      {
-        "name": "right"
-      }
-    ]
-  },
-  "probability:correlation": {
-    "heading": "probability.correlation",
-    "description": "Returns the Pearson correlation coefficient between two numeric arrays of equal length.",
-    "example": "value := probability.correlation(left: xs, right: ys)",
-    "params": [
-      {
-        "name": "left"
-      },
-      {
-        "name": "right"
-      }
-    ]
-  },
-  "probability:bernoulli": {
-    "heading": "probability.bernoulli",
-    "description": "Samples a Bernoulli trial with success probability p, returning 1 or 0.",
-    "example": "outcome := probability.bernoulli(p: 0.5)",
-    "params": [
-      {
-        "name": "p"
-      }
-    ]
-  },
-  "probability:binomialPmf": {
-    "heading": "probability.binomialPmf",
-    "description": "Returns the binomial probability mass function value for the given trials, successes, and success probability.",
-    "example": "value := probability.binomialPmf(trials: 10, successes: 4, p: 0.5)",
-    "params": [
-      {
-        "name": "trials"
-      },
-      {
-        "name": "successes"
-      },
-      {
-        "name": "p"
-      }
-    ]
-  },
-  "probability:binomialCdf": {
-    "heading": "probability.binomialCdf",
-    "description": "Returns the binomial cumulative distribution function value for the given trials, successes, and success probability.",
-    "example": "value := probability.binomialCdf(trials: 10, successes: 4, p: 0.5)",
-    "params": [
-      {
-        "name": "trials"
-      },
-      {
-        "name": "successes"
-      },
-      {
-        "name": "p"
-      }
-    ]
-  },
-  "probability:poissonPmf": {
-    "heading": "probability.poissonPmf",
-    "description": "Returns the Poisson probability mass function value for the given rate and event count.",
-    "example": "value := probability.poissonPmf(lambda: 3, events: 2)",
-    "params": [
-      {
-        "name": "lambda"
-      },
-      {
-        "name": "events"
-      }
-    ]
-  },
-  "probability:poissonCdf": {
-    "heading": "probability.poissonCdf",
-    "description": "Returns the Poisson cumulative distribution function value for the given rate and event count.",
-    "example": "value := probability.poissonCdf(lambda: 3, events: 2)",
-    "params": [
-      {
-        "name": "lambda"
-      },
-      {
-        "name": "events"
-      }
-    ]
-  },
-  "probability:normalPdf": {
-    "heading": "probability.normalPdf",
-    "description": "Returns the normal distribution probability density at x for the given mean and standard deviation.",
-    "example": "value := probability.normalPdf(x: 1, mean: 0, stddev: 1)",
-    "params": [
-      {
-        "name": "x"
-      },
-      {
-        "name": "mean"
-      },
-      {
-        "name": "stddev"
-      }
-    ]
-  },
-  "probability:normalCdf": {
-    "heading": "probability.normalCdf",
-    "description": "Returns the normal distribution cumulative probability at x for the given mean and standard deviation.",
-    "example": "value := probability.normalCdf(x: 1, mean: 0, stddev: 1)",
-    "params": [
-      {
-        "name": "x"
-      },
-      {
-        "name": "mean"
-      },
-      {
-        "name": "stddev"
-      }
-    ]
-  },
-  "probability:uniformPdf": {
-    "heading": "probability.uniformPdf",
-    "description": "Returns the uniform distribution probability density at x within the given min/max range.",
-    "example": "value := probability.uniformPdf(x: 5, min: 0, max: 10)",
-    "params": [
-      {
-        "name": "x"
-      },
-      {
-        "name": "min"
-      },
-      {
-        "name": "max"
-      }
-    ]
-  },
-  "probability:uniformCdf": {
-    "heading": "probability.uniformCdf",
-    "description": "Returns the uniform distribution cumulative probability at x within the given min/max range.",
-    "example": "value := probability.uniformCdf(x: 5, min: 0, max: 10)",
-    "params": [
-      {
-        "name": "x"
-      },
-      {
-        "name": "min"
-      },
-      {
-        "name": "max"
-      }
-    ]
-  },
-  "probability:sample": {
-    "heading": "probability.sample",
-    "description": "Returns one value chosen uniformly at random from the array.",
-    "example": "value := probability.sample(data: values)",
-    "params": [
-      {
-        "name": "data"
-      }
-    ]
-  },
-  "probability:weightedChoice": {
-    "heading": "probability.weightedChoice",
-    "description": "Returns one value chosen at random from the array, weighted by the parallel weights array.",
-    "example": "value := probability.weightedChoice(data: values, weights: weights)",
-    "params": [
-      {
-        "name": "data"
-      },
-      {
-        "name": "weights"
-      }
-    ]
-  },
   "str:len": {
     "heading": "str.len",
     "description": "Unifies the output argument with the length of a string.",
@@ -530,7 +299,7 @@
   },
   "str:startsWith": {
     "heading": "str.startsWith",
-    "description": "Returns \"true\" when a string starts with the requested prefix.",
+    "description": "Returns 1.0 when a string starts with the requested prefix, otherwise 0.0.",
     "example": "ok := str.startsWith(data: \"Alice\", prefix: \"Al\")",
     "params": [
       {
@@ -543,7 +312,7 @@
   },
   "str:endsWith": {
     "heading": "str.endsWith",
-    "description": "Returns \"true\" when a string ends with the requested suffix.",
+    "description": "Returns 1.0 when a string ends with the requested suffix, otherwise 0.0.",
     "example": "ok := str.endsWith(data: \"Alice\", suffix: \"ice\")",
     "params": [
       {
@@ -692,7 +461,7 @@
   },
   "json:has": {
     "heading": "json.has",
-    "description": "Returns \"true\" when a JSON/map value contains the requested key.",
+    "description": "Returns 1.0 when a JSON/map value contains the requested key, otherwise 0.0.",
     "example": "ok := json.has(data: object, key: \"name\")",
     "params": [
       {
@@ -908,7 +677,7 @@
   },
   "file:exists": {
     "heading": "file.exists",
-    "description": "Returns \"true\" when a path exists, otherwise \"false\".",
+    "description": "Returns 1.0 when a path exists, otherwise 0.0.",
     "example": "ok := file.exists(path: \"data.txt\")",
     "params": [
       {
@@ -918,7 +687,7 @@
   },
   "file:deleteFile": {
     "heading": "file.deleteFile",
-    "description": "Deletes a file and returns \"true\" when a file was removed.",
+    "description": "Deletes a file and returns 1.0 when a file was removed, otherwise 0.0.",
     "example": "removed := file.deleteFile(path: \"data.txt\")",
     "params": [
       {

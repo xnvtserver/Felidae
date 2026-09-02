@@ -1,5 +1,6 @@
 #include "IrCodeGenerator.h"
 
+#include "BuiltinRegistry.h"
 #include "IntegerParser.h"
 #include "OperatorAnnotation.h"
 #include "Symbol.h"
@@ -7,9 +8,12 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <optional>
+#include <set>
 #include <span>
 #include <unordered_set>
 
@@ -110,7 +114,7 @@ void desugarWhereGuardedClauses(Program &program) {
 }
 
 // Defined later in this file, alongside resolveScopedAccess whose traversal
-// shape it mirrors; forward-declared here for FactQueryNormalizer::iteration().
+// shape it mirrors; forward-declared here for FactDmlLowerer::iteration().
 std::shared_ptr<Expr> substituteCaptures(
     const std::shared_ptr<Expr> &expression, const std::string &rowParameter,
     SymbolId rowParameterId, const std::string &capturesVariable,
@@ -122,9 +126,15 @@ std::shared_ptr<Expr> substituteCaptures(
 // operation. Each predicate becomes an ordinary compiler-generated procedure;
 // RegisterVm therefore retains one iteration/call path for both lambda(...)
 // and concrete type methods such as School.all() and School.select(...).
-class FactQueryNormalizer {
+class FactDmlLowerer {
 public:
-  explicit FactQueryNormalizer(const Program &program) {
+  explicit FactDmlLowerer(const Program &program) {
+    for (const auto &declaration : program.classes) {
+      if (!declaration)
+        continue;
+      occupied_.insert(declaration->nameId);
+      factTypes_.emplace(declaration->name, declaration->nameId);
+    }
     for (const auto &clause : program.clauses) {
       if (!clause)
         continue;
@@ -347,51 +357,6 @@ private:
       }
       for (auto &argument : term->args)
         argument.value = expression(argument.value);
-      if (term->name == "ancestorAnalysis") {
-        // A source convenience over the three already-real hierarchy
-        // intrinsics (commonAncestors/lowestCommonAncestor/
-        // highestCommonAncestor, each its own dedicated IrOpcode -- see
-        // IrOpcode::HierarchyCommonAncestors and friends), combined into one
-        // fact instead of a bespoke analysis opcode. Facts carry more
-        // reasoning context than a bare map, matching how every other
-        // multi-value result in this file returns a labeled record.
-        if (term->args.size() != 2)
-          throw IntegerParserError(
-              "ancestorAnalysis requires left and right arguments");
-        std::shared_ptr<Expr> leftArg;
-        std::shared_ptr<Expr> rightArg;
-        for (const auto &argument : term->args) {
-          if (argument.name == "left")
-            leftArg = argument.value;
-          else if (argument.name == "right")
-            rightArg = argument.value;
-        }
-        if (!leftArg || !rightArg) {
-          throw IntegerParserError(
-              "ancestorAnalysis requires named left and right arguments");
-        }
-        const auto hierarchyCall = [&](std::string name) {
-          std::vector<Arg> callArgs;
-          callArgs.emplace_back("left", symbolIdForName("left"), leftArg);
-          callArgs.emplace_back("right", symbolIdForName("right"), rightArg);
-          auto call = std::make_shared<TermExpr>(std::move(name),
-                                                  std::move(callArgs));
-          call->sourceSpan = term->sourceSpan;
-          return call;
-        };
-        std::vector<Arg> factArgs;
-        factArgs.emplace_back("common", symbolIdForName("common"),
-                              hierarchyCall("commonAncestors"));
-        factArgs.emplace_back("lowest", symbolIdForName("lowest"),
-                              hierarchyCall("lowestCommonAncestor"));
-        factArgs.emplace_back("highest", symbolIdForName("highest"),
-                              hierarchyCall("highestCommonAncestor"));
-        auto result = std::make_shared<TermExpr>(
-            "AncestorAnalysis", symbolIdForName("AncestorAnalysis"),
-            std::move(factArgs), BuiltinId::Unknown, /*capitalized=*/true);
-        result->sourceSpan = term->sourceSpan;
-        return result;
-      }
       const auto separator = term->name.rfind('.');
       if (separator == std::string::npos)
         return value;
@@ -429,12 +394,13 @@ private:
       };
       if (method == "search") {
         const auto field = std::dynamic_pointer_cast<StringExpr>(named("field"));
-        const auto mode = std::dynamic_pointer_cast<StringExpr>(named("mode"));
-        if (!field || !mode)
+        const auto searchType =
+            std::dynamic_pointer_cast<StringExpr>(named("type"));
+        if (!field || !searchType)
           throw IntegerParserError(typeName +
-                                   ".search requires text field and mode");
+                                   ".search requires text field and type");
         static const std::unordered_set<std::string> allowedArguments{
-            "field",       "query",     "mode",      "case",
+            "field",       "query",     "type",      "case",
             "direction",   "includeSelf", "minimum", "maximum",
             "tolerance"};
         for (const auto &argument : term->args)
@@ -443,7 +409,7 @@ private:
                                      ".search has an unknown argument " +
                                      argument.name);
 
-        const auto textMode = mode->value;
+        const auto textMode = searchType->value;
         const bool textSearch =
             textMode == "exact" || textMode == "prefix" ||
             textMode == "suffix" || textMode == "contains" ||
@@ -461,7 +427,7 @@ private:
         } else if (textMode == "hierarchy") {
           if (!named("query"))
             throw IntegerParserError(typeName +
-                                     ".search hierarchy mode requires query");
+                                     ".search hierarchy type requires query");
           const auto direction =
               std::dynamic_pointer_cast<StringExpr>(named("direction"));
           if (!direction ||
@@ -476,9 +442,9 @@ private:
           if (closeness == range)
             throw IntegerParserError(
                 typeName +
-                ".search degree mode requires either query+tolerance or a range");
+                ".search degree type requires either query+tolerance or a range");
         } else {
-          throw IntegerParserError(typeName + ".search mode is invalid");
+          throw IntegerParserError(typeName + ".search type is invalid");
         }
 
         std::vector<MapEntry> optionEntries;
@@ -529,21 +495,37 @@ private:
         throw IntegerParserError(typeName +
                                  ".delete must follow a where condition");
       }
-      if (method == "join" || method == "leftJoin" ||
-          method == "rightJoin" || method == "OuterJoin") {
+      if (method == "join") {
         const auto other = std::dynamic_pointer_cast<VarExpr>(named("type"));
         const auto left = std::dynamic_pointer_cast<StringExpr>(named("left"));
         const auto right = std::dynamic_pointer_cast<StringExpr>(named("right"));
+        const auto kindArgument = named("kind");
         if (!other || !factTypes_.contains(other->name) || !left || !right ||
-            term->args.size() != 3)
+            term->args.size() != (kindArgument ? 4u : 3u))
           throw IntegerParserError(typeName +
-                                   "." + method +
-                                   " requires type, left, and right");
-        const auto kind = std::make_shared<NumberExpr>(
-            method == "join"        ? 0.0
-            : method == "leftJoin"  ? 1.0
-            : method == "rightJoin" ? 2.0
-                                      : 3.0);
+                                   ".join requires type, left, right, and an "
+                                   "optional kind");
+        double kindValue = 0.0;
+        if (kindArgument) {
+          const auto kind =
+              std::dynamic_pointer_cast<StringExpr>(kindArgument);
+          if (!kind)
+            throw IntegerParserError(typeName +
+                                     ".join kind must be text");
+          if (kind->value == "inner")
+            kindValue = 0.0;
+          else if (kind->value == "left")
+            kindValue = 1.0;
+          else if (kind->value == "right")
+            kindValue = 2.0;
+          else if (kind->value == "outer")
+            kindValue = 3.0;
+          else
+            throw IntegerParserError(
+                typeName +
+                ".join kind must be inner, left, right, or outer");
+        }
+        const auto kind = std::make_shared<NumberExpr>(kindValue);
         auto leftRows = std::make_shared<TermExpr>(typeName + ".all",
                                                    std::vector<Arg>{});
         auto rightRows = std::make_shared<TermExpr>(other->name + ".all",
@@ -733,8 +715,8 @@ private:
   std::size_t nextProcedure_ = 0;
 };
 
-void normalizeFactQueries(Program &program) {
-  FactQueryNormalizer(program).normalize(program);
+void lowerFactDml(Program &program) {
+  FactDmlLowerer(program).normalize(program);
 }
 
 // The integer parser preserves a dotted identifier as one symbol because the
@@ -744,13 +726,23 @@ void normalizeFactQueries(Program &program) {
 // is a visible binding.  Unscoped qualified symbols stay untouched.
 std::shared_ptr<Expr>
 resolveScopedAccess(const std::shared_ptr<Expr> &expression,
-                    const std::unordered_set<SymbolId> &visible) {
+                    const std::unordered_set<SymbolId> &visible,
+                    const std::unordered_set<SymbolId> *implicitFields = nullptr) {
   if (!expression)
     return expression;
   if (const auto variable = std::dynamic_pointer_cast<VarExpr>(expression)) {
     const auto dot = variable->name.find('.');
-    if (dot == std::string::npos)
+    if (dot == std::string::npos) {
+      if (implicitFields && implicitFields->contains(variable->nameId)) {
+        auto access = std::make_shared<AccessExpr>(
+            std::make_shared<VarExpr>("self", symbolIdForName("self")),
+            variable->name);
+        access->keyId = variable->nameId;
+        access->sourceSpan = variable->sourceSpan;
+        return access;
+      }
       return expression;
+    }
     const auto baseName = variable->name.substr(0, dot);
     if (!visible.contains(symbolIdForName(baseName)))
       return expression;
@@ -775,17 +767,17 @@ resolveScopedAccess(const std::shared_ptr<Expr> &expression,
   }
   if (const auto array = std::dynamic_pointer_cast<ArrayExpr>(expression)) {
     for (auto &item : array->items)
-      item = resolveScopedAccess(item, visible);
+      item = resolveScopedAccess(item, visible, implicitFields);
   } else if (const auto map = std::dynamic_pointer_cast<MapExpr>(expression)) {
     for (auto &item : map->entries)
-      item.value = resolveScopedAccess(item.value, visible);
+      item.value = resolveScopedAccess(item.value, visible, implicitFields);
   } else if (const auto access =
                  std::dynamic_pointer_cast<AccessExpr>(expression)) {
-    access->target = resolveScopedAccess(access->target, visible);
+    access->target = resolveScopedAccess(access->target, visible, implicitFields);
   } else if (const auto term =
                  std::dynamic_pointer_cast<TermExpr>(expression)) {
     for (auto &argument : term->args)
-      argument.value = resolveScopedAccess(argument.value, visible);
+      argument.value = resolveScopedAccess(argument.value, visible, implicitFields);
   } else if (const auto operation =
                  std::dynamic_pointer_cast<OperatorExpression>(expression)) {
     std::shared_ptr<OperatorExpression> rewritten;
@@ -795,7 +787,8 @@ resolveScopedAccess(const std::shared_ptr<Expr> &expression,
       for (std::size_t index = 0; index < operation->captureCount(); ++index) {
         captures.emplace_back(
             std::string(operation->captureName(index)),
-            resolveScopedAccess(operation->capture(index), visible));
+            resolveScopedAccess(operation->capture(index), visible,
+                                implicitFields));
       }
       rewritten = std::make_shared<OperatorExpression>(
           operation->operatorId, operation->patternId, std::move(captures),
@@ -803,12 +796,12 @@ resolveScopedAccess(const std::shared_ptr<Expr> &expression,
     } else if (operation->captureCount() == 1) {
       rewritten = std::make_shared<OperatorExpression>(
           operation->coreOperator,
-          resolveScopedAccess(operation->capture(0), visible));
+          resolveScopedAccess(operation->capture(0), visible, implicitFields));
     } else {
       rewritten = std::make_shared<OperatorExpression>(
           operation->coreOperator,
-          resolveScopedAccess(operation->capture(0), visible),
-          resolveScopedAccess(operation->capture(1), visible));
+          resolveScopedAccess(operation->capture(0), visible, implicitFields),
+          resolveScopedAccess(operation->capture(1), visible, implicitFields));
     }
     rewritten->module = operation->module;
     rewritten->sourceSpan = operation->sourceSpan;
@@ -821,7 +814,7 @@ resolveScopedAccess(const std::shared_ptr<Expr> &expression,
 // VarExpr other than the row parameter itself) into a read from the
 // synthesized callback's captures map, and records each one captured
 // (deduplicated, first-seen order) into `captured`. Used by
-// FactQueryNormalizer::iteration() -- see the comment there for why this
+// FactDmlLowerer::iteration() -- see the comment there for why this
 // exists. Mirrors resolveScopedAccess's traversal shape immediately above.
 std::shared_ptr<Expr> substituteCaptures(
     const std::shared_ptr<Expr> &expression, const std::string &rowParameter,
@@ -905,26 +898,59 @@ std::shared_ptr<Expr> substituteCaptures(
 }
 
 void resolveScopedAccessesInGoals(std::vector<std::shared_ptr<Goal>> &goals,
-                                  std::unordered_set<SymbolId> visible) {
+                                  std::unordered_set<SymbolId> visible,
+                                  const std::unordered_set<SymbolId> *implicitFields = nullptr) {
   for (auto &goal : goals) {
-    if (const auto assignment = std::dynamic_pointer_cast<AssignGoal>(goal)) {
-      assignment->expr = resolveScopedAccess(assignment->expr, visible);
+    const auto expression = [&](std::shared_ptr<Expr> value) {
+      return resolveScopedAccess(value, visible, implicitFields);
+    };
+    const auto call = [&](Call &value) {
+      for (auto &argument : value.args)
+        argument.value = expression(argument.value);
+    };
+    if (const auto called = std::dynamic_pointer_cast<CallGoal>(goal)) {
+      call(called->call);
+    } else if (const auto negated = std::dynamic_pointer_cast<NotGoal>(goal)) {
+      call(negated->call);
+    } else if (const auto assignment =
+                   std::dynamic_pointer_cast<AssignGoal>(goal)) {
+      assignment->expr =
+          expression(assignment->expr);
       visible.insert(assignment->nameId);
+    } else if (const auto assignment =
+                   std::dynamic_pointer_cast<MultiAssignGoal>(goal)) {
+      assignment->expr = expression(assignment->expr);
+      for (const auto &target : assignment->targets)
+        visible.insert(target.nameId);
     } else if (const auto returned =
                    std::dynamic_pointer_cast<ReturnGoal>(goal)) {
       for (auto &field : returned->fields)
-        field.value = resolveScopedAccess(field.value, visible);
+        field.value = resolveScopedAccess(field.value, visible, implicitFields);
     } else if (const auto binary =
                    std::dynamic_pointer_cast<BinaryGoal>(goal)) {
-      binary->left = resolveScopedAccess(binary->left, visible);
-      binary->right = resolveScopedAccess(binary->right, visible);
+      binary->left = expression(binary->left);
+      binary->right = expression(binary->right);
+    } else if (const auto where =
+                   std::dynamic_pointer_cast<WhereGoal>(goal)) {
+      std::vector<std::shared_ptr<Goal>> condition{where->condition};
+      resolveScopedAccessesInGoals(condition, visible, implicitFields);
+      where->condition = condition.front();
     } else if (const auto conditional =
                    std::dynamic_pointer_cast<IfGoal>(goal)) {
       std::vector<std::shared_ptr<Goal>> condition{conditional->condition};
-      resolveScopedAccessesInGoals(condition, visible);
+      resolveScopedAccessesInGoals(condition, visible, implicitFields);
       conditional->condition = condition.front();
-      resolveScopedAccessesInGoals(conditional->thenBranch, visible);
-      resolveScopedAccessesInGoals(conditional->elseBranch, visible);
+      resolveScopedAccessesInGoals(conditional->thenBranch, visible,
+                                   implicitFields);
+      resolveScopedAccessesInGoals(conditional->elseBranch, visible,
+                                   implicitFields);
+    } else if (const auto group =
+                   std::dynamic_pointer_cast<GroupGoal>(goal)) {
+      resolveScopedAccessesInGoals(group->goals, visible, implicitFields);
+    } else if (const auto alternatives =
+                   std::dynamic_pointer_cast<OrGoal>(goal)) {
+      for (auto &branch : alternatives->branches)
+        resolveScopedAccessesInGoals(branch, visible, implicitFields);
     }
   }
 }
@@ -1112,9 +1138,7 @@ bool isDirectDeterministicExpression(
         term->nameId == symbolIdForName("similarity") ||
         term->nameId == symbolIdForName("membership") ||
         term->nameId == symbolIdForName("isA") ||
-        term->nameId == symbolIdForName("commonAncestors") ||
-        term->nameId == symbolIdForName("lowestCommonAncestor") ||
-        term->nameId == symbolIdForName("highestCommonAncestor");
+        term->nameId == symbolIdForName("commonAncestors");
     if (fuzzyIntrinsic) {
       const auto expected =
           term->nameId == symbolIdForName("similarity") ? 2u : 2u;
@@ -1140,7 +1164,7 @@ bool isDirectDeterministicExpression(
     }
     if (term->nameId == symbolIdForName("for_each_fact")) {
       // The third argument (a captures map) is optional: only
-      // FactQueryNormalizer::iteration()'s generated calls provide one, for
+      // FactDmlLowerer::iteration()'s generated calls provide one, for
       // predicates closing over an outer-scope value; a raw, hand-written
       // for_each_fact(type, callback) call stays exactly as it was.
       if (term->args.size() != 2 && term->args.size() != 3)
@@ -1275,9 +1299,7 @@ firstUnsupportedExpression(const std::shared_ptr<Expr> &expression,
     if ((term->nameId == symbolIdForName("similarity") ||
          term->nameId == symbolIdForName("membership") ||
          term->nameId == symbolIdForName("isA") ||
-         term->nameId == symbolIdForName("commonAncestors") ||
-         term->nameId == symbolIdForName("lowestCommonAncestor") ||
-         term->nameId == symbolIdForName("highestCommonAncestor")) &&
+         term->nameId == symbolIdForName("commonAncestors")) &&
         term->args.size() == 2) {
       for (const auto &argument : term->args) {
         if (!isDirectDeterministicExpression(argument.value, definedSymbols,
@@ -1563,7 +1585,10 @@ void appendFragment(FelidaeIr &target, FelidaeIr fragment,
     case IrOpcode::MakeFact:
       reg(fragment.words[pc + 1]);
       symbol(fragment.words[pc + 2]);
-      width = 3;
+      // Source ownership is a one-based text index (zero means in-memory).
+      if (fragment.words[pc + 3] != 0)
+        fragment.words[pc + 3] += textBase;
+      width = 4;
       break;
     case IrOpcode::Return:
       reg(fragment.words[pc + 1]);
@@ -1678,6 +1703,23 @@ void appendFragment(FelidaeIr &target, FelidaeIr fragment,
   target.words.insert(target.words.end(), fragment.words.begin(),
                       fragment.words.end());
   target.registerCount += fragment.registerCount;
+}
+
+void attachFactPersistenceSource(FelidaeIr &program, std::size_t wordBegin,
+                                 RegisterId result, IrWord sourceIndex) {
+  bool attached = false;
+  for (std::size_t pc = wordBegin; pc < program.words.size();) {
+    const auto opcode = static_cast<IrOpcode>(program.words[pc]);
+    if (opcode == IrOpcode::MakeFact && program.words[pc + 1] == result) {
+      if (attached)
+        throw IntegerParserError("fact IR has ambiguous source ownership");
+      program.words[pc + 3] = sourceIndex;
+      attached = true;
+    }
+    pc += irInstructionWidth(program, pc);
+  }
+  if (!attached)
+    throw IntegerParserError("fact IR has no source-owning value");
 }
 
 CoreOperator directConditionOperator(TokenId::Id token) {
@@ -2040,7 +2082,7 @@ FelidaeIr IrCodeGenerator::lowerExpression(
       } else if (term->nameId == symbolIdForName("for_each_fact")) {
         // The third argument (a captures map) is optional -- see the
         // isDirectDeterministicExpression case above and
-        // FactQueryNormalizer::iteration() in this file. A raw two-argument
+        // FactDmlLowerer::iteration() in this file. A raw two-argument
         // call gets an empty map so IrOpcode::ForEachFact's fifth operand
         // (see RegisterVm.cpp) is always a valid register either way.
         if (term->args.size() != 2 && term->args.size() != 3) {
@@ -2079,9 +2121,7 @@ FelidaeIr IrCodeGenerator::lowerExpression(
             ir.words.end(),
             {static_cast<IrWord>(IrOpcode::Similarity), result, left, right});
       } else if (term->nameId == symbolIdForName("isA") ||
-                 term->nameId == symbolIdForName("commonAncestors") ||
-                 term->nameId == symbolIdForName("lowestCommonAncestor") ||
-                 term->nameId == symbolIdForName("highestCommonAncestor")) {
+                 term->nameId == symbolIdForName("commonAncestors")) {
         if (term->args.size() != 2) {
           throw IntegerParserError(term->name +
                                    " requires exactly two hierarchy arguments");
@@ -2090,11 +2130,7 @@ FelidaeIr IrCodeGenerator::lowerExpression(
         const auto right = self(self, term->args[1].value);
         const auto opcode =
             term->nameId == symbolIdForName("isA") ? IrOpcode::HierarchyIsA
-            : term->nameId == symbolIdForName("commonAncestors")
-                ? IrOpcode::HierarchyCommonAncestors
-            : term->nameId == symbolIdForName("lowestCommonAncestor")
-                ? IrOpcode::HierarchyLeastCommonAncestors
-                : IrOpcode::HierarchyMostGeneralAncestors;
+                                                    : IrOpcode::HierarchyCommonAncestors;
         ir.words.insert(ir.words.end(),
                         {static_cast<IrWord>(opcode), result, left, right});
       } else if (term->nameId == symbolIdForName("temporalRank")) {
@@ -2179,7 +2215,7 @@ FelidaeIr IrCodeGenerator::lowerExpression(
           ir.symbols.push_back(term->nameId);
           ir.words.insert(ir.words.end(),
                           {static_cast<IrWord>(IrOpcode::MakeFact), result,
-                           static_cast<IrWord>(ir.symbols.size() - 1)});
+                           static_cast<IrWord>(ir.symbols.size() - 1), 0});
           std::vector<std::pair<SymbolId, RegisterId>> fields;
           fields.reserve(arguments.size());
           for (std::size_t index = 0; index < arguments.size(); ++index) {
@@ -2238,7 +2274,7 @@ FelidaeIr IrCodeGenerator::lowerExpression(
         ir.symbols.push_back(symbolIdForName(map->factType));
         ir.words.insert(ir.words.end(),
                         {static_cast<IrWord>(IrOpcode::MakeFact), result,
-                         static_cast<IrWord>(ir.symbols.size() - 1)});
+                         static_cast<IrWord>(ir.symbols.size() - 1), 0});
         emitFactFields(result, entries);
       }
     } else if (const auto access =
@@ -2509,7 +2545,7 @@ FelidaeIr IrCodeGenerator::lowerEntryMethod(
 
 IrModule IrCodeGenerator::compile(Program program) const {
   desugarWhereGuardedClauses(program);
-  normalizeFactQueries(program);
+  lowerFactDml(program);
   IrModule module;
   // The strict compiler accepts only constructs that lower to verified IR.
   // Unsupported constructs are rejected with a source span; there is no
@@ -2517,6 +2553,18 @@ IrModule IrCodeGenerator::compile(Program program) const {
   std::unordered_set<SymbolId> directSymbols;
   std::unordered_set<SymbolId> procedureSymbols;
   std::unordered_set<SymbolId> factTypes;
+  std::unordered_map<SymbolId, const ClassStmt *> classSchemas;
+  for (const auto &declaration : program.classes) {
+    if (!declaration || declaration->name.empty() ||
+        !factTypes.insert(declaration->nameId).second) {
+      throw IntegerParserError(
+          "duplicate or invalid class declaration at " +
+          std::to_string(declaration ? declaration->sourceSpan.startLine : 1) +
+          ":" +
+          std::to_string(declaration ? declaration->sourceSpan.startColumn : 1));
+    }
+    classSchemas.emplace(declaration->nameId, declaration.get());
+  }
   for (const auto &clause : program.clauses) {
     if (!clause)
       continue;
@@ -2535,6 +2583,66 @@ IrModule IrCodeGenerator::compile(Program program) const {
     // source rows. Only callable procedures are single declarations.
     if (clause->isFact())
       factTypes.insert(clause->head.nameId);
+  }
+
+  // A declared schema constrains source fact rows while runtime facts remain
+  // ordinary first-class maps. Inherited fields are resolved after the class
+  // hierarchy has been validated below.
+  std::function<void(SymbolId, std::unordered_set<SymbolId> &,
+                     std::unordered_set<SymbolId> &)>
+      collectFields;
+  collectFields = [&](SymbolId type, std::unordered_set<SymbolId> &result,
+                      std::unordered_set<SymbolId> &visiting) {
+    const auto schema = classSchemas.find(type);
+    if (schema == classSchemas.end())
+      return;
+    if (!visiting.insert(type).second)
+      throw IntegerParserError("cyclic class hierarchy for '" +
+                               schema->second->name + "'");
+    for (const auto &parent : schema->second->parentNames) {
+      const auto parentId = symbolIdForName(parent);
+      if (!factTypes.contains(parentId))
+        throw IntegerParserError("unknown class parent '" + parent + "'");
+      collectFields(parentId, result, visiting);
+    }
+    for (const auto &field : schema->second->fields)
+      result.insert(field.nameId);
+    visiting.erase(type);
+  };
+  for (const auto &clause : program.clauses) {
+    if (!clause || !clause->isFact() ||
+        !classSchemas.contains(clause->head.nameId))
+      continue;
+    std::unordered_set<SymbolId> fields;
+    std::unordered_set<SymbolId> visiting;
+    collectFields(clause->head.nameId, fields, visiting);
+    for (const auto &argument : clause->head.args) {
+      if (argument.name.empty() || !fields.contains(argument.nameId)) {
+        throw IntegerParserError(
+            "fact field '" + argument.name + "' is not declared by class '" +
+            clause->head.name + "' at " +
+            std::to_string(clause->sourceSpan.startLine) + ":" +
+            std::to_string(clause->sourceSpan.startColumn));
+      }
+    }
+  }
+  std::unordered_map<SymbolId, std::unordered_set<SymbolId>> classMethodFields;
+  for (const auto &declaration : program.classes) {
+    std::unordered_set<SymbolId> fields;
+    std::unordered_set<SymbolId> visiting;
+    collectFields(declaration->nameId, fields, visiting);
+    for (const auto &method : declaration->methods)
+      classMethodFields.emplace(method->head.nameId, fields);
+    std::set<std::vector<SymbolId>> uniqueIndexes;
+    for (const auto &index : declaration->indexes) {
+      if (std::any_of(index.fieldIds.begin(), index.fieldIds.end(),
+                      [&](SymbolId field) { return !fields.contains(field); }))
+        throw IntegerParserError("class index references an undeclared field in '" +
+                                 declaration->name + "'");
+      if (!uniqueIndexes.insert(index.fieldIds).second)
+        throw IntegerParserError("duplicate class index in '" +
+                                 declaration->name + "'");
+    }
   }
   for (const auto &clause : program.clauses) {
     if (!clause)
@@ -2590,9 +2698,32 @@ IrModule IrCodeGenerator::compile(Program program) const {
     auto visible = globalSymbols;
     for (const auto parameter : procedureParameters(*clause))
       visible.insert(parameter);
-    resolveScopedAccessesInGoals(clause->body, std::move(visible));
+    const auto classFields = classMethodFields.find(clause->head.nameId);
+    resolveScopedAccessesInGoals(
+        clause->body, std::move(visible),
+        classFields == classMethodFields.end() ? nullptr : &classFields->second);
   }
   std::unordered_map<IrSymbolRef, std::size_t> factTypeIndexes;
+  for (const auto &declaration : program.classes) {
+    std::vector<IrSymbolRef> parents;
+    parents.reserve(declaration->parentNames.size());
+    for (const auto &parent : declaration->parentNames) {
+      const auto parentSymbol = symbolIdForName(parent);
+      if (!factTypes.contains(parentSymbol))
+        throw IntegerParserError("unknown class parent '" + parent + "'");
+      parents.push_back(parentSymbol);
+    }
+    std::vector<std::vector<IrSymbolRef>> indexes;
+    indexes.reserve(declaration->indexes.size());
+    for (const auto &index : declaration->indexes)
+      indexes.emplace_back(index.fieldIds.begin(), index.fieldIds.end());
+    factTypeIndexes.emplace(declaration->nameId, module.factTypes.size());
+    module.factTypes.push_back(
+        {declaration->nameId, std::move(parents), std::move(indexes),
+         {declaration->sourceSpan.startLine,
+          declaration->sourceSpan.startColumn,
+          declaration->sourceSpan.endLine, declaration->sourceSpan.endColumn}});
+  }
   for (const auto &clause : program.clauses) {
     if (!clause || !clause->isFact())
       continue;
@@ -2613,9 +2744,11 @@ IrModule IrCodeGenerator::compile(Program program) const {
       module.factTypes.push_back(
           {clause->head.nameId,
            std::move(parents),
+           {},
            {clause->sourceSpan.startLine, clause->sourceSpan.startColumn,
             clause->sourceSpan.endLine, clause->sourceSpan.endColumn}});
-    } else if (module.factTypes[existing->second].parents != parents) {
+    } else if (!parents.empty() &&
+               module.factTypes[existing->second].parents != parents) {
       throw IntegerParserError(
           "not yet lowered to IR: inconsistent fact hierarchy at " +
           std::to_string(clause->sourceSpan.startLine) + ":" +
@@ -2628,7 +2761,7 @@ IrModule IrCodeGenerator::compile(Program program) const {
   // parser/execution path. Other imports remain explicitly unsupported until
   // they have a verified IR module-linking contract.
   //
-  // This list previously omitted array/math/str/file/db/system even though
+  // This list previously omitted array/math/str/file/system even though
   // every one of their declared calls (array.get, math:sqrt, str:upper,
   // file.readFile, system.print, ...) already compiles and runs
   // fine with no import statement at all -- an explicit `import "array"`
@@ -2640,18 +2773,11 @@ IrModule IrCodeGenerator::compile(Program program) const {
   // silently return nil, which is worse than the current explicit rejection.
   const bool builtinImports = std::all_of(
       program.imports.begin(), program.imports.end(), [](const auto &import) {
-        return import && std::all_of(import->paths.begin(), import->paths.end(),
-                                     [](const std::string &path) {
-                                       return path == "json" || path == "csv" ||
-                                              path == "group" ||
-                                              path == "set" || path == "ml" ||
-                                              path == "array" ||
-                                              path == "math" ||
-                                              path == "str" ||
-                                              path == "file" ||
-                                              path == "db" ||
-                                              path == "system";
-                                     });
+        return import &&
+               std::all_of(import->paths.begin(), import->paths.end(),
+                           [](const std::string &path) {
+                             return isBuiltinModuleName(path);
+                           });
       });
   bool directGlobals = builtinImports && !program.clauses.empty();
   for (const auto &binding : program.globals) {
@@ -2688,6 +2814,7 @@ IrModule IrCodeGenerator::compile(Program program) const {
                      IrCodeGenerator::lowerGlobalBinding(*binding, factTypes),
                      true);
     }
+    std::map<PieceSequence, IrWord> persistenceSources;
     for (const auto &clause : program.clauses) {
       if (!clause || !clause->isFact() || clause->emptyDeclaration)
         continue;
@@ -2701,9 +2828,36 @@ IrModule IrCodeGenerator::compile(Program program) const {
             std::to_string(clause->sourceSpan.startLine) + ":" +
             std::to_string(clause->sourceSpan.startColumn));
       }
-      appendFragment(
-          module.ir,
-          IrCodeGenerator::lowerExpression(std::move(fact), factTypes), true);
+      auto factIr = IrCodeGenerator::lowerExpression(std::move(fact), factTypes);
+      if (factIr.words.size() < 4 ||
+          factIr.words[factIr.words.size() - 4] !=
+              static_cast<IrWord>(IrOpcode::Return)) {
+        throw IntegerParserError(
+            "fact IR fragment does not have a terminal return");
+      }
+      const auto result = static_cast<RegisterId>(
+          module.ir.registerCount + factIr.words[factIr.words.size() - 3]);
+      const auto wordBegin = module.ir.words.size();
+      appendFragment(module.ir, std::move(factIr), true);
+      if (clause->persistenceSource &&
+          !clause->persistenceSource->empty()) {
+        auto [source, inserted] = persistenceSources.try_emplace(
+            *clause->persistenceSource, 0);
+        if (inserted) {
+          const auto existing =
+              std::find(module.ir.texts.begin(), module.ir.texts.end(),
+                        *clause->persistenceSource);
+          if (existing == module.ir.texts.end()) {
+            module.ir.texts.push_back(*clause->persistenceSource);
+            source->second = static_cast<IrWord>(module.ir.texts.size());
+          } else {
+            source->second = static_cast<IrWord>(
+                std::distance(module.ir.texts.begin(), existing) + 1);
+          }
+        }
+        attachFactPersistenceSource(module.ir, wordBegin, result,
+                                    source->second);
+      }
     }
     for (const auto &clause : program.clauses) {
       if (clause->isFact())

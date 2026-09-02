@@ -15,6 +15,7 @@ enum class RuntimeTrainingTargetKind : std::uint8_t {
     DegreeMilli = 3,
     Nil = 4,
     NumericTruth = 5,
+    Score = 6,
 };
 
 // One verified runtime operation, represented exactly as the current GRU
@@ -23,12 +24,21 @@ enum class RuntimeTrainingTargetKind : std::uint8_t {
 struct RuntimeTrainingRecord {
     std::uint16_t operationId = 0;
     std::vector<RuntimeValueKind> inputKinds;
+    // Canonical value sequences: SentencePiece IDs are stored directly;
+    // structural markers use the high bit and are relocated to the model's
+    // reserved tail vocabulary by RuntimeStateModel.
+    std::vector<std::vector<std::uint32_t>> inputValues;
     std::vector<PieceSequence> factTypes;
     std::vector<std::pair<PieceSequence, std::uint32_t>> factTypeCounts;
     std::vector<std::pair<PieceSequence, PieceSequence>> hierarchyEdges;
     RuntimeTrainingTargetKind targetKind = RuntimeTrainingTargetKind::Nil;
     std::uint32_t targetValue = 0;
+    double targetScore = 0.0;
 };
+
+std::vector<std::uint32_t>
+runtimeValueEncoding(const VmValue &value,
+                     std::span<const PieceSequence> symbolTable);
 
 struct RuntimeKnowledgePieces {
     std::vector<PieceSequence> factTypes;
@@ -46,7 +56,7 @@ RuntimeKnowledgePieces runtimeKnowledgePieces(
 // JSON Lines v8: one self-describing, integer-only record per line.  The
 // schema value is repeated deliberately: lines can be validated or streamed
 // independently and no legacy binary header needs to be retained.
-inline constexpr std::uint32_t kRuntimeTrainingSchemaVersion = 8;
+inline constexpr std::uint32_t kRuntimeTrainingSchemaVersion = 9;
 void verifyRuntimeTrainingRecord(const RuntimeTrainingRecord& record);
 void writeRuntimeTrainingDataset(const std::filesystem::path& path,
                                  std::span<const RuntimeTrainingRecord> records);

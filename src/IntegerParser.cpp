@@ -48,8 +48,6 @@ bool isFragmentableBuiltin(TokenId::Id id) {
   case TokenId::WHERE:
   case TokenId::EXTEND:
   case TokenId::LAMBDA:
-  case TokenId::TRUE:
-  case TokenId::FALSE:
   case TokenId::NIL:
     return true;
   default:
@@ -999,6 +997,7 @@ IntegerParser::parseGoalList(TokenId::Id terminator) {
 }
 
 std::shared_ptr<Statement> IntegerParser::parseStatement() {
+  lastClauseUsedBlockEnd_ = false;
   skipTrivia();
   const std::size_t begin = byte_;
   std::vector<Call> annotations;
@@ -1008,6 +1007,14 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
   }
   for (const auto &annotation : annotations)
     prepareOperatorAnnotation(annotation);
+  if (annotations.empty() && atNameRange()) {
+    const auto savedByte = byte_;
+    const auto savedPiece = piece_;
+    if (consumeNameRange() == "class")
+      return parseClassStatement(begin);
+    byte_ = savedByte;
+    piece_ = savedPiece;
+  }
   if (match(TokenId::IMPORT)) {
     if (!annotations.empty())
       throw IntegerParserError(
@@ -1087,7 +1094,7 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
         }
         fallbackBranches.push_back(std::move(branch));
       }
-      (void)matchBlockEnd();
+      lastClauseUsedBlockEnd_ = matchBlockEnd();
     }
   }
   consumeStatementTerminator(begin);
@@ -1113,6 +1120,88 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
   result->annotations = std::move(annotations);
   for (const auto &annotation : result->annotations)
     registerOperatorImplementation(annotation, *result);
+  stamp(result, begin, byte_);
+  return result;
+}
+
+std::shared_ptr<ClassStmt>
+IntegerParser::parseClassStatement(std::size_t begin) {
+  const auto className = consumeQualifiedName(false);
+  if (!className.isCapitalized)
+    throw IntegerParserError("Class names must begin with an uppercase letter");
+
+  std::vector<std::string> parents;
+  if (match(TokenId::EXTEND)) {
+    do {
+      parents.push_back(consumeQualifiedName().spelling);
+    } while (match(TokenId::COMMA));
+  }
+  if (!lineBreakBeforeNextSignificantPiece())
+    throw IntegerParserError("Expected newline after class declaration");
+
+  std::vector<ClassFieldDecl> fields;
+  std::vector<ClassIndexDecl> indexes;
+  std::vector<std::shared_ptr<ClauseStmt>> methods;
+  std::unordered_set<SymbolId> fieldIds;
+  while (!atEnd() && !atBlockEnd()) {
+    const auto fieldBegin = byte_;
+    const auto fieldPiece = piece_;
+    const auto field = consumeQualifiedName(false);
+    if (field.spelling == "index" && at(TokenId::LPAREN)) {
+      (void)match(TokenId::LPAREN);
+      ClassIndexDecl index;
+      do {
+        const auto indexedField = consumeQualifiedName(false);
+        index.fields.push_back(indexedField.spelling);
+        index.fieldIds.push_back(indexedField.nameId);
+      } while (match(TokenId::COMMA));
+      require(TokenId::RPAREN, "Expected ')' after class index fields");
+      if (index.fields.empty())
+        throw IntegerParserError("Class index requires at least one field");
+      consumeStatementTerminator(fieldBegin);
+      index.sourceSpan = span(fieldBegin, byte_);
+      indexes.push_back(std::move(index));
+      continue;
+    }
+    if (at(TokenId::LPAREN)) {
+      byte_ = fieldBegin;
+      piece_ = fieldPiece;
+      auto statement = parseStatement();
+      auto method = std::dynamic_pointer_cast<ClauseStmt>(statement);
+      if (!method || method->clauseKind != ClauseKind::Method)
+        throw IntegerParserError("Expected a method declaration in class '" +
+                                 className.spelling + "'");
+      if (!lastClauseUsedBlockEnd_)
+        throw IntegerParserError("Class method '" + method->head.name +
+                                 "' must end with 'end'");
+      method->head.args.insert(
+          method->head.args.begin(),
+          Arg("self", symbolIdForName("self"),
+              std::make_shared<VarExpr>(className.spelling,
+                                        className.nameId)));
+      method->head.name = className.spelling + "." + method->head.name;
+      method->head.nameId = symbolIdForName(method->head.name);
+      methods.push_back(std::move(method));
+      continue;
+    }
+    require(TokenId::COLON, "Expected ':' after class field name");
+    const auto type = consumeQualifiedName();
+    if (!isFelidaeLikelyTypeName(type.spelling))
+      throw IntegerParserError("Expected a type name for class field '" +
+                               field.spelling + "'");
+    if (!fieldIds.insert(field.nameId).second)
+      throw IntegerParserError("Duplicate class field '" + field.spelling +
+                               "'");
+    consumeStatementTerminator(fieldBegin);
+    ClassFieldDecl declaration{field.spelling, field.nameId, type.spelling,
+                               span(fieldBegin, byte_)};
+    fields.push_back(std::move(declaration));
+  }
+  if (!matchBlockEnd())
+    throw IntegerParserError("Expected 'end' after class declaration");
+  auto result = std::make_shared<ClassStmt>(
+      className.spelling, className.nameId, std::move(parents),
+      std::move(fields), std::move(indexes), std::move(methods));
   stamp(result, begin, byte_);
   return result;
 }
@@ -1205,16 +1294,6 @@ std::shared_ptr<Expr> IntegerParser::parsePrimary() {
         number /= 100.0;
     }
     auto result = std::make_shared<NumberExpr>(number);
-    stamp(result, begin, byte_);
-    return result;
-  }
-  if (match(TokenId::TRUE)) {
-    auto result = std::make_shared<BoolExpr>(true);
-    stamp(result, begin, byte_);
-    return result;
-  }
-  if (match(TokenId::FALSE)) {
-    auto result = std::make_shared<BoolExpr>(false);
     stamp(result, begin, byte_);
     return result;
   }

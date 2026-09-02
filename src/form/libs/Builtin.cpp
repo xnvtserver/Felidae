@@ -7,6 +7,7 @@
 #include "form/IrModule.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <numbers>
 #include <numeric>
@@ -43,6 +44,21 @@ double numberValue(const VmValue &value, std::string_view operation) {
   if (!number || !std::isfinite(*number))
     throw IrError(std::string(operation) + " requires a finite number");
   return *number;
+}
+
+std::string asciiCase(std::string text, bool upper) {
+  std::transform(text.begin(), text.end(), text.begin(), [upper](char byte) {
+    const auto value = static_cast<unsigned char>(byte);
+    return static_cast<char>(upper ? std::toupper(value) : std::tolower(value));
+  });
+  return text;
+}
+
+double textLength(std::string_view text) {
+  return static_cast<double>(
+      std::count_if(text.begin(), text.end(), [](char byte) {
+        return (static_cast<unsigned char>(byte) & 0xc0U) != 0x80U;
+      }));
 }
 
 } // namespace
@@ -143,6 +159,15 @@ VmValue evaluateBuiltin(BuiltinId operation, std::span<const VmValue> inputs,
       }
       return (*array)->values[static_cast<std::size_t>(*position)];
     }
+    case BuiltinId::ArrayPush: {
+      const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
+      if (!array || !*array)
+        throw IrError("array.push requires an array");
+      auto result = std::make_shared<VmArray>();
+      result->values = (*array)->values;
+      result->values.push_back(inputs[1]);
+      return result;
+    }
     case BuiltinId::Count:
     case BuiltinId::ArrayLen: {
       const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
@@ -222,6 +247,126 @@ VmValue evaluateBuiltin(BuiltinId operation, std::span<const VmValue> inputs,
       for (const auto value : values)
         result->values.emplace_back(value);
       return result;
+    }
+    case BuiltinId::Length:
+      if (const auto text = std::get_if<VmText>(&inputs[0]))
+        return textLength(decodeText(text->pieces, codec));
+      else if (const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
+               array && *array)
+        return static_cast<double>((*array)->values.size());
+      throw IrError("length requires text or an array");
+    case BuiltinId::StrLen:
+      return textLength(textValue(inputs[0], codec, "str.len"));
+    case BuiltinId::Lower:
+    case BuiltinId::StrLower:
+      return VmText{encodeText(
+          asciiCase(textValue(inputs[0], codec, "lower"), false), codec)};
+    case BuiltinId::Upper:
+    case BuiltinId::StrUpper:
+      return VmText{encodeText(
+          asciiCase(textValue(inputs[0], codec, "upper"), true), codec)};
+    case BuiltinId::Contains:
+      if (const auto text = std::get_if<VmText>(&inputs[0])) {
+        const auto data = decodeText(text->pieces, codec);
+        const auto query = textValue(inputs[1], codec, "contains");
+        return data.find(query) == std::string::npos ? 0.0 : 1.0;
+      } else if (const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
+                 array && *array) {
+        return std::any_of((*array)->values.begin(), (*array)->values.end(),
+                           [&](const VmValue &item) {
+                             return vmValuesEqual(item, inputs[1]);
+                           })
+                   ? 1.0
+                   : 0.0;
+      }
+      throw IrError("contains requires text or an array");
+    case BuiltinId::Search: {
+      const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
+      if (!array || !*array)
+        throw IrError("search requires an array of text");
+      const auto query = textValue(inputs[1], codec, "search");
+      auto result = std::make_shared<VmArray>();
+      for (const auto &item : (*array)->values) {
+        const auto text = std::get_if<VmText>(&item);
+        if (!text)
+          throw IrError("search requires an array of text");
+        if (decodeText(text->pieces, codec).find(query) != std::string::npos)
+          result->values.push_back(item);
+      }
+      return result;
+    }
+    case BuiltinId::StrContains: {
+      const auto data = textValue(inputs[0], codec, "str.contains");
+      const auto needle = textValue(inputs[1], codec, "str.contains");
+      return data.find(needle) == std::string::npos ? 0.0 : 1.0;
+    }
+    case BuiltinId::StrConcat:
+      return VmText{encodeText(textValue(inputs[0], codec, "str.concat") +
+                                   textValue(inputs[1], codec, "str.concat"),
+                               codec)};
+    case BuiltinId::StrJoin: {
+      const auto array = std::get_if<VmArrayPtr>(&inputs[0]);
+      if (!array || !*array)
+        throw IrError("str.join requires an array of text");
+      const auto delimiter = textValue(inputs[1], codec, "str.join");
+      std::string result;
+      for (std::size_t index = 0; index < (*array)->values.size(); ++index) {
+        if (index != 0)
+          result += delimiter;
+        result += textValue((*array)->values[index], codec, "str.join");
+      }
+      return VmText{encodeText(result, codec)};
+    }
+    case BuiltinId::StrTrim: {
+      auto text = textValue(inputs[0], codec, "str.trim");
+      const auto whitespace = [](char byte) {
+        return std::isspace(static_cast<unsigned char>(byte)) != 0;
+      };
+      const auto first = std::find_if_not(text.begin(), text.end(), whitespace);
+      const auto last =
+          std::find_if_not(text.rbegin(), text.rend(), whitespace).base();
+      return VmText{encodeText(first < last ? std::string(first, last)
+                                            : std::string{},
+                               codec)};
+    }
+    case BuiltinId::StrSplit: {
+      const auto data = textValue(inputs[0], codec, "str.split");
+      const auto delimiter = textValue(inputs[1], codec, "str.split");
+      if (delimiter.empty())
+        throw IrError("str.split delimiter must not be empty");
+      auto result = std::make_shared<VmArray>();
+      std::size_t begin = 0;
+      for (;;) {
+        const auto end = data.find(delimiter, begin);
+        result->values.emplace_back(
+            VmText{encodeText(data.substr(begin, end - begin), codec)});
+        if (end == std::string::npos)
+          break;
+        begin = end + delimiter.size();
+      }
+      return result;
+    }
+    case BuiltinId::StrReplace: {
+      auto data = textValue(inputs[0], codec, "str.replace");
+      const auto search = textValue(inputs[1], codec, "str.replace");
+      const auto replacement = textValue(inputs[2], codec, "str.replace");
+      if (search.empty())
+        throw IrError("str.replace search must not be empty");
+      std::size_t position = 0;
+      while ((position = data.find(search, position)) != std::string::npos) {
+        data.replace(position, search.size(), replacement);
+        position += replacement.size();
+      }
+      return VmText{encodeText(data, codec)};
+    }
+    case BuiltinId::StrStartsWith:
+    case BuiltinId::StrEndsWith: {
+      const auto data = textValue(inputs[0], codec, "string boundary check");
+      const auto part = textValue(inputs[1], codec, "string boundary check");
+      return (operation == BuiltinId::StrStartsWith ? data.starts_with(part)
+                                                     : data.ends_with(part))
+                 ? 1.0
+                 : 0.0;
     }
     case BuiltinId::JsonParse:
       return jsonToVmValue(

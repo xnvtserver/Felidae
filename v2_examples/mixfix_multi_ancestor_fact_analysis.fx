@@ -76,7 +76,7 @@ buildSimilarityReport(left: Mammal, right: Mammal, context: string) =>
         context: context,
         left_type: type(left),
         right_type: type(right),
-        common_ancestor: lowestCommonAncestor(left, right),
+        common_ancestors: ancestors,
         score: score,
         evidence: [
             ancestorAnalysis(left: left, right: right),

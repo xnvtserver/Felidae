@@ -1,5 +1,6 @@
 #include "IrModule.h"
 
+#include <algorithm>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -51,6 +52,9 @@ static void validateIrModule(const IrModule &module) {
     requireSymbol(type.symbol);
     for (const auto parent : type.parents)
       requireSymbol(parent);
+    for (const auto &index : type.indexes)
+      for (const auto field : index)
+        requireSymbol(field);
   }
   IrVerifier::verify(module.ir);
   if (module.entryProcedure == 0 ||
@@ -97,6 +101,16 @@ static void validateIrModule(const IrModule &module) {
       if (parent == 0 || parent == type.symbol || !types.contains(parent) ||
           !parents.insert(parent).second)
         throw IrError("compiler IR hierarchy parent is invalid");
+    std::set<std::vector<IrSymbolRef>> indexes;
+    for (const auto &index : type.indexes) {
+      std::unordered_set<IrSymbolRef> fields;
+      if (index.empty() ||
+          !std::all_of(index.begin(), index.end(), [&](IrSymbolRef field) {
+            return field != 0 && fields.insert(field).second;
+          }) ||
+          !indexes.insert(index).second)
+        throw IrError("compiler IR fact index is invalid or duplicated");
+    }
   }
   std::unordered_set<IrSymbolRef> visiting, visited;
   const auto visit = [&](auto &&self, IrSymbolRef type) -> void {

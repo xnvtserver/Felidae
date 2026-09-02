@@ -73,6 +73,16 @@ VmFactPtr makeFact(IrSymbolRef type,
   return fact;
 }
 
+void persistThroughDml(FelidaeKnowledgeRuntime &runtime,
+                       const VmArrayPtr &rows) {
+  assert(rows && !rows->values.empty());
+  const auto fact = std::get<VmFactPtr>(rows->values.front());
+  assert(fact && !fact->fields.empty());
+  auto unchanged = std::make_shared<VmMap>();
+  unchanged->entries.push_back(fact->fields.front());
+  (void)runtime.updateFacts(std::array<VmFactPtr, 1>{fact}, unchanged);
+}
+
 } // namespace
 
 int main() {
@@ -159,7 +169,7 @@ int main() {
                                     codec.decode, codec.encode);
     const std::vector<std::string> names{
         "Catalog",   "title",       "confidence", "category",
-        "mode",      "query",       "case",       "direction",
+        "type",      "query",       "case",       "direction",
         "includeSelf", "minimum",   "maximum",    "tolerance",
         "Publication", "Book",      "Magazine"};
     IrModule module;
@@ -241,8 +251,7 @@ int main() {
     const auto importedArray = std::get<VmArrayPtr>(imported);
     assert(importedArray && importedArray->values.size() == 3);
 
-    const auto saved = runtime.syncDatabase(sourcePieces);
-    assert(saved == 1.0);
+    persistThroughDml(runtime, importedArray);
     assert(std::filesystem::exists(path));
 
     const auto writtenText = readFile(path);
@@ -296,8 +305,8 @@ int main() {
     assert(std::get<VmArrayPtr>(schoolsImported)->values.size() == 2);
     assert(std::get<VmArrayPtr>(teachersImported)->values.size() == 3);
 
-    runtime.syncDatabase(schoolsSource);
-    runtime.syncDatabase(teachersSource);
+    persistThroughDml(runtime, std::get<VmArrayPtr>(schoolsImported));
+    persistThroughDml(runtime, std::get<VmArrayPtr>(teachersImported));
 
     const auto schoolsRows = Form::Csv::parse(readFile(schoolsPath));
     const auto teachersRows = Form::Csv::parse(readFile(teachersPath));
@@ -460,6 +469,10 @@ int main() {
     runtime.registerFactType(/*type=*/1, /*parents=*/{});
     auto values = std::make_shared<VmMap>();
     values->entries.emplace_back(2, VmText{codec.encode("North")});
+    const auto emptySource = codec.encode("");
+    assert(rejects(
+        [&] { (void)runtime.insertFact(codec.encode("School"), values,
+                                      emptySource); }));
     const auto invalidSource = codec.encode((outDir / "insert.txt").string());
     assert(rejects(
         [&] { (void)runtime.insertFact(codec.encode("School"), values,

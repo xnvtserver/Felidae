@@ -5,8 +5,11 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <bit>
+#include <cmath>
 #include <fstream>
 #include <limits>
+#include <numeric>
 #include <string>
 #include <system_error>
 
@@ -15,6 +18,10 @@ namespace {
 using Json = nlohmann::json;
 constexpr std::size_t kMaximumRecords = 1'000'000;
 constexpr std::size_t kMaximumItems = 1'000'000;
+constexpr std::uint32_t kStructuralEncodingBit = 0x80000000u;
+constexpr std::uint32_t structural(std::uint32_t marker) {
+  return kStructuralEncodingBit | marker;
+}
 
 void requireJsonlPath(const std::filesystem::path &path) {
   if (path.extension() != ".jsonl")
@@ -54,7 +61,7 @@ RuntimeTrainingTargetKind targetKind(std::uint64_t value) {
   if (value < static_cast<std::uint64_t>(
                   RuntimeTrainingTargetKind::InputReference) ||
       value >
-          static_cast<std::uint64_t>(RuntimeTrainingTargetKind::NumericTruth)) {
+          static_cast<std::uint64_t>(RuntimeTrainingTargetKind::Score)) {
     throw IrError("runtime JSONL has an invalid target kind");
   }
   return static_cast<RuntimeTrainingTargetKind>(value);
@@ -79,6 +86,8 @@ RuntimeValueKind targetValueKind(const RuntimeTrainingRecord &record) {
   case RuntimeTrainingTargetKind::Nil:
     return RuntimeValueKind::Nil;
   case RuntimeTrainingTargetKind::NumericTruth:
+    return RuntimeValueKind::Number;
+  case RuntimeTrainingTargetKind::Score:
     return RuntimeValueKind::Number;
   }
   throw IrError("runtime JSONL target kind is invalid");
@@ -110,6 +119,11 @@ void validateTrainingContract(const RuntimeTrainingRecord &record) {
         output != RuntimeValueKind::Degree) {
       throw IrError("runtime degree-operation teacher has invalid kinds");
     }
+    return;
+  case SemanticOperationId::Suggest:
+    if (record.targetKind != RuntimeTrainingTargetKind::Score ||
+        output != RuntimeValueKind::Number)
+      throw IrError("runtime Suggest teacher must describe a numeric score");
     return;
   }
   throw IrError("runtime JSONL semantic operation ID is invalid");
@@ -212,8 +226,113 @@ factTypeCounts(const Json &object) {
 }
 } // namespace
 
+std::vector<std::uint32_t>
+runtimeValueEncoding(const VmValue &value,
+                     std::span<const PieceSequence> symbolTable) {
+  constexpr std::size_t kMaximumEncodedTokens = 4096;
+  std::vector<std::uint32_t> result;
+  const auto appendSymbol = [&](IrSymbolRef symbol) {
+    const auto pieces = irSymbolPieces(symbolTable, symbol);
+    result.insert(result.end(), pieces.begin(), pieces.end());
+  };
+  const auto orderedFields = [&](const auto &fields) {
+    std::vector<std::size_t> order(fields.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&](std::size_t left,
+                                              std::size_t right) {
+      const auto leftPieces = irSymbolPieces(symbolTable, fields[left].first);
+      const auto rightPieces = irSymbolPieces(symbolTable, fields[right].first);
+      return std::lexicographical_compare(
+          leftPieces.begin(), leftPieces.end(), rightPieces.begin(),
+          rightPieces.end());
+    });
+    return order;
+  };
+  const auto appendNumber = [&](double number, std::uint32_t marker) {
+    result.push_back(structural(marker));
+    const auto bits = std::bit_cast<std::uint64_t>(number);
+    for (int bit = 63; bit >= 0; --bit)
+      result.push_back(structural((bits & (std::uint64_t{1} << bit)) ? 39 : 38));
+  };
+  const auto append = [&](const auto &self, const VmValue &item,
+                          std::size_t depth) -> void {
+    if (depth > 32 || result.size() > kMaximumEncodedTokens)
+      throw IrError("runtime SSM value encoding exceeds its bound");
+    if (std::holds_alternative<VmNil>(item)) {
+      result.push_back(structural(28));
+    } else if (const auto number = std::get_if<double>(&item)) {
+      appendNumber(*number, 29);
+    } else if (const auto degree = std::get_if<VmDegree>(&item)) {
+      appendNumber(degree->value, 30);
+    } else if (const auto text = std::get_if<VmText>(&item)) {
+      result.push_back(structural(31));
+      result.insert(result.end(), text->pieces.begin(), text->pieces.end());
+    } else if (const auto symbol = std::get_if<VmSymbol>(&item)) {
+      result.push_back(structural(32));
+      appendSymbol(symbol->value);
+    } else if (const auto array = std::get_if<VmArrayPtr>(&item)) {
+      if (!*array)
+        throw IrError("runtime SSM cannot encode a null array");
+      result.push_back(structural(33));
+      for (const auto &value : (*array)->values)
+        self(self, value, depth + 1);
+      result.push_back(structural(27));
+    } else if (const auto map = std::get_if<VmMapPtr>(&item)) {
+      if (!*map)
+        throw IrError("runtime SSM cannot encode a null map");
+      result.push_back(structural(34));
+      for (const auto index : orderedFields((*map)->entries)) {
+        const auto &[field, value] = (*map)->entries[index];
+        result.push_back(structural(40));
+        appendSymbol(field);
+        self(self, value, depth + 1);
+      }
+      result.push_back(structural(27));
+    } else if (const auto fact = std::get_if<VmFactPtr>(&item)) {
+      if (!*fact)
+        throw IrError("runtime SSM cannot encode a null fact");
+      result.push_back(structural(35));
+      appendSymbol((*fact)->type);
+      for (const auto index : orderedFields((*fact)->fields)) {
+        const auto &[field, value] = (*fact)->fields[index];
+        result.push_back(structural(40));
+        appendSymbol(field);
+        self(self, value, depth + 1);
+      }
+      result.push_back(structural(27));
+    } else if (const auto tensor = std::get_if<VmTensorPtr>(&item)) {
+      if (!*tensor || !(*tensor)->storage)
+        throw IrError("runtime SSM cannot encode a null tensor");
+      throw IrError("runtime SSM tensor inputs are unsupported; pass an "
+                    "explicit fact or numeric summary");
+    } else if (const auto map = std::get_if<VmTextMapPtr>(&item)) {
+      if (!*map)
+        throw IrError("runtime SSM cannot encode a null text map");
+      result.push_back(structural(37));
+      auto entries = (*map)->entries;
+      std::sort(entries.begin(), entries.end(),
+                [](const auto &left, const auto &right) {
+                  return left.first < right.first;
+                });
+      for (const auto &[key, value] : entries) {
+        result.push_back(structural(40));
+        result.insert(result.end(), key.begin(), key.end());
+        self(self, value, depth + 1);
+      }
+      result.push_back(structural(27));
+    }
+    if (result.size() > kMaximumEncodedTokens)
+      throw IrError("runtime SSM value encoding exceeds its bound");
+  };
+  result.push_back(structural(26));
+  append(append, value, 0);
+  result.push_back(structural(27));
+  return result;
+}
+
 void verifyRuntimeTrainingRecord(const RuntimeTrainingRecord &record) {
   if (record.inputKinds.size() > kMaximumItems ||
+      record.inputValues.size() != record.inputKinds.size() ||
       record.factTypes.size() > kMaximumItems ||
       record.factTypeCounts.size() > kMaximumItems ||
       record.hierarchyEdges.size() > kMaximumItems) {
@@ -222,6 +341,9 @@ void verifyRuntimeTrainingRecord(const RuntimeTrainingRecord &record) {
   for (const auto kind : record.inputKinds) {
     (void)valueKind(static_cast<std::uint64_t>(kind), "input value kind");
   }
+  for (const auto &value : record.inputValues)
+    if (value.empty() || value.size() > 4096)
+      throw IrError("runtime JSONL input value encoding is invalid");
   const auto validSequence = [](const PieceSequence &pieces) {
     if (pieces.empty())
       throw IrError("runtime JSONL symbol has no SentencePiece IDs");
@@ -252,6 +374,9 @@ void verifyRuntimeTrainingRecord(const RuntimeTrainingRecord &record) {
        record.targetValue > 1000)) {
     throw IrError("runtime JSONL target value is invalid");
   }
+  if (target == RuntimeTrainingTargetKind::Score &&
+      !std::isfinite(record.targetScore))
+    throw IrError("runtime JSONL score target must be finite");
   validateTrainingContract(record);
 }
 
@@ -295,6 +420,9 @@ void writeRuntimeTrainingDataset(
     Json inputKinds = Json::array();
     for (const auto kind : record.inputKinds)
       inputKinds.push_back(static_cast<std::uint8_t>(kind));
+    Json inputValues = Json::array();
+    for (const auto &value : record.inputValues)
+      inputValues.push_back(value);
     Json factTypes = Json::array();
     for (const auto &type : record.factTypes)
       factTypes.push_back(type);
@@ -304,17 +432,19 @@ void writeRuntimeTrainingDataset(
     Json edges = Json::array();
     for (const auto &[child, parent] : record.hierarchyEdges)
       edges.push_back({child, parent});
-    output << Json{{"schema_version", kRuntimeTrainingSchemaVersion},
+    Json serialized{{"schema_version", kRuntimeTrainingSchemaVersion},
                    {"operation_id", record.operationId},
                    {"input_kinds", std::move(inputKinds)},
+                   {"input_values", std::move(inputValues)},
                    {"fact_types", std::move(factTypes)},
                    {"fact_type_counts", std::move(typeCounts)},
                    {"hierarchy_edges", std::move(edges)},
                    {"target_kind",
                     static_cast<std::uint8_t>(record.targetKind)},
-                   {"target_value", record.targetValue}}
-                  .dump()
-           << '\n';
+                   {"target_value", record.targetValue}};
+    if (record.targetKind == RuntimeTrainingTargetKind::Score)
+      serialized["target_score"] = record.targetScore;
+    output << serialized.dump() << '\n';
     if (!output)
       throw IrError("cannot write runtime JSONL dataset");
   }
@@ -355,12 +485,31 @@ loadRuntimeTrainingDataset(const std::filesystem::path &path) {
       const auto rawInputKinds = ids<std::uint8_t>(object, "input_kinds");
       for (const auto kind : rawInputKinds)
         record.inputKinds.push_back(valueKind(kind, "input value kind"));
+      if (!object.contains("input_values") ||
+          !object.at("input_values").is_array())
+        throw IrError("runtime JSONL record requires array input_values");
+      for (const auto &encoded : object.at("input_values")) {
+        if (!encoded.is_array())
+          throw IrError("runtime JSONL input value must be an ID array");
+        std::vector<std::uint32_t> value;
+        value.reserve(encoded.size());
+        for (const auto &token : encoded)
+          value.push_back(bounded<std::uint32_t>(
+              unsignedValue(token, "input_values"), "input_values"));
+        record.inputValues.push_back(std::move(value));
+      }
       record.factTypes = pieceSequences(object, "fact_types");
       record.factTypeCounts = factTypeCounts(object);
       record.hierarchyEdges = hierarchyEdges(object);
       record.targetKind = targetKind(member(object, "target_kind"));
       record.targetValue = bounded<std::uint32_t>(
           member(object, "target_value"), "target_value");
+      if (record.targetKind == RuntimeTrainingTargetKind::Score) {
+        if (!object.contains("target_score") ||
+            !object.at("target_score").is_number())
+          throw IrError("runtime JSONL score record requires target_score");
+        record.targetScore = object.at("target_score").get<double>();
+      }
       verifyRuntimeTrainingRecord(record);
       records.push_back(std::move(record));
       if (records.size() > kMaximumRecords)

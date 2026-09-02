@@ -2,6 +2,8 @@
 
 #include "SentencePieceModel.h"
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <functional>
 #include <sentencepiece.pb.h>
@@ -11,6 +13,10 @@
 namespace Felidae {
 
 namespace {
+
+constexpr std::array<std::string_view, 10> kBuiltinModules{
+    "json", "csv", "group", "set", "ml", "array", "math", "str", "file",
+    "system"};
 
 constexpr BuiltinInfo kBuiltinInfos[] = {
     {BuiltinId::Unknown, "", BuiltinEffect::Volatile},
@@ -79,17 +85,11 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
     {BuiltinId::FileDeleteFile, "file:deleteFile",
      BuiltinEffect::WritesExternalState},
     {BuiltinId::CommonAncestors, "commonAncestors", BuiltinEffect::Pure},
-    {BuiltinId::LowestCommonAncestor, "lowestCommonAncestor",
-     BuiltinEffect::Pure},
-    {BuiltinId::HighestCommonAncestor, "highestCommonAncestor",
-     BuiltinEffect::Pure},
     {BuiltinId::AncestorAnalysis, "ancestorAnalysis", BuiltinEffect::Pure},
     // Mutates the fact store (see the RegisterVm.cpp dispatch case) --
     // WritesExternalState because it mutates the retained fact store.
     {BuiltinId::PropagateFact, "propagateFact",
      BuiltinEffect::WritesExternalState},
-    {BuiltinId::DependencySatisfied, "Dependency:satisfied",
-     BuiltinEffect::Pure},
     {BuiltinId::JsonObject, "json:object", BuiltinEffect::Pure},
     {BuiltinId::JsonParse, "json:parse", BuiltinEffect::Pure},
     {BuiltinId::JsonGet, "json:get", BuiltinEffect::Pure},
@@ -135,39 +135,6 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
     {BuiltinId::MathMul, "math:mul", BuiltinEffect::Pure},
     {BuiltinId::MathDiv, "math:div", BuiltinEffect::Pure},
     {BuiltinId::MathMod, "math:mod", BuiltinEffect::Pure},
-    {BuiltinId::ProbabilityMean, "probability:mean", BuiltinEffect::Pure},
-    {BuiltinId::ProbabilityVariance, "probability:variance",
-     BuiltinEffect::Pure},
-    {BuiltinId::ProbabilityStddev, "probability:stddev", BuiltinEffect::Pure},
-    {BuiltinId::ProbabilityNormalize, "probability:normalize",
-     BuiltinEffect::Pure},
-    {BuiltinId::ProbabilityEntropy, "probability:entropy", BuiltinEffect::Pure},
-    {BuiltinId::ProbabilityCovariance, "probability:covariance",
-     BuiltinEffect::Pure},
-    {BuiltinId::ProbabilityCorrelation, "probability:correlation",
-     BuiltinEffect::Pure},
-    {BuiltinId::ProbabilityBernoulli, "probability:bernoulli",
-     BuiltinEffect::Volatile},
-    {BuiltinId::ProbabilityBinomialPmf, "probability:binomialPmf",
-     BuiltinEffect::Pure},
-    {BuiltinId::ProbabilityBinomialCdf, "probability:binomialCdf",
-     BuiltinEffect::Pure},
-    {BuiltinId::ProbabilityPoissonPmf, "probability:poissonPmf",
-     BuiltinEffect::Pure},
-    {BuiltinId::ProbabilityPoissonCdf, "probability:poissonCdf",
-     BuiltinEffect::Pure},
-    {BuiltinId::ProbabilityNormalPdf, "probability:normalPdf",
-     BuiltinEffect::Pure},
-    {BuiltinId::ProbabilityNormalCdf, "probability:normalCdf",
-     BuiltinEffect::Pure},
-    {BuiltinId::ProbabilityUniformPdf, "probability:uniformPdf",
-     BuiltinEffect::Pure},
-    {BuiltinId::ProbabilityUniformCdf, "probability:uniformCdf",
-     BuiltinEffect::Pure},
-    {BuiltinId::ProbabilitySample, "probability:sample",
-     BuiltinEffect::Volatile},
-    {BuiltinId::ProbabilityWeightedChoice, "probability:weightedChoice",
-     BuiltinEffect::Volatile},
     {BuiltinId::ReasoningContrary, "Reasoning:contrary",
      BuiltinEffect::WritesExternalState},
     {BuiltinId::ReasoningProve, "Reasoning:prove",
@@ -318,6 +285,11 @@ builtinsByPieceIds() {
 }
 
 } // namespace
+
+bool isBuiltinModuleName(std::string_view name) {
+  return std::find(kBuiltinModules.begin(), kBuiltinModules.end(), name) !=
+         kBuiltinModules.end();
+}
 
 BuiltinId builtinIdForName(const std::string &name) {
   return builtinIdForName(std::string_view(name));

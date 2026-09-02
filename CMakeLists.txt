@@ -805,6 +805,7 @@ if(FELIDAE_BUILD_TESTS)
         numeric_operations
         json_csv_operations
         csv_fact_database
+        fx_fact_database
         group_operations
         set_operations
         degree_profiles
@@ -842,6 +843,8 @@ if(FELIDAE_BUILD_TESTS)
     # gets ".0".
     set_tests_properties(felidae_example_csv_fact_database PROPERTIES
         PASS_REGULAR_EXPRESSION "all_count: 4, active_central_count: 2.*deleted: 1.0")
+    set_tests_properties(felidae_example_fx_fact_database PROPERTIES
+        PASS_REGULAR_EXPRESSION "count: 2, students: 770")
     set_tests_properties(felidae_example_group_operations PROPERTIES
         PASS_REGULAR_EXPRESSION "abelian: 1.0")
     set_tests_properties(felidae_example_set_operations PROPERTIES

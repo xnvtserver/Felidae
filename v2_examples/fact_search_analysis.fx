@@ -12,19 +12,19 @@ main() =>
     guides := Catalog.search(
         field: "title",
         query: "%guide",
-        mode: "like",
+        type: "like",
         case: "insensitive"
     )
     related := Catalog.search(
         field: "category",
         query: Publication,
-        mode: "hierarchy",
+        type: "hierarchy",
         direction: "descendants",
         includeSelf: 0.0
     )
     confident := Catalog.search(
         field: "confidence",
-        mode: "degree",
+        type: "degree",
         minimum: 0.70,
         maximum: 0.90
     )
