@@ -18,10 +18,6 @@ namespace {
 using Json = nlohmann::json;
 constexpr std::size_t kMaximumRecords = 1'000'000;
 constexpr std::size_t kMaximumItems = 1'000'000;
-constexpr std::uint32_t kStructuralEncodingBit = 0x80000000u;
-constexpr std::uint32_t structural(std::uint32_t marker) {
-  return kStructuralEncodingBit | marker;
-}
 
 void requireJsonlPath(const std::filesystem::path &path) {
   if (path.extension() != ".jsonl")
@@ -249,57 +245,62 @@ runtimeValueEncoding(const VmValue &value,
     return order;
   };
   const auto appendNumber = [&](double number, std::uint32_t marker) {
-    result.push_back(structural(marker));
+    result.push_back(kRuntimeStructuralEncodingBit | marker);
     const auto bits = std::bit_cast<std::uint64_t>(number);
     for (int bit = 63; bit >= 0; --bit)
-      result.push_back(structural((bits & (std::uint64_t{1} << bit)) ? 39 : 38));
+      result.push_back(runtimeStructuralToken(
+          (bits & (std::uint64_t{1} << bit))
+              ? RuntimeStructuralToken::NumberBitOne
+              : RuntimeStructuralToken::NumberBitZero));
   };
   const auto append = [&](const auto &self, const VmValue &item,
                           std::size_t depth) -> void {
     if (depth > 32 || result.size() > kMaximumEncodedTokens)
       throw IrError("runtime SSM value encoding exceeds its bound");
     if (std::holds_alternative<VmNil>(item)) {
-      result.push_back(structural(28));
+      result.push_back(runtimeStructuralToken(RuntimeStructuralToken::Nil));
     } else if (const auto number = std::get_if<double>(&item)) {
-      appendNumber(*number, 29);
+      appendNumber(*number,
+                   static_cast<std::uint32_t>(RuntimeStructuralToken::Number));
     } else if (const auto degree = std::get_if<VmDegree>(&item)) {
-      appendNumber(degree->value, 30);
+      appendNumber(degree->value,
+                   static_cast<std::uint32_t>(RuntimeStructuralToken::Degree));
     } else if (const auto text = std::get_if<VmText>(&item)) {
-      result.push_back(structural(31));
+      result.push_back(runtimeStructuralToken(RuntimeStructuralToken::Text));
       result.insert(result.end(), text->pieces.begin(), text->pieces.end());
     } else if (const auto symbol = std::get_if<VmSymbol>(&item)) {
-      result.push_back(structural(32));
+      result.push_back(runtimeStructuralToken(RuntimeStructuralToken::Symbol));
       appendSymbol(symbol->value);
     } else if (const auto array = std::get_if<VmArrayPtr>(&item)) {
       if (!*array)
         throw IrError("runtime SSM cannot encode a null array");
-      result.push_back(structural(33));
+      result.push_back(runtimeStructuralToken(RuntimeStructuralToken::Array));
       for (const auto &value : (*array)->values)
         self(self, value, depth + 1);
-      result.push_back(structural(27));
+      result.push_back(runtimeStructuralToken(RuntimeStructuralToken::ValueEnd));
     } else if (const auto map = std::get_if<VmMapPtr>(&item)) {
       if (!*map)
         throw IrError("runtime SSM cannot encode a null map");
-      result.push_back(structural(34));
+      result.push_back(runtimeStructuralToken(RuntimeStructuralToken::Map));
       for (const auto index : orderedFields((*map)->entries)) {
         const auto &[field, value] = (*map)->entries[index];
-        result.push_back(structural(40));
+        result.push_back(runtimeStructuralToken(RuntimeStructuralToken::Field));
         appendSymbol(field);
         self(self, value, depth + 1);
       }
-      result.push_back(structural(27));
+      result.push_back(runtimeStructuralToken(RuntimeStructuralToken::ValueEnd));
     } else if (const auto fact = std::get_if<VmFactPtr>(&item)) {
       if (!*fact)
         throw IrError("runtime SSM cannot encode a null fact");
-      result.push_back(structural(35));
+      result.push_back(runtimeStructuralToken(RuntimeStructuralToken::Fact));
       appendSymbol((*fact)->type);
       for (const auto index : orderedFields((*fact)->fields)) {
         const auto &[field, value] = (*fact)->fields[index];
-        result.push_back(structural(40));
+        result.push_back(runtimeStructuralToken(RuntimeStructuralToken::Field));
         appendSymbol(field);
         self(self, value, depth + 1);
       }
-      result.push_back(structural(27));
+      result.push_back(runtimeStructuralToken(RuntimeStructuralToken::ValueEnd));
     } else if (const auto tensor = std::get_if<VmTensorPtr>(&item)) {
       if (!*tensor || !(*tensor)->storage)
         throw IrError("runtime SSM cannot encode a null tensor");
@@ -308,25 +309,25 @@ runtimeValueEncoding(const VmValue &value,
     } else if (const auto map = std::get_if<VmTextMapPtr>(&item)) {
       if (!*map)
         throw IrError("runtime SSM cannot encode a null text map");
-      result.push_back(structural(37));
+      result.push_back(runtimeStructuralToken(RuntimeStructuralToken::TextMap));
       auto entries = (*map)->entries;
       std::sort(entries.begin(), entries.end(),
                 [](const auto &left, const auto &right) {
                   return left.first < right.first;
                 });
       for (const auto &[key, value] : entries) {
-        result.push_back(structural(40));
+        result.push_back(runtimeStructuralToken(RuntimeStructuralToken::Field));
         result.insert(result.end(), key.begin(), key.end());
         self(self, value, depth + 1);
       }
-      result.push_back(structural(27));
+      result.push_back(runtimeStructuralToken(RuntimeStructuralToken::ValueEnd));
     }
     if (result.size() > kMaximumEncodedTokens)
       throw IrError("runtime SSM value encoding exceeds its bound");
   };
-  result.push_back(structural(26));
+  result.push_back(runtimeStructuralToken(RuntimeStructuralToken::ValueStart));
   append(append, value, 0);
-  result.push_back(structural(27));
+  result.push_back(runtimeStructuralToken(RuntimeStructuralToken::ValueEnd));
   return result;
 }
 

@@ -198,6 +198,8 @@ double executeKeyedEquality(bool facts) {
   using namespace Felidae;
   auto module = returning(encodeIrNumber(1.0), IrConstantKind::Number);
   module.symbolTable = {{1}, {2}, {3}};
+  if (facts)
+    module.factTypes.push_back(IrFactType{.symbol = 1});
   auto &program = module.procedures.at(1).ir;
   program.registerCount = 5;
   program.constants = {
@@ -302,7 +304,7 @@ int main() {
   }
 
   VmFactStore hierarchy;
-  hierarchy.registerType(1, {});
+  hierarchy.registerType(1, {}, {{10}});
   hierarchy.registerType(2, {1});
   hierarchy.registerType(3, {2});
   hierarchy.registerType(3, {2});
@@ -325,9 +327,11 @@ int main() {
   const auto assignable = hierarchy.snapshotAssignableTo(1);
   assert(assignable.size() == 2);
   assert(assignable[0]->id < assignable[1]->id);
+  const std::array<std::pair<IrSymbolRef, VmValue>, 1> exact42{{{10, 42.0}}};
+  assert(hierarchy.snapshotMatching(1, exact42) ==
+         std::vector<VmFactPtr>{indexedFact});
   assert((hierarchy.hierarchyProof(3, 1) == std::vector<IrSymbolRef>{3, 2, 1}));
   assert((hierarchy.commonAncestors(2, 3) == std::vector<IrSymbolRef>{1, 2}));
-  assert((hierarchy.leastCommonAncestors(2, 3) == std::vector<IrSymbolRef>{2}));
 
   VmFactStore diamond;
   diamond.registerType(1, {});
@@ -346,8 +350,12 @@ int main() {
   assert((evidence[1].leftProofs ==
           std::vector<std::vector<IrSymbolRef>>{{4, 2}}));
   assert(evidence[1].leftDistance == 1 && evidence[1].rightDistance == 1);
-  assert((hierarchy.mostGeneralCommonAncestors(2, 3) ==
-          std::vector<IrSymbolRef>{1}));
+  VmFactStore deepHierarchy;
+  deepHierarchy.registerType(1, {});
+  for (IrSymbolRef type = 2; type <= 512; ++type)
+    deepHierarchy.registerType(type, {static_cast<IrSymbolRef>(type - 1)});
+  const auto deepProofs = deepHierarchy.hierarchyProofs(512, 1);
+  assert(deepProofs.size() == 1 && deepProofs.front().size() == 512);
   // Prime the per-type closure before adding type 5. Registering hierarchy
   // edges must invalidate only that cache domain and expose the new path.
   assert(hierarchy.hierarchyProof(5, 1).empty());
@@ -391,7 +399,40 @@ int main() {
   assert(std::get<double>(updatedIndexedFact->fields.front().second) == 44.0);
   assert(hierarchy.snapshotByField(10).front() == updatedIndexedFact);
   assert(hierarchy.snapshotAssignableTo(1).front() == updatedIndexedFact);
+  assert(hierarchy.snapshotMatching(1, exact42).empty());
+  const std::array<std::pair<IrSymbolRef, VmValue>, 1> exact44{{{10, 44.0}}};
+  assert(hierarchy.snapshotMatching(1, exact44) ==
+         std::vector<VmFactPtr>{updatedIndexedFact});
   assert(rejects([&] { (void)hierarchy.mutate(indexedFact, 10, 45.0, 0); }));
+
+  VmFactStore compositeIndex;
+  compositeIndex.registerType(30, {}, {{31, 32}});
+  compositeIndex.registerType(33, {30});
+  auto compositeBuilder = std::make_shared<VmFact>();
+  compositeBuilder->type = 30;
+  compositeBuilder->fields = {{31, 7.0}, {32, VmText{{9, 10}}}};
+  const auto compositeFact = compositeIndex.retain(compositeBuilder);
+  const std::array<std::pair<IrSymbolRef, VmValue>, 2> compositePredicates{{
+      {32, VmText{{9, 10}}}, {31, 7.0}}};
+  assert(compositeIndex.snapshotMatching(30, compositePredicates) ==
+         std::vector<VmFactPtr>{compositeFact});
+  const std::array<std::pair<IrSymbolRef, VmValue>, 1> prefixPredicate{{
+      {31, 7.0}}};
+  assert(compositeIndex.snapshotMatching(30, prefixPredicate) ==
+         std::vector<VmFactPtr>{compositeFact});
+  auto inheritedBuilder = std::make_shared<VmFact>();
+  inheritedBuilder->type = 33;
+  inheritedBuilder->fields = {{31, 7.0}, {32, VmText{{11}}}};
+  const auto inheritedFact = compositeIndex.retain(inheritedBuilder);
+  assert(compositeIndex.snapshotMatching(33, prefixPredicate) ==
+         std::vector<VmFactPtr>{inheritedFact});
+  assert(compositeIndex.snapshotMatching(30, prefixPredicate) ==
+         (std::vector<VmFactPtr>{compositeFact, inheritedFact}));
+  assert(compositeIndex.erase(std::array<VmFactPtr, 1>{compositeFact}) == 1);
+  assert(compositeIndex.snapshotMatching(30, compositePredicates).empty());
+  compositeIndex.restoreErased(compositeFact, std::nullopt);
+  assert(compositeIndex.snapshotMatching(30, compositePredicates) ==
+         std::vector<VmFactPtr>{compositeFact});
 
   VmFactStore concurrentFacts;
   concurrentFacts.registerType(20, {});
@@ -808,6 +849,17 @@ int main() {
   auto invalid = returning(encodeIrNumber(1.0), IrConstantKind::Number);
   invalid.procedures.at(1).ir.words[1] = 99;
   assert(rejects([&] { (void)verifyIrModule(std::move(invalid)); }));
+
+  // Classes and ordinary facts share IrFactType, so the authoritative IR
+  // verifier must reject cycles across that mixed hierarchy just as it does
+  // cycles containing only one source declaration form.
+  auto cyclicTypes = returning(encodeIrNumber(1.0), IrConstantKind::Number);
+  cyclicTypes.symbolTable = {{1}, {2}, {3}};
+  cyclicTypes.factTypes = {
+      IrFactType{.symbol = 2, .parents = {3}},
+      IrFactType{.symbol = 3, .parents = {2}},
+  };
+  assert(rejects([&] { (void)verifyIrModule(std::move(cyclicTypes)); }));
 
   IrModule loop;
   loop.sentencePieceModelIdentity = "sha256:test";

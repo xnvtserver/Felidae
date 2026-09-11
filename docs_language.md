@@ -3,51 +3,56 @@
 Felidae is a functional logic language for typed facts, explicit dataflow, and
 native stdlib calls. This document describes the current ("v2") grammar and
 runtime behavior, verified against the interpreter in `src/`. The reference
-programs for this grammar live in `v2_examples/`. The `examples/` directory
-still contains legacy programs written for the older dot-terminated grammar
-and is being migrated separately; don't copy syntax from it.
+programs for this grammar live in `v2_examples/`. The `examples/` directory is
+legacy material and is being migrated separately; don't copy syntax from it.
 
 ## Statement Termination
 
-Statements end at a newline, not at a trailing `.`:
+Use `.` to give an ordinary statement an explicit boundary:
 
 ```Felidae
-import "math"
+import "math".
 
-Person(name: "Alice", role: "Engineer")
-Person(name: "Bob", role: "Manager")
+Person(name: "Alice", role: "Engineer").
+Person(name: "Bob", role: "Manager").
 
 Greeting(name: string) =>
-    return (message: name)
+    return (message: name).
 ```
 
-`.` still means two things, both scoped to a single line:
+The tokenizer encodes a complete dot-terminated statement as one span. A
+statement can therefore cross physical lines, including a `then` pipeline:
 
 ```Felidae
-pi := 3.01                 # decimal point
-result := a.b.c            # member access, only valid when target and field share a line
+result := prepare(value: input)
+    then normalize(value: system.result)
+    then finish(value: system.result).
 ```
 
-A trailing `.` at the end of a fact, rule, import, or global binding is no
-longer valid syntax and raises a parse error (`Expected a newline after
-fact/rule ..., found .`). Blank lines between statements are fine.
+Dots inside a quoted string, a decimal (`3.01`), or adjacent member access
+(`a.b.c`) are not terminators. `end` closes a class or method block and is
+written without `.`. An annotation is attached to the declaration following
+it and is not a separate statement.
+
+The beta parser still accepts a newline boundary in older unambiguous source,
+but new and migrated programs should use explicit dots. SentencePiece itself
+does not tokenize line by line; newlines are formatting inside the current
+statement span.
 
 ## Goal Separators
 
-Inside a rule or method body, goals can be separated by a comma, a newline,
-or both — they're interchangeable:
+Inside a rule or method body, commas express conjunction. A newline formats a
+goal but does not replace an explicit statement boundary in new code:
 
 ```Felidae
 HotAdd(value: int) =>
     doubled := value + value,
-    return (result: doubled)
+    return (result: doubled).
 
 HotAddNoCommas(value: int) =>
-    doubled := value + value
-    return (result: doubled)
+    doubled := value + value.
+    return (result: doubled).
 ```
-
-Existing comma-separated code keeps working; commas are simply optional now.
 
 ## Memory Model
 
@@ -181,14 +186,13 @@ array:get(data: [1, 2, 3], position: 0, access: value)
 
 ## Logic Operators
 
-`,` is conjunction, same as a plain newline between goals. It means AND and
-every goal in the sequence must hold:
+`,` is conjunction. It means AND and every goal in the sequence must hold:
 
 ```Felidae
 EngineerInSEA(employee: e, name: Name) =>
-    Name == e.name
-    e.role == "Engineer"
-    e.office == "SEA"
+    Name == e.name,
+    e.role == "Engineer",
+    e.office == "SEA".
 ```
 
 `|` is disjunction. It means OR between goal branches:
@@ -252,7 +256,17 @@ Person(name: "Ada", age: 32)
 
 Class fields constrain source fact rows, inherited fields are accepted, and
 index declarations are carried in the existing executable fact-type metadata.
-There is no runtime class object or second interpreter.
+The VM maintains exact single/composite indexes for those declarations;
+`where` selects the widest fully covered inherited index and applies remaining
+predicates as residual checks. Unindexed scans are bounded and large queries
+report which corrective action is required. There is no runtime class object
+or second interpreter.
+
+Classes and fact declarations share this one hierarchy. All combinations are
+valid when the named parent exists: a fact may extend a fact or class, and a
+class may extend a fact or class. A class contributes schema fields and index
+metadata; an ordinary fact parent contributes hierarchy membership without
+creating a second class runtime.
 
 ## Hierarchical Fact Queries
 
@@ -282,7 +296,9 @@ requirements prevent accidental blind updates, deletes, and Cartesian joins.
 discovery operation for text patterns, hierarchy-valued properties, and degree
 ranges or closeness. Text search supports exact/prefix/suffix/contains, SQL
 LIKE (`%` and `_`), and regular-expression modes. Degree search preserves
-intermediate values and returns the matching facts in creation order.
+intermediate values—including negative values and values greater than `1.0`—
+and returns the matching facts in creation order. Its tolerance must be
+non-negative; no search result is implicitly normalized into truth.
 
 Relationships and dependency evidence are ordinary typed facts, not hidden
 verbs or a second relationship runtime. For example, declare
@@ -292,11 +308,28 @@ keys. Domain rules decide how graded evidence is combined. Facts, maps, arrays,
 strings, and arbitrary numbers are not implicitly Boolean: use an explicit
 comparison in `where` or `if` when a branch requires numeric truth.
 
+When a domain relationship has mixfix syntax, invoke that relationship using
+the declared expression itself:
+
+```Felidae
+association := person works at company
+```
+
+`Association.where(...)` is a later database query over association facts; it
+is not a substitute for evaluating the `works at` relationship.
+
+Joins build an ordered lookup from the declared right key and probe it from
+the left input. They preserve fact-creation order and duplicate-key matches;
+the runtime does not execute a Cartesian nested scan.
+
 `commonAncestors(left:, right:)` returns the complete deterministic candidate
 set in stable order. Felidae does not expose context-free “lowest” or “highest”
 ancestor choices. When an application needs a contextual score, it explicitly
 calls `ssm.suggest(input:)`; that result is a finite, unrestricted `double`,
 not a degree clamped to `[0, 1]`, and branching must compare it explicitly.
+`ancestorAnalysis(left:, right:)` returns each candidate together with every
+bounded proof path and the shortest distance from both subjects. The VM
+service command `proof <child-id> <ancestor-id>` likewise prints all paths.
 
 Use `type(value: item, name: TypeName)` to read a value's concrete type, and
 `instanceof(value: item, type: Person)` to check whether a value is an instance

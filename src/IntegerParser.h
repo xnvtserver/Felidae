@@ -96,6 +96,7 @@ private:
     std::size_t builtinSequenceLength(TokenId::Id id) const;
     bool at(TokenId::Id id);
     bool match(TokenId::Id id);
+    bool matchBindingOperator();
     bool atBlockEnd();
     bool matchBlockEnd();
     void require(TokenId::Id id, const char* message);

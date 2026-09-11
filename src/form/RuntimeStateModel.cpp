@@ -4,6 +4,9 @@
 #include "RuntimeTraining.h"
 #include "SemanticOperation.h"
 #include "../ModelStore.h"
+#ifdef FELIDAE_HAS_FAISS
+#include "libs/ExecutionVectorMemory.h"
+#endif
 
 #include <cmath>
 #include <fstream>
@@ -33,10 +36,9 @@ std::vector<std::int64_t> runtimeInputIds(
   };
   const auto appendValueTokens = [&](std::vector<std::int64_t> &ids,
                                      const auto &tokens) {
-    constexpr std::uint32_t kStructuralBit = 0x80000000u;
     for (const auto token : tokens) {
-      if ((token & kStructuralBit) != 0) {
-        const auto marker = token & ~kStructuralBit;
+      if ((token & kRuntimeStructuralEncodingBit) != 0) {
+        const auto marker = token & ~kRuntimeStructuralEncodingBit;
         if (marker >= kRuntimeStructuralInputTokens)
           throw IrError("runtime GRU value marker exceeds its vocabulary");
         ids.push_back(structural(marker));
@@ -60,9 +62,12 @@ std::vector<std::int64_t> runtimeInputIds(
       ids.push_back(piece);
     }
   };
-  const auto kFactTypesMarker = structural(8);
-  const auto kHierarchyMarker = structural(9);
-  const auto kInputsMarker = structural(10);
+  const auto marker = [&](RuntimeStructuralToken token) {
+    return structural(static_cast<std::int64_t>(token));
+  };
+  const auto kFactTypesMarker = marker(RuntimeStructuralToken::FactTypes);
+  const auto kHierarchyMarker = marker(RuntimeStructuralToken::Hierarchy);
+  const auto kInputsMarker = marker(RuntimeStructuralToken::Inputs);
   if (!isKnownSemanticOperation(operation) ||
       !semanticOperationAcceptsArity(operation, inputKinds.size()) ||
       (!inputValues.empty() && inputValues.size() != inputKinds.size()) ||
@@ -100,10 +105,10 @@ std::vector<std::int64_t> runtimeInputIds(
     appendPieces(ids, type);
   // Counts distinguish current fact population while keeping a fixed
   // integer vocabulary: one, two-to-four, and five-or-more facts.
-  const auto kFactCountsMarker = structural(11);
-  const auto kOneFactMarker = structural(12);
-  const auto kSeveralFactsMarker = structural(13);
-  const auto kManyFactsMarker = structural(14);
+  const auto kFactCountsMarker = marker(RuntimeStructuralToken::FactCounts);
+  const auto kOneFactMarker = marker(RuntimeStructuralToken::OneFact);
+  const auto kSeveralFactsMarker = marker(RuntimeStructuralToken::SeveralFacts);
+  const auto kManyFactsMarker = marker(RuntimeStructuralToken::ManyFacts);
   ids.push_back(kFactCountsMarker);
   for (const auto &[type, count] : factTypeCounts) {
     appendPieces(ids, type);
@@ -121,7 +126,9 @@ std::vector<std::int64_t> runtimeInputIds(
     if (kind < RuntimeValueKind::Nil || kind > RuntimeValueKind::TextMap) {
       throw IrError("runtime GRU input value kind is invalid");
     }
-    ids.push_back(structural(15 + static_cast<std::int64_t>(kind)));
+    ids.push_back(structural(
+        static_cast<std::int64_t>(RuntimeStructuralToken::InputKindBase) +
+        static_cast<std::int64_t>(kind)));
   }
   for (const auto &value : inputValues)
     appendValueTokens(ids, value);
@@ -177,6 +184,9 @@ public:
   };
   struct ExecutionState {
     torch::Tensor hidden;
+#ifdef FELIDAE_HAS_FAISS
+    std::unique_ptr<Form::ExecutionVectorMemory> vectors;
+#endif
   };
   explicit Implementation(const Configuration &c,
                           const std::filesystem::path &artifact) {
@@ -388,6 +398,16 @@ Value GruRuntimeStateModel::evaluate(const RuntimeOperation &operation,
     logits = implementation_->network->projection->forward(last);
     score = implementation_->network->scoreProjection->forward(last);
   }
+#ifdef FELIDAE_HAS_FAISS
+  // Flatten all recurrent layers from this evaluation, not token IDs or
+  // projected scores. Faiss copies the data; no tensor/autograd graph is held.
+  const auto vector = state->hidden.to(torch::kCPU, torch::kFloat32).contiguous();
+  const auto dimensions = static_cast<std::size_t>(vector.numel());
+  if (!state->vectors)
+    state->vectors = std::make_unique<Form::ExecutionVectorMemory>(
+        dimensions, context.maximumSemanticSteps);
+  state->vectors->append({vector.data_ptr<float>(), dimensions});
+#endif
   if (operation.id == static_cast<std::uint16_t>(SemanticOperationId::Suggest)) {
     const auto value = score.item<double>();
     if (!std::isfinite(value))
@@ -416,8 +436,6 @@ Value GruRuntimeStateModel::evaluate(const RuntimeOperation &operation,
     return inferred;
   }
   case RuntimeOutputTokenKind::DegreeMilli:
-    if (operation.id == static_cast<std::uint16_t>(SemanticOperationId::Suggest))
-      return static_cast<double>(token.value) / 1000.0;
     return VmDegree(static_cast<double>(token.value) / 1000.0);
   case RuntimeOutputTokenKind::Nil:
     return VmNil{};

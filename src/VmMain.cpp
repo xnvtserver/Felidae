@@ -24,6 +24,7 @@ struct Options {
   fs::path input;
   bool serve = false;
   std::optional<fs::path> modelDirectory;
+  std::optional<fs::path> factStoreDirectory;
 };
 
 std::optional<Options> parseInput(int argc, char **argv) {
@@ -42,6 +43,12 @@ std::optional<Options> parseInput(int argc, char **argv) {
       options.modelDirectory = fs::path(argv[index]);
       continue;
     }
+    if (argument == "--fact-store") {
+      if (++index == argc)
+        throw std::runtime_error("--fact-store requires a RocksDB directory");
+      options.factStoreDirectory = fs::path(argv[index]);
+      continue;
+    }
     if (!options.input.empty())
       throw std::runtime_error(
           "felidae_vm accepts exactly one verified .bin IR file");
@@ -56,13 +63,14 @@ void printHelp() {
   std::cout
       << LANGUAGE_NAME << " Form VM v" << LANGUAGE_VERSION << "\n\n"
       << "Usage: felidae_vm program.bin\n"
-      << "       felidae_vm [--serve] [--model models/runtime] program.bin\n"
+      << "       felidae_vm [--serve] [--model models/runtime] "
+         "[--fact-store path] program.bin\n"
       << "       felidae_vm --train datasets/vm/runtime-context-v1.jsonl "
          "--store-model build|dist [--epochs N] [--learning-rate R]\n"
       << "Loads, verifies once, and executes Felidae IR. --serve keeps one VM "
          "and "
          "its fact memory resident; use run, facts [type-id], field <id>, "
-         "history, proof <child-id> <ancestor-id>, load <module.bin>, "
+         "history, proof <child-id> <ancestor-id> (all paths), load <module.bin>, "
          "modules, or quit on stdin.\n";
 }
 
@@ -148,6 +156,11 @@ int main(int argc, char **argv) {
     };
     auto module = loadBinaryIr(binary, felidaeSentencePieceModelIdentity());
     auto display = makeIrDisplayContext(module, decoder);
+    auto factStore = options->factStoreDirectory
+                         ? std::make_shared<VmFactStore>(
+                               fs::absolute(*options->factStoreDirectory)
+                                   .lexically_normal())
+                         : std::make_shared<VmFactStore>();
 #ifdef FELIDAE_HAS_TORCH
     std::unique_ptr<GruRuntimeStateModel> model;
     if (options->modelDirectory) {
@@ -167,13 +180,15 @@ int main(int argc, char **argv) {
     display.tensorDecoder = [&](const VmTensor &tensor) {
       return tensorRuntime.displayTensor(tensor);
     };
-    FelidaeKnowledgeRuntime runtime(model.get(), 1024, 256, {}, &tensorRuntime,
+    FelidaeKnowledgeRuntime runtime(model.get(), 1024, 256,
+                                    std::move(factStore), &tensorRuntime,
                                     decoder, encoder);
 #else
     if (options->modelDirectory)
       throw std::runtime_error(
           "this VM build has no LibTorch runtime SSM support");
-    FelidaeKnowledgeRuntime runtime(nullptr, 1024, 256, {}, nullptr, decoder,
+    FelidaeKnowledgeRuntime runtime(nullptr, 1024, 256,
+                                    std::move(factStore), nullptr, decoder,
                                     encoder);
 #endif
     RegisterVm vm;
@@ -222,11 +237,19 @@ int main(int argc, char **argv) {
       } else if (verb == "proof") {
         const auto child = readSymbol(words, "proof");
         const auto ancestor = readSymbol(words, "proof");
-        const auto path = runtime.factStore()->hierarchyProof(child, ancestor);
-        for (std::size_t index = 0; index < path.size(); ++index) {
-          if (index != 0)
+        const auto paths =
+            runtime.factStore()->hierarchyProofs(child, ancestor);
+        for (std::size_t pathIndex = 0; pathIndex < paths.size(); ++pathIndex) {
+          if (pathIndex != 0)
             std::cout << ' ';
-          std::cout << path[index];
+          std::cout << '[';
+          const auto &path = paths[pathIndex];
+          for (std::size_t index = 0; index < path.size(); ++index) {
+            if (index != 0)
+              std::cout << ' ';
+            std::cout << path[index];
+          }
+          std::cout << ']';
         }
         std::cout << "\n";
       } else if (verb == "quit")

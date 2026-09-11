@@ -6,35 +6,79 @@
 #include <stdexcept>
 
 namespace Felidae {
+namespace {
+
+std::size_t statementEnd(std::string_view source, std::size_t begin) {
+  bool quoted = false;
+  bool escaped = false;
+  bool comment = false;
+  for (std::size_t index = begin; index < source.size(); ++index) {
+    const char byte = source[index];
+    if (comment) {
+      if (byte == '\n' || byte == '\r')
+        comment = false;
+      continue;
+    }
+    if (quoted) {
+      if (escaped)
+        escaped = false;
+      else if (byte == '\\')
+        escaped = true;
+      else if (byte == '"')
+        quoted = false;
+      continue;
+    }
+    if (byte == '"') {
+      quoted = true;
+      continue;
+    }
+    if (byte == '#') {
+      comment = true;
+      continue;
+    }
+    if (byte != '.')
+      continue;
+    // Decimal points and adjacent member access are grammar punctuation, not
+    // framing. An explicit terminator is followed by trivia or end of input.
+    const auto next = index + 1;
+    if (next == source.size() || source[next] == ' ' || source[next] == '\t' ||
+        source[next] == '\r' || source[next] == '\n' || source[next] == '#') {
+      auto end = next;
+      for (;;) {
+        while (end < source.size() &&
+               (source[end] == ' ' || source[end] == '\t' ||
+                source[end] == '\r' || source[end] == '\n'))
+          ++end;
+        if (end == source.size() || source[end] != '#')
+          return end;
+        while (end < source.size() && source[end] != '\r' && source[end] != '\n')
+          ++end;
+      }
+    }
+  }
+  return source.size();
+}
+
+} // namespace
 
 IntegerTokenList::IntegerTokenList(
     const sentencepiece::SentencePieceProcessor &processor, std::string source)
     : source_(std::move(source)), processor_(&processor),
       complete_(source_.empty()) {
   if (!complete_)
-    encodeNextLine();
+    encodeNextStatement();
 }
 
-void IntegerTokenList::encodeNextLine() const {
+void IntegerTokenList::encodeNextStatement() const {
   if (complete_)
     return;
-  if (!processor_)
-    throw std::runtime_error("SentencePiece processor is unavailable");
-  const auto lineBegin = nextLineBegin_;
-  const auto lineNumber = nextLineNumber_;
-  const auto newline = source_.find_first_of("\r\n", lineBegin);
-  auto lineEnd = newline == std::string::npos ? source_.size() : newline + 1;
-  if (newline != std::string::npos && source_[newline] == '\r' &&
-      lineEnd < source_.size() && source_[lineEnd] == '\n') {
-    ++lineEnd;
-  }
-  const absl::string_view line(source_.data() + lineBegin,
-                               lineEnd - lineBegin);
+  const auto begin = nextStatementBegin_;
+  const auto end = statementEnd(source_, begin);
+  const absl::string_view statement(source_.data() + begin, end - begin);
   sentencepiece::SentencePieceText encoded;
-  const auto status = processor_->Encode(line, &encoded);
+  const auto status = processor_->Encode(statement, &encoded);
   if (!status.ok()) {
-    throw std::runtime_error("SentencePiece encoding failed on source line " +
-                             std::to_string(lineNumber) + ": " +
+    throw std::runtime_error("SentencePiece source encoding failed: " +
                              status.ToString());
   }
   ++encodeCount_;
@@ -43,25 +87,19 @@ void IntegerTokenList::encodeNextLine() const {
   for (const auto &piece : encoded.pieces()) {
     const auto relativeBegin = static_cast<std::size_t>(piece.begin());
     const auto relativeEnd = static_cast<std::size_t>(piece.end());
-    if (relativeBegin > relativeEnd || relativeEnd > line.size()) {
-      throw std::runtime_error(
-          "SentencePiece returned an invalid offset on source line " +
-          std::to_string(lineNumber));
-    }
+    if (relativeBegin > relativeEnd || relativeEnd > statement.size())
+      throw std::runtime_error("SentencePiece returned an invalid source offset");
     const auto id = static_cast<TokenId::Id>(piece.id());
     entries_.push_back(
-        Entry{id, lineBegin + relativeBegin, lineBegin + relativeEnd});
+        Entry{id, begin + relativeBegin, begin + relativeEnd});
   }
-  // lineEnd is strictly greater than lineBegin whenever complete_ is false,
-  // including blank and CRLF lines, so every lazy-load call advances.
-  nextLineBegin_ = lineEnd;
-  ++nextLineNumber_;
-  complete_ = nextLineBegin_ >= source_.size();
+  nextStatementBegin_ = end;
+  complete_ = end == source_.size();
 }
 
 bool IntegerTokenList::has(std::size_t index) const {
   while (index >= entries_.size() && !complete_)
-    encodeNextLine();
+    encodeNextStatement();
   return index < entries_.size();
 }
 
@@ -74,7 +112,7 @@ IntegerTokenList::entry(std::size_t index) const {
 
 const std::vector<IntegerTokenList::Entry> &IntegerTokenList::entries() const {
   while (!complete_)
-    encodeNextLine();
+    encodeNextStatement();
   return entries_;
 }
 

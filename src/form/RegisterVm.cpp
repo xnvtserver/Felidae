@@ -5,9 +5,14 @@
 #include "libs/Builtin.h"
 #include "libs/Csv.h"
 #include "libs/Db.h"
+#include "libs/FactStorageCodec.h"
+#ifdef FELIDAE_HAS_ROCKSDB
+#include "libs/RocksDb.h"
+#endif
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdlib>
 #include <deque>
@@ -16,6 +21,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <optional>
 #include <regex>
@@ -80,10 +86,10 @@ std::size_t irInstructionWidth(const FelidaeIr &ir, std::size_t pc) {
   case IrOpcode::Similarity:
   case IrOpcode::HierarchyIsA:
   case IrOpcode::HierarchyCommonAncestors:
-  case IrOpcode::HierarchyLeastCommonAncestors:
-  case IrOpcode::HierarchyMostGeneralAncestors:
   case IrOpcode::TemporalRank:
   case IrOpcode::MakeFact:
+    return bounded(4);
+  case IrOpcode::FactWhere:
     return bounded(4);
   // One extra operand beyond type/callback: a register holding a map of
   // outer-scope values the callback's predicate closes over (0 = none). The
@@ -242,6 +248,53 @@ bool vmValuesEqualAtDepth(const VmValue &left, const VmValue &right,
 
 bool vmValuesEqualInternal(const VmValue &left, const VmValue &right) {
   return vmValuesEqualAtDepth(left, right, 0);
+}
+
+using Form::StoredValueKey;
+
+std::optional<StoredValueKey>
+factIndexKey(const VmFactPtr &fact, std::span<const IrSymbolRef> fields,
+             std::span<const PieceSequence> symbols) {
+  if (!fact)
+    return std::nullopt;
+  StoredValueKey result;
+  result.push_back(static_cast<std::uint64_t>(fields.size()));
+  for (const auto field : fields) {
+    const auto found = std::find_if(
+        fact->fields.begin(), fact->fields.end(),
+        [&](const auto &entry) { return entry.first == field; });
+    if (found == fact->fields.end())
+      return std::nullopt;
+    auto value = Form::encodeStoredValueKey(found->second, symbols);
+    result.push_back(static_cast<std::uint64_t>(value.size()));
+    result.insert(result.end(), value.begin(), value.end());
+  }
+  return result;
+}
+
+StoredValueKey predicateIndexKey(
+    std::span<const IrSymbolRef> indexFields, std::size_t coveredFields,
+    std::span<const std::pair<IrSymbolRef, VmValue>> predicates,
+    std::span<const PieceSequence> symbols) {
+  if (coveredFields == 0 || coveredFields > indexFields.size())
+    throw IrError("fact query planner selected an invalid index prefix");
+  StoredValueKey result;
+  // Keep the declared field count first so one index's key space cannot be a
+  // prefix of another. Only the leading covered fields follow for a range
+  // lookup over a composite index.
+  result.push_back(static_cast<std::uint64_t>(indexFields.size()));
+  for (std::size_t index = 0; index < coveredFields; ++index) {
+    const auto field = indexFields[index];
+    const auto found = std::find_if(
+        predicates.begin(), predicates.end(),
+        [&](const auto &entry) { return entry.first == field; });
+    if (found == predicates.end())
+      throw IrError("fact query planner selected an uncovered index");
+    auto value = Form::encodeStoredValueKey(found->second, symbols);
+    result.push_back(static_cast<std::uint64_t>(value.size()));
+    result.insert(result.end(), value.begin(), value.end());
+  }
+  return result;
 }
 
 double evaluateNumericOperation(NumericOperation operation,
@@ -577,6 +630,10 @@ void verifyControlFlowInitialization(
       requireFlowRead(state, ir.words[pc + 4]);
       write(ir.words[pc + 1]);
       break;
+    case IrOpcode::FactWhere:
+      requireFlowRead(state, ir.words[pc + 3]);
+      write(ir.words[pc + 1]);
+      break;
     case IrOpcode::FactJoin:
       requireFlowRead(state, ir.words[pc + 2]);
       requireFlowRead(state, ir.words[pc + 3]);
@@ -601,8 +658,6 @@ void verifyControlFlowInitialization(
     case IrOpcode::Membership:
     case IrOpcode::HierarchyIsA:
     case IrOpcode::HierarchyCommonAncestors:
-    case IrOpcode::HierarchyLeastCommonAncestors:
-    case IrOpcode::HierarchyMostGeneralAncestors:
     case IrOpcode::Compare:
       requireFlowRead(state, ir.words[pc + 2]);
       requireFlowRead(state, ir.words[pc + 3]);
@@ -680,6 +735,180 @@ void verifyControlFlowInitialization(
   }
 }
 } // namespace
+
+namespace {
+
+void appendBigEndian64(std::string &key, std::uint64_t value) {
+  for (int shift = 56; shift >= 0; shift -= 8)
+    key.push_back(static_cast<char>((value >> shift) & 0xffU));
+}
+
+void appendPieceKey(std::string &key, std::span<const PieceId> pieces) {
+  appendBigEndian64(key, pieces.size());
+  for (const auto piece : pieces)
+    appendBigEndian64(key, piece);
+}
+
+std::string storedFactKey(IrFactRef id) {
+  std::string key{"F", 1};
+  appendBigEndian64(key, id);
+  return key;
+}
+
+std::string storedTypeKey(std::span<const PieceId> pieces) {
+  std::string key{"Y", 1};
+  appendPieceKey(key, pieces);
+  return key;
+}
+
+void appendOrderedKey(std::string &key,
+                      std::span<const std::uint64_t> values) {
+  for (const auto value : values)
+    appendBigEndian64(key, value);
+}
+
+void appendFactOrder(std::string &key, const VmFact &fact) {
+  appendBigEndian64(key, fact.createdSequence);
+  appendBigEndian64(key, fact.id);
+}
+
+std::string storedTypeIndexPrefix(std::span<const PieceId> type) {
+  std::string key{"IT", 2};
+  appendPieceKey(key, type);
+  return key;
+}
+
+std::string storedConcreteTypeIndexPrefix(std::span<const PieceId> type) {
+  std::string key{"IC", 2};
+  appendPieceKey(key, type);
+  return key;
+}
+
+std::string storedFieldIndexPrefix(std::span<const PieceId> field) {
+  std::string key{"IF", 2};
+  appendPieceKey(key, field);
+  return key;
+}
+
+std::string storedSourceIndexPrefix(std::string_view source) {
+  std::string key{"IS", 2};
+  appendBigEndian64(key, source.size());
+  key.append(source);
+  return key;
+}
+
+std::string storedExactIndexPrefix(
+    std::span<const PieceId> owner,
+    std::span<const std::vector<IrSymbolRef>> indexes, std::size_t ordinal,
+    std::span<const PieceSequence> symbols) {
+  if (ordinal >= indexes.size())
+    throw IrError("persistent fact index ordinal is invalid");
+  std::string key{"IE", 2};
+  appendPieceKey(key, owner);
+  appendBigEndian64(key, indexes[ordinal].size());
+  for (const auto field : indexes[ordinal])
+    appendPieceKey(key, irSymbolPieces(symbols, field));
+  return key;
+}
+
+} // namespace
+
+class VmFactStore::Persistence {
+public:
+#ifdef FELIDAE_HAS_ROCKSDB
+  explicit Persistence(const std::filesystem::path &directory)
+      : database(directory) {
+    if (const auto stored = database.get("M/revision")) {
+      if (stored->size() != sizeof(revision))
+        throw IrError("RocksDB revision metadata is malformed");
+      for (const unsigned char byte : *stored)
+        revision = (revision << 8U) | byte;
+    }
+  }
+  // The store mutex serializes callers. Publish the next revision only after
+  // its atomic data/index batch commits; failed writes cannot advance it.
+  void commit(std::span<const Form::RocksDb::Mutation> mutations) {
+    if (mutations.empty())
+      return;
+    if (revision == std::numeric_limits<std::uint64_t>::max())
+      throw IrError("RocksDB fact-store revision exhausted");
+    std::vector<Form::RocksDb::Mutation> batch(mutations.begin(), mutations.end());
+    std::string encoded;
+    appendBigEndian64(encoded, revision + 1);
+    batch.push_back({Form::RocksDb::Mutation::Kind::Put, "M/revision",
+                     std::move(encoded)});
+    database.write(batch);
+    ++revision;
+  }
+  Form::RocksDb database;
+  std::uint64_t revision = 0;
+#else
+  explicit Persistence(const std::filesystem::path &) {
+    throw IrError("this VM build has no RocksDB fact-store support");
+  }
+#endif
+  bool loading = false;
+};
+
+VmFactStore::VmFactStore() = default;
+
+VmFactStore::VmFactStore(const std::filesystem::path &directory)
+    : persistence_(std::make_unique<Persistence>(directory)) {
+#ifdef FELIDAE_HAS_ROCKSDB
+  persistence_->loading = true;
+  // Allocation watermarks outlive deleted rows. Commit them with insertion
+  // so a restart cannot recycle an identity referenced by an older snapshot.
+  const auto allocation = persistence_->database.get("M/allocation");
+  if (allocation) {
+    if (allocation->size() != 16)
+      throw IrError("RocksDB allocation metadata is malformed");
+    std::uint64_t counters[2]{};
+    for (std::size_t i = 0; i < allocation->size(); ++i)
+      counters[i / 8] = (counters[i / 8] << 8U) |
+                       static_cast<unsigned char>((*allocation)[i]);
+    if (counters[0] == 0 || counters[1] == 0 ||
+        counters[0] > std::numeric_limits<IrFactRef>::max())
+      throw IrError("RocksDB allocation metadata is outside its range");
+    nextId_ = static_cast<IrFactRef>(counters[0]);
+    nextSequence_ = counters[1];
+  }
+  const auto readAll = [&](std::string_view prefix, const auto &consume) {
+    std::optional<std::string> after;
+    while (true) {
+      const auto page = persistence_->database.scanPrefix(
+          prefix,
+          after ? std::optional<std::string_view>{*after} : std::nullopt,
+          4096);
+      for (const auto &[key, value] : page.rows)
+        consume(key, value);
+      if (!page.hasMore || page.rows.empty())
+        break;
+      after = page.rows.back().first;
+    }
+  };
+  readAll(std::string_view{"Y", 1}, [&](std::string_view key, std::string_view value) {
+    const auto record = Form::decodeStoredFactType(
+        value, [this](PieceSequence pieces) {
+          return internSymbol(std::move(pieces));
+        });
+    if (key != storedTypeKey(irSymbolPieces(symbolTable_, record.type)))
+      throw IrError("RocksDB type record identity is inconsistent");
+    registerType(record.type, record.parents, record.indexes);
+  });
+  // Facts remain on disk and are decoded through their selected index page.
+  // Allocation metadata is mandatory once any fact exists; recovering it by
+  // scanning all rows would make VM startup proportional to database size.
+  if (!allocation &&
+      !persistence_->database.scanPrefix(std::string_view{"F", 1},
+                                         std::nullopt, 1).rows.empty())
+    throw IrError("RocksDB facts exist without allocation metadata");
+  persistence_->loading = false;
+#else
+  (void)directory;
+#endif
+}
+
+VmFactStore::~VmFactStore() = default;
 
 bool vmValuesEqual(const VmValue &left, const VmValue &right) {
   return vmValuesEqualInternal(left, right);
@@ -816,6 +1045,221 @@ bool VmFactStore::isAssignableToLocked(IrSymbolRef candidate,
   return ancestorClosureLocked(candidate).contains(expected);
 }
 
+void VmFactStore::validateDeclaredIndexKeysLocked(const VmFactPtr &fact) const {
+  for (const auto &[owner, indexes] : exactIndexes_) {
+    if (!isAssignableToLocked(fact->type, owner))
+      continue;
+    for (const auto &index : indexes)
+      (void)factIndexKey(fact, index.fields, symbolTable_);
+  }
+}
+
+void VmFactStore::addToDeclaredIndexesLocked(const VmFactPtr &fact) {
+  // Persistent rows are committed atomically by persistentIndexKeysLocked.
+  // Keep only their declarations here, not a second process-resident index.
+  if (persistence_)
+    return;
+  for (auto &[owner, indexes] : exactIndexes_) {
+    if (!isAssignableToLocked(fact->type, owner))
+      continue;
+    for (auto &index : indexes) {
+      if (auto key = factIndexKey(fact, index.fields, symbolTable_)) {
+        auto &rows = index.rows[std::move(*key)];
+        const auto position = std::lower_bound(
+            rows.begin(), rows.end(), fact,
+            [](const auto &left, const auto &right) {
+              if (left->createdSequence != right->createdSequence)
+                return left->createdSequence < right->createdSequence;
+              return left->id < right->id;
+            });
+        rows.insert(position, fact);
+      }
+    }
+  }
+}
+
+void VmFactStore::removeFromDeclaredIndexesLocked(const VmFactPtr &fact) {
+  if (persistence_)
+    return;
+  for (auto &[owner, indexes] : exactIndexes_) {
+    if (!isAssignableToLocked(fact->type, owner))
+      continue;
+    for (auto &index : indexes) {
+      const auto key = factIndexKey(fact, index.fields, symbolTable_);
+      if (!key)
+        continue;
+      const auto found = index.rows.find(*key);
+      if (found == index.rows.end())
+        throw IrError("declared fact index is inconsistent");
+      std::erase(found->second, fact);
+      if (found->second.empty())
+        index.rows.erase(found);
+    }
+  }
+}
+
+std::vector<std::string> VmFactStore::persistentIndexKeysLocked(
+    const VmFactPtr &fact, std::optional<std::string_view> source) const {
+  if (!fact)
+    throw IrError("persistent fact index requires a fact");
+  std::vector<std::string> result;
+  {
+    auto key = storedConcreteTypeIndexPrefix(
+        irSymbolPieces(symbolTable_, fact->type));
+    appendFactOrder(key, *fact);
+    result.push_back(std::move(key));
+  }
+  std::vector<IrSymbolRef> types(ancestorClosureLocked(fact->type).begin(),
+                                 ancestorClosureLocked(fact->type).end());
+  std::sort(types.begin(), types.end());
+  for (const auto type : types) {
+    auto key = storedTypeIndexPrefix(irSymbolPieces(symbolTable_, type));
+    appendFactOrder(key, *fact);
+    result.push_back(std::move(key));
+  }
+
+  std::vector<IrSymbolRef> fields;
+  fields.reserve(fact->fields.size());
+  for (const auto &[field, _] : fact->fields)
+    fields.push_back(field);
+  std::sort(fields.begin(), fields.end());
+  fields.erase(std::unique(fields.begin(), fields.end()), fields.end());
+  for (const auto field : fields) {
+    auto key = storedFieldIndexPrefix(irSymbolPieces(symbolTable_, field));
+    appendFactOrder(key, *fact);
+    result.push_back(std::move(key));
+  }
+
+  if (source) {
+    auto key = storedSourceIndexPrefix(*source);
+    appendFactOrder(key, *fact);
+    result.push_back(std::move(key));
+  }
+
+  for (const auto &[owner, indexes] : declaredIndexes_) {
+    if (!isAssignableToLocked(fact->type, owner))
+      continue;
+    for (std::size_t ordinal = 0; ordinal < indexes.size(); ++ordinal) {
+      const auto value = factIndexKey(fact, indexes[ordinal], symbolTable_);
+      if (!value)
+        continue;
+      auto key = storedExactIndexPrefix(
+          irSymbolPieces(symbolTable_, owner), indexes, ordinal, symbolTable_);
+      appendOrderedKey(key, *value);
+      appendFactOrder(key, *fact);
+      result.push_back(std::move(key));
+    }
+  }
+  std::sort(result.begin(), result.end());
+  result.erase(std::unique(result.begin(), result.end()), result.end());
+  return result;
+}
+
+std::vector<VmFactPtr> VmFactStore::persistentFactsLocked(
+    std::string_view prefix, std::size_t maximum, bool *hasMore,
+    std::optional<std::string_view> after, std::string *lastKey,
+    std::vector<std::string> *keys) const {
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (!persistence_)
+    throw IrError("persistent fact query requires a RocksDB store");
+  const auto page =
+      persistence_->database.scanPrefix(prefix, after, maximum);
+  if (lastKey && !page.rows.empty())
+    *lastKey = page.rows.back().first;
+  if (hasMore)
+    *hasMore = page.hasMore;
+  std::vector<VmFactPtr> result;
+  result.reserve(page.rows.size());
+  for (const auto &[key, _] : page.rows) {
+    if (keys)
+      keys->push_back(key);
+    if (key.size() < sizeof(std::uint64_t))
+      throw IrError("RocksDB fact index contains a truncated key");
+    std::uint64_t id = 0;
+    for (std::size_t index = key.size() - sizeof(std::uint64_t);
+         index < key.size(); ++index)
+      id = (id << 8U) | static_cast<unsigned char>(key[index]);
+    const auto record = persistence_->database.get(storedFactKey(id));
+    if (!record)
+      throw IrError("RocksDB fact index references a missing fact");
+    const auto decoded = Form::decodeStoredFact(
+        *record, [this](PieceSequence pieces) {
+          return internSymbolLocked(std::move(pieces));
+        });
+    if (!decoded.fact || decoded.fact->id != id)
+      throw IrError("RocksDB fact index identity is inconsistent");
+    result.push_back(decoded.fact);
+  }
+  return result;
+#else
+  (void)prefix;
+  (void)maximum;
+  (void)hasMore;
+  (void)after;
+  (void)lastKey;
+  (void)keys;
+  throw IrError("this VM build has no RocksDB fact-store support");
+#endif
+}
+
+VmFactStore::StoredSnapshot
+VmFactStore::persistentSnapshotLocked(IrFactRef fact) const {
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (!persistence_ || fact == 0)
+    throw IrError("persistent fact lookup has no valid store or identity");
+  const auto bytes = persistence_->database.get(storedFactKey(fact));
+  if (!bytes)
+    throw IrError("fact targets an identity outside this knowledge runtime");
+  auto record = Form::decodeStoredFact(
+      *bytes, [this](PieceSequence pieces) {
+        return internSymbolLocked(std::move(pieces));
+      });
+  if (!record.fact || record.fact->id != fact ||
+      !parents_.contains(record.fact->type) ||
+      record.fact->createdSequence == 0 ||
+      record.fact->createdSequence == std::numeric_limits<std::uint64_t>::max())
+    throw IrError("RocksDB contains an invalid fact record");
+  validateDeclaredIndexKeysLocked(record.fact);
+  return {std::move(record.fact), std::move(record.source)};
+#else
+  (void)fact;
+  throw IrError("this VM build has no RocksDB fact-store support");
+#endif
+}
+
+IrSymbolRef VmFactStore::internSymbol(PieceSequence pieces) {
+  if (pieces.empty())
+    throw IrError("runtime symbol must contain SentencePiece IDs");
+  std::lock_guard lock(mutex_);
+  return internSymbolLocked(std::move(pieces));
+}
+
+IrSymbolRef VmFactStore::internSymbolLocked(PieceSequence pieces) const {
+  const auto found = symbolIds_.find(pieces);
+  if (found != symbolIds_.end())
+    return found->second;
+  if (symbolTable_.size() ==
+      static_cast<std::size_t>(std::numeric_limits<IrSymbolRef>::max()))
+    throw IrError("runtime symbol table exhausted its ID space");
+  symbolTable_.push_back(std::move(pieces));
+  const auto symbol = static_cast<IrSymbolRef>(symbolTable_.size());
+  symbolIds_.emplace(symbolTable_.back(), symbol);
+  return symbol;
+}
+
+std::optional<IrSymbolRef>
+VmFactStore::findSymbol(std::span<const PieceId> pieces) const {
+  std::lock_guard lock(mutex_);
+  const PieceSequence key(pieces.begin(), pieces.end());
+  const auto found = symbolIds_.find(key);
+  return found == symbolIds_.end() ? std::nullopt
+                                  : std::optional<IrSymbolRef>{found->second};
+}
+
+const std::vector<PieceSequence> &VmFactStore::symbolTable() const noexcept {
+  return symbolTable_;
+}
+
 void VmFactStore::registerType(IrSymbolRef type,
                                std::vector<IrSymbolRef> parents,
                                std::vector<std::vector<IrSymbolRef>> indexes) {
@@ -836,8 +1280,23 @@ void VmFactStore::registerType(IrSymbolRef type,
     if (isAssignableToLocked(parent, type))
       throw IrError("fact hierarchy contains a cycle");
   }
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (persistence_ && !persistence_->loading) {
+    const auto value = Form::encodeStoredFactType(
+        type, parents, indexes, symbolTable_);
+    const std::array<Form::RocksDb::Mutation, 1> mutation{{
+        {Form::RocksDb::Mutation::Kind::Put,
+         storedTypeKey(irSymbolPieces(symbolTable_, type)), value}}};
+    persistence_->commit(mutation);
+  }
+#endif
   parents_.emplace(type, std::move(parents));
-  declaredIndexes_.emplace(type, std::move(indexes));
+  auto [declaration, _] =
+      declaredIndexes_.emplace(type, std::move(indexes));
+  auto &runtimeIndexes = exactIndexes_[type];
+  runtimeIndexes.reserve(declaration->second.size());
+  for (const auto &fields : declaration->second)
+    runtimeIndexes.push_back(ExactIndex{fields, {}});
   ++hierarchyRevision_;
   ++knowledgeRevision_;
 }
@@ -846,7 +1305,11 @@ VmFactPtr VmFactStore::retain(const VmFactPtr &fact) {
   if (!fact || !validVmValue(VmValue{fact}))
     throw IrError("fact store cannot retain an invalid fact");
   std::lock_guard lock(mutex_);
+  if (!parents_.contains(fact->type))
+    throw IrError("fact store cannot retain an unregistered fact type");
   if (fact->id != 0) {
+    if (persistence_)
+      return currentSnapshotLocked(fact);
     if (std::ranges::find(facts_, fact) == facts_.end())
       throw IrError("fact already belongs to another knowledge runtime");
     return fact;
@@ -854,12 +1317,38 @@ VmFactPtr VmFactStore::retain(const VmFactPtr &fact) {
   if (nextId_ == std::numeric_limits<IrFactRef>::max())
     throw IrError("fact store exhausted its fact ID space");
   auto retained = std::make_shared<VmFact>(*fact);
-  retained->id = nextId_++;
-  retained->createdSequence = nextSequence_++;
-  facts_.push_back(retained);
-  byType_[retained->type].push_back(retained);
-  for (const auto &[field, _] : retained->fields)
-    byField_[field].push_back(retained);
+  validateDeclaredIndexKeysLocked(retained);
+  if (nextSequence_ == std::numeric_limits<std::uint64_t>::max())
+    throw IrError("fact store exhausted its creation-order space");
+  retained->id = nextId_;
+  retained->createdSequence = nextSequence_;
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (persistence_) {
+    const auto value =
+        Form::encodeStoredFact(*retained, std::nullopt, symbolTable_);
+    std::vector<Form::RocksDb::Mutation> mutation{
+        {Form::RocksDb::Mutation::Kind::Put, storedFactKey(retained->id),
+         value}};
+    for (auto &key : persistentIndexKeysLocked(retained))
+      mutation.push_back(
+          {Form::RocksDb::Mutation::Kind::Put, std::move(key), {}});
+    std::string allocation;
+    appendBigEndian64(allocation, nextId_ + 1);
+    appendBigEndian64(allocation, nextSequence_ + 1);
+    mutation.push_back({Form::RocksDb::Mutation::Kind::Put, "M/allocation",
+                        std::move(allocation)});
+    persistence_->commit(mutation);
+  }
+#endif
+  ++nextId_;
+  ++nextSequence_;
+  if (!persistence_) {
+    facts_.push_back(retained);
+    byType_[retained->type].push_back(retained);
+    for (const auto &[field, _] : retained->fields)
+      byField_[field].push_back(retained);
+  }
+  addToDeclaredIndexesLocked(retained);
   provenance_.push_back(
       VmFactProvenance{retained->id, 0,
                        retained->origin == VmFact::Origin::Derived});
@@ -870,7 +1359,11 @@ VmFactPtr VmFactStore::retain(const VmFactPtr &fact) {
 
 void VmFactStore::recordInsert(IrFactRef fact) {
   std::lock_guard lock(mutex_);
-  if (fact == 0 || std::none_of(facts_.begin(), facts_.end(),
+  if (fact == 0)
+    throw IrError("fact insertion record targets an unknown fact");
+  if (persistence_)
+    (void)persistentSnapshotLocked(fact);
+  else if (std::none_of(facts_.begin(), facts_.end(),
                                 [&](const auto &item) {
                                   return item->id == fact;
                                 }))
@@ -879,18 +1372,36 @@ void VmFactStore::recordInsert(IrFactRef fact) {
                                       VmFactMutationKind::Insert});
 }
 
+namespace {
+void requireMatchingSnapshot(const VmFactPtr &current, const VmFactPtr &snapshot) {
+  if (!vmValuesEqualInternal(VmValue{current}, VmValue{snapshot}))
+    throw IrError("fact mutation uses a stale fact snapshot");
+}
+} // namespace
+
+VmFactPtr VmFactStore::currentSnapshotLocked(const VmFactPtr &fact) const {
+  if (persistence_) {
+    auto stored = persistentSnapshotLocked(fact->id).fact;
+    requireMatchingSnapshot(stored, fact);
+    return stored;
+  }
+  const auto known =
+      std::find_if(facts_.begin(), facts_.end(),
+                   [&](const auto &item) { return item->id == fact->id; });
+  if (known == facts_.end())
+    throw IrError(
+        "fact mutation targets a fact outside this knowledge runtime");
+  requireMatchingSnapshot(*known, fact);
+  return *known;
+}
+
 VmFactPtr VmFactStore::mutate(const VmFactPtr &fact, IrSymbolRef field,
                               const VmValue &value, IrSymbolRef procedure) {
   if (!fact || fact->id == 0 || field == 0 || !validVmValue(value))
     throw IrError("fact mutation is invalid");
   std::lock_guard lock(mutex_);
-  const auto known =
-      std::find_if(facts_.begin(), facts_.end(),
-                   [&](const auto &item) { return item == fact; });
-  if (known == facts_.end())
-    throw IrError(
-        "fact mutation targets a fact outside this knowledge runtime");
-  auto updated = std::make_shared<VmFact>(*fact);
+  const auto current = currentSnapshotLocked(fact);
+  auto updated = std::make_shared<VmFact>(*current);
   bool hadField = false;
   for (auto &[existing, previous] : updated->fields) {
     if (existing == field) {
@@ -902,18 +1413,49 @@ VmFactPtr VmFactStore::mutate(const VmFactPtr &fact, IrSymbolRef field,
   if (!hadField) {
     updated->fields.emplace_back(field, value);
   }
-  const auto replace = [&](auto &items) {
-    const auto item = std::ranges::find(items, fact);
-    if (item == items.end())
-      throw IrError("fact store index is inconsistent");
-    *item = updated;
-  };
-  replace(facts_);
-  replace(byType_.at(fact->type));
-  for (const auto &[indexedField, _] : fact->fields)
-    replace(byField_.at(indexedField));
-  if (!hadField)
-    byField_[field].push_back(updated);
+  validateDeclaredIndexKeysLocked(updated);
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (persistence_) {
+    const auto source = persistentSnapshotLocked(fact->id).source;
+    const auto value = Form::encodeStoredFact(
+        *updated,
+        source ? std::optional<std::string_view>{*source}
+               : std::optional<std::string_view>{},
+        symbolTable_);
+    std::vector<Form::RocksDb::Mutation> mutation{
+        {Form::RocksDb::Mutation::Kind::Put, storedFactKey(updated->id),
+         value}};
+    const std::optional<std::string_view> sourceView =
+        source ? std::optional<std::string_view>{*source}
+               : std::optional<std::string_view>{};
+    for (auto &key : persistentIndexKeysLocked(current, sourceView))
+      mutation.push_back(
+          {Form::RocksDb::Mutation::Kind::Erase, std::move(key), {}});
+    for (auto &key : persistentIndexKeysLocked(updated, sourceView))
+      mutation.push_back(
+          {Form::RocksDb::Mutation::Kind::Put, std::move(key), {}});
+    persistence_->commit(mutation);
+  }
+#endif
+  if (!persistence_) {
+    removeFromDeclaredIndexesLocked(current);
+    const auto replace = [&](auto &items) {
+      const auto item =
+          std::find_if(items.begin(), items.end(), [&](const auto &entry) {
+            return entry->id == current->id;
+          });
+      if (item == items.end())
+        throw IrError("fact store index is inconsistent");
+      *item = updated;
+    };
+    replace(facts_);
+    replace(byType_.at(current->type));
+    for (const auto &[indexedField, _] : current->fields)
+      replace(byField_.at(indexedField));
+    if (!hadField)
+      byField_[field].push_back(updated);
+    addToDeclaredIndexesLocked(updated);
+  }
   mutations_.push_back(VmFactMutation{nextSequence_++, fact->id, field,
                                       VmFactMutationKind::Update});
   provenance_.push_back(VmFactProvenance{
@@ -924,35 +1466,75 @@ VmFactPtr VmFactStore::mutate(const VmFactPtr &fact, IrSymbolRef field,
 
 std::size_t VmFactStore::erase(std::span<const VmFactPtr> facts) {
   std::lock_guard lock(mutex_);
-  std::unordered_set<IrFactRef> requested;
-  for (const auto &fact : facts)
-    if (fact && fact->id != 0)
-      requested.insert(fact->id);
+  std::unordered_map<IrFactRef, VmFactPtr> requested;
+  for (const auto &fact : facts) {
+    if (fact && fact->id != 0) {
+      const auto [entry, inserted] = requested.emplace(fact->id, fact);
+      if (!inserted)
+        requireMatchingSnapshot(entry->second, fact);
+    }
+  }
   if (requested.empty())
     return 0;
 
   std::vector<VmFactPtr> removed;
-  for (const auto &fact : facts_) {
-    if (requested.contains(fact->id))
-      removed.push_back(fact);
+  std::unordered_map<IrFactRef, std::optional<std::string>> removedSources;
+  if (persistence_) {
+    removed.reserve(requested.size());
+    for (const auto &[id, requestedFact] : requested) {
+      auto stored = persistentSnapshotLocked(id);
+      requireMatchingSnapshot(stored.fact, requestedFact);
+      removed.push_back(std::move(stored.fact));
+      removedSources.emplace(id, std::move(stored.source));
+    }
+  } else {
+    for (const auto &fact : facts_) {
+      if (const auto found = requested.find(fact->id); found != requested.end()) {
+        requireMatchingSnapshot(fact, found->second);
+        removed.push_back(fact);
+      }
+    }
   }
   if (removed.size() != requested.size())
     throw IrError("fact deletion targets a fact outside this knowledge runtime");
 
-  const auto removeIds = [&](auto &items) {
-    std::erase_if(items, [&](const auto &item) {
-      return item && requested.contains(item->id);
-    });
-  };
-  removeIds(facts_);
-  for (auto &[_, items] : byType_)
-    removeIds(items);
-  for (auto &[_, items] : byField_)
-    removeIds(items);
-  std::erase_if(byType_, [](const auto &entry) { return entry.second.empty(); });
-  std::erase_if(byField_, [](const auto &entry) { return entry.second.empty(); });
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (persistence_) {
+    std::vector<Form::RocksDb::Mutation> mutations;
+    mutations.reserve(removed.size());
+    for (const auto &fact : removed) {
+      mutations.push_back({Form::RocksDb::Mutation::Kind::Erase,
+                           storedFactKey(fact->id), {}});
+      const auto &source = removedSources.at(fact->id);
+      const std::optional<std::string_view> sourceView =
+          source ? std::optional<std::string_view>{*source}
+                 : std::optional<std::string_view>{};
+      for (auto &key : persistentIndexKeysLocked(fact, sourceView))
+        mutations.push_back(
+            {Form::RocksDb::Mutation::Kind::Erase, std::move(key), {}});
+    }
+    persistence_->commit(mutations);
+  }
+#endif
+  if (!persistence_) {
+    for (const auto &fact : removed)
+      removeFromDeclaredIndexesLocked(fact);
+    const auto removeIds = [&](auto &items) {
+      std::erase_if(items, [&](const auto &item) {
+        return item && requested.contains(item->id);
+      });
+    };
+    removeIds(facts_);
+    for (auto &[_, items] : byType_)
+      removeIds(items);
+    for (auto &[_, items] : byField_)
+      removeIds(items);
+    std::erase_if(byType_, [](const auto &entry) { return entry.second.empty(); });
+    std::erase_if(byField_, [](const auto &entry) { return entry.second.empty(); });
+  }
   for (const auto &fact : removed) {
-    factSource_.erase(fact->id);
+    if (!persistence_)
+      factSource_.erase(fact->id);
     mutations_.push_back(VmFactMutation{nextSequence_++, fact->id, 0,
                                         VmFactMutationKind::Delete});
   }
@@ -967,23 +1549,54 @@ void VmFactStore::restore(const VmFactPtr &current,
       current->id != previous->id || current->type != previous->type)
     throw IrError("fact rollback snapshots are incompatible");
   std::lock_guard lock(mutex_);
-  const auto replaceById = [&](auto &items) {
-    const auto found = std::find_if(items.begin(), items.end(), [&](const auto &item) {
-      return item && item->id == current->id;
-    });
-    if (found == items.end())
-      throw IrError("fact rollback target is absent");
-    *found = previous;
-  };
-  replaceById(facts_);
-  replaceById(byType_.at(current->type));
-  for (auto &[_, items] : byField_)
-    std::erase_if(items, [&](const auto &item) {
-      return item && item->id == current->id;
-    });
-  for (const auto &[field, _] : previous->fields)
-    byField_[field].push_back(previous);
-  std::erase_if(byField_, [](const auto &entry) { return entry.second.empty(); });
+  const auto stored = currentSnapshotLocked(current);
+  validateDeclaredIndexKeysLocked(previous);
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (persistence_) {
+    const auto source = persistentSnapshotLocked(previous->id).source;
+    const auto value = Form::encodeStoredFact(
+        *previous,
+        source ? std::optional<std::string_view>{*source}
+               : std::optional<std::string_view>{},
+        symbolTable_);
+    std::vector<Form::RocksDb::Mutation> mutation{
+        {Form::RocksDb::Mutation::Kind::Put, storedFactKey(previous->id),
+         value}};
+    const std::optional<std::string_view> sourceView =
+        source ? std::optional<std::string_view>{*source}
+               : std::optional<std::string_view>{};
+    for (auto &key : persistentIndexKeysLocked(stored, sourceView))
+      mutation.push_back(
+          {Form::RocksDb::Mutation::Kind::Erase, std::move(key), {}});
+    for (auto &key : persistentIndexKeysLocked(previous, sourceView))
+      mutation.push_back(
+          {Form::RocksDb::Mutation::Kind::Put, std::move(key), {}});
+    persistence_->commit(mutation);
+  }
+#endif
+  if (!persistence_) {
+    removeFromDeclaredIndexesLocked(stored);
+    const auto replaceById = [&](auto &items) {
+      const auto found =
+          std::find_if(items.begin(), items.end(), [&](const auto &item) {
+            return item && item->id == current->id;
+          });
+      if (found == items.end())
+        throw IrError("fact rollback target is absent");
+      *found = previous;
+    };
+    replaceById(facts_);
+    replaceById(byType_.at(current->type));
+    for (auto &[_, items] : byField_)
+      std::erase_if(items, [&](const auto &item) {
+        return item && item->id == current->id;
+      });
+    for (const auto &[field, _] : previous->fields)
+      byField_[field].push_back(previous);
+    addToDeclaredIndexesLocked(previous);
+    std::erase_if(byField_,
+                  [](const auto &entry) { return entry.second.empty(); });
+  }
   ++contentRevision_;
   ++knowledgeRevision_;
 }
@@ -993,36 +1606,86 @@ void VmFactStore::restoreErased(const VmFactPtr &fact,
   if (!fact || fact->id == 0)
     throw IrError("deleted fact rollback snapshot is invalid");
   std::lock_guard lock(mutex_);
-  if (std::any_of(facts_.begin(), facts_.end(), [&](const auto &existing) {
-        return existing->id == fact->id;
-      }))
+  validateDeclaredIndexKeysLocked(fact);
+  if (persistence_) {
+#ifdef FELIDAE_HAS_ROCKSDB
+    if (persistence_->database.get(storedFactKey(fact->id)))
+      throw IrError("deleted fact rollback would duplicate fact identity");
+#endif
+  } else if (std::any_of(facts_.begin(), facts_.end(),
+                         [&](const auto &existing) {
+                           return existing->id == fact->id;
+                         })) {
     throw IrError("deleted fact rollback would duplicate fact identity");
-  facts_.push_back(fact);
-  byType_[fact->type].push_back(fact);
-  for (const auto &[field, _] : fact->fields)
-    byField_[field].push_back(fact);
-  if (source)
-    factSource_[fact->id] = std::move(*source);
-  const auto order = [](auto &items) {
-    std::sort(items.begin(), items.end(), [](const auto &left, const auto &right) {
-      return left->createdSequence < right->createdSequence;
-    });
-  };
-  order(facts_);
-  order(byType_[fact->type]);
-  for (const auto &[field, _] : fact->fields)
-    order(byField_[field]);
+  }
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (persistence_) {
+    const auto value = Form::encodeStoredFact(
+        *fact,
+        source ? std::optional<std::string_view>{*source}
+               : std::optional<std::string_view>{},
+        symbolTable_);
+    std::vector<Form::RocksDb::Mutation> mutation{
+        {Form::RocksDb::Mutation::Kind::Put, storedFactKey(fact->id), value}};
+    const std::optional<std::string_view> sourceView =
+        source ? std::optional<std::string_view>{*source}
+               : std::optional<std::string_view>{};
+    for (auto &key : persistentIndexKeysLocked(fact, sourceView))
+      mutation.push_back(
+          {Form::RocksDb::Mutation::Kind::Put, std::move(key), {}});
+    persistence_->commit(mutation);
+  }
+#endif
+  if (!persistence_) {
+    facts_.push_back(fact);
+    byType_[fact->type].push_back(fact);
+    for (const auto &[field, _] : fact->fields)
+      byField_[field].push_back(fact);
+    addToDeclaredIndexesLocked(fact);
+    if (source)
+      factSource_[fact->id] = std::move(*source);
+    const auto order = [](auto &items) {
+      std::sort(items.begin(), items.end(),
+                [](const auto &left, const auto &right) {
+                  return left->createdSequence < right->createdSequence;
+                });
+    };
+    order(facts_);
+    order(byType_[fact->type]);
+    for (const auto &[field, _] : fact->fields)
+      order(byField_[field]);
+  }
   ++membershipRevision_;
   ++knowledgeRevision_;
 }
 
 std::vector<VmFactPtr> VmFactStore::snapshot() const {
   std::lock_guard lock(mutex_);
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (persistence_) {
+    bool more = false;
+    auto result = persistentFactsLocked(std::string_view{"F", 1}, 10'001, &more);
+    if (more || result.size() > 10'000)
+      throw IrError("fact query exceeds 10000 rows; use page(records:, after:)");
+    return result;
+  }
+#endif
   return facts_;
 }
 
 std::vector<VmFactPtr> VmFactStore::snapshot(IrSymbolRef type) const {
   std::lock_guard lock(mutex_);
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (persistence_) {
+    bool more = false;
+    auto result = persistentFactsLocked(
+        storedConcreteTypeIndexPrefix(irSymbolPieces(symbolTable_, type)),
+        10'001, &more);
+    if (more || result.size() > 10'000)
+      throw IrError("fact query exceeds 10000 rows; use page(records:, after:)");
+    return result;
+  }
+#endif
   const auto found = byType_.find(type);
   return found == byType_.end() ? std::vector<VmFactPtr>{} : found->second;
 }
@@ -1031,17 +1694,48 @@ void VmFactStore::recordSource(IrFactRef fact, std::string source) {
   if (fact == 0)
     throw IrError("fact source cannot be recorded for an invalid fact");
   std::lock_guard lock(mutex_);
-  const auto found = std::find_if(
-      facts_.begin(), facts_.end(),
-      [&](const auto &item) { return item->id == fact; });
-  if (found == facts_.end())
-    throw IrError(
-        "fact source recorded for a fact outside this knowledge runtime");
-  factSource_[fact] = std::move(source);
+  VmFactPtr stored;
+  std::optional<std::string> previousSource;
+  if (persistence_) {
+    auto record = persistentSnapshotLocked(fact);
+    stored = std::move(record.fact);
+    previousSource = std::move(record.source);
+  } else {
+    const auto found = std::find_if(
+        facts_.begin(), facts_.end(),
+        [&](const auto &item) { return item->id == fact; });
+    if (found == facts_.end())
+      throw IrError(
+          "fact source recorded for a fact outside this knowledge runtime");
+    stored = *found;
+  }
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (persistence_) {
+    const auto value = Form::encodeStoredFact(
+        *stored, std::optional<std::string_view>{source}, symbolTable_);
+    std::vector<Form::RocksDb::Mutation> mutation{
+        {Form::RocksDb::Mutation::Kind::Put, storedFactKey(fact), value}};
+    if (previousSource) {
+      auto key = storedSourceIndexPrefix(*previousSource);
+      appendFactOrder(key, *stored);
+      mutation.push_back(
+          {Form::RocksDb::Mutation::Kind::Erase, std::move(key), {}});
+    }
+    auto key = storedSourceIndexPrefix(source);
+    appendFactOrder(key, *stored);
+    mutation.push_back(
+        {Form::RocksDb::Mutation::Kind::Put, std::move(key), {}});
+    persistence_->commit(mutation);
+  }
+#endif
+  if (!persistence_)
+    factSource_[fact] = std::move(source);
 }
 
 std::optional<std::string> VmFactStore::sourceOf(IrFactRef fact) const {
   std::lock_guard lock(mutex_);
+  if (persistence_)
+    return persistentSnapshotLocked(fact).source;
   const auto found = factSource_.find(fact);
   if (found == factSource_.end())
     return std::nullopt;
@@ -1051,6 +1745,26 @@ std::optional<std::string> VmFactStore::sourceOf(IrFactRef fact) const {
 std::vector<std::string> VmFactStore::sourcesForType(IrSymbolRef type) const {
   std::lock_guard lock(mutex_);
   std::set<std::string> unique;
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (persistence_) {
+    const auto prefix =
+        storedConcreteTypeIndexPrefix(irSymbolPieces(symbolTable_, type));
+    std::optional<std::string> after;
+    bool more = false;
+    do {
+      std::string lastKey;
+      const auto rows = persistentFactsLocked(
+          prefix, 4096, &more,
+          after ? std::optional<std::string_view>{*after} : std::nullopt,
+          &lastKey);
+      for (const auto &fact : rows)
+        if (const auto source = persistentSnapshotLocked(fact->id).source)
+          unique.insert(*source);
+      after = std::move(lastKey);
+    } while (more && unique.size() < 2);
+    return {unique.begin(), unique.end()};
+  }
+#endif
   const auto found = byType_.find(type);
   if (found != byType_.end()) {
     for (const auto &fact : found->second) {
@@ -1066,6 +1780,24 @@ std::vector<VmFactPtr>
 VmFactStore::snapshotBySource(std::string_view source) const {
   std::lock_guard lock(mutex_);
   std::vector<VmFactPtr> result;
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (persistence_) {
+    const auto prefix = storedSourceIndexPrefix(source);
+    std::optional<std::string> after;
+    bool more = false;
+    do {
+      std::string lastKey;
+      auto rows = persistentFactsLocked(prefix, 4096, &more,
+          after ? std::optional<std::string_view>{*after} : std::nullopt,
+          &lastKey);
+      result.insert(result.end(), rows.begin(), rows.end());
+      after = std::move(lastKey);
+    } while (more);
+    // File persistence rewrites the complete owning source, not a query page.
+    // Only that source's index is scanned; unrelated facts are never loaded.
+    return result;
+  }
+#endif
   for (const auto &fact : facts_) {
     const auto found = factSource_.find(fact->id);
     if (found != factSource_.end() && found->second == source)
@@ -1108,31 +1840,48 @@ VmFactStore::hierarchyProof(IrSymbolRef child, IrSymbolRef ancestor) const {
 std::vector<std::vector<IrSymbolRef>>
 VmFactStore::hierarchyProofs(IrSymbolRef child, IrSymbolRef ancestor) const {
   constexpr std::size_t kMaximumProofPaths = 4096;
+  constexpr std::size_t kMaximumProofDepth = 4096;
   std::lock_guard lock(mutex_);
   if (child == 0 || ancestor == 0 ||
       !isAssignableToLocked(child, ancestor))
     return {};
   std::vector<std::vector<IrSymbolRef>> result;
-  std::vector<IrSymbolRef> path{child};
-  const auto visit = [&](const auto &self, IrSymbolRef current) -> void {
-    if (result.size() == kMaximumProofPaths)
-      throw IrError("fact hierarchy proof-path limit exceeded");
-    if (current == ancestor) {
-      result.push_back(path);
-      return;
-    }
-    const auto found = parents_.find(current);
-    if (found == parents_.end())
-      return;
-    auto parents = found->second;
-    std::sort(parents.begin(), parents.end());
-    for (const auto parent : parents) {
-      path.push_back(parent);
-      self(self, parent);
-      path.pop_back();
-    }
+  struct Frame {
+    std::vector<IrSymbolRef> parents;
+    std::size_t next = 0;
   };
-  visit(visit, child);
+  const auto frame = [&](IrSymbolRef current) {
+    Frame result;
+    if (const auto found = parents_.find(current); found != parents_.end())
+      result.parents = found->second;
+    std::sort(result.parents.begin(), result.parents.end());
+    return result;
+  };
+  std::vector<IrSymbolRef> path{child};
+  std::vector<Frame> stack{frame(child)};
+  while (!path.empty()) {
+    if (path.size() > kMaximumProofDepth)
+      throw IrError("fact hierarchy proof depth exceeds its limit");
+    if (path.back() == ancestor) {
+      if (result.size() == kMaximumProofPaths)
+        throw IrError("fact hierarchy proof-path limit exceeded");
+      result.push_back(path);
+      path.pop_back();
+      stack.pop_back();
+      continue;
+    }
+    auto &current = stack.back();
+    if (current.next == current.parents.size()) {
+      path.pop_back();
+      stack.pop_back();
+      continue;
+    }
+    const auto parent = current.parents[current.next++];
+    if (std::ranges::find(path, parent) != path.end())
+      throw IrError("fact hierarchy cycle reached proof enumeration");
+    path.push_back(parent);
+    stack.push_back(frame(parent));
+  }
   std::sort(result.begin(), result.end(), [](const auto &left,
                                              const auto &right) {
     if (left.size() != right.size())
@@ -1179,47 +1928,6 @@ VmFactStore::commonAncestorEvidence(IrSymbolRef left,
   return result;
 }
 
-std::vector<IrSymbolRef>
-VmFactStore::leastCommonAncestors(IrSymbolRef left, IrSymbolRef right) const {
-  const auto common = commonAncestors(left, right);
-  std::vector<IrSymbolRef> result;
-  for (const auto candidate : common) {
-    bool hasMoreSpecificCommon = false;
-    for (const auto other : common) {
-      if (candidate == other)
-        continue;
-      if (!hierarchyProof(other, candidate).empty()) {
-        hasMoreSpecificCommon = true;
-        break;
-      }
-    }
-    if (!hasMoreSpecificCommon)
-      result.push_back(candidate);
-  }
-  return result;
-}
-
-std::vector<IrSymbolRef>
-VmFactStore::mostGeneralCommonAncestors(IrSymbolRef left,
-                                        IrSymbolRef right) const {
-  const auto common = commonAncestors(left, right);
-  std::vector<IrSymbolRef> result;
-  for (const auto candidate : common) {
-    bool hasMoreGeneralCommon = false;
-    for (const auto other : common) {
-      if (candidate == other)
-        continue;
-      if (!hierarchyProof(candidate, other).empty()) {
-        hasMoreGeneralCommon = true;
-        break;
-      }
-    }
-    if (!hasMoreGeneralCommon)
-      result.push_back(candidate);
-  }
-  return result;
-}
-
 std::vector<VmRankedFact>
 VmFactStore::rankByTimeAndPriority(IrSymbolRef effectiveAtField,
                                    IrSymbolRef priorityField) const {
@@ -1240,8 +1948,12 @@ VmFactStore::rankByTimeAndPriority(IrSymbolRef effectiveAtField,
     return *number;
   };
   std::vector<VmRankedFact> ranked;
-  ranked.reserve(facts_.size());
-  for (const auto &fact : facts_)
+  const auto candidates = persistence_ ? persistentFactsLocked(
+      std::string_view{"F", 1}, 10'001) : facts_;
+  if (candidates.size() > 10'000)
+    throw IrError("fact ranking exceeds 10000 rows; filter before ranking");
+  ranked.reserve(candidates.size());
+  for (const auto &fact : candidates)
     ranked.push_back({fact, numberField(fact, effectiveAtField, "effective-at"),
                       numberField(fact, priorityField, "priority")});
   std::sort(ranked.begin(), ranked.end(),
@@ -1258,6 +1970,17 @@ VmFactStore::rankByTimeAndPriority(IrSymbolRef effectiveAtField,
 std::vector<VmFactPtr>
 VmFactStore::snapshotAssignableTo(IrSymbolRef type) const {
   std::lock_guard lock(mutex_);
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (persistence_) {
+    bool more = false;
+    auto result = persistentFactsLocked(
+        storedTypeIndexPrefix(irSymbolPieces(symbolTable_, type)), 10'001,
+        &more);
+    if (more || result.size() > 10'000)
+      throw IrError("fact query exceeds 10000 rows; use page(records:, after:)");
+    return result;
+  }
+#endif
   std::vector<VmFactPtr> result;
   for (const auto &[candidate, facts] : byType_) {
     if (isAssignableToLocked(candidate, type))
@@ -1272,6 +1995,233 @@ VmFactStore::snapshotAssignableTo(IrSymbolRef type) const {
   return result;
 }
 
+VmFactStore::Page VmFactStore::pageAssignableTo(
+    IrSymbolRef type, std::size_t records,
+    const std::optional<Cursor> &after) const {
+  return pageMatching(type, {}, records, after);
+}
+
+VmFactStore::Page VmFactStore::pageMatching(
+    IrSymbolRef type,
+    std::span<const std::pair<IrSymbolRef, VmValue>> predicates,
+    std::size_t records, const std::optional<Cursor> &after) const {
+  if (records > 10'000)
+    throw IrError("fact page exceeds the 10000 row limit");
+  std::lock_guard lock(mutex_);
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (!persistence_)
+    throw IrError("indexed fact pagination requires a RocksDB store");
+  const auto plan = equalityPlanLocked(type, predicates);
+  auto prefix = storedTypeIndexPrefix(irSymbolPieces(symbolTable_, type));
+  if (plan.index) {
+    prefix = storedExactIndexPrefix(irSymbolPieces(symbolTable_, plan.owner),
+        declaredIndexes_.at(plan.owner), plan.ordinal, symbolTable_);
+    appendOrderedKey(prefix, predicateIndexKey(plan.index->fields, plan.covered,
+                                              predicates, symbolTable_));
+  }
+  // Bind residual predicates and requested subtype as well as the physical
+  // index. Canonical map encoding makes argument order irrelevant.
+  auto predicateMap = std::make_shared<VmMap>();
+  predicateMap->entries.assign(predicates.begin(), predicates.end());
+  std::string query;
+  appendPieceKey(query, irSymbolPieces(symbolTable_, type));
+  appendOrderedKey(query, Form::encodeStoredValueKey(predicateMap, symbolTable_));
+  const auto identity = persistence_->database.identity();
+  if (after) {
+    if (after->database != identity || after->index != prefix ||
+        after->query != query)
+      throw IrError("fact cursor belongs to another database or query index");
+    if (after->revision != persistence_->revision)
+      throw IrError("fact cursor snapshot expired after a store mutation");
+    // A partially covered composite key also contains remaining field values.
+    if (after->lastKey.size() < prefix.size() + 16 ||
+        !after->lastKey.starts_with(prefix) ||
+        !persistence_->database.get(after->lastKey))
+      throw IrError("fact cursor has an invalid continuation key");
+  }
+  Page result;
+  result.revision = persistence_->revision;
+  std::optional<std::string> lastKey = after
+      ? std::optional<std::string>{after->lastKey} : std::nullopt;
+  std::optional<std::string> continuation = lastKey;
+  // One lookahead matching row establishes hasMore. Residual filtering is
+  // bounded independently of output size, so sparse queries cannot run forever.
+  std::size_t examined = 0;
+  while (!result.hasMore) {
+    std::vector<std::string> keys;
+    const auto count = std::min<std::size_t>(256, records - result.rows.size() + 1);
+    const auto rows = persistentFactsLocked(prefix, count, nullptr,
+        lastKey ? std::optional<std::string_view>{*lastKey} : std::nullopt,
+        nullptr, &keys);
+    if (rows.empty())
+      break;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      if (++examined > 10'001)
+        throw IrError("fact page candidate limit exceeded; use a more selective index");
+      lastKey = keys[i];
+      if (!matchesLocked(rows[i], type, predicates))
+        continue;
+      if (result.rows.size() == records) {
+        result.hasMore = true;
+        break;
+      }
+      result.rows.push_back(rows[i]);
+      continuation = keys[i];
+    }
+  }
+  if (result.hasMore && continuation)
+    result.next = Cursor{identity, prefix, query, std::move(*continuation),
+                         result.revision};
+  return result;
+#else
+  (void)type;
+  (void)predicates;
+  (void)after;
+  throw IrError("this VM build has no RocksDB fact-store support");
+#endif
+}
+
+VmFactStore::EqualityPlan VmFactStore::equalityPlanLocked(
+    IrSymbolRef type,
+    std::span<const std::pair<IrSymbolRef, VmValue>> predicates) const {
+  if (!parents_.contains(type))
+    throw IrError("fact query references an unregistered type");
+  std::unordered_set<IrSymbolRef> predicateFields;
+  for (const auto &[field, value] : predicates) {
+    if (field == 0 || !predicateFields.insert(field).second ||
+        !validVmValue(value))
+      throw IrError("fact query contains an invalid or duplicate predicate");
+  }
+
+  EqualityPlan plan;
+  for (const auto &[owner, indexes] : exactIndexes_) {
+    if (!isAssignableToLocked(type, owner))
+      continue;
+    for (std::size_t ordinal = 0; ordinal < indexes.size(); ++ordinal) {
+      const auto &index = indexes[ordinal];
+      std::size_t covered = 0;
+      while (covered < index.fields.size() &&
+             predicateFields.contains(index.fields[covered]))
+        ++covered;
+      const auto winsTie = [&] {
+        if (!plan.index || covered != plan.covered ||
+            index.fields.size() != plan.index->fields.size())
+          return false;
+        // Runtime handles may change when a database is reopened. Durable
+        // plans must break equal-coverage ties by canonical index identity,
+        // never unordered-map iteration or process-local symbol numbering.
+        if (persistence_)
+          return storedExactIndexPrefix(irSymbolPieces(symbolTable_, owner),
+                     declaredIndexes_.at(owner), ordinal, symbolTable_) <
+                 storedExactIndexPrefix(irSymbolPieces(symbolTable_, plan.owner),
+                     declaredIndexes_.at(plan.owner), plan.ordinal, symbolTable_);
+        return std::pair{owner, ordinal} < std::pair{plan.owner, plan.ordinal};
+      };
+      if (covered != 0 &&
+          (covered > plan.covered ||
+           (covered == plan.covered && plan.index &&
+            index.fields.size() < plan.index->fields.size()) || winsTie())) {
+        plan = {&index, owner, ordinal, covered};
+      }
+    }
+  }
+  return plan;
+}
+
+std::vector<VmFactPtr> VmFactStore::snapshotMatching(
+    IrSymbolRef type,
+    std::span<const std::pair<IrSymbolRef, VmValue>> predicates) const {
+  constexpr std::size_t kMaximumUnindexedScan = 10'000;
+  if (predicates.empty())
+    throw IrError("fact query requires at least one predicate");
+  std::lock_guard lock(mutex_);
+  const auto plan = equalityPlanLocked(type, predicates);
+  const auto *selected = plan.index;
+  const auto selectedFields = plan.covered;
+
+  std::vector<VmFactPtr> candidates;
+  if (selected) {
+    const auto prefix = predicateIndexKey(selected->fields, selectedFields,
+                                          predicates, symbolTable_);
+#ifdef FELIDAE_HAS_ROCKSDB
+    if (persistence_) {
+      auto storagePrefix = storedExactIndexPrefix(
+          irSymbolPieces(symbolTable_, plan.owner),
+          declaredIndexes_.at(plan.owner), plan.ordinal, symbolTable_);
+      appendOrderedKey(storagePrefix, prefix);
+      bool more = false;
+      candidates = persistentFactsLocked(storagePrefix, 10'001, &more);
+      if (more || candidates.size() > 10'000)
+        throw IrError(
+            "fact query exceeds 10000 rows; use page(records:, after:)");
+    } else
+#endif
+    if (selectedFields == selected->fields.size()) {
+      const auto found = selected->rows.find(prefix);
+      if (found != selected->rows.end())
+        candidates = found->second;
+    } else {
+      for (auto found = selected->rows.lower_bound(prefix);
+           found != selected->rows.end() && found->first.size() >= prefix.size() &&
+           std::equal(prefix.begin(), prefix.end(), found->first.begin());
+           ++found) {
+        candidates.insert(candidates.end(), found->second.begin(),
+                          found->second.end());
+      }
+    }
+  } else {
+    const auto oversizedScan = [] {
+      throw IrError("fact query exceeds the bounded unindexed scan; declare "
+                    "an index covering its equality fields");
+    };
+#ifdef FELIDAE_HAS_ROCKSDB
+    if (persistence_) {
+      bool more = false;
+      candidates = persistentFactsLocked(
+          storedTypeIndexPrefix(irSymbolPieces(symbolTable_, type)),
+          kMaximumUnindexedScan + 1, &more);
+      if (more || candidates.size() > kMaximumUnindexedScan)
+        oversizedScan();
+    } else
+#endif
+    {
+      for (const auto &[candidateType, rows] : byType_) {
+        if (!isAssignableToLocked(candidateType, type))
+          continue;
+        // Bound before copying, not after allocating the entire candidate set.
+        if (rows.size() > kMaximumUnindexedScan - candidates.size())
+          oversizedScan();
+        candidates.insert(candidates.end(), rows.begin(), rows.end());
+      }
+    }
+  }
+
+  std::erase_if(candidates, [&](const auto &fact) {
+    return !matchesLocked(fact, type, predicates);
+  });
+  std::sort(candidates.begin(), candidates.end(),
+            [](const auto &left, const auto &right) {
+              if (left->createdSequence != right->createdSequence)
+                return left->createdSequence < right->createdSequence;
+              return left->id < right->id;
+            });
+  return candidates;
+}
+
+bool VmFactStore::matchesLocked(
+    const VmFactPtr &fact, IrSymbolRef type,
+    std::span<const std::pair<IrSymbolRef, VmValue>> predicates) const {
+  if (!fact || !isAssignableToLocked(fact->type, type))
+    return false;
+  return std::all_of(predicates.begin(), predicates.end(),
+                    [&](const auto &predicate) {
+    const auto found = std::find_if(fact->fields.begin(), fact->fields.end(),
+        [&](const auto &entry) { return entry.first == predicate.first; });
+    return found != fact->fields.end() &&
+           vmValuesEqualInternal(found->second, predicate.second);
+  });
+}
+
 std::vector<IrSymbolRef> VmFactStore::parentsOf(IrSymbolRef type) const {
   std::lock_guard lock(mutex_);
   const auto found = parents_.find(type);
@@ -1281,6 +2231,17 @@ std::vector<IrSymbolRef> VmFactStore::parentsOf(IrSymbolRef type) const {
 
 std::vector<VmFactPtr> VmFactStore::snapshotByField(IrSymbolRef field) const {
   std::lock_guard lock(mutex_);
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (persistence_) {
+    bool more = false;
+    auto result = persistentFactsLocked(
+        storedFieldIndexPrefix(irSymbolPieces(symbolTable_, field)), 10'001,
+        &more);
+    if (more || result.size() > 10'000)
+      throw IrError("fact query exceeds 10000 rows; use page(records:, after:)");
+    return result;
+  }
+#endif
   const auto found = byField_.find(field);
   return found == byField_.end() ? std::vector<VmFactPtr>{} : found->second;
 }
@@ -1321,15 +2282,42 @@ void VmFactStore::refreshKnowledgeSnapshot(std::uint64_t &knownRevision,
   if (knownRevision == knowledgeRevision_)
     return;
   result = {};
-  result.factTypes.reserve(byType_.size());
-  result.factTypeCounts.reserve(byType_.size());
-  for (const auto &[type, facts] : byType_) {
-    result.factTypes.push_back(type);
-    result.factTypeCounts.emplace_back(
-        type,
-        static_cast<std::uint32_t>(std::min(
-            facts.size(), static_cast<std::size_t>(
-                              std::numeric_limits<std::uint32_t>::max()))));
+  if (persistence_) {
+#ifdef FELIDAE_HAS_ROCKSDB
+    for (const auto &[type, _] : parents_) {
+      const auto prefix = storedConcreteTypeIndexPrefix(
+          irSymbolPieces(symbolTable_, type));
+      std::optional<std::string> after;
+      std::uint64_t count = 0;
+      bool more = false;
+      do {
+        const auto page = persistence_->database.scanPrefix(
+            prefix,
+            after ? std::optional<std::string_view>{*after} : std::nullopt,
+            Form::RocksDb::maximumScanRecords);
+        count += page.rows.size();
+        more = page.hasMore;
+        if (!page.rows.empty())
+          after = page.rows.back().first;
+      } while (more && count <= std::numeric_limits<std::uint32_t>::max());
+      if (count == 0)
+        continue;
+      result.factTypes.push_back(type);
+      result.factTypeCounts.emplace_back(
+          type, static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    count, std::numeric_limits<std::uint32_t>::max())));
+    }
+#endif
+  } else {
+    result.factTypes.reserve(byType_.size());
+    result.factTypeCounts.reserve(byType_.size());
+    for (const auto &[type, facts] : byType_) {
+      result.factTypes.push_back(type);
+      result.factTypeCounts.emplace_back(
+          type, static_cast<std::uint32_t>(std::min(
+                    facts.size(), static_cast<std::size_t>(
+                                      std::numeric_limits<std::uint32_t>::max()))));
+    }
   }
   std::sort(result.factTypes.begin(), result.factTypes.end());
   std::sort(result.factTypeCounts.begin(), result.factTypeCounts.end());
@@ -1348,6 +2336,26 @@ VmFactStoreRevisions VmFactStore::revisions() const {
 
 std::size_t VmFactStore::size() const {
   std::lock_guard lock(mutex_);
+#ifdef FELIDAE_HAS_ROCKSDB
+  if (persistence_) {
+    std::optional<std::string> after;
+    std::size_t count = 0;
+    bool more = false;
+    do {
+      const auto page = persistence_->database.scanPrefix(
+          std::string_view{"F", 1},
+          after ? std::optional<std::string_view>{*after} : std::nullopt,
+          Form::RocksDb::maximumScanRecords);
+      if (page.rows.size() > std::numeric_limits<std::size_t>::max() - count)
+        throw IrError("fact store size exceeds this platform's range");
+      count += page.rows.size();
+      more = page.hasMore;
+      if (!page.rows.empty())
+        after = page.rows.back().first;
+    } while (more);
+    return count;
+  }
+#endif
   return facts_.size();
 }
 
@@ -1800,19 +2808,12 @@ VmValue FelidaeKnowledgeRuntime::searchFacts(
     if (closeness == range || (query.has_value() != tolerance.has_value()))
       throw IrError(
           "fact search degree requires query+tolerance or range bounds");
-    const auto requireDegree = [](double value, std::string_view name) {
-      if (value < 0.0 || value > 1.0)
-        throw IrError("fact search " + std::string(name) +
-                      " must be within [0.0, 1.0]");
-    };
-    if (query)
-      requireDegree(*query, "query");
-    if (tolerance)
-      requireDegree(*tolerance, "tolerance");
-    if (minimum)
-      requireDegree(*minimum, "minimum");
-    if (maximum)
-      requireDegree(*maximum, "maximum");
+    // "degree" selects numeric closeness/range discovery; it is not an
+    // implicit truth conversion. Ordinary number fields therefore retain the
+    // language's unrestricted finite-double domain. VmDegree values remain
+    // bounded by their own constructor/type contract.
+    if (tolerance && *tolerance < 0.0)
+      throw IrError("fact search tolerance must be non-negative");
     if (minimum && maximum && *minimum > *maximum)
       throw IrError("fact search degree minimum exceeds maximum");
     appendMatching([&](const VmValue &value) {
@@ -1821,8 +2822,7 @@ VmValue FelidaeKnowledgeRuntime::searchFacts(
         candidate = *number;
       else if (const auto degree = std::get_if<VmDegree>(&value))
         candidate = degree->value;
-      if (!candidate || !std::isfinite(*candidate) || *candidate < 0.0 ||
-          *candidate > 1.0)
+      if (!candidate || !std::isfinite(*candidate))
         return false;
       if (closeness)
         return std::fabs(*candidate - *query) <= *tolerance;
@@ -1864,6 +2864,12 @@ VmValue FelidaeKnowledgeRuntime::joinFacts(
   };
   auto result = std::make_shared<VmArray>();
   std::vector<bool> matchedRight(right.size(), false);
+  std::map<Form::StoredValueKey, std::vector<std::size_t>> rightIndex;
+  for (std::size_t index = 0; index < right.size(); ++index) {
+    if (const auto *value = read(right[index], rightKey))
+      rightIndex[Form::encodeStoredValueKey(*value, runtimeSymbolTable())]
+          .push_back(index);
+  }
   const auto append = [&](VmValue leftValue, VmValue rightValue) {
     auto joined = std::make_shared<VmFact>();
     joined->type = joinedType;
@@ -1874,14 +2880,21 @@ VmValue FelidaeKnowledgeRuntime::joinFacts(
   for (const auto &leftFact : left) {
     const auto *leftValue = read(leftFact, leftKey);
     bool matchedLeft = false;
-    for (std::size_t index = 0; leftValue && index < right.size(); ++index) {
-      const auto &rightFact = right[index];
-      const auto *rightValue = read(rightFact, rightKey);
-      if (!rightValue || !vmValuesEqual(*leftValue, *rightValue))
-        continue;
-      matchedLeft = true;
-      matchedRight[index] = true;
-      append(leftFact, rightFact);
+    if (leftValue) {
+      const auto found = rightIndex.find(
+          Form::encodeStoredValueKey(*leftValue, runtimeSymbolTable()));
+      if (found != rightIndex.end()) {
+        for (const auto index : found->second) {
+          // The canonical key is designed to agree with structural equality;
+          // retain the authoritative equality check at this trust boundary.
+          const auto *rightValue = read(right[index], rightKey);
+          if (!rightValue || !vmValuesEqual(*leftValue, *rightValue))
+            continue;
+          matchedLeft = true;
+          matchedRight[index] = true;
+          append(leftFact, right[index]);
+        }
+      }
     }
     if (!matchedLeft && (kind == 1 || kind == 3))
       append(leftFact, VmNil{});
@@ -1903,6 +2916,12 @@ void FelidaeKnowledgeRuntime::registerFactType(
 std::vector<VmFactPtr>
 FelidaeKnowledgeRuntime::snapshotFacts(IrSymbolRef type) {
   return factStore_->snapshotAssignableTo(type);
+}
+
+std::vector<VmFactPtr> FelidaeKnowledgeRuntime::snapshotMatchingFacts(
+    IrSymbolRef type,
+    std::span<const std::pair<IrSymbolRef, VmValue>> predicates) {
+  return factStore_->snapshotMatching(type, predicates);
 }
 
 std::vector<IrSymbolRef>
@@ -1965,16 +2984,6 @@ VmValue FelidaeKnowledgeRuntime::ancestorAnalysis(IrSymbolRef left,
   }
   return result;
 }
-std::vector<IrSymbolRef>
-FelidaeKnowledgeRuntime::leastCommonAncestors(IrSymbolRef left,
-                                              IrSymbolRef right) {
-  return factStore_->leastCommonAncestors(left, right);
-}
-std::vector<IrSymbolRef>
-FelidaeKnowledgeRuntime::mostGeneralCommonAncestors(IrSymbolRef left,
-                                                    IrSymbolRef right) {
-  return factStore_->mostGeneralCommonAncestors(left, right);
-}
 std::vector<VmRankedFact>
 FelidaeKnowledgeRuntime::rankFacts(IrSymbolRef effectiveAtField,
                                    IrSymbolRef priorityField) {
@@ -1985,29 +2994,13 @@ void FelidaeKnowledgeRuntime::installIrModule(const IrModule &module) {
   module_ = {};
   module_.symbolTable = module.symbolTable;
   module_.runtimeSymbols.reserve(module.symbolTable.size());
-  for (const auto &pieces : module.symbolTable) {
-    const auto found = runtimeSymbolIds_.find(pieces);
-    if (found != runtimeSymbolIds_.end()) {
-      module_.runtimeSymbols.push_back(found->second);
-      continue;
-    }
+  for (const auto &pieces : module.symbolTable)
     module_.runtimeSymbols.push_back(internRuntimeSymbol(pieces));
-  }
 }
 
 IrSymbolRef
 FelidaeKnowledgeRuntime::internRuntimeSymbol(PieceSequence pieces) {
-  const auto found = runtimeSymbolIds_.find(pieces);
-  if (found != runtimeSymbolIds_.end())
-    return found->second;
-  if (runtimeSymbolTable_.size() ==
-      static_cast<std::size_t>(std::numeric_limits<IrSymbolRef>::max())) {
-    throw IrError("runtime symbol table exhausted its ID space");
-  }
-  runtimeSymbolTable_.push_back(std::move(pieces));
-  const auto symbol = static_cast<IrSymbolRef>(runtimeSymbolTable_.size());
-  runtimeSymbolIds_.emplace(runtimeSymbolTable_.back(), symbol);
-  return symbol;
+  return factStore_->internSymbol(std::move(pieces));
 }
 
 IrSymbolRef
@@ -2021,7 +3014,7 @@ FelidaeKnowledgeRuntime::resolveSymbol(IrSymbolRef moduleSymbol) const {
 
 std::span<const PieceSequence>
 FelidaeKnowledgeRuntime::runtimeSymbolTable() const {
-  return runtimeSymbolTable_;
+  return factStore_->symbolTable();
 }
 
 void FelidaeKnowledgeRuntime::enterProcedure(
@@ -2131,9 +3124,8 @@ VmValue FelidaeKnowledgeRuntime::importCsvFacts(
     std::span<const PieceId> data, std::span<const PieceId> type,
     std::span<const PieceId> source) {
   const auto typePieces = encodeText(decodeText(type));
-  const auto knownType = runtimeSymbolIds_.find(typePieces);
-  if (knownType == runtimeSymbolIds_.end() ||
-      !registeredFactTypes_.contains(knownType->second)) {
+  const auto knownType = factStore_->findSymbol(typePieces);
+  if (!knownType || !registeredFactTypes_.contains(*knownType)) {
     throw IrError("csv.toFacts type must be declared in the IR module");
   }
 
@@ -2152,7 +3144,7 @@ VmValue FelidaeKnowledgeRuntime::importCsvFacts(
     if (!row.is_object())
       throw IrError("csv.toFacts requires object rows");
     auto fact = std::make_shared<VmFact>();
-    fact->type = knownType->second;
+    fact->type = *knownType;
     fact->origin = VmFact::Origin::Asserted;
     fact->fields.reserve(row.size());
     for (const auto &[name, value] : row.items()) {
@@ -2178,7 +3170,7 @@ double FelidaeKnowledgeRuntime::persistDatabaseSource(
   // whole store, and never inferred from fact type alone, since two
   // different files can share one fact type (see VmFactStore::recordSource).
   Form::Db::sync(std::filesystem::path(source),
-                 factStore_->snapshotBySource(source), runtimeSymbolTable_,
+                 factStore_->snapshotBySource(source), factStore_->symbolTable(),
                  decoder, emptySchema,
                  [this](IrSymbolRef type) {
                    return factStore_->parentsOf(type);
@@ -2209,7 +3201,7 @@ FelidaeKnowledgeRuntime::makeRuntimeContext(const VmValue &) const {
   context.maximumSemanticSteps = maximumSemanticSteps_;
   context.executionState = executionState_;
   context.sharedSemanticSteps = sharedSemanticSteps_;
-  context.symbolTable = &runtimeSymbolTable_;
+  context.symbolTable = &factStore_->symbolTable();
   factStore_->refreshKnowledgeSnapshot(context.knowledgeRevision,
                                        context.knowledge);
   return context;
@@ -2322,6 +3314,15 @@ void IrVerifier::verify(const FelidaeIr &ir) {
       initialized[ir.words[pc + 1]] = true;
       pc += 10;
       break;
+    case IrOpcode::FactWhere:
+      requireRegister(ir, ir.words[pc + 1]);
+      if (ir.words[pc + 2] >= ir.symbols.size())
+        throw IrError("IR fact where references an invalid type symbol");
+      requireRegister(ir, ir.words[pc + 3]);
+      requireInitialized(initialized, ir.words[pc + 3]);
+      initialized[ir.words[pc + 1]] = true;
+      pc += 4;
+      break;
     case IrOpcode::Add:
     case IrOpcode::Sub:
     case IrOpcode::Mul:
@@ -2338,8 +3339,6 @@ void IrVerifier::verify(const FelidaeIr &ir) {
     case IrOpcode::Similarity:
     case IrOpcode::HierarchyIsA:
     case IrOpcode::HierarchyCommonAncestors:
-    case IrOpcode::HierarchyLeastCommonAncestors:
-    case IrOpcode::HierarchyMostGeneralAncestors:
       requireRegister(ir, ir.words[pc + 1]);
       requireRegister(ir, ir.words[pc + 2]);
       requireRegister(ir, ir.words[pc + 3]);
@@ -2663,6 +3662,11 @@ void VmRuntime::registerFactType(IrSymbolRef, std::vector<IrSymbolRef>,
 std::vector<VmFactPtr> VmRuntime::snapshotFacts(IrSymbolRef) {
   throw IrError("IR fact iteration is unavailable in this runtime");
 }
+std::vector<VmFactPtr> VmRuntime::snapshotMatchingFacts(
+    IrSymbolRef,
+    std::span<const std::pair<IrSymbolRef, VmValue>>) {
+  throw IrError("IR indexed fact queries are unavailable in this runtime");
+}
 
 std::vector<IrSymbolRef> VmRuntime::hierarchyProof(IrSymbolRef, IrSymbolRef) {
   throw IrError("IR hierarchy is unavailable in this runtime");
@@ -2679,14 +3683,6 @@ VmRuntime::commonAncestorEvidence(IrSymbolRef, IrSymbolRef) {
   throw IrError("IR hierarchy is unavailable in this runtime");
 }
 VmValue VmRuntime::ancestorAnalysis(IrSymbolRef, IrSymbolRef) {
-  throw IrError("IR hierarchy is unavailable in this runtime");
-}
-std::vector<IrSymbolRef> VmRuntime::leastCommonAncestors(IrSymbolRef,
-                                                         IrSymbolRef) {
-  throw IrError("IR hierarchy is unavailable in this runtime");
-}
-std::vector<IrSymbolRef> VmRuntime::mostGeneralCommonAncestors(IrSymbolRef,
-                                                               IrSymbolRef) {
   throw IrError("IR hierarchy is unavailable in this runtime");
 }
 std::vector<VmRankedFact> VmRuntime::rankFacts(IrSymbolRef, IrSymbolRef) {
@@ -3351,6 +4347,20 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
               number(2), {number(3), number(4), number(5)}));
       break;
     }
+    case IrOpcode::FactWhere: {
+      const auto predicates =
+          std::get_if<VmMapPtr>(&registers.at(program.words.at(pc + 3)));
+      if (!predicates || !*predicates || (*predicates)->entries.empty())
+        throw IrError("IR fact where requires a non-empty predicate map");
+      const auto facts = runtime.snapshotMatchingFacts(
+          symbol(program.words.at(pc + 2)), (*predicates)->entries);
+      auto values = std::make_shared<VmArray>();
+      values->values.reserve(facts.size());
+      for (const auto &fact : facts)
+        values->values.emplace_back(fact);
+      registers.at(program.words.at(pc + 1)) = std::move(values);
+      break;
+    }
     case IrOpcode::ForEachFact: {
       const auto facts =
           runtime.snapshotFacts(symbol(program.words.at(pc + 2)));
@@ -3438,18 +4448,6 @@ VmValue RegisterVm::executeIrProgram(const IrModule &module,
     case IrOpcode::HierarchyCommonAncestors:
       registers.at(program.words.at(pc + 1)) =
           symbolArray(runtime.commonAncestors(
-              typeSymbol(registers.at(program.words.at(pc + 2))),
-              typeSymbol(registers.at(program.words.at(pc + 3)))));
-      break;
-    case IrOpcode::HierarchyLeastCommonAncestors:
-      registers.at(program.words.at(pc + 1)) =
-          symbolArray(runtime.leastCommonAncestors(
-              typeSymbol(registers.at(program.words.at(pc + 2))),
-              typeSymbol(registers.at(program.words.at(pc + 3)))));
-      break;
-    case IrOpcode::HierarchyMostGeneralAncestors:
-      registers.at(program.words.at(pc + 1)) =
-          symbolArray(runtime.mostGeneralCommonAncestors(
               typeSymbol(registers.at(program.words.at(pc + 2))),
               typeSymbol(registers.at(program.words.at(pc + 3)))));
       break;

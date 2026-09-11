@@ -97,8 +97,8 @@ Program parseProgramText(std::string text,
   if (!operators)
     throw std::invalid_argument("parser operator registry must not be null");
   IntegerTokenList input(felidaeSentencePieceModel(), std::move(text));
-  // Mixfix declarations and uses share one parser-owned registry while each
-  // physical source line is independently SentencePiece-encoded.
+  // Mixfix declarations and uses share one parser-owned registry. SentencePiece
+  // receives complete dot-terminated statements, including multiline chains.
   IntegerParser parser(input, std::move(operators), options.mixfixModel);
   return parser.parseProgram();
 }

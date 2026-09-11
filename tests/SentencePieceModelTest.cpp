@@ -82,12 +82,12 @@ int main() {
     std::filesystem::remove_all(datasetTestDirectory);
 
     assert(Felidae::felidaeSentencePieceModelIdentity() ==
-           "sha256:e84eacbb51d5e63a10c308ea6728a7653f24015099215ad75e2b679a4d01b8b8");
+           "sha256:9f5a24275dacac172f145a776434c5b8a49375e4354c682dc52fbc0675114f4b");
     sentencepiece::SentencePieceProcessor model;
     const auto loaded = model.Load(FELIDAE_SENTENCEPIECE_MODEL_PATH);
     assert(loaded.ok());
     assert(Felidae::kFelidaeTokenizerDatasetSchemaVersion == 1);
-    assert(Felidae::kFelidaeTokenizerDatasetRecordCount == 32);
+    assert(Felidae::kFelidaeTokenizerDatasetRecordCount == 92);
     assert(Felidae::kFelidaeSentencePieceVocabularySize ==
            static_cast<std::uint32_t>(model.GetPieceSize()));
     assert(model.GetPieceSize() <= 1024 && model.GetPieceSize() > 512);
@@ -154,24 +154,20 @@ int main() {
     const std::string completeSource =
         "# comment\n"
         "café(value: \"hello\") => return value\n";
-    const Felidae::IntegerTokenList lazyLines(model, "first\nsecond\nthird\n");
-    assert(lazyLines.encodeCount() == 1);
-    assert(lazyLines.has(lazyLines.loadedSize()));
-    assert(lazyLines.encodeCount() == 2);
-    assert(lazyLines.has(lazyLines.loadedSize()));
-    assert(lazyLines.encodeCount() == 3);
-    const Felidae::IntegerTokenList firstLine(model, "first\n");
-    const auto &lazyEntries = lazyLines.entries();
-    const auto &firstEntries = firstLine.entries();
-    assert(lazyEntries.size() >= firstEntries.size());
-    for (std::size_t index = 0; index < firstEntries.size(); ++index) {
-      assert(lazyEntries[index].id == firstEntries[index].id);
-      assert(lazyEntries[index].begin == firstEntries[index].begin);
-      assert(lazyEntries[index].end == firstEntries[index].end);
-    }
+    const Felidae::IntegerTokenList blockTokens(model, "first\nsecond\nthird\n");
+    assert(blockTokens.encodeCount() == 1);
+    assert(!blockTokens.entries().empty());
+    const Felidae::IntegerTokenList statementTokens(
+        model,
+        "value := pipeline(\n"
+        "  input: \"a.b\", weight: 1.25\n"
+        ") then worker(value: system.result). # completed\n"
+        "next := value.member.\n");
+    (void)statementTokens.entries();
+    assert(statementTokens.encodeCount() == 2);
     const Felidae::IntegerTokenList sourceTokens(model, completeSource);
     assert(!sourceTokens.entries().empty());
-    assert(sourceTokens.encodeCount() == 2);
+    assert(sourceTokens.encodeCount() == 1);
     for (const auto& entry : sourceTokens.entries()) {
         assert(entry.begin <= entry.end);
         assert(entry.end <= completeSource.size());
@@ -182,7 +178,7 @@ int main() {
     Felidae::IntegerParser integerParser(expressionTokens);
     const auto expression = integerParser.parseExpressionText();
     assert(expression->debug() == "[\"value\", café, 1]");
-    assert(integerParser.metrics().sourceEncodeCount == 2);
+    assert(integerParser.metrics().sourceEncodeCount == 1);
     assert(integerParser.metrics().tokenCount == expressionTokens.entries().size());
     assert(integerParser.metrics().iterations > 0);
     assert(integerParser.metrics().peakRecursionDepth > 0);
@@ -192,7 +188,7 @@ int main() {
     Felidae::IntegerParser structuredParser(structuredTokens);
     const auto structured = structuredParser.parseExpressionText();
     assert(structured->debug() == "worker(task: {name: \"café\"}):result + 2 * 3");
-    assert(structuredParser.metrics().sourceEncodeCount == 2);
+    assert(structuredParser.metrics().sourceEncodeCount == 1);
 
     const Felidae::IntegerTokenList programTokens(
         model, "import \"core.fx\".\nthreshold := 2 + 3.\nPerson(name: \"Ada\", age: threshold).");
@@ -263,8 +259,8 @@ int main() {
     assert(dottedLabelProgram.clauses.size() == 1);
     assert(dottedLabelProgram.clauses.front()->head.args.front().name == "fx.effective_at");
 
-    // Moderate-size program regression: every physical line is encoded once
-    // and repeated SentencePiece word fragments never merge statements.
+    // Moderate-size program regression: explicit statements are encoded once
+    // each rather than being split by their physical line layout.
     std::string largeSource;
     largeSource.reserve(12'000);
     for (int index = 0; index < 512; ++index) {
@@ -326,7 +322,7 @@ int main() {
     auto operators = std::make_shared<Felidae::OperatorRegistry>();
     const Felidae::IntegerTokenList mixfixDeclarationTokens(model,
         "@mixfix(pattern: \"choose {value: expr}\")\n"
-        "choose() => return (value)\n");
+        "choose() => return (value).\n");
     Felidae::IntegerParser mixfixDeclarationParser(mixfixDeclarationTokens, operators);
     const auto mixfixDeclarationProgram = mixfixDeclarationParser.parseProgram();
     assert(mixfixDeclarationProgram.clauses.size() == 1);
@@ -352,7 +348,7 @@ int main() {
 
     const Felidae::IntegerTokenList nestedMixfixDeclarationTokens(model,
         "@mixfix(pattern: \"wrap {value: expr} end\")\n"
-        "wrap() => return (value)\n");
+        "wrap() => return (value).\n");
     Felidae::IntegerParser nestedMixfixDeclarationParser(nestedMixfixDeclarationTokens, operators);
     (void)nestedMixfixDeclarationParser.parseProgram();
     const Felidae::IntegerTokenList nestedMixfixUseTokens(model, "wrap choose 7 end");
@@ -365,7 +361,7 @@ int main() {
 
     const Felidae::IntegerTokenList trailingMixfixDeclarationTokens(model,
         "@mixfix(pattern: \"{left: expr} combines {right: expr}\")\n"
-        "combines() => return (left)\n");
+        "combines() => return (left).\n");
     Felidae::IntegerParser trailingMixfixDeclarationParser(trailingMixfixDeclarationTokens, operators);
     (void)trailingMixfixDeclarationParser.parseProgram();
     const Felidae::IntegerTokenList trailingMixfixUseTokens(model, "1 combines 2");
@@ -381,10 +377,10 @@ int main() {
     auto sameAnchorOperators = std::make_shared<Felidae::OperatorRegistry>();
     const Felidae::IntegerTokenList sameAnchorTokens(model,
         "@mixfix(pattern: \"plan {name: string} using {strategy: string} with {budget: number}\")\n"
-        "longPlan() => return (value: name)\n"
+        "longPlan() => return (value: name).\n"
         "@mixfix(pattern: \"plan {value: number} using {enabled: number}\")\n"
-        "shortPlan() => return (value: value)\n"
-        "main() => return (long: plan \"x\" using \"y\" with 1, short: plan 7 using 1.0)\n");
+        "shortPlan() => return (value: value).\n"
+        "main() => return (long: plan \"x\" using \"y\" with 1, short: plan 7 using 1.0).\n");
     Felidae::IntegerParser sameAnchorParser(sameAnchorTokens, sameAnchorOperators);
     const auto sameAnchorProgram = sameAnchorParser.parseProgram();
     assert(sameAnchorProgram.clauses.size() == 3);
