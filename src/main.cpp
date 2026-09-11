@@ -1,135 +1,311 @@
-#include "CompilerFrontend.h"
-#include "IntegerTokenList.h"
-#include "MixfixTraining.h"
-#include "MixfixStateModel.h"
-#include "ModelStore.h"
-#include "SentencePieceModel.h"
+#include "Interpreter.h"
+#include "FelidaeRuntime.h"
 #include "Version.h"
-#include "form/BinaryIr.h"
 
+#include <algorithm>
+#include <chrono>
+#include <cctype>
 #include <filesystem>
 #include <iostream>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include <sentencepiece_processor.h>
-
 namespace fs = std::filesystem;
 using namespace Felidae;
 
-namespace {
-struct Options { fs::path input; std::optional<fs::path> mixfixModelDirectory; };
+struct CliOptions {
+    bool showHelp = false;
+    bool showVersion = false;
+    bool repl = false;
+    bool debug = false;
+    bool metricsJson = false;
+    size_t benchmarkRepeat = 1;
+    std::optional<fs::path> programFile;
+    std::optional<std::string> query;
+    std::vector<std::string> remainingArgs;
+};
 
-std::optional<Options> parseInput(int argc, char** argv) {
-    if (argc == 1 || (argc == 2 && std::string(argv[1]) == "--help")) return std::nullopt;
-    Options options;
-    for (int index = 1; index < argc; ++index) {
-        const std::string argument(argv[index]);
-        if (argument == "--mixfix-model") {
-            if (++index == argc) throw std::runtime_error("--mixfix-model requires a model directory");
-            options.mixfixModelDirectory = fs::path(argv[index]);
+static CliOptions parseCli(int argc, char** argv) {
+    CliOptions options;
+    if (argc <= 1) {
+        options.showHelp = true;
+        return options;
+    }
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            options.showHelp = true;
+            return options;
+        }
+        if (arg == "--version" || arg == "-v") {
+            options.showVersion = true;
+            return options;
+        }
+        if (arg == "--repl") {
+            options.repl = true;
             continue;
         }
-        if (!options.input.empty()) throw std::runtime_error("felidae_compiler accepts exactly one .fx source file");
-        options.input = argument;
+        if (arg == "--debug") {
+            options.debug = true;
+            continue;
+        }
+        if (arg == "--metrics-json") {
+            options.metricsJson = true;
+            continue;
+        }
+        if (arg == "--visualize-data-json" || arg == "--visualize-data-html" ||
+            arg == "--inspect-graph" || arg == "--load-imports") {
+            throw std::runtime_error(
+                "Visualization options are no longer supported");
+        }
+        if (arg == "--benchmark-repeat") {
+            if (i + 1 >= argc) {
+                throw std::runtime_error("--benchmark-repeat expects a positive integer");
+            }
+            const std::string count = argv[++i];
+            size_t consumed = 0;
+            const unsigned long long parsed = std::stoull(count, &consumed);
+            if (consumed != count.size() || parsed == 0) {
+                throw std::runtime_error("--benchmark-repeat expects a positive integer");
+            }
+            options.benchmarkRepeat = static_cast<size_t>(parsed);
+            continue;
+        }
+        if (!options.programFile) {
+            options.programFile = fs::path(arg);
+            continue;
+        }
+        if (!options.query && !arg.empty() && arg[0] == '?') {
+            options.query = arg;
+            continue;
+        }
+        options.remainingArgs.push_back(arg);
     }
-    if (options.input.empty()) throw std::runtime_error("felidae_compiler requires a .fx source file");
     return options;
 }
-void printHelp() {
-    std::cout << LANGUAGE_NAME << " compiler v" << LANGUAGE_VERSION << "\n\n"
-              << "Usage: felidae_compiler [--mixfix-model models/mixfix] program.fx\n"
-              << "       felidae_compiler --tokenize input.fx\n"
-              << "       felidae_compiler --train 'datasets/compiler/*.jsonl' --store-model build|dist [--epochs N] [--learning-rate R]\n"
-              << "Writes verified Felidae binary IR to the compiler directory.\n";
+
+static const char* bannerText() {
+    return R"(        ______    _ _     _            
+       |  ____|  | (_)   | |           
+       | |__ ___ | |_  __| | __ _  ___ 
+       |  __/ _ \| | |/ _` |/ _` |/ _ \
+       | | |  __/| | | (_| | (_| |  __/
+       |_|  \___||_|_|\__,_|\__, |\___|
+
+       :=Bow(:)|Grr(..)|Roar(<)|Meow(>).                             
+
+)";
+}
+//       :=Bow(🐶)|Grr(🐯)|Roar(🦁)|Meow(🐱).
+
+static void printVersion() {
+    std::cout << LANGUAGE_NAME << " v" << LANGUAGE_VERSION << "\n";
 }
 
-int tokenizeSource(const fs::path& input) {
-    const auto source = resolveProgramEntryPath(input);
-    if (source.extension() != FILE_EXTENSION) {
-        throw std::runtime_error("--tokenize accepts only .fx source files");
-    }
-    const IntegerTokenList tokens(felidaeSentencePieceModel(),
-                                  Felidae::readSourceFile(source));
-    std::cout << '[';
-    for (std::size_t index = 0; index < tokens.entries().size(); ++index) {
-        if (index != 0) std::cout << ',';
-        std::cout << tokens.entries()[index].id;
-    }
-    std::cout << "]\n";
-    return 0;
+static void printHelp() {
+    std::cout << bannerText() << "\n"
+              << LANGUAGE_NAME << " v" << LANGUAGE_VERSION << "\n"
+              << LANGUAGE_DESCRIPTION << "\n\n"
+              << "File extension:\n"
+              << "  " << FILE_EXTENSION << "\n\n"
+              << "Usage:\n"
+              << "  felidae program.fx\n"
+              << "  felidae program.fx '? Query(key: x)'\n"
+              << "  felidae --repl program.fx\n"
+              << "  felidae program.fx --repl\n"
+              << "  felidae program.fx --debug\n"
+              << "  felidae program.fx --metrics-json\n"
+              << "  felidae program.fx --benchmark-repeat 100 --metrics-json\n"
+              << "  felidae program.fx '? Query(key: x)' --benchmark-repeat 100 --metrics-json\n"
+              << "  felidae --help\n"
+              << "  felidae --version\n\n"
+              << "Commands:\n"
+              << "  program.fx                         Run program and execute main(...) if found\n"
+              << "  program.fx '? Query(key: x)'        Run external query mode\n"
+              << "  --repl program.fx                   Start interactive REPL\n"
+              << "  program.fx --repl                   Start interactive REPL\n"
+              << "  program.fx --debug                  Run with debug adapter diagnostics enabled\n"
+              << "  --metrics-json                      Emit load and runtime performance counters to stderr\n"
+              << "  --benchmark-repeat N                Repeat the entry method or external query in one runtime\n"
+              << "  --help                              Show this help screen\n"
+              << "  --version                           Show version information\n\n"
+              << "Total commands supported: " << TOTAL_COMMANDS_SUPPORTED << "\n\n"
+              << "Examples:\n"
+              << "  felidae examples/main.fx\n"
+              << "  felidae examples/main.fx '? Person(name: x)'\n"
+              << "  felidae --repl examples/main.fx\n";
 }
 
-int trainMixfixModel(const ModelTrainingOptions& training) {
-#ifdef FELIDAE_HAS_TRAINING
-    const auto datasets = expandJsonlDatasetPaths(training.dataset);
-    const auto output = modelStoreDirectory(training.store, "mixfix-gru");
-    const auto inputVocabulary = std::to_string(felidaeSentencePieceModel().GetPieceSize());
-    const auto outputVocabulary = std::to_string(kMixfixStructuralVocabularySize);
-    std::vector<std::string> arguments{
-        "felidae_compiler", encodeDatasetPaths(datasets), output.string(), inputVocabulary,
-        outputVocabulary, "0", std::to_string(training.epochs), std::to_string(training.learningRate),
-        felidaeSentencePieceModelIdentity()};
-    std::vector<char*> rawArguments;
-    rawArguments.reserve(arguments.size());
-    for (auto& argument : arguments) rawArguments.push_back(argument.data());
-    return runMixfixGruTraining(static_cast<int>(rawArguments.size()), rawArguments.data());
-#else
-    (void)training;
-    throw std::runtime_error("this compiler build has training disabled; configure FELIDAE_ENABLE_TRAINING=ON");
-#endif
+static void runRepl(Interpreter& interpreter) {
+    std::cout << LANGUAGE_NAME << " v" << LANGUAGE_VERSION << "\n"
+              << LANGUAGE_DESCRIPTION << "\n"
+              << "Type 'help' for commands, 'exit' or 'quit' to leave.\n\n";
+    std::string line;
+    while (true) {
+        std::cout << "felidae> ";
+        if (!std::getline(std::cin, line)) {
+            std::cout << "\n";
+            break;
+        }
+        line = trim(line);
+        if (line.empty()) continue;
+        if (line == "exit" || line == "quit") break;
+        if (line == "version") {
+            printVersion();
+            continue;
+        }
+        if (line == "help") {
+            std::cout << "REPL commands:\n"
+                      << "  ? Predicate(field: x)        Run old-style query\n"
+                      << "  MethodName(args...)          Invoke method\n"
+                      << "  GlobalName                   Print global value\n"
+                      << "  function(args...)            Call built-in function\n"
+                      << "  help                         Show REPL help\n"
+                      << "  version                      Show version\n"
+                      << "  exit                         Exit REPL\n"
+                      << "  quit                         Exit REPL\n";
+            continue;
+        }
+
+        try {
+            if (!line.empty() && line[0] == '?') {
+                auto queryGoals = parseQueryText(line);
+                auto solutions = interpreter.solve(queryGoals, 1000);
+                printSolutions(interpreter, queryGoals, solutions, std::cout);
+                continue;
+            }
+            if (isBareIdentifier(line) && interpreter.hasGlobal(line)) {
+                std::cout << interpreter.valueToDisplayString(interpreter.evaluateGlobal(line)) << "\n";
+                continue;
+            }
+            auto value = interpreter.evaluateExpressionText(line);
+            std::cout << interpreter.valueToDisplayString(value) << "\n";
+        } catch (const std::exception& e) {
+            std::cout << "error: " << e.what() << "\n";
+        }
+    }
 }
-} // namespace
 
 int main(int argc, char** argv) {
     try {
-        if (argc == 2 && std::string(argv[1]) == "--version") {
-            std::cout << LANGUAGE_NAME << " compiler v" << LANGUAGE_VERSION << "\n";
+        CliOptions options = parseCli(argc, argv);
+        if (options.showHelp) {
+            printHelp();
             return 0;
         }
-        if (argc == 3 && std::string(argv[1]) == "--tokenize") {
-            return tokenizeSource(argv[2]);
+        if (options.showVersion) {
+            printVersion();
+            return 0;
         }
-        if (const auto training = parseModelTrainingOptions(argc, argv)) {
-            return trainMixfixModel(*training);
+        if (!options.programFile) {
+            printHelp();
+            return 1;
         }
-        const auto input = parseInput(argc, argv);
-        if (!input) { printHelp(); return argc == 1 ? 1 : 0; }
-        const auto source = resolveProgramEntryPath(input->input);
-        if (source.extension() != FILE_EXTENSION) {
-            throw std::runtime_error("felidae_compiler accepts only .fx source files");
+
+        using Clock = std::chrono::steady_clock;
+        const auto loadStarted = Clock::now();
+        Interpreter interpreter;
+        fs::path entryFile = resolveProgramEntryPath(*options.programFile);
+        if (entryFile.extension() != FILE_EXTENSION) {
+            throw std::runtime_error("Felidae source files must use .fx extension");
         }
-        CompilerOptions compilerOptions;
-#ifdef FELIDAE_HAS_TORCH
-        std::optional<GruMixfixStateModel> mixfixModel;
-        if (input->mixfixModelDirectory) {
-            GruMixfixStateModel::Configuration configuration;
-            configuration.inputVocabularySize = felidaeSentencePieceModel().GetPieceSize();
-            configuration.outputVocabularySize =
-                static_cast<std::int64_t>(kMixfixStructuralVocabularySize);
-            configuration.beginToken = 0;
-            mixfixModel.emplace(GruMixfixStateModel::loadVersioned(
-                configuration, *input->mixfixModelDirectory, felidaeSentencePieceModelIdentity()));
-            compilerOptions.mixfixModel = &*mixfixModel;
+        // A source file becomes executable only after its imports and every
+        // declaration have registered successfully. Running main while the
+        // parser was still producing chunks made later declarations invisible
+        // and could leave effects behind when a later error rejected the file.
+        // Registration remains streaming; publication is the execution boundary.
+        loadProgramRoot(entryFile, interpreter);
+        const auto executionStarted = Clock::now();
+        double firstQueryMs = 0.0;
+        double repeatedQueryAverageMs = 0.0;
+        size_t measuredQueryRuns = 0;
+        auto reportMetrics = [&]() {
+            if (!options.metricsJson) return;
+            const auto finished = Clock::now();
+            const auto loadMicros = std::chrono::duration_cast<std::chrono::microseconds>(
+                executionStarted - loadStarted).count();
+            const auto executionMicros = std::chrono::duration_cast<std::chrono::microseconds>(
+                finished - executionStarted).count();
+            std::cerr << "FELIDAE_METRICS {"
+                      << "\"loadMs\":" << (static_cast<double>(loadMicros) / 1000.0) << ","
+                      << "\"executionMs\":" << (static_cast<double>(executionMicros) / 1000.0) << ","
+                      << "\"queryRuns\":" << measuredQueryRuns << ","
+                      << "\"firstQueryMs\":" << firstQueryMs << ","
+                      << "\"repeatedQueryAverageMs\":" << repeatedQueryAverageMs << ","
+                      << "\"runtime\":" << interpreter.runtimeMetricsJson()
+                      << "}\n";
+        };
+        if (options.debug) {
+            std::cerr << "Felidae debug mode enabled for " << entryFile.string() << "\n";
         }
-#else
-        if (input->mixfixModelDirectory) throw std::runtime_error("this compiler build has no LibTorch mixfix support");
-#endif
-        auto module = verifyIrModule(compileProgramFileToIr(source, compilerOptions));
-        // Build artifacts never modify example/source directories or a staged
-        // distribution. The caller's existing build/ directory is the one
-        // canonical artifact location for both a developer build and the
-        // portable compiler.
-        const auto outputDirectory = fs::absolute(fs::path(argv[0])).lexically_normal().parent_path();
-        fs::create_directories(outputDirectory);
-        auto output = outputDirectory / source.filename();
-        output.replace_extension(kBinaryIrExtension);
-        writeBinaryIr(output, module);
-        std::cout << output.string() << "\n";
+
+        if (options.repl) {
+            runRepl(interpreter);
+            reportMetrics();
+            return 0;
+        }
+
+        if (options.query) {
+            auto queryGoals = parseQueryText(*options.query);
+            std::vector<Solution> solutions;
+            double repeatedQueryTotalMs = 0.0;
+            for (size_t run = 0; run < options.benchmarkRepeat; ++run) {
+                const auto queryStarted = Clock::now();
+                solutions = interpreter.solve(queryGoals, 1000);
+                const auto queryFinished = Clock::now();
+                const double queryMs = static_cast<double>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        queryFinished - queryStarted).count()) / 1000000.0;
+                if (run == 0) {
+                    firstQueryMs = queryMs;
+                } else {
+                    repeatedQueryTotalMs += queryMs;
+                }
+            }
+            measuredQueryRuns = options.benchmarkRepeat;
+            if (options.benchmarkRepeat > 1) {
+                repeatedQueryAverageMs =
+                    repeatedQueryTotalMs / static_cast<double>(options.benchmarkRepeat - 1);
+            }
+            printSolutions(interpreter, queryGoals, solutions, std::cout);
+            reportMetrics();
+            return 0;
+        }
+
+        if (interpreter.hasMethod("main") || interpreter.hasAutoEntryCall()) {
+            std::shared_ptr<Expr> result;
+            double repeatedEntryTotalMs = 0.0;
+            for (size_t run = 0; run < options.benchmarkRepeat; ++run) {
+                const auto entryStarted = Clock::now();
+                result = interpreter.hasMethod("main")
+                    ? interpreter.callMain(makeSystemInput(options.remainingArgs))
+                    : interpreter.callAutoEntry();
+                const double entryMs = static_cast<double>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        Clock::now() - entryStarted).count()) / 1000000.0;
+                if (run == 0) {
+                    firstQueryMs = entryMs;
+                } else {
+                    repeatedEntryTotalMs += entryMs;
+                }
+            }
+            measuredQueryRuns = options.benchmarkRepeat;
+            if (options.benchmarkRepeat > 1) {
+                repeatedQueryAverageMs =
+                    repeatedEntryTotalMs / static_cast<double>(options.benchmarkRepeat - 1);
+            }
+            std::cout << interpreter.valueToDisplayString(result) << "\n";
+        } else {
+            std::cout << "Program loaded successfully. No main() method found.\n"
+                      << "Use a query argument, add a zero-argument entry call, or run with --repl.\n";
+        }
+
+        reportMetrics();
         return 0;
-    } catch (const std::exception& error) {
-        std::cerr << "error: " << error.what() << "\n";
+    } catch (const std::exception& e) {
+        std::cerr << "error: " << e.what() << "\n";
         return 1;
     }
 }
