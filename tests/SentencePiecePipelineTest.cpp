@@ -114,6 +114,43 @@ int main() {
   };
   const auto numericModule =
       Felidae::compileProgramFileToIr(FELIDAE_NUMERIC_OPERATIONS_FIXTURE_PATH);
+  const auto objectArray = Felidae::compileProgramTextToIr(
+      "main() =>\n"
+      "  people:obj = array()\n"
+      "  return people\n"
+      "end\n");
+  const auto objectArrayResult =
+      std::get<Felidae::VmArrayPtr>(executeModule(objectArray));
+  assert(objectArrayResult && objectArrayResult->values.empty());
+  const auto objectReceiver = Felidae::compileProgramTextToIr(
+      "main() =>\n"
+      "  people:obj = array()\n"
+      "  people := people.push(value: 42)\n"
+      "  people.len()\n"
+      "  return (first: people.get(position: 0), size: people.len())\n"
+      "end\n");
+  const auto receiverResult =
+      std::get<Felidae::VmMapPtr>(executeModule(objectReceiver));
+  assert(receiverResult && receiverResult->entries.size() == 2);
+  assert(std::get<double>(receiverResult->entries[0].second) == 42.0);
+  assert(std::get<double>(receiverResult->entries[1].second) == 1.0);
+  const auto globalObject = Felidae::compileProgramTextToIr(
+      "people:obj = [42].\n"
+      "main() => return people.get(position: 0)\nend\n");
+  assert(std::get<double>(executeModule(globalObject)) == 42.0);
+  const auto sameLineStatements = Felidae::compileProgramTextToIr(
+      "left := 1.25. right := left. main() => return right.");
+  assert(std::get<double>(executeModule(sameLineStatements)) == 1.25);
+  for (const auto *source : {
+           "main() => people:obj array()\nreturn people\nend\n",
+           "value := 1 .25. main() => return value.",
+           "main() => people:obj = array(42)\nreturn people\nend\n",
+           "main() => people:obj = [42]\nreturn people.get()\nend\n"}) {
+    bool rejected = false;
+    try { (void)Felidae::compileProgramTextToIr(source); }
+    catch (const Felidae::IntegerParserError &) { rejected = true; }
+    assert(rejected);
+  }
   const auto numericResult =
       std::get<Felidae::VmMapPtr>(executeModule(numericModule));
   const std::array<double, 26> expectedNumeric{
@@ -174,12 +211,12 @@ int main() {
   assert(std::get<double>(executeModule(directMixfixModule)) == 42.0);
 
   const auto thenPipelineModule = Felidae::compileProgramTextToIr(
-      "increment(value: number) => return value + 1\n"
-      "double(value: number) => return value * 2\n"
+      "increment(value: number) => return value + 1.\n"
+      "double(value: number) => return value * 2.\n"
       "main() =>\n"
       "    return increment(value: 9)\n"
       "        then double(value: system.result)\n"
-      "        then increment(value: system.result)\n");
+      "        then increment(value: system.result).\n");
   assert(std::get<double>(executeModule(thenPipelineModule)) == 21.0);
 
   const auto nestedThenPipelineModule = Felidae::compileProgramTextToIr(
@@ -276,6 +313,25 @@ int main() {
   const auto queriedFacts =
       std::get<Felidae::VmArrayPtr>(executeModule(queriedHierarchyModule));
   assert(queriedFacts && queriedFacts->values.size() == 2);
+
+  const auto hierarchyEvidenceModule = Felidae::compileProgramTextToIr(
+      "Root(name: \"root\")\n"
+      "Left extend Root(name: \"left\")\n"
+      "Right extend Root(name: \"right\")\n"
+      "Diamond extend Left, Right(name: \"diamond\")\n"
+      "Other extend Root(name: \"other\")\n"
+      "main() => return ancestorAnalysis(left: Diamond(name: \"diamond\"), "
+      "right: Other(name: \"other\"))\n"
+      "end\n");
+  const auto hierarchyEvidence = displayModuleValue(
+      hierarchyEvidenceModule, executeModule(hierarchyEvidenceModule));
+  assert(hierarchyEvidence.find(
+             "leftProofs: [[Diamond, Left, Root], [Diamond, Right, Root]]") !=
+         std::string::npos);
+  assert(hierarchyEvidence.find("rightProofs: [[Other, Root]]") !=
+         std::string::npos);
+  assert(hierarchyEvidence.find("leftDistance: 2") != std::string::npos);
+  assert(hierarchyEvidence.find("rightDistance: 1.0") != std::string::npos);
 
   const auto temporalModule = Felidae::compileProgramTextToIr(
       "Event(name: \"first\", effective_at: 10, priority: 1)\n"
@@ -809,6 +865,7 @@ int main() {
       "School(id: 2, name: \"West\", city: \"MYS\", students: 280, active: 0.0)\n"
       "School(id: 3, name: \"Lake\", city: \"BLR\", students: 350, active: 1.0)\n"
       "Teacher(name: \"Ada\", school_id: 1)\n"
+      "Teacher(name: \"Lin\", school_id: 1)\n"
       "Teacher(name: \"Grace\", school_id: 9)\n"
       "main() =>\n"
       "  limited := School.where(active: 1.0).AndWhere(city: \"BLR\").limit(records: 1)\n"
@@ -832,6 +889,17 @@ int main() {
       "updated: count(data: updated), deleted: deleted, remaining: School.count(), "
       "total: School.sum(field: \"students\"), average: School.average(field: \"students\"))\n"
       "end\n");
+  bool usesIndexedWhere = false;
+  for (const auto &[_, procedure] : factDmlModule.procedures) {
+    for (std::size_t pc = 0; pc < procedure.ir.words.size();
+         pc += Felidae::irInstructionWidth(procedure.ir, pc)) {
+      usesIndexedWhere =
+          usesIndexedWhere ||
+          procedure.ir.words[pc] ==
+              static_cast<Felidae::IrWord>(Felidae::IrOpcode::FactWhere);
+    }
+  }
+  assert(usesIndexedWhere);
   Felidae::FelidaeKnowledgeRuntime factDmlRuntime;
   const auto factDmlResult = displayModuleValue(
       factDmlModule, executeModuleDirect(factDmlModule, factDmlRuntime));
@@ -839,11 +907,11 @@ int main() {
   assert(factDmlResult.find("all_limited: 2") != std::string::npos);
   assert(factDmlResult.find("alternatives: 2") != std::string::npos);
   assert(factDmlResult.find("projected_limited: 1.0") != std::string::npos);
-  assert(factDmlResult.find("inner_joined: 1.0") != std::string::npos);
-  assert(factDmlResult.find("joined: 3") != std::string::npos);
-  assert(factDmlResult.find("right_joined: 2") != std::string::npos);
-  assert(factDmlResult.find("outer_joined: 4") != std::string::npos);
-  assert(factDmlResult.find("joined_limited: 1.0") != std::string::npos);
+  assert(factDmlResult.find("inner_joined: 2") != std::string::npos);
+  assert(factDmlResult.find("joined: 4") != std::string::npos);
+  assert(factDmlResult.find("right_joined: 3") != std::string::npos);
+  assert(factDmlResult.find("outer_joined: 5") != std::string::npos);
+  assert(factDmlResult.find("joined_limited: 2") != std::string::npos);
   assert(factDmlResult.find("none: 0.0") != std::string::npos);
   assert(factDmlResult.find("updated: 1.0") != std::string::npos);
   assert(factDmlResult.find("deleted: 1.0") != std::string::npos);
@@ -1012,6 +1080,8 @@ int main() {
       "Catalog(title: \"Alpha Guide\", confidence: 0.82, category: Book)\n"
       "Catalog(title: \"beta guide\", confidence: 0.74, category: Magazine)\n"
       "Catalog(title: \"Reference\", confidence: 0.40, category: Publication)\n"
+      "Catalog(title: \"Outlier\", confidence: -212.421, category: Publication)\n"
+      "Catalog(title: \"Strong\", confidence: 89.024, category: Publication)\n"
       "main() =>\n"
       "  exact := Catalog.search(field: \"title\", query: \"alpha guide\", type: \"exact\", case: \"insensitive\")\n"
       "  liked := Catalog.search(field: \"title\", query: \"%guide\", type: \"like\", case: \"insensitive\")\n"
@@ -1019,14 +1089,16 @@ int main() {
       "  descendants := Catalog.search(field: \"category\", query: Publication, type: \"hierarchy\", direction: \"descendants\", includeSelf: 0.0)\n"
       "  ranged := Catalog.search(field: \"confidence\", type: \"degree\", minimum: 0.70, maximum: 0.90)\n"
       "  close := Catalog.search(field: \"confidence\", query: 0.80, tolerance: 0.08, type: \"degree\")\n"
-      "  return (exact: count(data: exact), liked: count(data: liked), regexed: count(data: regexed), descendants: count(data: descendants), ranged: count(data: ranged), close: count(data: close))\n"
+      "  unrestricted := Catalog.search(field: \"confidence\", type: \"degree\", minimum: -300, maximum: -200)\n"
+      "  large := Catalog.search(field: \"confidence\", query: 90, tolerance: 1.0, type: \"degree\")\n"
+      "  return (exact: count(data: exact), liked: count(data: liked), regexed: count(data: regexed), descendants: count(data: descendants), ranged: count(data: ranged), close: count(data: close), unrestricted: count(data: unrestricted), large: count(data: large))\n"
       "end\n");
   Felidae::FelidaeKnowledgeRuntime factSearchRuntime;
   const auto factSearchResult = displayModuleValue(
       factSearchModule,
       executeModuleDirect(factSearchModule, factSearchRuntime));
   assert(factSearchResult ==
-         "{exact: 1.0, liked: 2, regexed: 2, descendants: 2, ranged: 2, close: 2}");
+         "{exact: 1.0, liked: 2, regexed: 2, descendants: 2, ranged: 2, close: 2, unrestricted: 1.0, large: 1.0}");
 
   const auto repeatedFieldsModule = Felidae::compileProgramTextToIr(
       "Color(value: \"red\", tag: \"warm\", tag: \"primary\").\n"
@@ -1065,6 +1137,88 @@ int main() {
                             executeModuleDirect(classModule, classRuntime)) ==
          "[{name: Ada, age: 32}]");
 
+  // Multiple inheritance is retained in the ordinary type table, and a
+  // class method is an ordinary lowered procedure with an explicit `self`
+  // argument. This exercises the method body instead of merely accepting its
+  // declaration.
+  const auto classMethodModule = Felidae::compileProgramTextToIr(
+      "class Named\n"
+      "  name: string\n"
+      "end\n"
+      "class Active\n"
+      "  active: number\n"
+      "end\n"
+      "class Student extend Named, Active\n"
+      "  score: number\n"
+      "  passes(minimum: number) =>\n"
+      "    where active == 1.0 and score >= minimum\n"
+      "    return score\n"
+      "  else\n"
+      "    return 0.0\n"
+      "  end\n"
+      "end\n"
+      "Student(name: \"Ada\", active: 1.0, score: 82)\n"
+      "main() =>\n"
+      "  rows := Student.all()\n"
+      "  student := array.get(data: rows, position: 0)\n"
+      "  return Student.passes(self: student, minimum: 70)\n"
+      "end\n");
+  Felidae::FelidaeKnowledgeRuntime classMethodRuntime;
+  assert(std::get<double>(Felidae::RegisterVm{}.executeMain(
+             Felidae::verifyIrModule(Felidae::IrModule(classMethodModule)),
+             classMethodRuntime)) == 82.0);
+
+  // Classes and legacy fact declarations occupy one fact-type hierarchy.
+  // Every direction is legal: fact->fact, fact->class, class->fact, and
+  // class->class. Classes remain compiler schemas rather than a parallel
+  // runtime hierarchy.
+  const auto mixedHierarchyModule = Felidae::compileProgramTextToIr(
+      "FactBase(id: 0)\n"
+      "FactChild extend FactBase(id: 1)\n"
+      "class ClassFromFact extend FactBase\n"
+      "  name: string\n"
+      "end\n"
+      "class ClassChild extend ClassFromFact\n"
+      "  score: number\n"
+      "end\n"
+      "FactFromClass extend ClassFromFact(name: \"row\")\n"
+      "main() =>\n"
+      "  fact_fact := isA(left: FactChild(id: 2), right: FactBase(id: 0))\n"
+      "  class_fact := isA(left: ClassFromFact(name: \"a\"), right: FactBase(id: 0))\n"
+      "  class_class := isA(left: ClassChild(name: \"b\", score: 4.2), right: ClassFromFact(name: \"a\"))\n"
+      "  fact_class := isA(left: FactFromClass(name: \"row\"), right: ClassFromFact(name: \"a\"))\n"
+      "  return [fact_fact, class_fact, class_class, fact_class]\n"
+      "end\n");
+  Felidae::FelidaeKnowledgeRuntime mixedHierarchyRuntime;
+  assert(displayModuleValue(
+             mixedHierarchyModule,
+             executeModuleDirect(mixedHierarchyModule,
+                                 mixedHierarchyRuntime)) ==
+         "[1.0, 1.0, 1.0, 1.0]");
+
+  // Mixfix relationship methods return ordinary Association facts. No
+  // relationship-only runtime representation or compare builtin is involved.
+  const auto associationModule = Felidae::compileProgramTextToIr(
+      "Person(name: \"Ada\")\n"
+      "Company(name: \"Felidae\")\n"
+      "@mixfix(pattern: \"{left: Person} works at {right: Company}\")\n"
+      "worksAt() =>\n"
+      "  return Association(left: left, right: right, relation: \"works at\", strength: 3.421)\n"
+      "end\n"
+      "main() =>\n"
+      "  people := Person.all()\n"
+      "  companies := Company.all()\n"
+      "  person := array.get(data: people, position: 0)\n"
+      "  company := array.get(data: companies, position: 0)\n"
+      "  return person works at company\n"
+      "end\n");
+  Felidae::FelidaeKnowledgeRuntime associationRuntime;
+  assert(displayModuleValue(
+             associationModule,
+             executeModuleDirect(associationModule, associationRuntime)) ==
+         "{left: {name: Ada}, right: {name: Felidae}, relation: works at, "
+         "strength: 3.421}");
+
   // Real source semantic intrinsic -> structured compiler IR
   // operation ID -> typed runtime-model result. No tokenizer or symbol ID
   // crosses the semantic execution boundary.
@@ -1094,19 +1248,44 @@ int main() {
       "end\n");
   class SuggestRuntimeModel final : public Felidae::RuntimeStateModel {
   public:
+    explicit SuggestRuntimeModel(double score) : score_(score) {}
+
     Felidae::VmValue evaluate(const Felidae::RuntimeOperation &operation,
                               std::span<const Felidae::VmValue> inputs,
                               Felidae::RuntimeContext &) override {
       assert(operation.id == static_cast<std::uint16_t>(
                                  Felidae::SemanticOperationId::Suggest));
       assert(inputs.size() == 1);
-      return -212.421;
+      return score_;
     }
-  } suggestModel;
+  private:
+    double score_;
+  } suggestModel(-212.421);
   Felidae::FelidaeKnowledgeRuntime suggestRuntime(&suggestModel);
   assert(std::get<double>(Felidae::RegisterVm{}.executeMain(
              Felidae::verifyIrModule(Felidae::IrModule(suggestModule)),
              suggestRuntime)) == -212.421);
+  SuggestRuntimeModel largeSuggestModel(89.024);
+  Felidae::FelidaeKnowledgeRuntime largeSuggestRuntime(&largeSuggestModel);
+  assert(std::get<double>(Felidae::RegisterVm{}.executeMain(
+             Felidae::verifyIrModule(Felidae::IrModule(suggestModule)),
+             largeSuggestRuntime)) == 89.024);
+  const auto thresholdModule = Felidae::compileProgramTextToIr(
+      "Candidate(name: \"Mammal\")\n"
+      "main() =>\n"
+      "  score := ssm.suggest(input: Candidate.all())\n"
+      "  where score >= 4.5\n"
+      "  return score\n"
+      "else\n"
+      "  return 0.0\n"
+      "end\n");
+  assert(std::get<double>(Felidae::RegisterVm{}.executeMain(
+             Felidae::verifyIrModule(Felidae::IrModule(thresholdModule)),
+             largeSuggestRuntime)) == 89.024);
+  Felidae::FelidaeKnowledgeRuntime negativeThresholdRuntime(&suggestModel);
+  assert(std::get<double>(Felidae::RegisterVm{}.executeMain(
+             Felidae::verifyIrModule(Felidae::IrModule(thresholdModule)),
+             negativeThresholdRuntime)) == 0.0);
   const auto executeBinaryModule = [&](const Felidae::IrModule &candidate) {
     const auto path =
         testOutputDirectory / "felidae_pipeline_feature_roundtrip.bin";

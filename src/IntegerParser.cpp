@@ -274,6 +274,22 @@ bool IntegerParser::match(TokenId::Id id) {
   return true;
 }
 
+bool IntegerParser::matchBindingOperator() {
+  if (match(TokenId::ASSIGN))
+    return true;
+  const auto savedByte = byte_;
+  const auto savedPiece = piece_;
+  // Both global and local obj declarations use ordinary bindings. The
+  // initializer determines the existing VM value type; no object wrapper.
+  if (match(TokenId::COLON) && atNameRange() && consumeNameRange() == "obj") {
+    require(TokenId::EQUAL, "Expected '=' after object declaration");
+    return true;
+  }
+  byte_ = savedByte;
+  piece_ = savedPiece;
+  return false;
+}
+
 bool IntegerParser::atBlockEnd() {
   const auto savedByte = byte_;
   const auto savedPiece = piece_;
@@ -533,7 +549,10 @@ double IntegerParser::consumeNumber() {
     byte_ = input_.entry(piece_++).end;
     consumed = true;
   }
-  if (at(TokenId::DOT) && input_.has(piece_ + 1) &&
+  const auto integerEnd = byte_;
+  if (at(TokenId::DOT) && input_.entry(piece_).begin == integerEnd &&
+      input_.has(piece_ + 1) &&
+      input_.entry(piece_).end == input_.entry(piece_ + 1).begin &&
       isDecimalDigitId(input_.entry(piece_ + 1).id)) {
     match(TokenId::DOT);
     double scale = 0.1;
@@ -648,11 +667,12 @@ IntegerParser::consumeQualifiedName(bool allowNamespaceSeparators) {
     const auto separator = input_.entry(piece_).id;
     match(separator);
     const auto separatorEnd = byte_;
-    // A separator is never followed by the start of a new statement, so a
-    // keyword spelling standing entirely alone here (School.where,
-    // Type.all, Type.select, ...) is unambiguously a name segment.
+    // A dot followed immediately by a name continues a qualified name.
+    // Whitespace after it instead leaves a statement terminator for the
+    // caller. Keyword members such as School.where remain valid names.
     if (!atNameRange(/*allowLoneKeyword=*/true) ||
-        sourceContainsLineBreak(separatorEnd, byte_)) {
+        (separator == TokenId::DOT ? byte_ != separatorEnd
+                                   : sourceContainsLineBreak(separatorEnd, byte_))) {
       byte_ = beforeByte;
       piece_ = beforePiece;
       break;
@@ -890,7 +910,7 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
   const auto startPiece = piece_;
   if (atNameRange()) {
     const auto name = consumeNameRange();
-    if (match(TokenId::ASSIGN)) {
+    if (matchBindingOperator()) {
       auto result = std::make_shared<AssignGoal>(name, parseExpression());
       stamp(result, begin, byte_);
       return result;
@@ -1039,7 +1059,7 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
   const auto checkpointPiece = piece_;
   if (atNameRange()) {
     const auto name = consumeNameRange();
-    if (match(TokenId::ASSIGN)) {
+    if (matchBindingOperator()) {
       if (!annotations.empty())
         throw IntegerParserError(
             "Annotations can only be applied to method declarations");
@@ -1328,6 +1348,14 @@ std::shared_ptr<Expr> IntegerParser::parsePrimary() {
   if (atNameRange()) {
     const auto name = consumeQualifiedName();
     if (at(TokenId::LPAREN)) {
+      if (name.spelling == "array") {
+        require(TokenId::LPAREN, "Expected '(' after array");
+        require(TokenId::RPAREN, "array() creates an empty array; use [...] for elements");
+        auto result = std::make_shared<ArrayExpr>(
+            std::vector<std::shared_ptr<Expr>>{});
+        stamp(result, begin, byte_);
+        return result;
+      }
       auto result = std::make_shared<TermExpr>(name.spelling, name.nameId,
                                                parseArguments(), name.builtinId,
                                                name.isCapitalized);
@@ -1492,9 +1520,9 @@ std::shared_ptr<Expr> IntegerParser::tryParseLeadingPattern() {
       }
       auto candidate = std::make_shared<OperatorExpression>(
           pattern.operatorId, pattern.patternId, std::move(captures));
-      candidateParsed = true;
       stamp(candidate, startByte, byte_);
       candidate->resolvedMethodId = resolveMixfixMethod(*candidate);
+      candidateParsed = true;
       if (candidate->resolvedMethodId == 0 && mixfixModel_) {
         candidate->resolvedMethodId = resolveModelMixfixMethod(candidate);
       }
@@ -1589,9 +1617,9 @@ IntegerParser::tryParseTrailingPattern(std::shared_ptr<Expr> left,
       if (!immediate || byte_ > immediateByte) {
         immediate = std::make_shared<OperatorExpression>(
             pattern.operatorId, pattern.patternId, std::move(captures));
-        candidateParsed = true;
         stampTrailing(immediate, byte_);
         immediate->resolvedMethodId = resolveMixfixMethod(*immediate);
+        candidateParsed = true;
         if (immediate->resolvedMethodId == 0 && mixfixModel_) {
           immediate->resolvedMethodId = resolveModelMixfixMethod(immediate);
         }
@@ -1678,9 +1706,9 @@ IntegerParser::tryParseTrailingPattern(std::shared_ptr<Expr> left,
         if (!deferred || byte_ > deferredByte) {
           deferred = std::make_shared<OperatorExpression>(
               pattern->operatorId, pattern->patternId, std::move(captures));
-          candidateParsed = true;
           stampTrailing(deferred, byte_);
           deferred->resolvedMethodId = resolveMixfixMethod(*deferred);
+          candidateParsed = true;
           if (deferred->resolvedMethodId == 0 && mixfixModel_) {
             deferred->resolvedMethodId = resolveModelMixfixMethod(deferred);
           }
@@ -1771,7 +1799,9 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
     const auto separator = input_.entry(piece_).id;
     match(separator);
     const auto separatorEnd = byte_;
-    if (!atNameRange() || sourceContainsLineBreak(separatorEnd, byte_)) {
+    if (!atNameRange() ||
+        (separator == TokenId::DOT ? byte_ != separatorEnd
+                                   : sourceContainsLineBreak(separatorEnd, byte_))) {
       byte_ = beforeByte;
       piece_ = beforePiece;
       break;
@@ -2155,7 +2185,11 @@ IntegerParser::resolveMixfixMethod(const OperatorExpression &expression) const {
       matches.push_back(candidate);
   }
   if (highestSpecificity < 0)
-    throw IntegerParserError("mixfix expression has no compatible overload");
+    throw IntegerParserError(
+        "mixfix expression has no compatible overload at " +
+        std::to_string(expression.sourceSpan.startLine) + ":" +
+        std::to_string(expression.sourceSpan.startColumn) + ": " +
+        expression.debug());
   return matches.size() == 1 ? matches.front()->methodId : 0;
 }
 

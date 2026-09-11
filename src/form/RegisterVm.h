@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <filesystem>
 #include <limits>
 #include <map>
 #include <memory>
@@ -234,12 +235,26 @@ struct VmCommonAncestorEvidence {
   std::size_t rightDistance = 0;
 };
 
-// Process-resident append-only fact memory. It belongs to the Form runtime,
-// not to AST/parser services, and is shared by repeated VM executions in a
-// daemon. Type and field indexes are authoritative; callers must not mutate a
-// retained fact directly.
+// Process-resident fact storage used by the portable runtime. It belongs to
+// Form, not to AST/parser services, and is shared by repeated VM executions in
+// a daemon. Mutations go through this owner so fact identity, creation order,
+// indexes, provenance, source ownership, and revisions stay synchronized.
+// A disk-backed implementation must preserve this contract; this class alone
+// is not presented as trillion-scale storage.
 class VmFactStore {
 public:
+  VmFactStore();
+  explicit VmFactStore(const std::filesystem::path &directory);
+  ~VmFactStore();
+  VmFactStore(const VmFactStore &) = delete;
+  VmFactStore &operator=(const VmFactStore &) = delete;
+  // Numeric symbol references are process-local handles. The complete
+  // SentencePiece sequence stored here is their authoritative identity and
+  // is what a durable backend encodes.
+  IrSymbolRef internSymbol(PieceSequence pieces);
+  std::optional<IrSymbolRef>
+  findSymbol(std::span<const PieceId> pieces) const;
+  const std::vector<PieceSequence> &symbolTable() const noexcept;
   void registerType(IrSymbolRef type, std::vector<IrSymbolRef> parents,
                     std::vector<std::vector<IrSymbolRef>> indexes = {});
   VmFactPtr retain(const VmFactPtr &fact);
@@ -253,6 +268,33 @@ public:
   std::vector<VmFactPtr> snapshot() const;
   std::vector<VmFactPtr> snapshot(IrSymbolRef type) const;
   std::vector<VmFactPtr> snapshotAssignableTo(IrSymbolRef type) const;
+  // Storage continuation metadata, not a VM query-object value. Any committed
+  // mutation expires the cursor. Keys and database identity survive reopening.
+  struct Cursor {
+    std::string database;
+    std::string index;
+    std::string query;
+    std::string lastKey;
+    std::uint64_t revision = 0;
+  };
+  struct Page {
+    std::vector<VmFactPtr> rows;
+    std::optional<Cursor> next;
+    bool hasMore = false;
+    std::uint64_t revision = 0;
+  };
+  Page pageAssignableTo(IrSymbolRef type, std::size_t records,
+                        const std::optional<Cursor> &after = std::nullopt) const;
+  Page pageMatching(IrSymbolRef type,
+                    std::span<const std::pair<IrSymbolRef, VmValue>> predicates,
+                    std::size_t records,
+                    const std::optional<Cursor> &after = std::nullopt) const;
+  // Plans exact predicates against the widest fully-covered declared index.
+  // Small unindexed stores may use a bounded scan; large stores fail with an
+  // actionable index diagnostic instead of silently becoming unbounded.
+  std::vector<VmFactPtr> snapshotMatching(
+      IrSymbolRef type,
+      std::span<const std::pair<IrSymbolRef, VmValue>> predicates) const;
   std::vector<IrSymbolRef> parentsOf(IrSymbolRef type) const;
   std::vector<IrSymbolRef> hierarchyProof(IrSymbolRef child,
                                           IrSymbolRef ancestor) const;
@@ -262,10 +304,6 @@ public:
                                            IrSymbolRef right) const;
   std::vector<VmCommonAncestorEvidence>
   commonAncestorEvidence(IrSymbolRef left, IrSymbolRef right) const;
-  std::vector<IrSymbolRef> leastCommonAncestors(IrSymbolRef left,
-                                                IrSymbolRef right) const;
-  std::vector<IrSymbolRef> mostGeneralCommonAncestors(IrSymbolRef left,
-                                                      IrSymbolRef right) const;
   // Sorts facts by descending effective time, then descending priority,
   // then stable fact identity. Missing/non-numeric fields are rejected.
   std::vector<VmRankedFact>
@@ -306,19 +344,63 @@ public:
                                    const VmGaussianProfile &profile);
 
 private:
+  class Persistence;
+  struct StoredSnapshot {
+    VmFactPtr fact;
+    std::optional<std::string> source;
+  };
+  IrSymbolRef internSymbolLocked(PieceSequence pieces) const;
+  StoredSnapshot persistentSnapshotLocked(IrFactRef fact) const;
+  VmFactPtr currentSnapshotLocked(const VmFactPtr &snapshot) const;
   const std::unordered_set<IrSymbolRef> &
   ancestorClosureLocked(IrSymbolRef type) const;
   bool isAssignableToLocked(IrSymbolRef candidate, IrSymbolRef expected) const;
+  void validateDeclaredIndexKeysLocked(const VmFactPtr &fact) const;
+  void addToDeclaredIndexesLocked(const VmFactPtr &fact);
+  void removeFromDeclaredIndexesLocked(const VmFactPtr &fact);
+  std::vector<std::string> persistentIndexKeysLocked(
+      const VmFactPtr &fact,
+      std::optional<std::string_view> source = std::nullopt) const;
+  std::vector<VmFactPtr> persistentFactsLocked(
+      std::string_view prefix, std::size_t maximum,
+      bool *hasMore = nullptr,
+      std::optional<std::string_view> after = std::nullopt,
+      std::string *lastKey = nullptr,
+      std::vector<std::string> *keys = nullptr) const;
+
+  struct ExactIndex {
+    std::vector<IrSymbolRef> fields;
+    // Rows belong only to the memory backend. RocksDB stores retain the
+    // declaration for shared planning but load candidates from durable keys.
+    std::map<std::vector<std::uint64_t>, std::vector<VmFactPtr>> rows;
+  };
+  struct EqualityPlan {
+    const ExactIndex *index = nullptr;
+    IrSymbolRef owner = 0;
+    std::size_t ordinal = 0;
+    std::size_t covered = 0;
+  };
+  EqualityPlan equalityPlanLocked(
+      IrSymbolRef type,
+      std::span<const std::pair<IrSymbolRef, VmValue>> predicates) const;
+  bool matchesLocked(
+      const VmFactPtr &fact, IrSymbolRef type,
+      std::span<const std::pair<IrSymbolRef, VmValue>> predicates) const;
 
   mutable std::mutex mutex_;
+  std::unique_ptr<Persistence> persistence_;
+  mutable std::map<PieceSequence, IrSymbolRef> symbolIds_;
+  mutable std::vector<PieceSequence> symbolTable_;
   IrFactRef nextId_ = 1;
   std::uint64_t nextSequence_ = 1;
   std::vector<VmFactPtr> facts_;
   std::unordered_map<IrSymbolRef, std::vector<VmFactPtr>> byType_;
+  // Memory backend only; persistent field-presence lookups use the IF index.
   std::unordered_map<IrSymbolRef, std::vector<VmFactPtr>> byField_;
   std::unordered_map<IrSymbolRef, std::vector<IrSymbolRef>> parents_;
   std::unordered_map<IrSymbolRef, std::vector<std::vector<IrSymbolRef>>>
       declaredIndexes_;
+  std::unordered_map<IrSymbolRef, std::vector<ExactIndex>> exactIndexes_;
   std::unordered_map<IrFactRef, std::string> factSource_;
   std::vector<VmFactMutation> mutations_;
   std::vector<VmFactProvenance> provenance_;
@@ -415,6 +497,9 @@ public:
                                 std::vector<IrSymbolRef> parents,
                                 std::vector<std::vector<IrSymbolRef>> indexes = {});
   virtual std::vector<VmFactPtr> snapshotFacts(IrSymbolRef type);
+  virtual std::vector<VmFactPtr> snapshotMatchingFacts(
+      IrSymbolRef type,
+      std::span<const std::pair<IrSymbolRef, VmValue>> predicates);
   virtual std::vector<IrSymbolRef> hierarchyProof(IrSymbolRef child,
                                                   IrSymbolRef ancestor);
   virtual std::vector<std::vector<IrSymbolRef>>
@@ -424,10 +509,6 @@ public:
   virtual std::vector<VmCommonAncestorEvidence>
   commonAncestorEvidence(IrSymbolRef left, IrSymbolRef right);
   virtual VmValue ancestorAnalysis(IrSymbolRef left, IrSymbolRef right);
-  virtual std::vector<IrSymbolRef> leastCommonAncestors(IrSymbolRef left,
-                                                        IrSymbolRef right);
-  virtual std::vector<IrSymbolRef>
-  mostGeneralCommonAncestors(IrSymbolRef left, IrSymbolRef right);
   virtual std::vector<VmRankedFact> rankFacts(IrSymbolRef effectiveAtField,
                                               IrSymbolRef priorityField);
   // Modules are independently verified before this hook. A long-lived
@@ -504,6 +585,9 @@ public:
                         std::vector<IrSymbolRef> parents,
                         std::vector<std::vector<IrSymbolRef>> indexes = {}) override;
   std::vector<VmFactPtr> snapshotFacts(IrSymbolRef type) override;
+  std::vector<VmFactPtr> snapshotMatchingFacts(
+      IrSymbolRef type,
+      std::span<const std::pair<IrSymbolRef, VmValue>> predicates) override;
   std::vector<IrSymbolRef> hierarchyProof(IrSymbolRef child,
                                           IrSymbolRef ancestor) override;
   std::vector<std::vector<IrSymbolRef>>
@@ -513,10 +597,6 @@ public:
   std::vector<VmCommonAncestorEvidence>
   commonAncestorEvidence(IrSymbolRef left, IrSymbolRef right) override;
   VmValue ancestorAnalysis(IrSymbolRef left, IrSymbolRef right) override;
-  std::vector<IrSymbolRef> leastCommonAncestors(IrSymbolRef left,
-                                                IrSymbolRef right) override;
-  std::vector<IrSymbolRef>
-  mostGeneralCommonAncestors(IrSymbolRef left, IrSymbolRef right) override;
   std::vector<VmRankedFact> rankFacts(IrSymbolRef effectiveAtField,
                                       IrSymbolRef priorityField) override;
   void installIrModule(const IrModule &module) override;
@@ -561,14 +641,12 @@ private:
     std::unordered_map<IrSymbolRef, VmValue> globals;
     std::vector<PieceSequence> symbolTable;
     // One entry per module-local symbol. Values are one-based indexes into
-    // runtimeSymbolTable_, which remains stable across installed modules.
+    // VmFactStore's symbol table, which remains stable across installed modules.
     std::vector<IrSymbolRef> runtimeSymbols;
   };
   // Module globals are process-resident knowledge-runtime state. Registers,
   // call frames and recurrent state are deliberately excluded.
   VmModuleState module_;
-  std::map<PieceSequence, IrSymbolRef> runtimeSymbolIds_;
-  std::vector<PieceSequence> runtimeSymbolTable_;
   std::unordered_set<IrSymbolRef> registeredFactTypes_;
   std::shared_ptr<VmFactStore> factStore_;
   RuntimeStateModel *semanticModel_ = nullptr;

@@ -609,17 +609,23 @@ main() =>
 end
 ```
 
-`Type.all()` and `Type.where(...)` compile to the same verified fact-iteration
-IR used by `lambda(Type, ...)`; `select` projects named fields. Conditions may
-be extended with `.AndWhere(...)` and `.OrWhere(...)`. Hierarchy traversal
+`Type.where(...)` compiles directly to verified indexed-query IR. Declared
+single/composite class indexes are inherited, leading composite prefixes are
+usable, and remaining conditions are checked as residual predicates. A small
+unindexed table may use a bounded scan; a large one reports that an index is
+required. `Type.all()` and `where(using:)` retain the established fact-
+iteration path, while `select` projects named fields. Conditions may be
+extended with `.AndWhere(...)` and `.OrWhere(...)`. Hierarchy traversal
 includes assignable child facts. Exact truth values are numeric `0.0` and
 `1.0`.
 
 `where` and `search` have different contracts. `where` performs structured
 equality filtering or invokes a verified predicate. `search` discovers facts
 through text (`exact`, `prefix`, `suffix`, `contains`, SQL `like`, or `regex`),
-hierarchy (`ancestors`, `descendants`, or `related`), or bounded degree
-matching. Search never changes a graded value into Boolean truth. See
+hierarchy (`ancestors`, `descendants`, or `related`), or finite numeric
+range/closeness matching. Numeric search accepts negative values and values
+greater than `1.0`; only its tolerance is constrained to be non-negative.
+Search never changes a graded value into Boolean truth. See
 `v2_examples/fact_search_analysis.fx`.
 
 CSV rows can enter that same native fact store and be synchronized from the VM:
@@ -646,9 +652,16 @@ Joins must provide both `left` and `right` key fields, so the normal
 conditionless Cartesian join. Pass `kind: "left"`, `kind: "right"`, or
 `kind: "outer"` to the same operation when unmatched rows are required;
 separate `leftJoin`, `rightJoin`, and `OuterJoin` methods do not exist.
+The VM builds one ordered right-key lookup and probes it in stable left order,
+including every duplicate-key match; it does not execute a nested Cartesian
+scan.
 
 Because child types are assignable to their parents, a parent query can work
 with the hierarchy rather than only one exact concrete type.
+Classes and ordinary fact declarations use the same hierarchy table: class →
+class, class → fact, fact → class, and fact → fact extension are all valid.
+Only classes add reusable field/index schema metadata; neither form creates a
+runtime class object.
 
 This gives Felidae a natural path for:
 
@@ -1528,6 +1541,14 @@ Example:
 felidae_vm --serve program.bin
 ```
 
+To retain the VM fact store across restarts, provide a RocksDB directory. The
+directory is data, so keep it under an application-owned location rather than
+inside the source tree:
+
+```bash
+felidae_vm --serve --fact-store build/runtime/facts.rocksdb program.bin
+```
+
 The current server mode supports commands around concepts such as:
 
 ```text
@@ -1539,7 +1560,7 @@ field
 
 history
 
-proof
+proof <child-id> <ancestor-id>
 
 load
 
@@ -1549,6 +1570,9 @@ quit
 ```
 
 This allows the VM to remain alive instead of starting a completely new process for every interaction.
+
+`proof` prints every bounded hierarchy proof path in deterministic order, not
+only one arbitrarily selected ancestor route.
 
 The feature is particularly relevant to future reasoning and fact-oriented workflows.
 
@@ -1767,6 +1791,65 @@ CSV functionality.
 PyTorch's native C++ distribution.
 
 LibTorch is not kept as an ordinary source submodule in the same way as the lightweight dependencies; developers provide an appropriate platform package.
+
+### Faiss execution memory
+
+Optional `FELIDAE_ENABLE_FAISS=ON` retains actual runtime SSM hidden vectors in
+an execution-owned CPU Faiss index. It requires LibTorch and the Faiss C++ CMake
+package. It does not index facts or SentencePiece IDs, change scores, train a
+model, or feed retrieved states back into execution. Retrieval is not exposed
+yet. Ordinary numeric expressions do not invoke the SSM to manufacture vectors.
+
+Each completed SSM evaluation stores one flattened hidden tensor, including all
+recurrent layers. Capacity follows the existing execution semantic-step limit;
+overflow raises an error rather than evicting states silently. Separate top-level
+executions have separate indexes, including requests in a long-lived VM process.
+All retained vectors are released with their execution state, with no disk writes.
+RocksDB remains independent and continues to own persistent facts.
+
+After installing Faiss development files, enable and verify with:
+
+```bash
+cmake -S . -B build/debug -DFELIDAE_ENABLE_FAISS=ON
+cmake --build build/debug --target felidae_vm felidae_execution_vectors_test felidae_mixfix_state_model_test --parallel 8
+ctest --test-dir build/debug -R '^felidae_(execution_vectors|mixfix_state_model)$' --output-on-failure
+```
+
+### RocksDB
+
+RocksDB provides the ordered, durable key/value boundary used by scalable fact
+storage and keyset pagination. It is enabled by default on desktop builds and
+disabled by default on Android, where the platform package is normally absent.
+
+On Debian or Ubuntu:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y librocksdb-dev
+```
+
+On macOS with Homebrew:
+
+```bash
+brew install rocksdb
+```
+
+Disable it explicitly only for a platform without RocksDB:
+
+```bash
+./build.sh --rocksdb OFF
+```
+
+An opt-in fact-store benchmark generates its synthetic database only under the
+selected build tree. It reports ingestion rate, reopen time, cold and warm
+indexed lookup latency, requested/returned page size, RocksDB index-reader
+memory, estimated live/SST bytes, total storage size, and the cache assumptions.
+It does not make a trillion-scale claim. Build and run it explicitly:
+
+```bash
+cmake --build build/debug --target felidae_fact_store_benchmark --parallel 8
+./build/debug/felidae_fact_store_benchmark --records 100000 --page 100 --warm 100
+```
 
 ---
 
@@ -2031,6 +2114,12 @@ FELIDAE_LIBTORCH_PATH=/opt/libtorch \
 Felidae intentionally represents source language tokens using integer IDs.
 
 SentencePiece provides the project's tokenizer representation.
+
+The compiler feeds SentencePiece complete dot-terminated statement spans, not
+individual physical lines. This keeps multiline expressions and `then` chains
+in one integer-token stream. Decimal points, adjacent member access, strings,
+and comments are distinguished before a terminator boundary is selected;
+source offsets remain attached to every emitted token for diagnostics.
 
 A simplified view is:
 

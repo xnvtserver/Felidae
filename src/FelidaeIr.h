@@ -41,11 +41,13 @@ enum class IrOpcode : std::uint8_t {
   Similarity,
   Membership,
   ForEachFact,
+  // [opcode, destination, fact-type-symbol index, predicate-map register].
+  // Exact named-field filtering uses VmFactStore's declared index planner;
+  // no runtime query-object representation is introduced.
+  FactWhere,
   FactJoin,
   HierarchyIsA,
   HierarchyCommonAncestors,
-  HierarchyLeastCommonAncestors,
-  HierarchyMostGeneralAncestors,
   TemporalRank,
   Numeric,
   Tensor,

@@ -6,6 +6,7 @@ set -euo pipefail
 MODE="${FELIDAE_MODE:-test}"                       # test | release
 ENABLE_TRAINING="${FELIDAE_ENABLE_TRAINING:-OFF}" # ON | OFF
 ENABLE_LIBTORCH="${FELIDAE_ENABLE_LIBTORCH:-auto}" # auto | ON | OFF
+ENABLE_ROCKSDB="${FELIDAE_ENABLE_ROCKSDB:-auto}"   # auto | ON | OFF
 PLATFORM="${FELIDAE_PLATFORM:-auto}"               # auto | linux | macos | windows | android | generic
 ARCHITECTURE="${FELIDAE_ARCH:-auto}"               # auto | x86_64 | arm64 | armv7
 ANDROID_API="${FELIDAE_ANDROID_API:-24}"
@@ -15,7 +16,7 @@ SANITIZE=0
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
-    echo "usage: ./build.sh [--mode test|release] [--training ON|OFF] [--libtorch ON|OFF]"
+    echo "usage: ./build.sh [--mode test|release] [--training ON|OFF] [--libtorch ON|OFF] [--rocksdb ON|OFF]"
     echo "                  [--platform auto|linux|macos|windows|android|generic]"
     echo "                  [--arch auto|x86_64|arm64|armv7] [--android-api N]"
     echo "                  [--jobs N|auto] [--sanitize]"
@@ -34,6 +35,7 @@ while [[ $# -gt 0 ]]; do
         --mode) MODE="${2:-}"; shift 2 ;;
         --training) ENABLE_TRAINING="${2:-}"; shift 2 ;;
         --libtorch) ENABLE_LIBTORCH="${2:-}"; shift 2 ;;
+        --rocksdb) ENABLE_ROCKSDB="${2:-}"; shift 2 ;;
         --platform) PLATFORM="${2:-}"; shift 2 ;;
         --arch) ARCHITECTURE="${2:-}"; shift 2 ;;
         --android-api) ANDROID_API="${2:-}"; shift 2 ;;
@@ -109,6 +111,15 @@ if [[ "${ENABLE_LIBTORCH,,}" == auto ]]; then
 else
     ENABLE_LIBTORCH="$(normalize_boolean "$ENABLE_LIBTORCH")"
 fi
+if [[ "${ENABLE_ROCKSDB,,}" == auto ]]; then
+    if [[ "$PLATFORM" == android ]]; then
+        ENABLE_ROCKSDB=OFF
+    else
+        ENABLE_ROCKSDB=ON
+    fi
+else
+    ENABLE_ROCKSDB="$(normalize_boolean "$ENABLE_ROCKSDB")"
+fi
 if [[ "${JOBS,,}" == auto ]]; then
     if command -v getconf >/dev/null 2>&1; then
         JOBS="$(getconf _NPROCESSORS_ONLN)"
@@ -140,6 +151,7 @@ CMAKE_ARGS=(
     "-DFELIDAE_BUILD_TESTS=${BUILD_TESTS}"
     "-DFELIDAE_ENABLE_LIBTORCH=${ENABLE_LIBTORCH}"
     "-DFELIDAE_ENABLE_TRAINING=${ENABLE_TRAINING}"
+    "-DFELIDAE_ENABLE_ROCKSDB=${ENABLE_ROCKSDB}"
 )
 CAN_RUN_TESTS=1
 case "$PLATFORM" in
@@ -188,7 +200,7 @@ if [[ "$SANITIZE" -eq 1 ]]; then
     CMAKE_ARGS+=("-DFELIDAE_ENABLE_SANITIZERS=ON")
 fi
 
-echo "Felidae platform=${PLATFORM} arch=${ARCHITECTURE} mode=${MODE} configuration=${CONFIGURATION} training=${ENABLE_TRAINING} libtorch=${ENABLE_LIBTORCH} jobs=${JOBS}"
+echo "Felidae platform=${PLATFORM} arch=${ARCHITECTURE} mode=${MODE} configuration=${CONFIGURATION} training=${ENABLE_TRAINING} libtorch=${ENABLE_LIBTORCH} rocksdb=${ENABLE_ROCKSDB} jobs=${JOBS}"
 cmake "${CMAKE_ARGS[@]}"
 
 if [[ "$MODE" == test ]]; then

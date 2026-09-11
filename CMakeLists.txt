@@ -46,10 +46,58 @@ option(FELIDAE_ENABLE_LIBTORCH
     ${FELIDAE_LIBTORCH_DEFAULT})
 option(FELIDAE_ENABLE_TRAINING
     "Build explicit compiler and VM C++ model-training commands" OFF)
+option(FELIDAE_ENABLE_FAISS
+    "Retain execution-local SSM hidden vectors in real Faiss indexes" OFF)
+if(FELIDAE_ENABLE_FAISS)
+    if(NOT FELIDAE_ENABLE_LIBTORCH)
+        message(FATAL_ERROR "FELIDAE_ENABLE_FAISS requires FELIDAE_ENABLE_LIBTORCH=ON")
+    endif()
+    find_package(OpenMP REQUIRED COMPONENTS CXX)
+    find_package(faiss CONFIG REQUIRED)
+    add_library(felidae_execution_vectors STATIC src/form/libs/ExecutionVectorMemory.cpp)
+    target_include_directories(felidae_execution_vectors PUBLIC src)
+    target_compile_features(felidae_execution_vectors PUBLIC cxx_std_20)
+    target_compile_definitions(felidae_execution_vectors INTERFACE FELIDAE_HAS_FAISS=1)
+    target_link_libraries(felidae_execution_vectors PRIVATE faiss)
+endif()
+if(ANDROID)
+    set(FELIDAE_ROCKSDB_DEFAULT OFF)
+else()
+    set(FELIDAE_ROCKSDB_DEFAULT ON)
+endif()
+option(FELIDAE_ENABLE_ROCKSDB
+    "Enable the disk-backed ordered Felidae fact-store driver"
+    ${FELIDAE_ROCKSDB_DEFAULT})
 
 if(FELIDAE_ENABLE_TRAINING AND NOT FELIDAE_ENABLE_LIBTORCH)
     message(FATAL_ERROR
         "FELIDAE_ENABLE_TRAINING requires FELIDAE_ENABLE_LIBTORCH=ON")
+endif()
+
+if(FELIDAE_ENABLE_ROCKSDB)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(FELIDAE_ROCKSDB QUIET IMPORTED_TARGET rocksdb)
+    endif()
+    if(TARGET PkgConfig::FELIDAE_ROCKSDB)
+        set(FELIDAE_ROCKSDB_TARGET PkgConfig::FELIDAE_ROCKSDB)
+    else()
+        find_path(FELIDAE_ROCKSDB_INCLUDE_DIR rocksdb/db.h)
+        find_library(FELIDAE_ROCKSDB_LIBRARY NAMES rocksdb)
+        if(FELIDAE_ROCKSDB_INCLUDE_DIR AND FELIDAE_ROCKSDB_LIBRARY)
+            add_library(felidae_rocksdb UNKNOWN IMPORTED)
+            set_target_properties(felidae_rocksdb PROPERTIES
+                IMPORTED_LOCATION "${FELIDAE_ROCKSDB_LIBRARY}"
+                INTERFACE_INCLUDE_DIRECTORIES "${FELIDAE_ROCKSDB_INCLUDE_DIR}")
+            set(FELIDAE_ROCKSDB_TARGET felidae_rocksdb)
+        else()
+            message(FATAL_ERROR
+                "FELIDAE_ENABLE_ROCKSDB=ON requires RocksDB development files. "
+                "On Debian/Ubuntu install librocksdb-dev; on macOS install "
+                "rocksdb with Homebrew; or configure Android/unsupported "
+                "targets with -DFELIDAE_ENABLE_ROCKSDB=OFF.")
+        endif()
+    endif()
 endif()
 
 # Keep the lexical model native and reproducible: SentencePiece is pinned as a
@@ -375,13 +423,31 @@ add_library(felidae_form STATIC
     src/form/libs/Builtin.cpp
     src/form/libs/Csv.cpp
     src/form/libs/Db.cpp
+    src/form/libs/FactStorageCodec.cpp
     src/form/libs/Group.cpp
     src/form/libs/Json.cpp
     src/form/libs/Set.cpp)
+if(FELIDAE_ENABLE_ROCKSDB)
+    target_sources(felidae_form PRIVATE src/form/libs/RocksDb.cpp)
+    target_compile_definitions(felidae_form PUBLIC FELIDAE_HAS_ROCKSDB=1)
+    target_link_libraries(felidae_form PRIVATE ${FELIDAE_ROCKSDB_TARGET})
+endif()
 target_include_directories(felidae_form PUBLIC src)
 target_link_libraries(felidae_form PRIVATE nlohmann_json::nlohmann_json)
 felidae_enable_static_analysis(felidae_form)
 felidae_enable_msvc_exceptions(felidae_form)
+
+if(FELIDAE_ENABLE_ROCKSDB)
+    add_executable(felidae_fact_store_benchmark EXCLUDE_FROM_ALL
+        tools/FactStoreBenchmark.cpp)
+    target_link_libraries(felidae_fact_store_benchmark PRIVATE felidae_form)
+    target_compile_definitions(felidae_fact_store_benchmark PRIVATE
+        FELIDAE_BENCHMARK_OUTPUT_DIR="${CMAKE_BINARY_DIR}/benchmarks")
+    felidae_enable_static_analysis(felidae_fact_store_benchmark)
+    felidae_enable_msvc_exceptions(felidae_fact_store_benchmark)
+    set_target_properties(felidae_fact_store_benchmark PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+endif()
 
 if(TARGET felidae_mixfix_torch)
     target_link_libraries(felidae_mixfix_torch PRIVATE felidae_form)
@@ -406,6 +472,11 @@ set_target_properties(felidae_vm PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}")
 felidae_enable_static_analysis(felidae_vm)
+if(FELIDAE_ENABLE_FAISS)
+    felidae_enable_msvc_exceptions(felidae_execution_vectors)
+    felidae_enable_static_analysis(felidae_execution_vectors)
+    target_link_libraries(felidae_vm PRIVATE felidae_execution_vectors)
+endif()
 
 if(FELIDAE_ENABLE_LIBTORCH)
     # The daemon owns an optional runtime-only GRU. Form itself remains free
@@ -584,6 +655,7 @@ if(FELIDAE_BUILD_TESTS)
     add_executable(felidae_sentencepiece_model_test
         tests/SentencePieceModelTest.cpp
         src/MixfixStateModel.cpp
+        src/IrCodeGenerator.cpp
         src/SentencePieceModel.cpp
         src/IntegerTokenList.cpp
         src/IntegerParser.cpp
@@ -667,6 +739,17 @@ if(FELIDAE_BUILD_TESTS)
         tests/MixfixStateModelTest.cpp
         src/form/RuntimeStateModel.cpp)
     target_include_directories(felidae_mixfix_state_model_test PRIVATE src)
+    if(FELIDAE_ENABLE_FAISS)
+        target_link_libraries(felidae_mixfix_state_model_test PRIVATE felidae_execution_vectors)
+        add_executable(felidae_execution_vectors_test tests/ExecutionVectorMemoryTest.cpp)
+        target_link_libraries(felidae_execution_vectors_test PRIVATE felidae_execution_vectors)
+        target_compile_options(felidae_execution_vectors_test PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-UNDEBUG>
+            $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
+        felidae_enable_msvc_exceptions(felidae_execution_vectors_test)
+        add_test(NAME felidae_execution_vectors COMMAND felidae_execution_vectors_test)
+        set_tests_properties(felidae_execution_vectors PROPERTIES TIMEOUT 10)
+    endif()
     if(FELIDAE_ENABLE_LIBTORCH)
         target_sources(felidae_mixfix_state_model_test PRIVATE
             src/CompilerFrontend.cpp
@@ -796,6 +879,21 @@ if(FELIDAE_BUILD_TESTS)
     add_test(NAME felidae_db_csv COMMAND felidae_db_csv_test)
     set_tests_properties(felidae_db_csv PROPERTIES TIMEOUT 30)
 
+    if(FELIDAE_ENABLE_ROCKSDB)
+        add_executable(felidae_rocksdb_test tests/RocksDbTest.cpp)
+        target_link_libraries(felidae_rocksdb_test PRIVATE felidae_form nlohmann_json::nlohmann_json)
+        target_compile_definitions(felidae_rocksdb_test PRIVATE
+            FELIDAE_TEST_OUTPUT_DIR="${CMAKE_BINARY_DIR}/test-artifacts/rocksdb")
+        target_compile_options(felidae_rocksdb_test PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-UNDEBUG>
+            $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>)
+        felidae_enable_msvc_exceptions(felidae_rocksdb_test)
+        add_test(NAME felidae_rocksdb COMMAND felidae_rocksdb_test)
+        set_tests_properties(felidae_rocksdb PROPERTIES
+            TIMEOUT 30
+            LABELS "storage")
+    endif()
+
     # Exercise representative user programs through the public compiler and
     # VM executables. Keep generated .bin files in the active build tree.
     # External-service, training, and stress fixtures have separate
@@ -803,6 +901,7 @@ if(FELIDAE_BUILD_TESTS)
     set(FELIDAE_RUNNABLE_V2_EXAMPLES
         form_core_concepts
         numeric_operations
+        array_object
         json_csv_operations
         csv_fact_database
         fx_fact_database
@@ -821,7 +920,8 @@ if(FELIDAE_BUILD_TESTS)
         standard_search_algorithms
         deep_fact_reasoning_analysis
         fact_search_analysis
-        selective_relationship_reasoning)
+        selective_relationship_reasoning
+        class_association_reasoning)
     foreach(example IN LISTS FELIDAE_RUNNABLE_V2_EXAMPLES)
         add_test(NAME felidae_example_${example}
             COMMAND "${CMAKE_COMMAND}"
@@ -837,6 +937,8 @@ if(FELIDAE_BUILD_TESTS)
     endforeach()
     set_tests_properties(felidae_example_json_csv_operations PROPERTIES
         PASS_REGULAR_EXPRESSION "name: Ada")
+    set_tests_properties(felidae_example_array_object PROPERTIES
+        PASS_REGULAR_EXPRESSION "first: Ada, count: 2")
     # renderNumber() only forces a trailing .0 on exactly 0.0/1.0 (the
     # boolean convention); an ordinary whole number like this count prints
     # without one, so the assertion must match that, not assume every number
@@ -859,6 +961,8 @@ if(FELIDAE_BUILD_TESTS)
         PASS_REGULAR_EXPRESSION "guides: 2, related: 2, confident: 2")
     set_tests_properties(felidae_example_selective_relationship_reasoning PROPERTIES
         PASS_REGULAR_EXPRESSION "connected_via_signal: 1.0\\}")
+    set_tests_properties(felidae_example_class_association_reasoning PROPERTIES
+        PASS_REGULAR_EXPRESSION "relation: works at, strength: 3.421")
     set_tests_properties(felidae_example_where_guard_chain PROPERTIES
         PASS_REGULAR_EXPRESSION "passes: 82, lowScore: 0.0, inactive: 0.0")
     set_tests_properties(felidae_example_optional_end_blocks PROPERTIES
@@ -879,6 +983,12 @@ if(FELIDAE_BUILD_TESTS)
         felidae_db_csv_test)
     if(TARGET felidae_libtorch_smoke_test)
         list(APPEND FELIDAE_TEST_TARGETS felidae_libtorch_smoke_test)
+    endif()
+    if(TARGET felidae_rocksdb_test)
+        list(APPEND FELIDAE_TEST_TARGETS felidae_rocksdb_test)
+    endif()
+    if(TARGET felidae_execution_vectors_test)
+        list(APPEND FELIDAE_TEST_TARGETS felidae_execution_vectors_test)
     endif()
     foreach(test_target IN LISTS FELIDAE_TEST_TARGETS)
         set_property(TARGET ${test_target} PROPERTY EXCLUDE_FROM_ALL TRUE)

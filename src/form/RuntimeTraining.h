@@ -2,10 +2,48 @@
 
 #include "RegisterVm.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <vector>
 
 namespace Felidae {
+
+// Structural tokens share the runtime model's input vocabulary with raw
+// SentencePiece IDs. Encoded values set the high bit; RuntimeStateModel
+// relocates the low marker into the reserved vocabulary tail. Keep this list
+// authoritative for both dataset generation and live inference.
+inline constexpr std::uint32_t kRuntimeStructuralEncodingBit = 0x80000000u;
+enum class RuntimeStructuralToken : std::uint32_t {
+    FactTypes = 8,
+    Hierarchy = 9,
+    Inputs = 10,
+    FactCounts = 11,
+    OneFact = 12,
+    SeveralFacts = 13,
+    ManyFacts = 14,
+    InputKindBase = 15,
+    ValueStart = 26,
+    ValueEnd = 27,
+    Nil = 28,
+    Number = 29,
+    Degree = 30,
+    Text = 31,
+    Symbol = 32,
+    Array = 33,
+    Map = 34,
+    Fact = 35,
+    TextMap = 37,
+    NumberBitZero = 38,
+    NumberBitOne = 39,
+    Field = 40,
+};
+
+constexpr std::uint32_t runtimeStructuralToken(RuntimeStructuralToken token) {
+    return kRuntimeStructuralEncodingBit |
+           static_cast<std::uint32_t>(token);
+}
+static_assert(static_cast<std::uint32_t>(RuntimeStructuralToken::Field) < 48,
+              "runtime structural token exceeds the reserved vocabulary");
 
 // Stable semantic actions produced by the finite runtime GRU vocabulary.
 // This is deliberately not VmValue::index() or a model-logit index.
@@ -53,7 +91,7 @@ RuntimeKnowledgePieces runtimeKnowledgePieces(
     const VmKnowledgeSnapshot& knowledge,
     std::span<const PieceSequence> symbolTable);
 
-// JSON Lines v8: one self-describing, integer-only record per line.  The
+// JSON Lines v9: one self-describing record per line. The
 // schema value is repeated deliberately: lines can be validated or streamed
 // independently and no legacy binary header needs to be retained.
 inline constexpr std::uint32_t kRuntimeTrainingSchemaVersion = 9;

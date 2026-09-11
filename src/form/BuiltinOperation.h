@@ -65,8 +65,6 @@ enum class BuiltinId : std::uint16_t {
   FileExists,
   FileDeleteFile,
   CommonAncestors,
-  LowestCommonAncestor,
-  HighestCommonAncestor,
   AncestorAnalysis,
   PropagateFact,
   JsonObject,

@@ -635,21 +635,21 @@ private:
           throw IntegerParserError(typeName + "." + method +
                                    " requires named field values");
         }
-        std::shared_ptr<Expr> predicate;
-        for (const auto &argument : term->args) {
-          auto field = std::make_shared<AccessExpr>(
-              std::make_shared<VarExpr>(rowName, rowId), argument.name);
-          field->keyId = argument.nameId;
-          auto comparison = std::make_shared<OperatorExpression>(
-              CoreOperator::StrictEqual, std::move(field), argument.value);
-          predicate = predicate
-                          ? std::make_shared<OperatorExpression>(
-                                CoreOperator::LogicalAnd, std::move(predicate),
-                                std::move(comparison))
-                          : std::move(comparison);
-        }
-        return iteration(typeName, type->second, rowName, rowId,
-                         std::move(predicate), term->sourceSpan);
+        std::vector<MapEntry> predicates;
+        predicates.reserve(term->args.size());
+        for (const auto &argument : term->args)
+          predicates.emplace_back(argument.name, argument.nameId,
+                                  argument.value);
+        auto predicateMap = std::make_shared<MapExpr>(std::move(predicates));
+        predicateMap->sourceSpan = term->sourceSpan;
+        auto result = std::make_shared<TermExpr>(
+            "__fact:where",
+            std::vector<Arg>{
+                Arg(std::string{},
+                    std::make_shared<VarExpr>(typeName, type->second)),
+                Arg(std::string{}, std::move(predicateMap))});
+        result->sourceSpan = term->sourceSpan;
+        return result;
       }
     } else if (const auto operation =
                    std::dynamic_pointer_cast<OperatorExpression>(value)) {
@@ -778,6 +778,24 @@ resolveScopedAccess(const std::shared_ptr<Expr> &expression,
                  std::dynamic_pointer_cast<TermExpr>(expression)) {
     for (auto &argument : term->args)
       argument.value = resolveScopedAccess(argument.value, visible, implicitFields);
+    const auto dot = term->name.rfind('.');
+    const auto firstDot = term->name.find('.');
+    if (dot != std::string::npos &&
+        visible.contains(symbolIdForName(term->name.substr(0, firstDot)))) {
+      const auto operation = builtinIdForName("array:" + term->name.substr(dot + 1));
+      if (operation == BuiltinId::ArrayGet || operation == BuiltinId::ArrayLen ||
+          operation == BuiltinId::ArrayPush) {
+        auto receiver = std::make_shared<VarExpr>(term->name.substr(0, dot));
+        receiver->sourceSpan = term->sourceSpan;
+        auto arguments = term->args;
+        arguments.insert(arguments.begin(), Arg("data",
+            resolveScopedAccess(receiver, visible, implicitFields)));
+        auto result = std::make_shared<TermExpr>(builtinName(operation),
+                                               std::move(arguments), operation);
+        result->sourceSpan = term->sourceSpan;
+        return result;
+      }
+    }
   } else if (const auto operation =
                  std::dynamic_pointer_cast<OperatorExpression>(expression)) {
     std::shared_ptr<OperatorExpression> rewritten;
@@ -905,8 +923,16 @@ void resolveScopedAccessesInGoals(std::vector<std::shared_ptr<Goal>> &goals,
       return resolveScopedAccess(value, visible, implicitFields);
     };
     const auto call = [&](Call &value) {
-      for (auto &argument : value.args)
-        argument.value = expression(argument.value);
+      // Calls used as statements share receiver and argument resolution with
+      // calls used as values; they must not retain a separate dotted-name path.
+      auto term = std::make_shared<TermExpr>(value.name, value.nameId,
+                                            value.args, value.builtinId);
+      term->sourceSpan = value.sourceSpan;
+      const auto resolved = std::static_pointer_cast<TermExpr>(expression(term));
+      value.name = resolved->name;
+      value.nameId = resolved->nameId;
+      value.builtinId = resolved->builtinId;
+      value.args = std::move(resolved->args);
     };
     if (const auto called = std::dynamic_pointer_cast<CallGoal>(goal)) {
       call(called->call);
@@ -1058,6 +1084,15 @@ bool isDirectDeterministicExpression(
     return definedSymbols.contains(variable->nameId);
   }
   if (const auto term = std::dynamic_pointer_cast<TermExpr>(expression)) {
+    if (term->name == "__fact:where" && term->args.size() == 2) {
+      const auto type =
+          std::dynamic_pointer_cast<VarExpr>(term->args[0].value);
+      return type && context.factTypes.contains(type->nameId) &&
+             static_cast<bool>(
+                 std::dynamic_pointer_cast<MapExpr>(term->args[1].value)) &&
+             isDirectDeterministicExpression(term->args[1].value,
+                                             definedSymbols, context);
+    }
     if (const auto operation = numericOperationForName(term->name);
         operation && term->args.size() == numericOperationArity(*operation) &&
         std::all_of(term->args.begin(), term->args.end(),
@@ -1590,6 +1625,12 @@ void appendFragment(FelidaeIr &target, FelidaeIr fragment,
         fragment.words[pc + 3] += textBase;
       width = 4;
       break;
+    case IrOpcode::FactWhere:
+      reg(fragment.words[pc + 1]);
+      symbol(fragment.words[pc + 2]);
+      reg(fragment.words[pc + 3]);
+      width = 4;
+      break;
     case IrOpcode::Return:
       reg(fragment.words[pc + 1]);
       width = 3;
@@ -1602,8 +1643,6 @@ void appendFragment(FelidaeIr &target, FelidaeIr fragment,
     case IrOpcode::Similarity:
     case IrOpcode::HierarchyIsA:
     case IrOpcode::HierarchyCommonAncestors:
-    case IrOpcode::HierarchyLeastCommonAncestors:
-    case IrOpcode::HierarchyMostGeneralAncestors:
       reg(fragment.words[pc + 1]);
       reg(fragment.words[pc + 2]);
       reg(fragment.words[pc + 3]);
@@ -1908,7 +1947,22 @@ FelidaeIr IrCodeGenerator::lowerExpression(
                       {static_cast<IrWord>(IrOpcode::LoadSymbol), result,
                        static_cast<IrWord>(ir.symbols.size() - 1)});
     } else if (const auto term = std::dynamic_pointer_cast<TermExpr>(value)) {
-      if (term->builtinId == BuiltinId::CsvToFacts &&
+      if (term->name == "__fact:where") {
+        if (term->args.size() != 2)
+          throw IntegerParserError("fact where lowering requires type and predicates");
+        const auto type =
+            std::dynamic_pointer_cast<VarExpr>(term->args[0].value);
+        const auto predicates =
+            std::dynamic_pointer_cast<MapExpr>(term->args[1].value);
+        if (!type || !predicates)
+          throw IntegerParserError("fact where lowering received invalid operands");
+        const auto predicateRegister = self(self, predicates);
+        ir.symbols.push_back(type->nameId);
+        ir.words.insert(ir.words.end(),
+                        {static_cast<IrWord>(IrOpcode::FactWhere), result,
+                         static_cast<IrWord>(ir.symbols.size() - 1),
+                         predicateRegister});
+      } else if (term->builtinId == BuiltinId::CsvToFacts &&
           (term->args.size() == 2 || term->args.size() == 3)) {
         // Mirrors the generic builtin-lowering block below, except the
         // arity itself varies (2 or 3, matching the isDirectDeterministicExpression
