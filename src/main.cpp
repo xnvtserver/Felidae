@@ -1,14 +1,18 @@
 #include "Interpreter.h"
 #include "FelidaeRuntime.h"
+#include "Symbol.h"
 #include "Version.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <map>
 #include <optional>
+#include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -236,6 +240,144 @@ static void runServeEntry(Interpreter& interpreter, const CliOptions& options) {
     }
 }
 
+// Real breakpoint/step debugging over Interpreter::setGoalHook - not a
+// simulation. The hook fires once per goal from the live iterative solver
+// (solveIterative, Interpreter.cpp), so a pause here sees the goal's actual
+// bound Env, and stepping/breakpoints act on real execution rather than
+// static analysis or a heuristic over source text.
+//
+// Line-based text protocol on stdin/stdout, extending the pre-existing
+// FELIDAE_DEBUG_STOPPED/CONTINUED marker convention (previously only used to
+// gate when static analysis began) so a driving client - the VS Code
+// extension, or a person testing this by hand - can attach the same way:
+//   Output, when paused:
+//     FELIDAE_DEBUG_STOPPED reason=<entry|breakpoint|step> line=<N>
+//   Commands read one per line while paused:
+//     continue | next (step over) | stepIn | stepOut
+//     break <line> | clear <line>   (adjust breakpoints while paused)
+//     locals                        (every bound name in the paused Env)
+//     print <name>                  (one bound name's real value)
+//     terminate | quit
+//   Output when resuming: FELIDAE_DEBUG_CONTINUED
+//   Output at program end: FELIDAE_DEBUG_TERMINATED
+//
+// Depth here is Interpreter's existing per-goal nesting depth (grouped/if/or
+// bodies and method-call recursion both increase it, since both re-enter the
+// same solveIterative loop) - step over/out use it as "stop once back at or
+// above the depth this command was issued at," which does not distinguish a
+// nested control-flow body from an actual method call. Good enough to step
+// through a program goal by goal; a call-frame-accurate depth would need
+// solveMethodCall to publish its own frames alongside solveIterative's.
+class DebugSession {
+public:
+    void attach(Interpreter& interpreter) {
+        interpreter_ = &interpreter;
+        stepMode_ = StepMode::Into; // stopOnEntry: pause before the first goal.
+        interpreter.setGoalHook([this](const Goal& goal, const Env& env, std::size_t depth) {
+            onGoal(goal, env, depth);
+        });
+    }
+
+private:
+    enum class StepMode { None, Into, Over, Out };
+
+    void onGoal(const Goal& goal, const Env& env, std::size_t depth) {
+        if (terminated_) return;
+        const int line = goal.sourceSpan.valid() ? goal.sourceSpan.startLine : 0;
+        const char* reason = nullptr;
+        if (breakpoints_.count(line)) {
+            reason = "breakpoint";
+        } else if (stepMode_ == StepMode::Into) {
+            reason = "step";
+        } else if (stepMode_ == StepMode::Over && depth <= stepDepth_) {
+            reason = "step";
+        } else if (stepMode_ == StepMode::Out && depth < stepDepth_) {
+            reason = "step";
+        }
+        if (!reason) return;
+        stepMode_ = StepMode::None;
+        pauseAndWait(reason, line, depth, env);
+    }
+
+    void pauseAndWait(const char* reason, int line, std::size_t depth, const Env& env) {
+        std::cout << "FELIDAE_DEBUG_STOPPED reason=" << reason << " line=" << line << std::endl;
+        std::string commandLine;
+        while (std::getline(std::cin, commandLine)) {
+            commandLine = trim(commandLine);
+            if (commandLine.empty()) continue;
+            std::istringstream parsed(commandLine);
+            std::string command;
+            parsed >> command;
+            if (command == "continue") {
+                std::cout << "FELIDAE_DEBUG_CONTINUED" << std::endl;
+                return;
+            }
+            if (command == "next") {
+                stepMode_ = StepMode::Over;
+                stepDepth_ = depth;
+                std::cout << "FELIDAE_DEBUG_CONTINUED" << std::endl;
+                return;
+            }
+            if (command == "stepIn") {
+                stepMode_ = StepMode::Into;
+                std::cout << "FELIDAE_DEBUG_CONTINUED" << std::endl;
+                return;
+            }
+            if (command == "stepOut") {
+                stepMode_ = StepMode::Out;
+                stepDepth_ = depth;
+                std::cout << "FELIDAE_DEBUG_CONTINUED" << std::endl;
+                return;
+            }
+            if (command == "break" || command == "clear") {
+                int requestedLine = 0;
+                parsed >> requestedLine;
+                if (command == "break") breakpoints_.insert(requestedLine);
+                else breakpoints_.erase(requestedLine);
+                std::cout << "FELIDAE_DEBUG_BREAKPOINT_" << (command == "break" ? "SET" : "CLEARED")
+                          << " line=" << requestedLine << std::endl;
+                continue;
+            }
+            if (command == "locals") {
+                std::cout << "FELIDAE_DEBUG_LOCALS_BEGIN" << std::endl;
+                for (const auto& binding : env) {
+                    if (isInternalGeneratedSymbolId(binding.first)) continue;
+                    const std::string name = symbolNameForId(binding.first);
+                    if (name.empty()) continue;
+                    std::cout << name << " = " << interpreter_->valueToDisplayString(binding.second) << std::endl;
+                }
+                std::cout << "FELIDAE_DEBUG_LOCALS_END" << std::endl;
+                continue;
+            }
+            if (command == "print") {
+                std::string name;
+                parsed >> name;
+                const auto found = env.find(name);
+                std::cout << "FELIDAE_DEBUG_VALUE " << name << " = "
+                          << (found != env.end() ? interpreter_->valueToDisplayString(found->second) : "<unbound>")
+                          << std::endl;
+                continue;
+            }
+            if (command == "terminate" || command == "quit") {
+                terminated_ = true;
+                std::cout << "FELIDAE_DEBUG_TERMINATED" << std::endl;
+                std::exit(0);
+            }
+            std::cout << "FELIDAE_DEBUG_ERROR unknown command '" << command << "'" << std::endl;
+        }
+        // stdin closed without an explicit terminate: end the session rather
+        // than spin forever with no client left to drive it.
+        terminated_ = true;
+        std::exit(0);
+    }
+
+    Interpreter* interpreter_ = nullptr;
+    std::set<int> breakpoints_;
+    StepMode stepMode_ = StepMode::None;
+    std::size_t stepDepth_ = 0;
+    bool terminated_ = false;
+};
+
 int main(int argc, char** argv) {
     try {
         CliOptions options = parseCli(argc, argv);
@@ -255,6 +397,16 @@ int main(int argc, char** argv) {
         using Clock = std::chrono::steady_clock;
         const auto loadStarted = Clock::now();
         Interpreter interpreter;
+        DebugSession debugSession;
+        // Attached before loadProgramRoot below, not after: a program with
+        // no main() executes its bare top-level calls during loading itself
+        // (Interpreter::addProgram's EntryCall handling), so attaching any
+        // later would miss stepping through those entirely.
+        if (options.debug) {
+            std::cerr << "Felidae debug session for " << options.programFile->string()
+                      << " - stopped on entry, waiting on stdin.\n";
+            debugSession.attach(interpreter);
+        }
         fs::path entryFile = resolveProgramEntryPath(*options.programFile);
         if (entryFile.extension() != FILE_EXTENSION) {
             throw std::runtime_error("Felidae source files must use .fx extension");
@@ -313,10 +465,6 @@ int main(int argc, char** argv) {
                       << "\"runtime\":" << interpreter.runtimeMetricsJson()
                       << "}\n";
         };
-        if (options.debug) {
-            std::cerr << "Felidae debug mode enabled for " << entryFile.string() << "\n";
-        }
-
         if (options.repl) {
             runRepl(interpreter);
             reportMetrics();

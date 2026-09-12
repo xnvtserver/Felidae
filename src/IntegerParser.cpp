@@ -134,7 +134,7 @@ bool IntegerParser::atNameRange() {
     if (piece_ >= pieces.size()) return false;
     const auto id = pieces[piece_].id;
     // `as` is an atomic grammar ID when it stands alone after a fact or query.
-    // The BPE tokenizer also emits that same ID as the prefix of identifiers such
+    // The word vocabulary also emits that same ID as the prefix of identifiers such
     // as `Assessment`; contiguous IDs are one identifier range, never a
     // grammar boundary.
     if (id == TokenId::AS) {
@@ -211,7 +211,7 @@ std::string IntegerParser::consumeNameRange() {
     const std::size_t begin = byte_;
     const auto& pieces = input_.entries();
     // A logical name is a contiguous run of non-grammar token IDs.
-    // BPE may split one source name into many adjacent pieces.
+    // The word vocabulary may split one source name into many adjacent pieces.
     while (piece_ < pieces.size()) {
         const auto id = pieces[piece_].id;
         if (id == TokenId::UNKNOWN || isIdentifierBoundaryId(id)) break;
@@ -229,7 +229,7 @@ std::string IntegerParser::consumeString() {
         if (id == TokenId::QUOTE) {
             const std::size_t end = input_.entries()[piece_].begin;
             byte_ = input_.entries()[piece_++].end;
-            // Literal content is a lexer-owned source span; BPE supplies IDs
+            // Literal content is a lexer-owned source span; the word vocabulary supplies IDs
             // only for identifiers and mixfix anchors.
             const std::string value = input_.source().substr(begin, end - begin);
             std::string unescaped;
@@ -490,26 +490,51 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
     skipTrivia();
     const std::size_t begin = byte_;
     if (match(TokenId::IF)) {
-        auto conditionExpression = parseBinaryExpression(
-            static_cast<int>(OperatorPrecedence::Control), TokenId::THEN);
-        require(TokenId::THEN, "Expected 'then' after if condition");
-        std::shared_ptr<Goal> condition;
-        if (const auto comparison = std::dynamic_pointer_cast<OperatorExpression>(conditionExpression);
-            comparison && comparison->captureCount() == 2 &&
-            isComparisonOperator(comparison->coreOperator)) {
-            condition = std::make_shared<BinaryGoal>(comparison->capture(0),
-                coreOperatorDefinition(comparison->coreOperator).token, comparison->capture(1));
-        } else {
-            condition = std::make_shared<BinaryGoal>(std::move(conditionExpression), TokenId::EQUAL,
-                                                     std::make_shared<BoolExpr>(true));
+        // `elif` is sugar, not a new AST shape: `if A then T1 elif B then T2
+        // else T3 end` desugars to exactly the nested
+        // `if A then T1 else if B then T2 else T3 end end` a user could
+        // already write by hand (see optional_end_blocks.fx) - one IfGoal
+        // per condition, each one's elseBranch holding the next. Only one
+        // `end` appears in the source for the whole chain, so matchBlockEnd
+        // runs once, after every branch is parsed, never per synthesized
+        // nesting level.
+        const auto parseCondition = [&]() -> std::shared_ptr<Goal> {
+            auto conditionExpression = parseBinaryExpression(
+                static_cast<int>(OperatorPrecedence::Control), TokenId::THEN);
+            require(TokenId::THEN, "Expected 'then' after if condition");
+            if (const auto comparison = std::dynamic_pointer_cast<OperatorExpression>(conditionExpression);
+                comparison && comparison->captureCount() == 2 &&
+                isComparisonOperator(comparison->coreOperator)) {
+                return std::make_shared<BinaryGoal>(comparison->capture(0),
+                    coreOperatorDefinition(comparison->coreOperator).token, comparison->capture(1));
+            }
+            return std::make_shared<BinaryGoal>(std::move(conditionExpression), TokenId::EQUAL,
+                                                std::make_shared<BoolExpr>(true));
+        };
+        struct Branch {
+            std::size_t begin;
+            std::shared_ptr<Goal> condition;
+            std::vector<std::shared_ptr<Goal>> thenBranch;
+        };
+        std::vector<Branch> branches;
+        branches.push_back({begin, parseCondition(), parseGoalList(TokenId::DOT)});
+        while (true) {
+            const auto branchBegin = byte_;
+            if (!match(TokenId::ELIF)) break;
+            branches.push_back({branchBegin, parseCondition(), parseGoalList(TokenId::DOT)});
         }
-        auto thenBranch = parseGoalList(TokenId::DOT);
         std::vector<std::shared_ptr<Goal>> elseBranch;
         if (match(TokenId::ELSE)) elseBranch = parseGoalList(TokenId::DOT);
         (void)matchBlockEnd();
-        auto result = std::make_shared<IfGoal>(std::move(condition), std::move(thenBranch),
-                                               std::move(elseBranch));
-        stamp(result, begin, byte_);
+        std::shared_ptr<Goal> result;
+        auto tailElse = std::move(elseBranch);
+        for (auto branch = branches.rbegin(); branch != branches.rend(); ++branch) {
+            auto ifGoal = std::make_shared<IfGoal>(std::move(branch->condition),
+                                                   std::move(branch->thenBranch), std::move(tailElse));
+            stamp(ifGoal, branch->begin, byte_);
+            result = ifGoal;
+            tailElse = std::vector<std::shared_ptr<Goal>>{std::move(ifGoal)};
+        }
         return result;
     }
     if (match(TokenId::WHERE)) {
@@ -623,6 +648,47 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
     return result;
 }
 
+// True when the parser sits at the start of what can only be a new clause
+// head (`qualifiedName(...) =>`, optionally followed by `as designation`),
+// never a goal continuing the current body: no goal is itself a bare
+// callable head immediately followed by an arrow. Checking this shape - independent
+// of indentation - is what stops a same-line body (`f() => return x`, whose
+// one line sits at indent 0 like any top-level clause) from swallowing the
+// clause that follows it; the indentation dedent check in parseGoalList only
+// protects a genuinely indented body. Pure lookahead: parser position is
+// always restored before returning.
+bool IntegerParser::looksLikeClauseHead() {
+    skipTrivia();
+    if (!atNameRange()) return false;
+    const auto savedByte = byte_;
+    const auto savedPiece = piece_;
+    bool result = false;
+    try {
+        consumeQualifiedName();
+        if (match(TokenId::LPAREN)) {
+            std::size_t depth = 1;
+            const auto& pieces = input_.entries();
+            while (depth > 0 && piece_ < pieces.size()) {
+                const auto id = pieces[piece_].id;
+                byte_ = pieces[piece_++].end;
+                if (id == TokenId::LPAREN) ++depth;
+                else if (id == TokenId::RPAREN) --depth;
+            }
+            if (depth == 0) {
+                if (match(TokenId::AS)) {
+                    do { consumeQualifiedName(); } while (match(TokenId::COMMA));
+                }
+                result = at(TokenId::ARROW);
+            }
+        }
+    } catch (const IntegerParserError&) {
+        result = false;
+    }
+    byte_ = savedByte;
+    piece_ = savedPiece;
+    return result;
+}
+
 std::vector<std::shared_ptr<Goal>> IntegerParser::parseGoalList(TokenId::Id terminator) {
     std::vector<std::shared_ptr<Goal>> goals;
     if (at(terminator)) return goals;
@@ -634,6 +700,7 @@ std::vector<std::shared_ptr<Goal>> IntegerParser::parseGoalList(TokenId::Id term
         // the next top-level declaration into its method body.
         skipTrivia();
         if (atBlockEnd()) break;
+        if (looksLikeClauseHead()) break;
         const auto before = byte_;
         if (!hasBodyIndent) {
             bodyIndent = sourceLineIndent(before);
@@ -1304,6 +1371,30 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
         if (member == "delete") {
             prepend(std::move(result), "selection");
             result = std::make_shared<TermExpr>("Fact:delete", std::move(arguments), BuiltinId::FactDelete);
+            continue;
+        }
+        // Type.where(field: value, ...) is handled above, gated on a bare
+        // capitalized receiver. Reaching here with `where` means the
+        // receiver is some other expression - e.g. join(TypeA, TypeB) -
+        // whose rows are plain {left, right} pairs rather than one type's
+        // fields, so the single argument is a boolean predicate expression
+        // (left.id == right.school_id) evaluated once per row instead of a
+        // map of field equalities.
+        if (member == "where") {
+            if (arguments.size() != 1 || !arguments.front().name.empty()) {
+                throw IntegerParserError(
+                    "where(...) on a join result expects a single predicate expression, "
+                    "e.g. where(left.id == right.school_id)");
+            }
+            std::vector<Arg> whereArgs;
+            whereArgs.emplace_back("selection", std::move(result));
+            whereArgs.emplace_back("predicate", std::move(arguments.front().value));
+            result = std::make_shared<TermExpr>("Array:where", std::move(whereArgs), BuiltinId::ArrayWhere);
+            continue;
+        }
+        if (member == "order_by") {
+            prepend(std::move(result), "selection");
+            result = std::make_shared<TermExpr>("Array:orderBy", std::move(arguments), BuiltinId::ArrayOrderBy);
             continue;
         }
         throw IntegerParserError("Unsupported fact operation '" + member + "'");

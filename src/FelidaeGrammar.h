@@ -92,6 +92,11 @@ enum class BuiltinId {
     FileExists,
     FileDeleteFile,
 
+    CsvParse,
+    CsvToFacts,
+    CsvToText,
+    CsvToFelidaeFacts,
+
     FactAll,
     FactFind,
     FactCount,
@@ -111,6 +116,9 @@ enum class BuiltinId {
     FactAndWhere,
     FactOrWhere,
     FactLimit,
+    FactJoin,
+    ArrayWhere,
+    ArrayOrderBy,
 
     // Fact reasoning is language-native.  These operate directly on typed
     // fact values; FactMemory remains an implementation detail.
@@ -161,6 +169,7 @@ enum class BuiltinId {
     MathFloor,
     MathCeil,
     MathRound,
+    MathCbrt,
     MathAdd,
     MathSub,
     MathMul,
@@ -336,8 +345,9 @@ inline constexpr std::string_view builtinTokenSpelling(TokenId::Id id) {
 }
 
 // These IDs end an already-started identifier range.  Keyword IDs are
-// intentionally absent: if BPE emits (for example) the `or` ID in
-// the middle of `Record`, the contiguous IDs still represent one identifier.
+// intentionally absent: if the word vocabulary emits (for example) the `or`
+// ID in the middle of `Record`, the contiguous IDs still represent one
+// identifier.
 // At the start of a grammar position, atNameRange() rejects every built-in ID
 // so reserved words continue to be parsed as grammar vocabulary.
 inline constexpr bool isIdentifierBoundaryId(TokenId::Id id) {

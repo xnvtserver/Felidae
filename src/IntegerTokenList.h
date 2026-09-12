@@ -10,7 +10,7 @@
 
 namespace Felidae {
 
-// The sole source-tokenization result. BPE encodes complete
+// The sole source-tokenization result. WordVocabulary encodes complete
 // dot-terminated statement spans, so multiline statements and `then` chains
 // have one stable token stream. Newlines are formatting inside a span.
 //
@@ -27,7 +27,7 @@ public:
   };
 
   IntegerTokenList() = default;
-  IntegerTokenList(std::shared_ptr<BpeTokenizer> tokenizer, std::string source);
+  IntegerTokenList(std::shared_ptr<WordVocabulary> tokenizer, std::string source);
 
   const std::string &source() const noexcept { return source_; }
   bool has(std::size_t index) const;
@@ -36,12 +36,12 @@ public:
   // Tool/test materialization boundary. Production parsing uses has/entry.
   const std::vector<Entry> &entries() const;
   std::size_t encodeCount() const noexcept { return encodeCount_; }
-  const BpeTokenizer &tokenizer() const noexcept { return *tokenizer_; }
+  const WordVocabulary &tokenizer() const noexcept { return *tokenizer_; }
 
 private:
   void encodeNextStatement() const;
   std::string source_;
-  std::shared_ptr<BpeTokenizer> tokenizer_;
+  std::shared_ptr<WordVocabulary> tokenizer_;
   mutable std::vector<Entry> entries_;
   mutable std::size_t nextStatementBegin_ = 0;
   mutable std::size_t encodeCount_ = 0;

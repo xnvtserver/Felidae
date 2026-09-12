@@ -1,4 +1,4 @@
-// Fixed custom-BPE syntax IDs. Model line N owns ID N. Do not reorder.
+// Fixed word-vocabulary syntax IDs. Model line N owns ID N. Do not reorder.
 #pragma once
 
 #include <cstdint>
@@ -126,12 +126,13 @@ constexpr Id DIGIT_6 = 55;
 constexpr Id DIGIT_7 = 56;
 constexpr Id DIGIT_8 = 57;
 constexpr Id DIGIT_9 = 58;
-// Lexer-owned reserved words deliberately sit outside custom-BPE IDs.  They
+// Lexer-owned reserved words deliberately sit outside the word-vocabulary IDs.  They
 // are syntax only and must never be learned or persisted in model.txt.
 constexpr Id CLASS = -1;
 constexpr Id END = -2;
 constexpr Id INDEX = -3;
 constexpr Id EXTENDS = -4;
+constexpr Id ELIF = -5;
 } // namespace TokenId
 
 inline constexpr bool isCapitalizedIdentifierStartId(TokenId::Id id) {

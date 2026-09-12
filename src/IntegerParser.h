@@ -24,10 +24,10 @@ public:
     explicit IntegerParserError(const std::string& message) : std::runtime_error(message) {}
 };
 
-// Direct BPE-token-ID grammar assembler. It has no secondary tokenizer,
-// source-character syntax scanner, or spelling-to-token lookup table. IDs
-// determine all syntax; original source is retained only to copy an already
-// bounded identifier payload into the IR for SymbolId interning.
+// Direct word-vocabulary-token-ID grammar assembler. It has no secondary
+// tokenizer, source-character syntax scanner, or spelling-to-token lookup
+// table. IDs determine all syntax; original source is retained only to copy
+// an already bounded identifier payload into the IR for SymbolId interning.
 class IntegerParser {
 public:
     explicit IntegerParser(const IntegerTokenList& input,
@@ -104,6 +104,7 @@ private:
     std::string consumeString();
     double consumeNumber();
     bool atNameRange();
+    bool looksLikeClauseHead();
     bool sourceContainsLineBreak(std::size_t begin, std::size_t end) const;
     bool lineBreakBeforeNextSignificantPiece() const;
     std::size_t sourceLineIndent(std::size_t offset) const;

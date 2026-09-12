@@ -5,7 +5,7 @@ VM, or statistical mixfix model in the supported path.
 
 ```text
 source.fx
-  -> custom BPE tokenizer (stable line IDs and byte offsets)
+  -> word vocabulary tokenizer (stable line IDs and byte offsets)
   -> IntegerTokenList
   -> IntegerParser
   -> Program AST / SymbolId interning
@@ -15,7 +15,9 @@ source.fx
 
 `models/felidae-bpe/model.txt` is the checked-in, line-oriented identifier
 vocabulary: line N is token ID N. The normal lexer owns fixed syntax, comments,
-numbers, and strings; only identifiers and mixfix anchors use BPE. Unknown
+numbers, and strings; only identifiers and mixfix anchors go through the word
+vocabulary (a deterministic dictionary lookup, not byte-pair encoding - the
+directory name is a historical holdover, see `src/Tokenizer.h`). Unknown
 identifier words are added in source order, and execution needs no training.
 
 `FactMemory` is Felidae's in-process fact database. It uses immutable,
