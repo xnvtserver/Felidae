@@ -30,3 +30,8 @@ operator registry; no SSM participates.
 
 Run `felidae program.fx`, or `felidae program.fx --serve` to replace the live
 interpreter after a successful source reload.
+
+The same executable owns live debugging (`--debug`), AST checks
+(`--check-json`), metadata, and LSP (`--lsp`). These modes share the
+authoritative tokenizer, parser, source loader, and operator registry; no
+separate tooling parser or visualization runtime exists.

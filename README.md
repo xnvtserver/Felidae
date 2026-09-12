@@ -19,11 +19,20 @@ cmake --build build/debug --target felidae -j2
 build/debug/felidae tests/direct_ast_smoke.fx
 build/debug/felidae v2_examples/mixfix_nested_expression.fx
 build/debug/felidae tests/direct_ast_smoke.fx --serve
+build/debug/felidae tests/direct_ast_smoke.fx --check-json
+build/debug/felidae tests/direct_ast_smoke.fx --debug
+build/debug/felidae --lsp
 ```
 
 `--serve` watches the root module and loaded imports. A changed program is
 parsed and registered in a replacement interpreter; the prior interpreter
 remains alive if the new source is invalid.
+
+`felidae` is also the single source-tooling executable. Static checks, symbol
+and operator metadata, builtin/library listings, and the stdio language server
+reuse the runtime tokenizer, parser, import loader, and operator registry.
+They do not execute the program. Live breakpoints and stepping are enabled
+only by `--debug`; normal execution leaves the goal hook unset.
 
 ## Facts and memory
 

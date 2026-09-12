@@ -1118,10 +1118,10 @@ public:
 };
 
 // Non-fatal or fatal diagnostic about a span of source, in the same
-// severity/code/message shape the felidae_debug tool (src/debugger/
+// severity/code/message shape the unified felidae tooling modes (src/debugger/
 // AstAnalyzer.h) uses. Shared here so any diagnostic emitter can report
 // warnings without hand-rolling a second diagnostic struct of its own;
-// felidae_debug still owns the actual analyses (unused symbols, hidden
+// AstAnalyzer still owns the actual analyses (unused symbols, hidden
 // materialization, etc.) that produce AstDiagnostic values - this is just
 // the shared value type and the two small constructors every emitter
 // otherwise repeats. Not used by the interpreter's own execution path, so
