@@ -1397,7 +1397,16 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
             result = std::make_shared<TermExpr>("Array:orderBy", std::move(arguments), BuiltinId::ArrayOrderBy);
             continue;
         }
-        throw IntegerParserError("Unsupported fact operation '" + member + "'");
+        // Class methods are registered as `Class.method`, but the receiver's
+        // concrete class may only be known after evaluating an earlier call
+        // in a chain. Preserve the receiver and member for runtime dispatch.
+        std::vector<Arg> invokeArgs;
+        invokeArgs.reserve(arguments.size() + 2);
+        invokeArgs.emplace_back("receiver", std::move(result));
+        invokeArgs.emplace_back("member", std::make_shared<StringExpr>(member));
+        for (auto& argument : arguments) invokeArgs.push_back(std::move(argument));
+        result = std::make_shared<TermExpr>(
+            std::string(kMemberInvokeTerm), std::move(invokeArgs));
     }
     return result;
 }

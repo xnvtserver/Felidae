@@ -12,6 +12,11 @@
 
 namespace Felidae {
 
+// Parser/runtime-only term used to preserve an arbitrary receiver call until
+// the receiver's runtime fact/class type is known. It is intentionally absent
+// from the public builtin registry.
+inline constexpr std::string_view kMemberInvokeTerm = "Object:invokeMember";
+
 inline constexpr bool isCustomOperatorCharacter(char value) {
     switch (value) {
         case '~':
