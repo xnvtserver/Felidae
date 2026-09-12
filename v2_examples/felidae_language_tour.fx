@@ -102,7 +102,7 @@ mutationExamples() =>
 
 # --- 8. Ancestry reasoning ---------------------------------------------------
 # commonAncestors reads the `extend` graph declared in section 1. Selecting
-# one candidate as contextually best belongs to the application or SSM.
+# one candidate as contextually best belongs to the calling application.
 ancestryExamples() =>
     cat := Mammal(name: "cat")
     lizard := Reptile(name: "lizard")

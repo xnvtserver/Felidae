@@ -95,10 +95,11 @@ main() => return reason "tiger" with "observed"
 
 ## Tokenization
 
-The custom BPE model is `models/felidae-bpe/model.txt`. The normal lexer owns
-its fixed first 59 syntax IDs, comments, strings, numbers, punctuation,
-operators, and reserved words (including `class`, `extends`, `index`, and
-`end`). The remaining line-oriented text dictionary
+The deterministic word-vocabulary model is `models/felidae-bpe/model.txt`
+(not byte-pair encoding despite the directory name - see `src/Tokenizer.h`).
+The normal lexer owns its fixed first 59 syntax IDs, comments, strings,
+numbers, punctuation, operators, and reserved words (including `class`,
+`extends`, `index`, and `end`). The remaining line-oriented text dictionary
 stores identifiers and mixfix anchors only; missing identifiers are appended
 in source order without training.
 

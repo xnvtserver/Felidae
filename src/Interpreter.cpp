@@ -2,8 +2,10 @@
 #include "BuiltinRegistry.h"
 #include "IntegerParser.h"
 #include "FelidaeRuntime.h"
+#include "NativeJson.h"
 #include "OperatorAnnotation.h"
 #include "Tokenizer.h"
+#include <rapidcsv.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -20,10 +22,6 @@
 #include <random>
 #include <set>
 #include <sstream>
-
-#ifdef FELIDAE_HAS_EIGEN
-#include <Eigen/Dense>
-#endif
 
 namespace Felidae {
 namespace fs = std::filesystem;
@@ -521,6 +519,28 @@ static std::string astNodeKind(const std::shared_ptr<AstNode>& node) {
     return "expr";
 }
 
+// Single authoritative "what does type()/typeof report for this runtime
+// value" classification. Both the goal-call form (type(X, Name)) and the
+// expression form (Name := type(X)) must agree, so they share this instead
+// of maintaining two hand-copied dynamic_pointer_cast chains.
+static bool resolveRuntimeTypeName(const std::shared_ptr<Expr>& value, std::string& out) {
+    if (auto ast = std::dynamic_pointer_cast<AstValueExpr>(value)) {
+        out = ast->nodeKind;
+        return true;
+    }
+    if (auto typeString = std::dynamic_pointer_cast<StringExpr>(
+            findMapValue(value, internalSymbolString(InternalSymbolKind::Type)))) {
+        out = typeString->value;
+        return true;
+    }
+    if (std::dynamic_pointer_cast<NumberExpr>(value)) { out = "number"; return true; }
+    if (std::dynamic_pointer_cast<StringExpr>(value)) { out = "string"; return true; }
+    if (std::dynamic_pointer_cast<BoolExpr>(value)) { out = "bool"; return true; }
+    if (std::dynamic_pointer_cast<ArrayExpr>(value)) { out = "array"; return true; }
+    if (std::dynamic_pointer_cast<NilExpr>(value)) { out = "nil"; return true; }
+    return false;
+}
+
 static bool valueMatchesBuiltinType(const std::shared_ptr<Expr>& value,
                                     LanguageTypeId type) {
     switch (type) {
@@ -755,146 +775,145 @@ static std::string exprToJson(const std::shared_ptr<Expr>& expr) {
     return "\"" + jsonEscape(expr ? expr->debug() : "") + "\"";
 }
 
-static void skipJsonWs(const std::string& text, size_t& pos) {
-    while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) pos++;
-}
-
-static bool parseJsonString(const std::string& text, size_t& pos, std::string& out) {
-    skipJsonWs(text, pos);
-    if (pos >= text.size() || text[pos] != '"') return false;
-    pos++;
-    out.clear();
-    while (pos < text.size() && text[pos] != '"') {
-        char c = text[pos++];
-        if (c == '\\' && pos < text.size()) {
-            char esc = text[pos++];
-            switch (esc) {
-                case 'n': out.push_back('\n'); break;
-                case 't': out.push_back('\t'); break;
-                case 'r': out.push_back('\r'); break;
-                case '"': out.push_back('"'); break;
-                case '\\': out.push_back('\\'); break;
-                default: out.push_back(esc); break;
+// The interpreter lowers JSON text into runtime Expr values through the one
+// grammar parser in NativeJson.h (also used by NativeRuntime.cpp for native
+// module manifests) instead of a second, independently hand-rolled
+// recursive-descent JSON parser. Only this conversion step is specific to
+// the language's value representation.
+static std::shared_ptr<Expr> jsonValueToExpr(const NativeJson::Value& value) {
+    switch (value.kind) {
+        case NativeJson::Value::Kind::Null:
+            return std::make_shared<NilExpr>();
+        case NativeJson::Value::Kind::Bool:
+            return std::make_shared<BoolExpr>(value.boolean);
+        case NativeJson::Value::Kind::Number:
+            return std::make_shared<NumberExpr>(value.number);
+        case NativeJson::Value::Kind::String:
+            return std::make_shared<StringExpr>(value.text);
+        case NativeJson::Value::Kind::Array: {
+            std::vector<std::shared_ptr<Expr>> items;
+            items.reserve(value.items.size());
+            for (const auto& item : value.items) items.push_back(jsonValueToExpr(item));
+            return std::make_shared<ArrayExpr>(std::move(items));
+        }
+        case NativeJson::Value::Kind::Object: {
+            std::vector<MapEntry> entries;
+            entries.reserve(value.fieldOrder.size());
+            for (const auto& key : value.fieldOrder) {
+                const auto field = value.fields.find(key);
+                if (field != value.fields.end()) {
+                    entries.push_back(MapEntry{key, jsonValueToExpr(field->second)});
+                }
             }
-        } else {
-            out.push_back(c);
+            return std::make_shared<MapExpr>(std::move(entries));
         }
     }
-    if (pos >= text.size() || text[pos] != '"') return false;
-    pos++;
-    return true;
-}
-
-static bool parseJsonValue(const std::string& text, size_t& pos, std::shared_ptr<Expr>& out);
-
-static bool parseJsonObjectValue(const std::string& text, size_t& pos, std::shared_ptr<Expr>& out) {
-    skipJsonWs(text, pos);
-    if (pos >= text.size() || text[pos] != '{') return false;
-    pos++;
-    std::vector<MapEntry> entries;
-    skipJsonWs(text, pos);
-    if (pos < text.size() && text[pos] == '}') {
-        pos++;
-        out = std::make_shared<MapExpr>(std::move(entries));
-        return true;
-    }
-    while (pos < text.size()) {
-        std::string key;
-        std::shared_ptr<Expr> value;
-        if (!parseJsonString(text, pos, key)) return false;
-        skipJsonWs(text, pos);
-        if (pos >= text.size() || text[pos] != ':') return false;
-        pos++;
-        if (!parseJsonValue(text, pos, value)) return false;
-        entries.push_back(MapEntry{key, value});
-        skipJsonWs(text, pos);
-        if (pos < text.size() && text[pos] == ',') {
-            pos++;
-            continue;
-        }
-        if (pos < text.size() && text[pos] == '}') {
-            pos++;
-            out = std::make_shared<MapExpr>(std::move(entries));
-            return true;
-        }
-        return false;
-    }
-    return false;
-}
-
-static bool parseJsonArrayValue(const std::string& text, size_t& pos, std::shared_ptr<Expr>& out) {
-    skipJsonWs(text, pos);
-    if (pos >= text.size() || text[pos] != '[') return false;
-    pos++;
-    std::vector<std::shared_ptr<Expr>> items;
-    skipJsonWs(text, pos);
-    if (pos < text.size() && text[pos] == ']') {
-        pos++;
-        out = std::make_shared<ArrayExpr>(std::move(items));
-        return true;
-    }
-    while (pos < text.size()) {
-        std::shared_ptr<Expr> value;
-        if (!parseJsonValue(text, pos, value)) return false;
-        items.push_back(value);
-        skipJsonWs(text, pos);
-        if (pos < text.size() && text[pos] == ',') {
-            pos++;
-            continue;
-        }
-        if (pos < text.size() && text[pos] == ']') {
-            pos++;
-            out = std::make_shared<ArrayExpr>(std::move(items));
-            return true;
-        }
-        return false;
-    }
-    return false;
-}
-
-static bool parseJsonValue(const std::string& text, size_t& pos, std::shared_ptr<Expr>& out) {
-    skipJsonWs(text, pos);
-    if (pos >= text.size()) return false;
-    if (text.compare(pos, 4, "null") == 0) {
-        pos += 4;
-        out = std::make_shared<NilExpr>();
-        return true;
-    }
-    if (text.compare(pos, 4, "true") == 0) {
-        pos += 4;
-        out = std::make_shared<BoolExpr>(true);
-        return true;
-    }
-    if (text.compare(pos, 5, "false") == 0) {
-        pos += 5;
-        out = std::make_shared<BoolExpr>(false);
-        return true;
-    }
-    if (text[pos] == '{') return parseJsonObjectValue(text, pos, out);
-    if (text[pos] == '[') return parseJsonArrayValue(text, pos, out);
-    if (text[pos] == '"') {
-        std::string value;
-        if (!parseJsonString(text, pos, value)) return false;
-        out = std::make_shared<StringExpr>(value);
-        return true;
-    }
-    size_t start = pos;
-    if (text[pos] == '-') pos++;
-    while (pos < text.size() && std::isdigit(static_cast<unsigned char>(text[pos]))) pos++;
-    if (pos < text.size() && text[pos] == '.') {
-        pos++;
-        while (pos < text.size() && std::isdigit(static_cast<unsigned char>(text[pos]))) pos++;
-    }
-    if (start == pos || (start + 1 == pos && text[start] == '-')) return false;
-    out = std::make_shared<NumberExpr>(std::stod(text.substr(start, pos - start)));
-    return true;
+    return std::make_shared<NilExpr>();
 }
 
 static bool parseFlatJsonObject(const std::string& text, std::shared_ptr<Expr>& out) {
-    size_t pos = 0;
-    if (!parseJsonValue(text, pos, out)) return false;
-    skipJsonWs(text, pos);
-    return pos == text.size();
+    try {
+        out = jsonValueToExpr(NativeJson::parse(text.c_str(), "json.parse"));
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+// A cell that fully parses as a finite number becomes one - matching how
+// every hand-written fact in this codebase already stores counts/flags as
+// numbers (e.g. School(students: 420, active: 1.0)), not strings - so CSV
+// facts compare and aggregate the same way hand-written ones do. Anything
+// else, including an empty cell, stays exactly the text it was.
+static std::shared_ptr<Expr> csvCellToExpr(const std::string& cell) {
+    if (!cell.empty()) {
+        std::size_t consumed = 0;
+        try {
+            const double value = std::stod(cell, &consumed);
+            if (consumed == cell.size() && std::isfinite(value)) {
+                return std::make_shared<NumberExpr>(value);
+            }
+        } catch (const std::exception&) {
+            // Not a number - fall through to the plain string below.
+        }
+    }
+    return std::make_shared<StringExpr>(cell);
+}
+
+// Parses through rapidcsv (third_party/rapidcsv, vendored but previously
+// unused) rather than a hand-rolled comma-split, so quoted fields containing
+// the separator or embedded newlines are handled correctly instead of
+// silently misparsed. The header row supplies field names; every other row
+// becomes one map, in row order, with fields in header order.
+static std::shared_ptr<ArrayExpr> csvTextToRows(const std::string& data) {
+    std::istringstream input(data);
+    const rapidcsv::Document document(input, rapidcsv::LabelParams(0, -1));
+    const auto columns = document.GetColumnNames();
+    std::vector<std::shared_ptr<Expr>> rows;
+    rows.reserve(document.GetRowCount());
+    for (std::size_t rowIndex = 0; rowIndex < document.GetRowCount(); ++rowIndex) {
+        std::vector<MapEntry> entries;
+        entries.reserve(columns.size());
+        for (std::size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex) {
+            entries.push_back(MapEntry{columns[columnIndex],
+                csvCellToExpr(document.GetCell<std::string>(columnIndex, rowIndex))});
+        }
+        rows.push_back(std::make_shared<MapExpr>(std::move(entries)));
+    }
+    return std::make_shared<ArrayExpr>(std::move(rows));
+}
+
+// The reverse of csvCellToExpr: a value's display text is already exactly
+// what belongs in a cell (numbers print without quotes, strings as their
+// own text) - only characters CSV itself treats specially need quoting.
+static std::string csvCellText(const std::shared_ptr<Expr>& value) {
+    std::string text;
+    if (const auto string = std::dynamic_pointer_cast<StringExpr>(value)) {
+        text = string->value;
+    } else if (const auto number = std::dynamic_pointer_cast<NumberExpr>(value)) {
+        std::ostringstream out;
+        out << number->value;
+        text = out.str();
+    } else if (value) {
+        text = value->debug();
+    }
+    if (text.find_first_of(",\"\n\r") == std::string::npos) return text;
+    std::string quoted = "\"";
+    for (const char character : text) {
+        if (character == '"') quoted += "\"\"";
+        else quoted += character;
+    }
+    quoted += "\"";
+    return quoted;
+}
+
+// Column order comes from the first row's own field order (every row here
+// already comes from either csv.parse, sharing one header-derived order, or
+// hand-built maps a caller is expected to keep consistent) rather than
+// recomputing a union of every row's keys, which could silently reorder
+// columns row to row.
+static std::string rowsToCsvText(const std::vector<std::shared_ptr<Expr>>& rows) {
+    std::vector<std::string> columns;
+    if (!rows.empty()) {
+        if (const auto first = std::dynamic_pointer_cast<MapExpr>(rows.front())) {
+            for (const auto& entry : first->entries) columns.push_back(entry.key);
+        }
+    }
+    std::ostringstream out;
+    for (std::size_t index = 0; index < columns.size(); ++index) {
+        if (index) out << ",";
+        out << csvCellText(std::make_shared<StringExpr>(columns[index]));
+    }
+    out << "\r\n";
+    for (const auto& row : rows) {
+        for (std::size_t index = 0; index < columns.size(); ++index) {
+            if (index) out << ",";
+            auto value = findMapValue(row, columns[index]);
+            out << csvCellText(value ? value : std::make_shared<StringExpr>(""));
+        }
+        out << "\r\n";
+    }
+    return out.str();
 }
 
 Interpreter::~Interpreter() {
@@ -1641,7 +1660,7 @@ std::shared_ptr<Expr> Interpreter::evaluateGlobal(const std::string& name) const
 }
 
 std::shared_ptr<Expr> Interpreter::evaluateExpressionText(const std::string& text) {
-    auto tokenizer = std::make_shared<BpeTokenizer>();
+    auto tokenizer = std::make_shared<WordVocabulary>();
     IntegerTokenList tokenList(std::move(tokenizer), text);
     IntegerParser parser(tokenList);
     auto expr = parser.parseExpressionText();
@@ -1713,14 +1732,60 @@ std::shared_ptr<Expr> Interpreter::executeEntryCall(const Call& entryCall) {
     throw InterpreterError("Auto entry method '" + entryCall.name + "' produced no result");
 }
 
+// Type.where(...) stays a lazy, composable selection internally so
+// AndWhere/limit/count/iteration can keep narrowing or consuming it without
+// re-querying FactMemory each step. But a selection that reaches the actual
+// program boundary - what gets printed or returned to a caller - is never
+// useful as its own descriptor; every other terminal fact operation
+// (OrWhere, limit, get, count, iteration) already materializes it into rows,
+// so displaying one directly does the same instead of showing the internal
+// {__type: "FactSelection", ...} cursor.
+std::shared_ptr<Expr> Interpreter::materializeIfFactSelection(const std::shared_ptr<Expr>& value) {
+    if (!value) return value;
+    if (std::dynamic_pointer_cast<FactSelectionExpr>(value)) return materializeFactSelection(value);
+    // A selection reported alongside other results - e.g. a returned map
+    // bundling several named queries - is exactly as displayable-as-a-raw-
+    // descriptor as a bare one, so the replacement recurses into maps and
+    // arrays rather than only checking the outermost value.
+    if (auto map = std::dynamic_pointer_cast<MapExpr>(value)) {
+        std::vector<MapEntry> entries;
+        entries.reserve(map->entries.size());
+        bool changed = false;
+        for (const auto& entry : map->entries) {
+            auto materialized = materializeIfFactSelection(entry.value);
+            changed = changed || materialized != entry.value;
+            entries.push_back(MapEntry{entry.key, entry.keyId, materialized});
+        }
+        if (!changed) return value;
+        auto result = std::make_shared<MapExpr>(std::move(entries));
+        result->factType = map->factType;
+        result->factIdentity = map->factIdentity;
+        return result;
+    }
+    if (auto array = std::dynamic_pointer_cast<ArrayExpr>(value)) {
+        std::vector<std::shared_ptr<Expr>> items;
+        items.reserve(array->items.size());
+        bool changed = false;
+        for (const auto& item : array->items) {
+            auto materialized = materializeIfFactSelection(item);
+            changed = changed || materialized != item;
+            items.push_back(materialized);
+        }
+        if (!changed) return value;
+        return std::make_shared<ArrayExpr>(std::move(items));
+    }
+    return value;
+}
+
 std::string Interpreter::valueToString(const std::shared_ptr<Expr>& value) const {
     Env env;
     auto resolved = resolveExpr(value, env);
     std::shared_ptr<Expr> evaluated;
-    if (const_cast<Interpreter*>(this)->evalExprValue(resolved, env, evaluated)) {
-        return publicValueString(evaluated);
+    auto* self = const_cast<Interpreter*>(this);
+    if (self->evalExprValue(resolved, env, evaluated)) {
+        return publicValueString(self->materializeIfFactSelection(evaluated));
     }
-    return publicValueString(resolved);
+    return publicValueString(self->materializeIfFactSelection(resolved));
 }
 
 
@@ -1728,10 +1793,11 @@ std::string Interpreter::valueToDisplayString(const std::shared_ptr<Expr>& value
     Env env;
     auto resolved = resolveExpr(value, env);
     std::shared_ptr<Expr> evaluated;
-    if (const_cast<Interpreter*>(this)->evalExprValue(resolved, env, evaluated)) {
-        return publicDisplayString(evaluated);
+    auto* self = const_cast<Interpreter*>(this);
+    if (self->evalExprValue(resolved, env, evaluated)) {
+        return publicDisplayString(self->materializeIfFactSelection(evaluated));
     }
-    return publicDisplayString(resolved);
+    return publicDisplayString(self->materializeIfFactSelection(resolved));
 }
 void Interpreter::solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals,
                                  Env env,
@@ -1791,6 +1857,16 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
         const auto continueFrame = [&](Env nextEnv) {
             work.push_back(WorkFrame{frame.goals, nextGoalIndex, std::move(nextEnv), frame.depth});
         };
+
+        // methodCallDepth_ (incremented/decremented only around
+        // solveMethodCall's own body, via its existing CounterScope) is the
+        // real method call-stack depth - unlike frame.depth, which also
+        // increases for group/if/or nesting and, worse, does NOT increase
+        // for a method called from expression position (e.g. `b :=
+        // helper(x: a)`, the common case): evalBuiltinTerm's user-callable
+        // path invokes solveMethodCall with a hardcoded depth of 0,
+        // independent of the caller's frame.depth entirely.
+        if (goalHook_) goalHook_(*goal, frame.env, methodCallDepth_);
 
         switch (goal->kind()) {
             case GoalKind::Assign: {
@@ -2511,17 +2587,54 @@ bool Interpreter::solveMethodCall(const Call& call,
     };
 
     if (!originalClause->fallbackBranches.empty()) {
+        // Split the body at its first `where`: goals before it (e.g. `found
+        // := lca(...)` ahead of `where found.status == "none"`) are an
+        // unconditional prelude that must still be visible to the `else`
+        // branches when the guard does not hold, since a branch may depend
+        // on a value the guard itself was computed from. Only the guard
+        // onward is allowed to fail outright. (A body with no `where` at all
+        // puts everything in the prelude, matching plain sequential
+        // evaluation.) Previously the whole body ran as one unit and the
+        // fallback ran unconditionally afterward on top of it, so a
+        // satisfied guard's own return was always overwritten by the first
+        // `else` branch's result instead of being used, while a failed
+        // guard produced no solution at all - the fallback never ran either.
+        std::size_t whereIndex = 0;
+        while (whereIndex < originalClause->body.size() &&
+               originalClause->body[whereIndex]->kind() != GoalKind::Where) {
+            ++whereIndex;
+        }
+        const std::vector<std::shared_ptr<Goal>> preludeGoals(
+            originalClause->body.begin(), originalClause->body.begin() + static_cast<std::ptrdiff_t>(whereIndex));
+        const std::vector<std::shared_ptr<Goal>> guardedGoals(
+            originalClause->body.begin() + static_cast<std::ptrdiff_t>(whereIndex), originalClause->body.end());
+
         for (auto& candidate : candidates) {
             std::vector<Solution> preludeSolutions;
-            if (originalClause->body.empty()) {
+            if (preludeGoals.empty()) {
                 preludeSolutions.push_back(Solution{std::move(candidate)});
             } else {
-                solveRecursive(originalClause->body, std::move(candidate), preludeSolutions, 1, depth + 1);
+                solveRecursive(preludeGoals, std::move(candidate), preludeSolutions, 1, depth + 1);
             }
             for (auto& prelude : preludeSolutions) {
+                Env preludeEnv = prelude.env;
+                std::vector<Solution> guardedSolutions;
+                if (guardedGoals.empty()) {
+                    guardedSolutions.push_back(Solution{preludeEnv});
+                } else {
+                    solveRecursive(guardedGoals, preludeEnv, guardedSolutions, 1, depth + 1);
+                }
+                bool guardReturned = false;
+                for (auto& solution : guardedSolutions) {
+                    auto returnedIt = solution.env.find(internalSymbolString(InternalSymbolKind::Return));
+                    if (returnedIt == solution.env.end()) continue;
+                    guardReturned = true;
+                    if (appendReturnedSolution(solution.env, returnedIt->second)) return true;
+                }
+                if (guardReturned) continue;
                 for (const auto& branch : originalClause->fallbackBranches) {
                     std::vector<Solution> branchSolutions;
-                    solveRecursive(branch, prelude.env, branchSolutions, 1, depth + 1);
+                    solveRecursive(branch, preludeEnv, branchSolutions, 1, depth + 1);
                     bool branchReturned = false;
                     for (auto& solution : branchSolutions) {
                         auto returnedIt = solution.env.find(internalSymbolString(InternalSymbolKind::Return));
@@ -4339,16 +4452,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
     if (call.builtinId == BuiltinId::Type) {
         if (!valueArg({"value", "data", "input"}, 0, a)) return false;
         std::string resolvedType;
-        if (auto ast = std::dynamic_pointer_cast<AstValueExpr>(a)) resolvedType = ast->nodeKind;
-        else if (auto typeString = std::dynamic_pointer_cast<StringExpr>(
-                     findMapValue(a, internalSymbolString(InternalSymbolKind::Type)))) {
-            resolvedType = typeString->value;
-        } else if (std::dynamic_pointer_cast<NumberExpr>(a)) resolvedType = "number";
-        else if (std::dynamic_pointer_cast<StringExpr>(a)) resolvedType = "string";
-        else if (std::dynamic_pointer_cast<BoolExpr>(a)) resolvedType = "bool";
-        else if (std::dynamic_pointer_cast<ArrayExpr>(a)) resolvedType = "array";
-        else if (std::dynamic_pointer_cast<NilExpr>(a)) resolvedType = "nil";
-        else return false;
+        if (!resolveRuntimeTypeName(a, resolvedType)) return false;
         const Arg* out = namedArg("name");
         if (!out) out = namedArg("type");
         if (!out) out = namedArg("out");
@@ -5046,13 +5150,8 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
     library->free(response);
 
     std::shared_ptr<Expr> parsed;
-    size_t pos = 0;
-    if (!parseJsonValue(responseText, pos, parsed)) {
+    if (!parseFlatJsonObject(responseText, parsed)) {
         throw InterpreterError("Native function '" + nativeFunctionName + "' returned invalid JSON");
-    }
-    skipJsonWs(responseText, pos);
-    if (pos != responseText.size()) {
-        throw InterpreterError("Native function '" + nativeFunctionName + "' returned trailing data after JSON");
     }
 
     if (auto errorValue = findMapValue(parsed, "error")) {
@@ -5087,6 +5186,64 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
     return true;
 }
 
+bool Interpreter::evalArrayWherePredicate(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out) {
+    const Arg* selectionArg = nullptr;
+    const Arg* predicateArg = nullptr;
+    for (const auto& arg : term.args) {
+        if (arg.name == "selection") selectionArg = &arg;
+        else if (arg.name == "predicate") predicateArg = &arg;
+    }
+    if (!selectionArg || !predicateArg) return false;
+    std::shared_ptr<Expr> selectionValue;
+    if (!evalExprValue(selectionArg->value, env, selectionValue)) return false;
+    const auto array = std::dynamic_pointer_cast<ArrayExpr>(selectionValue);
+    if (!array) {
+        throw InterpreterError("where(...) on a join result expects an array of {left, right} pairs");
+    }
+    static const SymbolId leftId = symbolIdForName("left");
+    static const SymbolId rightId = symbolIdForName("right");
+    std::vector<std::shared_ptr<Expr>> matches;
+    for (const auto& item : array->items) {
+        const auto pair = std::dynamic_pointer_cast<MapExpr>(item);
+        Env rowEnv = env;
+        if (pair) {
+            if (const auto leftValue = findMapValue(pair, "left")) rowEnv[leftId] = leftValue;
+            if (const auto rightValue = findMapValue(pair, "right")) rowEnv[rightId] = rightValue;
+        }
+        std::shared_ptr<Expr> matched;
+        if (evalExprValue(predicateArg->value, rowEnv, matched)) {
+            if (const auto matchedBool = std::dynamic_pointer_cast<BoolExpr>(matched);
+                matchedBool && matchedBool->value) {
+                matches.push_back(item->clone());
+            }
+        }
+    }
+    out = std::make_shared<ArrayExpr>(std::move(matches));
+    return true;
+}
+
+// Shared by csv.toFacts (raw CSV text) and csv.toFelidaeFacts (an
+// already-parsed array, e.g. from csv.parse): each row's own fields become
+// one new fact of `type`, the same way Type.insert(values:) already does
+// for a single map (Interpreter.cpp's FactInsert case) - `source`, when
+// given, is recorded the same way so a later db.sync/Type.update/delete
+// writes back only these rows' file instead of the whole store.
+std::shared_ptr<ArrayExpr> Interpreter::insertFactsFromRows(const std::string& type,
+                                                            const std::vector<std::shared_ptr<Expr>>& rows,
+                                                            const std::filesystem::path& source) {
+    std::vector<std::shared_ptr<Expr>> inserted;
+    inserted.reserve(rows.size());
+    for (const auto& row : rows) {
+        const auto rowMap = std::dynamic_pointer_cast<MapExpr>(row);
+        if (!rowMap) throw InterpreterError("csv.toFacts expects every row to be a map of fields");
+        auto fact = std::static_pointer_cast<MapExpr>(rowMap->clone());
+        fact->factType = type;
+        memory_.addFact(type, {}, fact, source);
+        inserted.push_back(fact);
+    }
+    return std::make_shared<ArrayExpr>(std::move(inserted));
+}
+
 bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out) {
     if (term.builtinId == BuiltinId::CommonAncestors ||
         term.builtinId == BuiltinId::LowestCommonAncestor ||
@@ -5107,6 +5264,15 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         // evaluating that term first would execute it and discard proof
         // identity. The reasoning runtime resolves only its query arguments.
         return evalReasoningBuiltin(term, env, out);
+    }
+    if (term.builtinId == BuiltinId::ArrayWhere) {
+        // Same reasoning as Reasoning.prove above: where(...) after join(...)
+        // is `left`/`right` comparisons (e.g. left.id == right.school_id).
+        // Those names are only meaningful once bound per candidate pair, so
+        // the predicate must stay unevaluated here and be run once per row
+        // instead - the eager per-argument evaluation loop below would run
+        // it now with nothing bound.
+        return evalArrayWherePredicate(term, env, out);
     }
     std::vector<std::shared_ptr<Expr>> args;
     args.reserve(term.args.size());
@@ -5133,7 +5299,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         const auto source = std::dynamic_pointer_cast<StringExpr>(args.front());
         if (!source) throw InterpreterError("system.run expects a string source");
         try {
-            auto tokenizer = std::make_shared<BpeTokenizer>();
+            auto tokenizer = std::make_shared<WordVocabulary>();
             IntegerTokenList tokenList(std::move(tokenizer), source->value);
             IntegerParser parser(tokenList);
             if (parser.startsQuery()) {
@@ -5170,9 +5336,38 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         }
     }
 
+    if (term.builtinId == BuiltinId::FactLimit) {
+        const auto argument = [&](const char* name, std::size_t positional)
+            -> std::shared_ptr<Expr> {
+            for (std::size_t index = 0; index < term.args.size(); ++index) {
+                if (term.args[index].name == name) return args[index];
+            }
+            return positional < args.size() ? args[positional] : nullptr;
+        };
+        // .limit(...) closes either a lazy Type.where(...) selection or an
+        // already-materialized array - e.g. join(...).where(...).order_by(...)
+        // - so it accepts whichever it is handed rather than requiring a
+        // FactSelectionExpr the way AndWhere/OrWhere below still do (they
+        // need the lazy filter list to keep composing).
+        const auto selectionArg = argument("selection", 0);
+        auto rows = std::dynamic_pointer_cast<FactSelectionExpr>(selectionArg)
+            ? materializeFactSelection(selectionArg)
+            : std::dynamic_pointer_cast<ArrayExpr>(selectionArg);
+        if (!rows) throw InterpreterError("Fact selection operation expects Type.where(...) or an array");
+        const auto count = std::dynamic_pointer_cast<NumberExpr>(argument("records", 1));
+        if (!count || count->value < 0 || std::floor(count->value) != count->value) {
+            throw InterpreterError("Fact.limit expects a non-negative integer records value");
+        }
+        std::vector<std::shared_ptr<Expr>> limited = rows->items;
+        if (limited.size() > static_cast<std::size_t>(count->value)) {
+            limited.resize(static_cast<std::size_t>(count->value));
+        }
+        out = std::make_shared<ArrayExpr>(std::move(limited));
+        return true;
+    }
+
     if (term.builtinId == BuiltinId::FactAndWhere ||
-        term.builtinId == BuiltinId::FactOrWhere ||
-        term.builtinId == BuiltinId::FactLimit) {
+        term.builtinId == BuiltinId::FactOrWhere) {
         const auto argument = [&](const char* name, std::size_t positional)
             -> std::shared_ptr<Expr> {
             for (std::size_t index = 0; index < term.args.size(); ++index) {
@@ -5182,18 +5377,6 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         };
         const auto selection = std::dynamic_pointer_cast<FactSelectionExpr>(argument("selection", 0));
         if (!selection) throw InterpreterError("Fact selection operation expects Type.where(...)");
-        if (term.builtinId == BuiltinId::FactLimit) {
-            const auto count = std::dynamic_pointer_cast<NumberExpr>(argument("records", 1));
-            if (!count || count->value < 0 || std::floor(count->value) != count->value) {
-                throw InterpreterError("Fact.limit expects a non-negative integer records value");
-            }
-            auto rows = materializeFactSelection(selection);
-            if (rows->items.size() > static_cast<std::size_t>(count->value)) {
-                rows->items.resize(static_cast<std::size_t>(count->value));
-            }
-            out = std::move(rows);
-            return true;
-        }
         const auto match = std::dynamic_pointer_cast<MapExpr>(argument("match", 1));
         if (!match) throw InterpreterError("Fact filter expects a map of fields");
         auto filtered = std::static_pointer_cast<FactSelectionExpr>(selection->clone());
@@ -5226,6 +5409,89 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         for (const auto& value : left->items) append(value);
         for (const auto& value : right->items) append(value);
         out = std::make_shared<ArrayExpr>(std::move(rows));
+        return true;
+    }
+
+    if (term.builtinId == BuiltinId::FactJoin) {
+        // join(TypeA, TypeB) is the full cross product, deliberately
+        // unfiltered: every {left, right} pair of one TypeA fact with one
+        // TypeB fact. A capitalized type name that never resolves as an
+        // ordinary value survives the earlier eager-eval loop as its own
+        // VarExpr (the same fallback Type.all()/Type.count() rely on).
+        if (args.size() != 2) throw InterpreterError("join expects two fact type names");
+        const auto leftType = std::dynamic_pointer_cast<VarExpr>(args[0]);
+        const auto rightType = std::dynamic_pointer_cast<VarExpr>(args[1]);
+        if (!leftType || !leftType->isCapitalized || !rightType || !rightType->isCapitalized) {
+            throw InterpreterError("join expects two fact type names, e.g. join(School, Teacher)");
+        }
+        ensurePredicateLoaded(leftType->name);
+        ensurePredicateLoaded(rightType->name);
+        const auto rowsOf = [&](const std::string& type) {
+            std::vector<std::shared_ptr<Expr>> rows;
+            for (size_t index : memory_.currentFactIndexes(memory_.compatibleFactIndexes(type))) {
+                if (const auto value = memory_.factValue(index)) rows.push_back(value);
+            }
+            return rows;
+        };
+        const auto leftRows = rowsOf(leftType->name);
+        const auto rightRows = rowsOf(rightType->name);
+        std::vector<std::shared_ptr<Expr>> pairs;
+        pairs.reserve(leftRows.size() * rightRows.size());
+        for (const auto& leftRow : leftRows) {
+            for (const auto& rightRow : rightRows) {
+                pairs.push_back(std::make_shared<MapExpr>(std::vector<MapEntry>{
+                    MapEntry{"left", leftRow->clone()},
+                    MapEntry{"right", rightRow->clone()}}));
+            }
+        }
+        out = std::make_shared<ArrayExpr>(std::move(pairs));
+        return true;
+    }
+
+    if (term.builtinId == BuiltinId::ArrayOrderBy) {
+        const auto argument = [&](const char* name, std::size_t positional)
+            -> std::shared_ptr<Expr> {
+            for (std::size_t index = 0; index < term.args.size(); ++index) {
+                if (term.args[index].name == name) return args[index];
+            }
+            return positional < args.size() ? args[positional] : nullptr;
+        };
+        const auto array = std::dynamic_pointer_cast<ArrayExpr>(argument("selection", 0));
+        if (!array) throw InterpreterError("order_by expects an array");
+        std::string fieldPath;
+        if (!argAsString(argument("field", 1), fieldPath) || fieldPath.empty()) {
+            throw InterpreterError("order_by expects a 'field' path such as \"right.name\"");
+        }
+        const auto valueAtPath = [&](const std::shared_ptr<Expr>& row) -> std::shared_ptr<Expr> {
+            std::shared_ptr<Expr> current = row;
+            std::size_t start = 0;
+            while (current && start <= fieldPath.size()) {
+                const auto dot = fieldPath.find('.', start);
+                const auto segment = fieldPath.substr(start, dot == std::string::npos ? std::string::npos : dot - start);
+                current = findMapValue(current, segment);
+                if (dot == std::string::npos) break;
+                start = dot + 1;
+            }
+            return current;
+        };
+        std::vector<std::shared_ptr<Expr>> items = array->items;
+        std::stable_sort(items.begin(), items.end(),
+            [&](const std::shared_ptr<Expr>& lhs, const std::shared_ptr<Expr>& rhs) {
+                const auto leftValue = valueAtPath(lhs);
+                const auto rightValue = valueAtPath(rhs);
+                double leftNumber = 0.0, rightNumber = 0.0;
+                if (leftValue && rightValue &&
+                    argAsNumber(leftValue, leftNumber) && argAsNumber(rightValue, rightNumber)) {
+                    return leftNumber < rightNumber;
+                }
+                std::string leftText, rightText;
+                if (leftValue && rightValue &&
+                    argAsString(leftValue, leftText) && argAsString(rightValue, rightText)) {
+                    return leftText < rightText;
+                }
+                return false;
+            });
+        out = std::make_shared<ArrayExpr>(std::move(items));
         return true;
     }
 
@@ -5282,21 +5548,9 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
 
     if (term.builtinId == BuiltinId::Type) {
         if (args.size() != 1) return false;
-        if (auto ast = std::dynamic_pointer_cast<AstValueExpr>(args.front())) {
-            out = std::make_shared<StringExpr>(ast->nodeKind);
-            return true;
-        }
-        if (auto type = std::dynamic_pointer_cast<StringExpr>(
-                findMapValue(args.front(), internalSymbolString(InternalSymbolKind::Type)))) {
-            out = type->clone();
-            return true;
-        }
-        if (std::dynamic_pointer_cast<NumberExpr>(args.front())) out = std::make_shared<StringExpr>("number");
-        else if (std::dynamic_pointer_cast<StringExpr>(args.front())) out = std::make_shared<StringExpr>("string");
-        else if (std::dynamic_pointer_cast<BoolExpr>(args.front())) out = std::make_shared<StringExpr>("bool");
-        else if (std::dynamic_pointer_cast<ArrayExpr>(args.front())) out = std::make_shared<StringExpr>("array");
-        else if (std::dynamic_pointer_cast<NilExpr>(args.front())) out = std::make_shared<StringExpr>("nil");
-        else return false;
+        std::string resolvedType;
+        if (!resolveRuntimeTypeName(args.front(), resolvedType)) return false;
+        out = std::make_shared<StringExpr>(resolvedType);
         return true;
     }
 
@@ -6003,6 +6257,63 @@ bool Interpreter::evalCallAsValueOnce(
         return true;
     }
 
+    if (builtin == BuiltinId::CsvParse) {
+        const std::string data = requireNamedString({"data", "text", "content"}, 0, "data");
+        try {
+            out = csvTextToRows(data);
+        } catch (const std::exception& e) {
+            throw InterpreterError("csv.parse failed: " + std::string(e.what()));
+        }
+        return true;
+    }
+
+    if (builtin == BuiltinId::CsvToFacts) {
+        const std::string data = requireNamedString({"data", "text", "content"}, 0, "data");
+        const std::string type = requireNamedString({"type"}, 1, "type");
+        std::string source;
+        if (const Arg* sourceArg = findTermArgByNameOrIndex(term, "source", 2)) {
+            std::shared_ptr<Expr> sourceValue;
+            if (!evalExprValue(sourceArg->value, env, sourceValue) || !argAsString(sourceValue, source)) {
+                throw InterpreterError("csv.toFacts expects string argument 'source'");
+            }
+        }
+        std::shared_ptr<ArrayExpr> rows;
+        try {
+            rows = csvTextToRows(data);
+        } catch (const std::exception& e) {
+            throw InterpreterError("csv.toFacts failed: " + std::string(e.what()));
+        }
+        out = insertFactsFromRows(type, rows->items, source);
+        return true;
+    }
+
+    if (builtin == BuiltinId::CsvToFelidaeFacts) {
+        std::shared_ptr<Expr> dataValue;
+        if (!evalNamed("data", 0, dataValue)) {
+            throw InterpreterError("csv.toFelidaeFacts expects array argument 'data'");
+        }
+        std::vector<std::shared_ptr<Expr>> rows;
+        if (!exprAsArrayItems(dataValue, rows)) {
+            throw InterpreterError("csv.toFelidaeFacts expects array argument 'data'");
+        }
+        const std::string type = requireNamedString({"type"}, 1, "type");
+        out = insertFactsFromRows(type, rows, {});
+        return true;
+    }
+
+    if (builtin == BuiltinId::CsvToText) {
+        std::shared_ptr<Expr> dataValue;
+        if (!evalNamed("data", 0, dataValue)) {
+            throw InterpreterError("csv.toText expects array argument 'data'");
+        }
+        std::vector<std::shared_ptr<Expr>> rows;
+        if (!exprAsArrayItems(dataValue, rows)) {
+            throw InterpreterError("csv.toText expects array argument 'data'");
+        }
+        out = std::make_shared<StringExpr>(rowsToCsvText(rows));
+        return true;
+    }
+
     if (builtin == BuiltinId::JsonParse) {
         std::string jsonText = requireNamedString({"data", "value"}, 0, "data");
         std::shared_ptr<Expr> parsed;
@@ -6477,7 +6788,8 @@ bool Interpreter::evalCallAsValueOnce(
         case BuiltinId::MathAbs:
         case BuiltinId::MathFloor:
         case BuiltinId::MathCeil:
-        case BuiltinId::MathRound: {
+        case BuiltinId::MathRound:
+        case BuiltinId::MathCbrt: {
             double value = requireNamedNumber({"value", "data", "x"}, 0, "value");
             switch (term.builtinId) {
                 case BuiltinId::MathSqrt: out = std::make_shared<NumberExpr>(std::sqrt(value)); break;
@@ -6494,6 +6806,12 @@ bool Interpreter::evalCallAsValueOnce(
                 case BuiltinId::MathFloor: out = std::make_shared<NumberExpr>(std::floor(value)); break;
                 case BuiltinId::MathCeil: out = std::make_shared<NumberExpr>(std::ceil(value)); break;
                 case BuiltinId::MathRound: out = std::make_shared<NumberExpr>(std::round(value)); break;
+                // Signed cube root: unlike pow(value, 1/3), this is defined
+                // for negative inputs too (cbrt(-8) == -2), which is the one
+                // operation of the old VM's NumericOperation set that plain
+                // .fx arithmetic genuinely cannot reproduce (every other
+                // operation below is now a core/math.fx function instead).
+                case BuiltinId::MathCbrt: out = std::make_shared<NumberExpr>(std::cbrt(value)); break;
                 default: break;
             }
             return true;
@@ -6718,19 +7036,12 @@ bool Interpreter::evalCallAsValueOnce(
                 throw InterpreterError(term.name + " expects arrays of equal length");
             }
             if (left.empty()) throw InterpreterError(term.name + " expects non-empty arrays");
-#ifdef FELIDAE_HAS_EIGEN
-            Eigen::VectorXd lhs(static_cast<Eigen::Index>(left.size()));
-            Eigen::VectorXd rhs(static_cast<Eigen::Index>(right.size()));
-            for (size_t i = 0; i < left.size(); ++i) {
-                lhs(static_cast<Eigen::Index>(i)) = requireNumber(left[i], term.name, "left");
-                rhs(static_cast<Eigen::Index>(i)) = requireNumber(right[i], term.name, "right");
-            }
-            if (op == "dot") {
-                out = std::make_shared<NumberExpr>(lhs.dot(rhs));
-            } else {
-                out = std::make_shared<NumberExpr>((lhs - rhs).squaredNorm() / static_cast<double>(left.size()));
-            }
-#else
+            // Plain scalar accumulation, not a vendored linear-algebra library:
+            // these vectors are small (fact/array-sized), so there is no real
+            // need for a heavyweight Eigen dependency here, and none was ever
+            // wired into the build (no FELIDAE_HAS_EIGEN definition existed
+            // anywhere in CMakeLists.txt - the branch that used to guard this
+            // was permanently dead code).
             double total = 0.0;
             for (size_t i = 0; i < left.size(); ++i) {
                 double a = requireNumber(left[i], term.name, "left");
@@ -6738,7 +7049,6 @@ bool Interpreter::evalCallAsValueOnce(
                 total += op == "dot" ? a * b : (a - b) * (a - b);
             }
             out = std::make_shared<NumberExpr>(op == "dot" ? total : total / static_cast<double>(left.size()));
-#endif
             return true;
         }
         throw InterpreterError("Unknown ml builtin: " + term.name);
@@ -8763,7 +9073,18 @@ Interpreter::ClauseList* Interpreter::findClauses(const std::string& name, Symbo
     }
     if (nameId == 0) nameId = symbolIdForName(name);
     auto found = clauses_->find(nameId);
-    if (found == clauses_->end()) return nullptr;
+    // "No clauses under this name" is itself a stable answer - invalidated
+    // the same way a real hit is, by addClause erasing this exact name's
+    // entry the moment a clause is actually added under it (see addClause).
+    // Every builtin call whose Call/TermExpr name (e.g. "Fact:select",
+    // "Fact:andWhere") no user program ever defines a clause for used to
+    // fall through this miss on every single invocation forever - measured
+    // as the dominant share of dispatchCacheMisses_ (e.g. ~91% miss rate
+    // running v2_examples/csv_fact_database.fx --benchmark-repeat 50).
+    if (found == clauses_->end()) {
+        if (cacheInvalidationDepth_ == 0) clauseLookupCache_[name] = nullptr;
+        return nullptr;
+    }
     for (auto& bucket : found->second) {
         if (bucket.name == name) {
             auto* clauses = &bucket.clauses;
@@ -8771,6 +9092,7 @@ Interpreter::ClauseList* Interpreter::findClauses(const std::string& name, Symbo
             return clauses;
         }
     }
+    if (cacheInvalidationDepth_ == 0) clauseLookupCache_[name] = nullptr;
     return nullptr;
 }
 
@@ -8785,7 +9107,10 @@ const Interpreter::ClauseList* Interpreter::findClauses(const std::string& name,
     }
     if (nameId == 0) nameId = symbolIdForName(name);
     auto found = clauses_->find(nameId);
-    if (found == clauses_->end()) return nullptr;
+    if (found == clauses_->end()) {
+        if (cacheInvalidationDepth_ == 0) clauseLookupCache_[name] = nullptr;
+        return nullptr;
+    }
     for (const auto& bucket : found->second) {
         if (bucket.name == name) {
             auto* clauses = const_cast<ClauseList*>(&bucket.clauses);
@@ -8793,6 +9118,7 @@ const Interpreter::ClauseList* Interpreter::findClauses(const std::string& name,
             return clauses;
         }
     }
+    if (cacheInvalidationDepth_ == 0) clauseLookupCache_[name] = nullptr;
     return nullptr;
 }
 

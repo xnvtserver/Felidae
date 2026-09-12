@@ -5,7 +5,7 @@ database. `.fx` source is tokenized, parsed to an AST, and evaluated directly
 by the restored interpreter.
 
 ```text
-source.fx -> custom BPE -> IntegerParser -> Program AST -> Interpreter
+source.fx -> word vocabulary tokenizer -> IntegerParser -> Program AST -> Interpreter
 ```
 
 There is no compiler-to-IR conversion, binary program format, VM, SentencePiece
@@ -34,12 +34,14 @@ No external fact store is required for this interpreter-only runtime.
 
 ## Token model
 
-`models/felidae-bpe/model.txt` is the checked-in custom-BPE identifier
-vocabulary. Its physical line number is the token ID. The lexer owns the first
-59 fixed syntax IDs plus reserved `class`, `extends`, `index`, and `end`, as
-well as comments, strings, punctuation, and numbers; BPE only looks up
-identifier and mixfix-anchor words in the text table. Unknown words are added
-deterministically in source order.
+`models/felidae-bpe/model.txt` is the checked-in, deterministic word-vocabulary
+identifier dictionary (not byte-pair encoding - see `src/Tokenizer.h` for why
+the directory kept its old name). Its physical line number is the token ID.
+The lexer owns the first 59 fixed syntax IDs plus reserved `class`, `extends`,
+`index`, and `end`, as well as comments, strings, punctuation, and numbers;
+the vocabulary only looks up whole identifier and mixfix-anchor words in the
+text table. Unknown words are added deterministically in source order, with
+no training step.
 
 See [code.md](code.md) for the execution architecture and
 [docs_language.md](docs_language.md) for language semantics.

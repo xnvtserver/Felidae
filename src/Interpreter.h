@@ -6,6 +6,7 @@
 #include "NativeRuntime.h"
 #include "ParserMetrics.h"
 #include <filesystem>
+#include <functional>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -66,6 +67,25 @@ public:
     // Imported source files registered by the current interpreter.  The root
     // module is owned by the frontend; callers add it to any watch set.
     std::vector<std::filesystem::path> loadedSourceFiles() const;
+
+    // Real (not simulated) execution control for a driving debugger: called
+    // once per goal, immediately before it runs, from solveIterative's
+    // dispatch loop - the same point every top-level goal and every method
+    // body's goals pass through (method calls recurse back into that same
+    // loop via solveRecursive), so one hook covers both without threading a
+    // callback through every call site. The hook receives the live Env for
+    // that goal, so `print`/`locals` during a pause see real bound values,
+    // not placeholders, and the real method call-stack depth (methodCallDepth_,
+    // shared with the recursion-limit check in solveMethodCall) rather than
+    // solveIterative's own frame nesting depth, which also counts group/if/or
+    // bodies and - for a method called from expression position, e.g. `b :=
+    // helper(x: a)` - does not increase at all. Costs one null std::function
+    // check per goal when unset (the default), so running without a debugger
+    // attached pays nothing beyond that. Only main.cpp's CLI debug driver
+    // installs one; the interpreter itself has no notion of breakpoints or
+    // step modes.
+    using GoalHook = std::function<void(const Goal& goal, const Env& env, std::size_t callDepth)>;
+    void setGoalHook(GoalHook hook) { goalHook_ = std::move(hook); }
 
 private:
     struct ThreadTask {
@@ -143,8 +163,11 @@ private:
     using ClauseTable = std::unordered_map<SymbolId, std::vector<ClauseBucket>>;
 
     struct ProvenanceNode {
-        enum class Kind { Fact, Rule };
-        Kind kind = Kind::Fact;
+        // Reuses ClauseKind (AST.h) rather than a private Fact/Rule enum:
+        // every provenance node originates from a ClauseStmt that already
+        // carries this same classification, so a second copy would only be
+        // able to drift from it.
+        ClauseKind kind = ClauseKind::Fact;
         std::uint64_t factId = 0;
         std::string rule;
         SourceSpan span;
@@ -277,6 +300,7 @@ private:
     std::size_t streamedModuleMicros_ = 0;
     ParserMetrics parserMetrics_;
     std::size_t factRegistrationMicros_ = 0;
+    GoalHook goalHook_;
     mutable std::size_t dispatchCacheHits_ = 0;
     mutable std::size_t dispatchCacheMisses_ = 0;
     std::size_t tableCacheHits_ = 0;
@@ -324,6 +348,12 @@ private:
     bool evalReasoningBuiltin(const TermExpr& term,
                               const Env& env,
                               std::shared_ptr<Expr>& out);
+    bool evalArrayWherePredicate(const TermExpr& term,
+                                 const Env& env,
+                                 std::shared_ptr<Expr>& out);
+    std::shared_ptr<ArrayExpr> insertFactsFromRows(const std::string& type,
+                                                   const std::vector<std::shared_ptr<Expr>>& rows,
+                                                   const std::filesystem::path& source);
     bool evalReasoningContrary(const TermExpr& term,
                                const Env& env,
                                std::shared_ptr<Expr>& out);
@@ -453,6 +483,7 @@ private:
     };
     FactMaterialization factToMap(const ClauseStmt& clause);
     std::shared_ptr<ArrayExpr> materializeFactSelection(const std::shared_ptr<Expr>& selection);
+    std::shared_ptr<Expr> materializeIfFactSelection(const std::shared_ptr<Expr>& value);
     void refreshAncestryCaches() const;
     const std::vector<std::string>& typeAncestry(const std::string& type) const;
     const std::unordered_map<std::string, std::size_t>& typeAncestorDistances(

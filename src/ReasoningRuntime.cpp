@@ -342,7 +342,7 @@ Interpreter::buildTableEvaluation(
             const std::string key = answer.debug();
 
             ProvenanceNode node;
-            node.kind = ProvenanceNode::Kind::Fact;
+            node.kind = ClauseKind::Fact;
             node.factId = fact.id;
             const std::size_t provenance = evaluation->provenance.size();
             evaluation->provenance.push_back(std::move(node));
@@ -478,7 +478,7 @@ Interpreter::buildTableEvaluation(
                                 "DerivationLimit: provenance node limit reached");
                         }
                         ProvenanceNode node;
-                        node.kind = ProvenanceNode::Kind::Rule;
+                        node.kind = ClauseKind::Rule;
                         node.rule = rule->clause->head.name;
                         node.span = rule->clause->sourceSpan;
                         node.parents = std::move(binding.provenance);
@@ -666,7 +666,7 @@ std::shared_ptr<MapExpr> Interpreter::materializeDerivationResult(
             if (!visited.insert(handle).second ||
                 handle >= evaluation->provenance.size()) continue;
             const auto& node = evaluation->provenance[handle];
-            if (node.kind == ProvenanceNode::Kind::Fact) {
+            if (node.kind == ClauseKind::Fact) {
                 result.factIds.insert(node.factId);
                 if (explainedFacts.insert(node.factId).second) {
                     result.explanation.push_back(markFact(std::make_shared<MapExpr>(

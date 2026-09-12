@@ -59,7 +59,7 @@ std::size_t statementEnd(std::string_view source, std::size_t begin) {
 
 } // namespace
 
-IntegerTokenList::IntegerTokenList(std::shared_ptr<BpeTokenizer> tokenizer,
+IntegerTokenList::IntegerTokenList(std::shared_ptr<WordVocabulary> tokenizer,
                                    std::string source)
     : source_(std::move(source)), tokenizer_(std::move(tokenizer)),
       complete_(source_.empty()) {
@@ -88,6 +88,7 @@ void IntegerTokenList::encodeNextStatement() const {
     if (spelling == "end") return TokenId::END;
     if (spelling == "index") return TokenId::INDEX;
     if (spelling == "extends") return TokenId::EXTENDS;
+    if (spelling == "elif") return TokenId::ELIF;
     return TokenId::UNKNOWN;
   };
   for (std::size_t offset = 0; offset < statement.size();) {
@@ -164,7 +165,7 @@ void IntegerTokenList::encodeNextStatement() const {
     const std::string_view word = statement.substr(first, offset - first);
     const TokenId::Id keyword = fixedId(word);
     if (keyword != TokenId::UNKNOWN || word == "class" || word == "end" ||
-        word == "index" || word == "extends") {
+        word == "index" || word == "extends" || word == "elif") {
       push(keyword, first, offset);
       continue;
     }
@@ -184,7 +185,7 @@ bool IntegerTokenList::has(std::size_t index) const {
 const IntegerTokenList::Entry &
 IntegerTokenList::entry(std::size_t index) const {
   if (!has(index))
-    throw std::out_of_range("BPE token index is out of range");
+    throw std::out_of_range("word vocabulary token index is out of range");
   return entries_[index];
 }
 

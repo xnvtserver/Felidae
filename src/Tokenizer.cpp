@@ -74,16 +74,17 @@ std::filesystem::path defaultTokenizerModelPath() {
 #endif
 }
 
-BpeTokenizer::BpeTokenizer(std::filesystem::path modelPath)
+WordVocabulary::WordVocabulary(std::filesystem::path modelPath)
     : modelPath_(modelPath.empty() ? defaultTokenizerModelPath()
                                    : std::move(modelPath)) {
   loadModel();
 }
 
-void BpeTokenizer::loadModel() {
+void WordVocabulary::loadModel() {
   std::lock_guard lock(mutex_);
   entries_.clear();
   matchOrder_.clear();
+  byBytes_.clear();
   std::ifstream input(modelPath_, std::ios::binary);
   if (input) {
     std::string line;
@@ -95,7 +96,16 @@ void BpeTokenizer::loadModel() {
   ensureFixedVocabulary();
 }
 
-void BpeTokenizer::ensureFixedVocabulary() {
+void WordVocabulary::indexEntry(std::size_t index) const {
+  // Skips index 0 (<unk>): its bytes are empty and every other entry's
+  // absence from byBytes_ is exactly what "unknown" already means, so an
+  // empty-string key would only ever be a wrong hit for genuinely-empty
+  // input, never a real spelling.
+  if (index == 0 || entries_[index].bytes.empty()) return;
+  byBytes_.emplace(entries_[index].bytes, static_cast<int>(index));
+}
+
+void WordVocabulary::ensureFixedVocabulary() {
   const auto &fixed = fixedVocabulary();
   if (entries_.empty()) {
     entries_.reserve(fixed.size());
@@ -119,10 +129,13 @@ void BpeTokenizer::ensureFixedVocabulary() {
                                std::to_string(index) + ": " +
                                modelPath_.string());
   }
-  for (std::size_t index = 1; index < entries_.size(); ++index)
+  byBytes_.reserve(entries_.size());
+  for (std::size_t index = 1; index < entries_.size(); ++index) {
+    indexEntry(index);
     if (!entries_[index].bytes.empty())
       matchOrder_.emplace_back(entries_[index].bytes,
                                static_cast<int>(index));
+  }
   std::stable_sort(matchOrder_.begin(), matchOrder_.end(),
                    [](const auto &left, const auto &right) {
                      if (left.first.size() != right.first.size())
@@ -131,13 +144,17 @@ void BpeTokenizer::ensureFixedVocabulary() {
                    });
 }
 
-int BpeTokenizer::findToken(std::string_view bytes) const {
-  for (std::size_t index = 1; index < entries_.size(); ++index)
-    if (entries_[index].bytes == bytes) return static_cast<int>(index);
-  return -1;
+int WordVocabulary::findToken(std::string_view bytes) const {
+  // O(1) average via byBytes_ instead of a linear scan over every entry:
+  // this runs once per identifier/digit occurrence encoded, in every
+  // program, against a vocabulary that only ever grows (700+ entries
+  // already and counting), so a full scan here was the one lookup every
+  // encode call paid for unconditionally.
+  const auto found = byBytes_.find(std::string(bytes));
+  return found == byBytes_.end() ? -1 : found->second;
 }
 
-void BpeTokenizer::appendModelLine(std::string_view bytes) const {
+void WordVocabulary::appendModelLine(std::string_view bytes) const {
   std::error_code error;
   std::filesystem::create_directories(modelPath_.parent_path(), error);
   std::ofstream output(modelPath_, std::ios::binary | std::ios::app);
@@ -147,7 +164,7 @@ void BpeTokenizer::appendModelLine(std::string_view bytes) const {
   output << encodeModelSpelling(bytes) << '\n';
 }
 
-int BpeTokenizer::appendToken(std::string_view bytes) const {
+int WordVocabulary::appendToken(std::string_view bytes, bool addToMatchOrder) const {
   std::lock_guard lock(mutex_);
   const int existing = findToken(bytes);
   if (existing >= 0) return existing;
@@ -155,17 +172,20 @@ int BpeTokenizer::appendToken(std::string_view bytes) const {
   std::string owned(bytes);
   appendModelLine(owned);
   entries_.push_back(Entry{encodeModelSpelling(owned), std::move(owned)});
-  matchOrder_.emplace_back(entries_.back().bytes, id);
-  std::stable_sort(matchOrder_.begin(), matchOrder_.end(),
-                   [](const auto &left, const auto &right) {
-                     if (left.first.size() != right.first.size())
-                       return left.first.size() > right.first.size();
-                     return left.second < right.second;
-                   });
+  indexEntry(static_cast<std::size_t>(id));
+  if (addToMatchOrder) {
+    matchOrder_.emplace_back(entries_.back().bytes, id);
+    std::stable_sort(matchOrder_.begin(), matchOrder_.end(),
+                     [](const auto &left, const auto &right) {
+                       if (left.first.size() != right.first.size())
+                         return left.first.size() > right.first.size();
+                       return left.second < right.second;
+                     });
+  }
   return id;
 }
 
-void BpeTokenizer::prime(std::string_view source) const {
+void WordVocabulary::prime(std::string_view source) const {
   std::vector<std::string> words;
   for (std::size_t begin = 0; begin < source.size();) {
     if (std::isdigit(static_cast<unsigned char>(source[begin]))) {
@@ -193,12 +213,12 @@ void BpeTokenizer::prime(std::string_view source) const {
       std::lock_guard lock(mutex_);
       known = findToken(word) >= 0;
     }
-    if (!known) appendToken(word);
+    if (!known) appendToken(word, false);
   }
 }
 
 std::vector<EncodedToken>
-BpeTokenizer::encodeWithOffsets(std::string_view text) const {
+WordVocabulary::encodeWithOffsets(std::string_view text) const {
   std::vector<EncodedToken> result;
   std::size_t offset = 0;
   while (offset < text.size()) {
@@ -209,7 +229,7 @@ BpeTokenizer::encodeWithOffsets(std::string_view text) const {
         std::lock_guard lock(mutex_);
         id = findToken(digit);
       }
-      if (id < 0) id = appendToken(digit);
+      if (id < 0) id = appendToken(digit, false);
       result.push_back({id, offset, offset + 1});
       ++offset;
       continue;
@@ -225,7 +245,7 @@ BpeTokenizer::encodeWithOffsets(std::string_view text) const {
         std::lock_guard lock(mutex_);
         id = findToken(word);
       }
-      if (id < 0) id = appendToken(word);
+      if (id < 0) id = appendToken(word, false);
       result.push_back({id, offset, end});
       offset = end;
       continue;
@@ -245,7 +265,7 @@ BpeTokenizer::encodeWithOffsets(std::string_view text) const {
       }
     }
     if (id < 0) {
-      id = appendToken(text.substr(offset, 1));
+      id = appendToken(text.substr(offset, 1), true);
       length = 1;
     }
     result.push_back({id, offset, offset + length});
@@ -254,7 +274,7 @@ BpeTokenizer::encodeWithOffsets(std::string_view text) const {
   return result;
 }
 
-std::vector<int> BpeTokenizer::encode(std::string_view text) const {
+std::vector<int> WordVocabulary::encode(std::string_view text) const {
   const auto encoded = encodeWithOffsets(text);
   std::vector<int> result;
   result.reserve(encoded.size());
@@ -262,12 +282,12 @@ std::vector<int> BpeTokenizer::encode(std::string_view text) const {
   return result;
 }
 
-std::string BpeTokenizer::decode(std::span<const int> tokens) const {
+std::string WordVocabulary::decode(std::span<const int> tokens) const {
   std::lock_guard lock(mutex_);
   std::string result;
   for (const int id : tokens) {
     if (id < 0 || static_cast<std::size_t>(id) >= entries_.size())
-      throw std::runtime_error("BPE decode received an invalid token ID");
+      throw std::runtime_error("word vocabulary decode received an invalid token ID");
     result += entries_[static_cast<std::size_t>(id)].bytes;
   }
   return result;

@@ -14,6 +14,15 @@ function(felidae_common target)
   target_include_directories(${target} PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/models)
+  # NativeJson.h parses through the real, vendored nlohmann::json library
+  # (single-header form: no separate build target needed) rather than a
+  # bespoke recursive-descent parser. csv.parse/csv.toFacts likewise parse
+  # through the vendored, previously-unused rapidcsv (handles quoted fields
+  # and escaped separators correctly, which a hand-rolled comma-split would
+  # not) instead of a bespoke CSV splitter.
+  target_include_directories(${target} SYSTEM PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/nlohmann_json/single_include
+    ${CMAKE_SOURCE_DIR}/third_party/rapidcsv/src)
   if(UNIX AND NOT APPLE)
     target_link_libraries(${target} PRIVATE dl)
   endif()
@@ -40,6 +49,30 @@ target_compile_definitions(felidae PRIVATE
   FELIDAE_TOKENIZER_MODEL_PATH="${CMAKE_SOURCE_DIR}/models/felidae-bpe/model.txt")
 target_compile_options(felidae PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wnon-virtual-dtor -Wold-style-cast -Woverloaded-virtual>)
+
+# felidae_debug is an explicit developer tool (AST diagnostics, symbol
+# table, and a JSON-RPC LSP server for editor integrations - see
+# src/debugger/AstAnalyzer.h and code.md). It never runs as part of, or
+# alongside, a normal `felidae program.fx` execution: running a program pays
+# nothing for it (Interpreter::setGoalHook is a null std::function unless a
+# debug session explicitly installs one), and this target is EXCLUDE_FROM_ALL
+# so a plain build of `felidae` never even compiles it.
+add_executable(felidae_debug EXCLUDE_FROM_ALL
+  src/debugger/main.cpp
+  src/debugger/AstAnalyzer.cpp
+  src/FelidaeRuntime.cpp
+  src/IntegerParser.cpp
+  src/IntegerTokenList.cpp
+  src/Tokenizer.cpp
+  src/BuiltinRegistry.cpp
+  src/Interpreter.cpp
+  src/ReasoningRuntime.cpp
+  src/Env.cpp
+  src/Memory.cpp
+  src/NativeRuntime.cpp)
+felidae_common(felidae_debug)
+target_compile_definitions(felidae_debug PRIVATE
+  FELIDAE_TOKENIZER_MODEL_PATH="${CMAKE_SOURCE_DIR}/models/felidae-bpe/model.txt")
 
 if(FELIDAE_BUILD_TESTS)
   enable_testing()

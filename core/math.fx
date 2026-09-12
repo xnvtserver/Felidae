@@ -19,3 +19,7 @@ math.abs(value: number) => ()
 math.floor(value: number) => ()
 math.ceil(value: number) => ()
 math.round(value: number) => ()
+# Signed cube root (cbrt(-8) == -2): the one operation below that plain
+# arithmetic cannot reproduce, since pow(value, 1/3) is undefined for
+# negative bases in the reals.
+math.cbrt(value: number) => ()

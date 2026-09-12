@@ -82,7 +82,7 @@ Program parseProgramFile(const fs::path& path) {
 }
 
 Program parseProgramText(std::string text) {
-    auto tokenizer = std::make_shared<BpeTokenizer>();
+    auto tokenizer = std::make_shared<WordVocabulary>();
     IntegerTokenList input(std::move(tokenizer), std::move(text));
     return IntegerParser(input).parseProgram();
 }
@@ -93,7 +93,7 @@ void parseProgramFileStatements(
     std::shared_ptr<OperatorRegistry> operators,
     ParserMetrics* metrics) {
     const fs::path normalized = resolveProgramEntryPath(path);
-    auto tokenizer = std::make_shared<BpeTokenizer>();
+    auto tokenizer = std::make_shared<WordVocabulary>();
     IntegerTokenList input(std::move(tokenizer), readSourceFile(normalized));
     IntegerParser parser(input, std::move(operators));
     Program program = parser.parseProgram();
@@ -215,7 +215,7 @@ std::vector<std::string> listCoreLibraries(const fs::path& startDir) {
 }
 
 std::vector<std::shared_ptr<Goal>> parseQueryText(const std::string& query) {
-    auto tokenizer = std::make_shared<BpeTokenizer>();
+    auto tokenizer = std::make_shared<WordVocabulary>();
     IntegerTokenList input(std::move(tokenizer), query);
     return IntegerParser(input).parseQuery();
 }
