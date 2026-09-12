@@ -57,6 +57,15 @@ void testFactQueryAndMutationInvalidation() {
             "fact query or repeated-query cache changed solutions");
 }
 
+void testAnalysisLoadDoesNotEvaluateGlobals() {
+    auto program = Felidae::parseProgramText("danger := 1 / 0\n");
+    Felidae::Interpreter interpreter;
+    interpreter.setLoadEvaluationEnabled(false);
+    interpreter.addProgram(program);
+    require(interpreter.hasGlobal("danger"),
+            "analysis load did not retain global symbol metadata");
+}
+
 } // namespace
 
 int main() {
@@ -64,6 +73,7 @@ int main() {
         testParserRejectsInvalidSource();
         testMethodExecutionAndDebugHook();
         testFactQueryAndMutationInvalidation();
+        testAnalysisLoadDoesNotEvaluateGlobals();
         std::cout << "interpreter tests passed\n";
         return 0;
     } catch (const std::exception& error) {

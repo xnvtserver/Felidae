@@ -49,9 +49,9 @@ static LoadedSources loadProgramStatements(
     return result;
   }
   Interpreter interpreter;
-  loadProgramRoot(entryFile, interpreter, [&](const Program &chunk) {
-    for (const auto &statement : chunk.statements) consume(statement);
-  });
+  interpreter.setLoadEvaluationEnabled(false);
+  interpreter.setStatementLoadHook(consume);
+  loadProgramRoot(entryFile, interpreter);
   result.files = interpreter.loadedSourceFiles();
   result.operators = interpreter.operatorRegistry();
   return result;
@@ -120,13 +120,12 @@ static DebugOptions parseDebugCli(int argc, char **argv) {
       options.help = true;
       continue;
     }
-    if (arg == "--inspect-graph" || arg == "--visualize-data-json" ||
-        arg == "--visualize-data-html" || arg == "--json" || arg == "--html") {
-      throw std::runtime_error("Visualization options are no longer supported");
-    }
     if (arg == "--query" || (!arg.empty() && arg.front() == '?')) {
       throw std::runtime_error("tooling modes do not execute queries. Run "
                                "felidae program.fx '? Query(...)'");
+    }
+    if (!arg.empty() && arg.front() == '-') {
+      throw std::runtime_error("Unknown tooling option: " + arg);
     }
     if (!options.programFile) {
       options.programFile = fs::path(arg);
