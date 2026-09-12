@@ -1,6 +1,5 @@
-# Optional `end` delimiters make every nested decision and method boundary
-# explicit. The existing `then` pipeline remains an expression; `end` adds no
-# executable operation and is consumed while constructing compiler HIR.
+# Explicit `end` delimiters close methods and nested decisions while the AST
+# interpreter preserves the existing `then` pipeline semantics.
 
 increment(value: number) =>
     return value + 1

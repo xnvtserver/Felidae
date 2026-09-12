@@ -1,9 +1,8 @@
 # `where` is a sequential guard, not a fact-query construct here. Statements
 # retain their order: those before a guard run at the current level, while
 # those after it run only if the guard succeeds. If any `where` fails,
-# execution falls through to the clause's single `else` branch. The compiler
-# normalizes this to ordinary nested if/else AST nodes; no extra opcode or
-# runtime path is involved.
+# execution falls through to the clause's single `else` branch. The direct
+# interpreter evaluates that ordered AST structure without a separate opcode.
 #
 # A `where` guard with no `else` at all is intentionally a compile error
 # ("a where-guarded clause requires exactly one else branch") rather than a

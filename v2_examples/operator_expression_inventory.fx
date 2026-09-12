@@ -22,7 +22,7 @@ main() =>
     point := {x: 3, y: 4}
     record := {owner: {name: "Ava"}, scores: [10, 20, 30]}
     # lambda(...) is fact-query sugar over a declared fact type (see
-    # FactQueryNormalizer) -- there is no generic array-map lambda over an
+    # FactDmlLowerer) -- there is no generic array-map lambda over an
     # arbitrary array like record.scores, so indexing it directly here.
     first := array.get(data: record.scores, position: 0)
     piped := increment(value: first)

@@ -109,7 +109,7 @@ compareMammals() =>
     return AnimalSimilarityEvidence(
         left_type: type(left),
         right_type: type(right),
-        common_ancestor: lowestCommonAncestor(left, right),
+        common_ancestors: ancestors,
         score: score,
         ancestor_similarity: array.len(data: ancestors) > 0,
         property_similarity: score,

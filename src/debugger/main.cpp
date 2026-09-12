@@ -116,7 +116,7 @@ static DebugOptions parseDebugCli(int argc, char **argv) {
 
 static void printDebugUsage(std::ostream &out) {
   out << "Felidae AST debugger " << LANGUAGE_VERSION << "\n"
-      << "Pipeline: SentencePiece IDs -> Integer Parser -> AST Analyzer\n"
+      << "Pipeline: word vocabulary -> Integer Parser -> AST Analyzer\n"
       << "Usage: felidae_debug <file.fx> [--check|--check-json] "
          "[--load-imports]\n"
       << "\n"
