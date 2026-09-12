@@ -1,8 +1,6 @@
 #include "IntegerTokenList.h"
 
-#include <sentencepiece.pb.h>
-#include <sentencepiece_processor.h>
-
+#include <cctype>
 #include <stdexcept>
 
 namespace Felidae {
@@ -61,10 +59,12 @@ std::size_t statementEnd(std::string_view source, std::size_t begin) {
 
 } // namespace
 
-IntegerTokenList::IntegerTokenList(
-    const sentencepiece::SentencePieceProcessor &processor, std::string source)
-    : source_(std::move(source)), processor_(&processor),
+IntegerTokenList::IntegerTokenList(std::shared_ptr<BpeTokenizer> tokenizer,
+                                   std::string source)
+    : source_(std::move(source)), tokenizer_(std::move(tokenizer)),
       complete_(source_.empty()) {
+  if (!tokenizer_)
+    throw std::invalid_argument("IntegerTokenList requires a tokenizer");
   if (!complete_)
     encodeNextStatement();
 }
@@ -74,24 +74,102 @@ void IntegerTokenList::encodeNextStatement() const {
     return;
   const auto begin = nextStatementBegin_;
   const auto end = statementEnd(source_, begin);
-  const absl::string_view statement(source_.data() + begin, end - begin);
-  sentencepiece::SentencePieceText encoded;
-  const auto status = processor_->Encode(statement, &encoded);
-  if (!status.ok()) {
-    throw std::runtime_error("SentencePiece source encoding failed: " +
-                             status.ToString());
-  }
+  const std::string_view statement(source_.data() + begin, end - begin);
   ++encodeCount_;
-  entries_.reserve(entries_.size() +
-                   static_cast<std::size_t>(encoded.pieces_size()));
-  for (const auto &piece : encoded.pieces()) {
-    const auto relativeBegin = static_cast<std::size_t>(piece.begin());
-    const auto relativeEnd = static_cast<std::size_t>(piece.end());
-    if (relativeBegin > relativeEnd || relativeEnd > statement.size())
-      throw std::runtime_error("SentencePiece returned an invalid source offset");
-    const auto id = static_cast<TokenId::Id>(piece.id());
-    entries_.push_back(
-        Entry{id, begin + relativeBegin, begin + relativeEnd});
+  const auto push = [&](TokenId::Id id, std::size_t first, std::size_t last) {
+    entries_.push_back(Entry{id, begin + first, begin + last});
+  };
+  const auto fixedId = [](std::string_view spelling) -> TokenId::Id {
+    for (std::size_t index = 0; index < std::size(kBuiltinTokens); ++index) {
+      if (kBuiltinTokens[index].spelling == spelling)
+        return kFelidaeBuiltinTokenIds[index];
+    }
+    if (spelling == "class") return TokenId::CLASS;
+    if (spelling == "end") return TokenId::END;
+    if (spelling == "index") return TokenId::INDEX;
+    if (spelling == "extends") return TokenId::EXTENDS;
+    return TokenId::UNKNOWN;
+  };
+  for (std::size_t offset = 0; offset < statement.size();) {
+    const unsigned char byte = static_cast<unsigned char>(statement[offset]);
+    if (statement[offset] == '#') {
+      const std::size_t first = offset++;
+      push(TokenId::COMMENT, first, offset);
+      const std::size_t content = offset;
+      while (offset < statement.size() && statement[offset] != '\n' && statement[offset] != '\r') ++offset;
+      if (content != offset) push(TokenId::UNKNOWN, content, offset);
+      continue;
+    }
+    if (statement[offset] == '"') {
+      push(TokenId::QUOTE, offset, offset + 1);
+      const std::size_t content = ++offset;
+      bool escaped = false;
+      while (offset < statement.size()) {
+        const char current = statement[offset];
+        if (!escaped && current == '"') break;
+        escaped = !escaped && current == '\\';
+        if (current != '\\') escaped = false;
+        ++offset;
+      }
+      if (content != offset) push(TokenId::UNKNOWN, content, offset);
+      if (offset < statement.size()) {
+        push(TokenId::QUOTE, offset, offset + 1);
+        ++offset;
+      }
+      continue;
+    }
+    if (std::isspace(byte)) {
+      const TokenId::Id id = statement[offset] == ' ' ? TokenId::SPACE
+          : statement[offset] == '\t' ? TokenId::TAB
+          : statement[offset] == '\n' ? TokenId::NEWLINE : TokenId::CARRIAGE_RETURN;
+      push(id, offset, offset + 1);
+      ++offset;
+      continue;
+    }
+    if (std::isdigit(byte)) {
+      push(static_cast<TokenId::Id>(TokenId::DIGIT_0 + statement[offset] - '0'), offset, offset + 1);
+      ++offset;
+      continue;
+    }
+    bool matched = false;
+    for (const std::string_view syntax : {std::string_view(":="), std::string_view("::"),
+                                           std::string_view("=>"), std::string_view("=="),
+                                           std::string_view("!="), std::string_view("<="),
+                                           std::string_view(">=")}) {
+      if (statement.substr(offset).starts_with(syntax)) {
+        push(fixedId(syntax), offset, offset + syntax.size());
+        offset += syntax.size();
+        matched = true;
+        break;
+      }
+    }
+    if (matched) continue;
+    const TokenId::Id punctuation = fixedId(statement.substr(offset, 1));
+    if (punctuation != TokenId::UNKNOWN) {
+      push(punctuation, offset, offset + 1);
+      ++offset;
+      continue;
+    }
+    const std::size_t first = offset;
+    while (offset < statement.size()) {
+      const unsigned char current = static_cast<unsigned char>(statement[offset]);
+      if (!(std::isalnum(current) || current == '_' || current >= 0x80)) break;
+      ++offset;
+    }
+    if (first == offset) {
+      push(TokenId::UNKNOWN, offset, offset + 1);
+      ++offset;
+      continue;
+    }
+    const std::string_view word = statement.substr(first, offset - first);
+    const TokenId::Id keyword = fixedId(word);
+    if (keyword != TokenId::UNKNOWN || word == "class" || word == "end" ||
+        word == "index" || word == "extends") {
+      push(keyword, first, offset);
+      continue;
+    }
+    for (const auto &piece : tokenizer_->encodeWithOffsets(word))
+      push(static_cast<TokenId::Id>(piece.id), first + piece.begin, first + piece.end);
   }
   nextStatementBegin_ = end;
   complete_ = end == source_.size();
@@ -106,7 +184,7 @@ bool IntegerTokenList::has(std::size_t index) const {
 const IntegerTokenList::Entry &
 IntegerTokenList::entry(std::size_t index) const {
   if (!has(index))
-    throw std::out_of_range("SentencePiece token index is out of range");
+    throw std::out_of_range("BPE token index is out of range");
   return entries_[index];
 }
 

@@ -1,4 +1,4 @@
-# Strict-IR expert-system baseline. The declarations model hierarchy and
+# Direct-interpreter expert-system baseline. The declarations model hierarchy and
 # time/priority provenance; the returned values remain numeric Degrees/facts,
 # never implicit booleans.
 

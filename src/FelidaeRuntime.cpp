@@ -1,8 +1,8 @@
 #include "FelidaeRuntime.h"
 
 #include "IntegerParser.h"
-#include "SentencePieceModel.h"
 #include "Symbol.h"
+#include "Tokenizer.h"
 
 #include <algorithm>
 #include <chrono>
@@ -82,7 +82,8 @@ Program parseProgramFile(const fs::path& path) {
 }
 
 Program parseProgramText(std::string text) {
-    IntegerTokenList input(felidaeSentencePieceModel(), std::move(text));
+    auto tokenizer = std::make_shared<BpeTokenizer>();
+    IntegerTokenList input(std::move(tokenizer), std::move(text));
     return IntegerParser(input).parseProgram();
 }
 
@@ -92,7 +93,8 @@ void parseProgramFileStatements(
     std::shared_ptr<OperatorRegistry> operators,
     ParserMetrics* metrics) {
     const fs::path normalized = resolveProgramEntryPath(path);
-    IntegerTokenList input(felidaeSentencePieceModel(), readSourceFile(normalized));
+    auto tokenizer = std::make_shared<BpeTokenizer>();
+    IntegerTokenList input(std::move(tokenizer), readSourceFile(normalized));
     IntegerParser parser(input, std::move(operators));
     Program program = parser.parseProgram();
     for (auto& statement : program.statements) consume(std::move(statement));
@@ -213,14 +215,14 @@ std::vector<std::string> listCoreLibraries(const fs::path& startDir) {
 }
 
 std::vector<std::shared_ptr<Goal>> parseQueryText(const std::string& query) {
-    IntegerTokenList input(felidaeSentencePieceModel(), query);
+    auto tokenizer = std::make_shared<BpeTokenizer>();
+    IntegerTokenList input(std::move(tokenizer), query);
     return IntegerParser(input).parseQuery();
 }
 
 static void collectVarsExpr(const std::shared_ptr<Expr>& expr, std::vector<SymbolId>& vars) {
     if (auto v = std::dynamic_pointer_cast<VarExpr>(expr)) {
         if (v->nameId != InternalSymbol::SystemResultId &&
-            !isInternalGeneratedSymbolId(v->nameId) &&
             std::find(vars.begin(), vars.end(), v->nameId) == vars.end()) {
             vars.push_back(v->nameId);
         }

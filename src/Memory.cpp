@@ -1270,6 +1270,31 @@ void FactMemory::removeOrigin(const std::filesystem::path& origin) {
     compactInactiveIfSafe();
 }
 
+std::size_t FactMemory::deactivateFacts(const std::vector<size_t>& indexes) {
+    ensureUnique();
+    std::size_t changed = 0;
+    for (const size_t index : indexes) {
+        if (index >= data_->facts.size() || !data_->facts.at(index).active) continue;
+        deactivateFact(index);
+        ++changed;
+    }
+    if (changed != 0) {
+        ++data_->generation;
+        compactInactiveIfSafe();
+    }
+    return changed;
+}
+
+bool FactMemory::replaceFact(size_t index, std::shared_ptr<MapExpr> value) {
+    if (index >= data_->facts.size() || !data_->facts.at(index).active || !value) return false;
+    const FactRecord previous = data_->facts.at(index);
+    deactivateFacts({index});
+    addFact(previous.type, previous.parentType, std::move(value), previous.origin,
+            previous.id, previous.rowVersion + 1, previous.parentFactIds,
+            previous.designations);
+    return true;
+}
+
 bool FactMemory::isCompatibleType(const std::string& actual, const std::string& expected) const {
     return isCompatibleTypeInData(*data_, actual, expected);
 }

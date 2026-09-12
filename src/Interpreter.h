@@ -63,6 +63,9 @@ public:
     void recordParserMetrics(const ParserMetrics& metrics);
     std::size_t syncFactSource(const std::filesystem::path& file);
     std::shared_ptr<OperatorRegistry> operatorRegistry() const { return operators_; }
+    // Imported source files registered by the current interpreter.  The root
+    // module is owned by the frontend; callers add it to any watch set.
+    std::vector<std::filesystem::path> loadedSourceFiles() const;
 
 private:
     struct ThreadTask {
@@ -182,6 +185,7 @@ private:
         std::vector<std::shared_ptr<Expr>> autoEntryResults;
         FactMemory memory;
         GlobalEnv globals;
+        std::unordered_map<SymbolId, std::shared_ptr<ClassStmt>> classDefinitions;
         std::unordered_map<std::uint64_t, std::vector<ReferenceAttachment>> referencesBySource;
         std::uint64_t nextReferenceAttachmentId = 1;
         std::size_t nextReferenceCreationOrder = 0;
@@ -205,6 +209,9 @@ private:
     std::vector<std::shared_ptr<Expr>> autoEntryResults_;
     FactMemory memory_;
     GlobalEnv globals_;
+    // Class declarations are retained as AST schema metadata.  A constructor
+    // call creates a typed map directly; it never passes through IR or a VM.
+    std::unordered_map<SymbolId, std::shared_ptr<ClassStmt>> classDefinitions_;
     std::unordered_map<std::string, SolveCacheEntry> solveCache_;
     std::list<std::string> solveCacheRecency_;
     std::size_t solveCacheBytes_ = 0;
@@ -307,6 +314,7 @@ private:
     bool solveBuiltin(const Call& call, Env& env);
     bool solveNativeCall(const Call& call, Env& env);
     bool evalBuiltinTerm(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
+    bool instantiateClass(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
     bool evalAncestorAnalysis(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
     bool evalFactPropagation(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
     bool evalRelationCompare(const Call& call, const Env& env, std::shared_ptr<Expr>& out);

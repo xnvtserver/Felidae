@@ -1,7 +1,6 @@
 # Finite group operations use an explicit Cayley table:
 # [{left: a, right: b, result: c}, ...]
-# The compiler emits Builtin IR and RegisterVm calls
-# src/form/libs/Group.cpp directly.
+# The AST interpreter dispatches these builtins directly.
 
 Group.validate(set: array, table: array, identity: any) => ()
 Group.closed(set: array, table: array) => ()

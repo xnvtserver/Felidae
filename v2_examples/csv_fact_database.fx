@@ -1,5 +1,5 @@
-# CSV enters the VM as native School facts. Concrete fact-type queries use the
-# same retained knowledge store; DML writes owned CSV facts back automatically.
+# CSV facts enter the direct interpreter's retained knowledge store. Concrete
+# fact-type queries and language-level mutations use the same FactMemory path.
 
 import "csv"
 

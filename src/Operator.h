@@ -361,7 +361,7 @@ public:
 
 public:
     // Structural compilation is intentionally lexical-model agnostic. Parser
-    // attaches its native SentencePiece IDs exactly once before registration.
+    // attaches its native token IDs exactly once before registration.
     static CoreOperator coreOperatorForPattern(std::string_view pattern) {
         if (pattern == "{left} + {right}") return CoreOperator::Add;
         if (pattern == "{left} - {right}") return CoreOperator::Subtract;

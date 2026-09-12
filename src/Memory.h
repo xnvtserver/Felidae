@@ -177,6 +177,11 @@ public:
     std::vector<size_t> factIndexesFromOrigin(const std::filesystem::path& origin) const;
     bool hasOrigin(const std::filesystem::path& origin) const;
     void removeOrigin(const std::filesystem::path& origin);
+    // Language-level mutations preserve stable fact identity. Updates append
+    // a new row version and retire the prior row; deletes retire rows without
+    // invalidating snapshots that still refer to their original catalog.
+    std::size_t deactivateFacts(const std::vector<size_t>& indexes);
+    bool replaceFact(size_t index, std::shared_ptr<MapExpr> value);
     bool isCompatibleType(const std::string& actual, const std::string& expected) const;
     const std::vector<size_t>& compatibleFactIndexes(const std::string& type, SymbolId typeId = 0);
     const std::vector<size_t>& propertyFactIndexes(const std::string& type,

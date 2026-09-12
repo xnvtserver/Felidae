@@ -1,6 +1,6 @@
 #include "NativeRuntime.h"
 
-#include "../native_modules/common/NativeJson.h"
+#include "NativeJson.h"
 
 #include <algorithm>
 #include <cctype>

@@ -1,7 +1,5 @@
-# A fact-only .fx file is DDL data linked by the compiler. Imported rows keep
-# source ownership, so conditional insert/update/delete operations can persist
-# them automatically. This example is read-only to keep the checked-in dataset
-# deterministic; copy the database under build/ before experimenting with DML.
+# A fact-only .fx file is loaded directly into FactMemory. This example is
+# read-only to keep the checked-in dataset deterministic.
 import "../datasets/examples/schools.fx"
 
 main() =>
