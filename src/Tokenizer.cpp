@@ -16,9 +16,13 @@ WordVocabulary::encodeWithOffsets(std::string_view text) const {
 }
 
 std::vector<int> WordVocabulary::encode(std::string_view text) const {
+  // Reuses encodeWithOffsets rather than repeating its loop, so there is one
+  // place that defines how a byte becomes a token ID, not two that have to
+  // be kept in sync by hand.
+  const auto encoded = encodeWithOffsets(text);
   std::vector<int> result;
-  result.reserve(text.size());
-  for (const unsigned char byte : text) result.push_back(kFirstByteToken + byte);
+  result.reserve(encoded.size());
+  for (const auto& token : encoded) result.push_back(token.id);
   return result;
 }
 

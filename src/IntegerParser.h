@@ -113,10 +113,10 @@ private:
     std::string consumeString();
     double consumeNumber();
     bool atNameRange();
-    bool looksLikeClauseHead();
     bool sourceContainsLineBreak(std::size_t begin, std::size_t end) const;
     bool lineBreakBeforeNextSignificantPiece() const;
     std::size_t sourceLineIndent(std::size_t offset) const;
+    bool startsOwnLine(std::size_t offset) const;
     void consumeStatementTerminator(std::size_t statementBegin);
     SourceSpan span(std::size_t begin, std::size_t end) const;
     void stamp(const std::shared_ptr<AstNode>& node, std::size_t begin, std::size_t end) const;

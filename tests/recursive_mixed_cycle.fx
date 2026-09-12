@@ -4,6 +4,6 @@ end
 
 Second extend First(first_value: 1, second_value: 2)
 
-main() =>
+def main() =>
     return Second.count()
 end

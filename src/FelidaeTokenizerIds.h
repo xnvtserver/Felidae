@@ -1,70 +1,9 @@
-// Fixed word-vocabulary syntax IDs. Model line N owns ID N. Do not reorder.
+// Fixed grammar syntax IDs.
 #pragma once
 
 #include <cstdint>
 
 namespace Felidae {
-inline constexpr int kFelidaeBuiltinTokenIds[] = {
-    1, // IMPORT
-    2, // NOT
-    3, // AND
-    4, // OR
-    5, // THEN
-    6, // AS
-    7, // IF
-    8, // ELSE
-    9, // RETURN
-    10, // WHERE
-    11, // EXTEND
-    12, // LAMBDA
-    13, // TRUE
-    14, // FALSE
-    15, // NIL
-    16, // LPAREN
-    17, // RPAREN
-    18, // LBRACE
-    19, // RBRACE
-    20, // LBRACKET
-    21, // RBRACKET
-    22, // COMMA
-    23, // COLON
-    24, // DOT
-    25, // PIPE
-    26, // QUESTION
-    27, // AT
-    28, // ASSIGN
-    29, // DOUBLE_COLON
-    30, // ARROW
-    31, // PLUS
-    32, // MINUS
-    33, // STAR
-    34, // SLASH
-    35, // PERCENT
-    36, // EQUAL
-    37, // NOT_EQUAL
-    38, // LESS
-    39, // LESS_EQUAL
-    40, // GREATER
-    41, // GREATER_EQUAL
-    42, // QUOTE
-    43, // BACKSLASH
-    44, // COMMENT
-    45, // SPACE
-    46, // TAB
-    47, // NEWLINE
-    48, // CARRIAGE_RETURN
-    49, // DIGIT_0
-    50, // DIGIT_1
-    51, // DIGIT_2
-    52, // DIGIT_3
-    53, // DIGIT_4
-    54, // DIGIT_5
-    55, // DIGIT_6
-    56, // DIGIT_7
-    57, // DIGIT_8
-    58, // DIGIT_9
-};
-
 namespace TokenId {
 using Id = std::int32_t;
 constexpr Id UNKNOWN = 0;
@@ -126,38 +65,14 @@ constexpr Id DIGIT_6 = 55;
 constexpr Id DIGIT_7 = 56;
 constexpr Id DIGIT_8 = 57;
 constexpr Id DIGIT_9 = 58;
-// Lexer-owned reserved words deliberately sit outside the word-vocabulary IDs.  They
-// are syntax only and must never be learned or persisted in model.txt.
+// Lexer-owned reserved words deliberately sit outside the fixed grammar IDs
+// above (1..58) and the byte-token range (WordVocabulary::kFirstByteToken
+// and up, src/Tokenizer.h) - negative IDs can never collide with either.
 constexpr Id CLASS = -1;
 constexpr Id END = -2;
 constexpr Id INDEX = -3;
 constexpr Id EXTENDS = -4;
 constexpr Id ELIF = -5;
+constexpr Id DEF = -6;
 } // namespace TokenId
-
-inline constexpr bool isCapitalizedIdentifierStartId(TokenId::Id id) {
-    switch (id) {
-        case 124: return true;
-        case 125: return true;
-        case 126: return true;
-        case 127: return true;
-        case 128: return true;
-        case 129: return true;
-        case 130: return true;
-        case 131: return true;
-        case 132: return true;
-        case 139: return true;
-        case 140: return true;
-        case 141: return true;
-        case 142: return true;
-        case 143: return true;
-        case 144: return true;
-        case 145: return true;
-        case 146: return true;
-        case 147: return true;
-        case 148: return true;
-        case 149: return true;
-        default: return false;
-    }
-}
 } // namespace Felidae

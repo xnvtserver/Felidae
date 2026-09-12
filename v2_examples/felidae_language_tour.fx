@@ -14,7 +14,7 @@ import "csv"
 
 ImportedSchool(name: "", district: "", students: 0, active: 1.0)
 
-importExample() =>
+def importExample() =>
     raw := file.readFile(file: "datasets/examples/schools.csv")
     imported := csv.toFacts(data: raw, type: "ImportedSchool", source: "build/runtime/language_tour_schools.csv")
     return count(data: imported)
@@ -37,7 +37,7 @@ Teacher(name: "Grace", subject: "science", school_id: 99)
 # `where` narrows a method to the cases it actually handles; the implicit
 # `else` branch runs when the guard does not hold. Truth in Felidae is
 # numeric: 1.0/0.0, never a separate boolean.
-classifyEnrollment(count: number) =>
+def classifyEnrollment(count: number) =>
     where count >= 400
     return "large"
 else
@@ -47,7 +47,7 @@ else
 # `.where(...)` filters by named-field equality; chaining `.AndWhere`/
 # `.OrWhere` composes further conditions left to right, and `.limit(records:)`
 # bounds the result without truncating silently on invalid input.
-queryExamples() =>
+def queryExamples() =>
     active_central := School.where(district: "central", active: 1.0)
     central_or_west := School.where(district: "central").OrWhere(district: "west")
     large_central := School.where(district: "central").AndWhere(active: 1.0)
@@ -63,12 +63,12 @@ queryExamples() =>
 # `.select(fields:, match:)` returns only the requested fields, never the
 # whole fact -- useful once a query is answering a specific question rather
 # than handing back full records.
-projectionExample() =>
+def projectionExample() =>
     return School.select(fields: ["name", "district"], match: {active: 1.0})
 
 # --- 5. Aggregates: count / sum / average / min / max -----------------------
 # Each aggregate accepts the same optional `match:` a query would use.
-aggregateExamples() =>
+def aggregateExamples() =>
     return (
         total_schools: School.count(),
         total_students: School.sum(field: "students"),
@@ -82,7 +82,7 @@ aggregateExamples() =>
 # joining never inflates School.count() or Teacher.count(). Only an explicit
 # .insert() persists anything. join() is inner by default; kind selects an
 # outer variant without creating parallel method names.
-joinExamples() =>
+def joinExamples() =>
     inner := School.join(type: Teacher, left: "id", right: "school_id")
     left := School.join(type: Teacher, left: "id", right: "school_id", kind: "left")
     return (inner_count: count(data: inner), left_count: count(data: left))
@@ -90,7 +90,7 @@ joinExamples() =>
 # --- 7. DML: insert / update / delete ----------------------------------------
 # `match:` is mandatory for update and delete -- there is no conditionless
 # mutation, unlike a bare SQL UPDATE with no WHERE.
-mutationExamples() =>
+def mutationExamples() =>
     inserted := School.insert(values: {id: 40, name: "Riverside", district: "east", students: 210, active: 1.0})
     updated := School.where(district: "east").update(values: {students: 230.0})
     deleted := School.where(name: "Riverside").delete()
@@ -103,7 +103,7 @@ mutationExamples() =>
 # --- 8. Ancestry reasoning ---------------------------------------------------
 # commonAncestors reads the `extend` graph declared in section 1. Selecting
 # one candidate as contextually best belongs to the calling application.
-ancestryExamples() =>
+def ancestryExamples() =>
     cat := Mammal(name: "cat")
     lizard := Reptile(name: "lizard")
     return (
@@ -114,12 +114,12 @@ ancestryExamples() =>
 # @mixfix declares a natural-language-shaped call pattern; it lowers to an
 # ordinary call underneath, so it composes with everything above it.
 @mixfix(pattern: "{value:number} rated above {minimum:number}")
-ratedAbove() => return value > minimum
+def ratedAbove() => return value > minimum
 
-mixfixExample() =>
+def mixfixExample() =>
     return 82 rated above 75
 
-main() =>
+def main() =>
     return (
         imported_count: importExample(),
         classification: classifyEnrollment(count: 420),

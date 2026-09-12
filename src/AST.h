@@ -53,8 +53,7 @@ enum class ClauseKind {
     Fact,
     Rule,
     Method,
-    NativeDeclaration,
-    EntryCall
+    NativeDeclaration
 };
 
 struct SourceSpan {
