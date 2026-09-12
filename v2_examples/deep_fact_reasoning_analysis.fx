@@ -104,8 +104,8 @@ main() =>
         confidence: 0.91
     )
 
-    tied_lineage := lowestCommonAncestor(left: tiger_female, right: cat_female)
-    broad_lineage := highestCommonAncestor(left: tiger_female, right: cat_female)
+    tied_lineage := commonAncestors(left: tiger_female, right: cat_female)
+    broad_lineage := tied_lineage
     tiger_cat_lineage := ancestorAnalysis(left: tiger_female, right: cat_female)
     tiger_dog_lineage := commonAncestors(left: tiger_male, right: dog_male)
     habitat_propagation := propagateFact(

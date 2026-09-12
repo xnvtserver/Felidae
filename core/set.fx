@@ -1,4 +1,4 @@
-# Set mathematics is direct Builtin IR executed by RegisterVm.
+# Set mathematics is dispatched directly by the AST interpreter.
 
 Set.union(sets: array) => ()
 Set.intersection(sets: array) => ()

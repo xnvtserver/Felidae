@@ -12,10 +12,6 @@ main() =>
     right := Right(name: "right")
 
     common := commonAncestors(left: left, right: right)
-    lowest := lowestCommonAncestor(left: left, right: right)
-    highest := highestCommonAncestor(left: left, right: right)
     return (
-        common: common,
-        lowest: lowest,
-        highest: highest
+        common: common
     )

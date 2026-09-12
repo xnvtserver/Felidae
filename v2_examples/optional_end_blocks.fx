@@ -1,6 +1,5 @@
-# `end` is an optional contextual block delimiter. It is useful when nested
-# control flow would otherwise rely only on indentation. It creates no HIR or
-# VM operation: the parser consumes it at method/if boundaries.
+# `end` is an explicit contextual block delimiter for nested direct AST
+# control flow. It adds no runtime operation.
 
 classify(value: number) =>
     if value > 10 then

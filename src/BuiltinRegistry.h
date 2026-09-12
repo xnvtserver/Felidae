@@ -23,11 +23,6 @@ struct BuiltinInfo {
 BuiltinId builtinIdForName(const std::string& name);
 BuiltinId builtinIdForName(std::string_view name);
 BuiltinId builtinIdForName(const char* name);
-// Parser-facing native resolution.  The input is a complete qualified source
-// name from the SentencePiece stream (including atomic separator IDs), not a
-// decoded spelling.  This keeps grammar assembly independent of string
-// comparisons while retaining BuiltinId as the interpreter's semantic ID.
-BuiltinId builtinIdForPieceIds(const std::vector<TokenId::Id>& pieceIds);
 bool isBuiltinFunctionName(const std::string& name);
 const char* builtinName(BuiltinId id);
 BuiltinEffect builtinEffect(BuiltinId id);

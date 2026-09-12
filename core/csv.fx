@@ -1,5 +1,4 @@
-# CSV operations are compiler-known declarations. The compiler emits a
-# Builtin IR instruction and RegisterVm calls src/form/libs/Csv.cpp directly.
+# CSV operations are declared in source and dispatched by the AST interpreter.
 
 csv.parse(data: string) => ()
 csv.toFacts(data: string, type: string) => ()
