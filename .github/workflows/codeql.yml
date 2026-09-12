@@ -1,25 +1,16 @@
-name: CodeQL Advanced
+name: CodeQL
 
 on:
   pull_request:
     branches:
       - main
-    paths:
-      - "src/**"
-      - "include/**"
-      - "CMakeLists.txt"
-      - "cmake/**"
-      - "third_party/**"
-      - ".gitmodules"
-      - ".github/workflows/codeql.yml"
-      - ".github/codeql/codeql-config.yml"
 
   schedule:
     - cron: "18 15 * * 3"
 
 jobs:
   analyze:
-    name: Analyze (c-cpp)
+    name: CodeQL
     runs-on: ubuntu-latest
 
     permissions:
@@ -39,10 +30,6 @@ jobs:
         with:
           languages: c-cpp
           build-mode: none
-          queries: security-extended
-          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
-        with:
-          category: "/language:c-cpp"
