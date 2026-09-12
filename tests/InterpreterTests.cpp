@@ -24,7 +24,7 @@ void testParserRejectsInvalidSource() {
 
 void testMethodExecutionAndDebugHook() {
     auto program = Felidae::parseProgramText(
-        "main() =>\n"
+        "def main() =>\n"
         "  answer := 40 + 2\n"
         "  return answer\n"
         "end\n");

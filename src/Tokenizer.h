@@ -1,12 +1,10 @@
 #pragma once
+#include "FelidaeGrammar.h"
 
 #include <cstddef>
-#include <filesystem>
-#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 namespace Felidae {
@@ -17,83 +15,56 @@ struct EncodedToken {
   std::size_t end = 0;
 };
 
-// Deterministic, training-free word vocabulary - not byte-pair encoding.
-// Despite the class's former name, no byte-pair merging ever happens here:
-// a whole identifier is looked up (and, if unseen, appended) as one atomic
-// dictionary entry, and non-word punctuation/operator bytes are matched
-// against the same table by longest match. That is exactly what
-// README.md/code.md already describe ("unknown words are added
-// deterministically in source order", "execution needs no training") - the
-// prior name just kept "Bpe" from this project's earlier, removed
-// SentencePiece-adjacent tokenizer despite no longer describing what this
-// class actually does.
+// Byte-level, training-free tokenizer (ByT5-style): every byte of an
+// already-delimited word becomes exactly one token, offset past the fixed
+// grammar IDs (kBuiltinTokens, FelidaeGrammar.h). No merge table, no corpus,
+// no training, no file on disk at all - the complete vocabulary (59 grammar
+// tokens + 256 byte tokens = 315 total) is fixed at compile time, so
+// construction and every encode call are pure, allocation-light functions
+// of their input.
 //
-// Line N in model.txt owns ID N. <0xNN> is the escaped spelling for bytes
-// which cannot be represented literally in a line-oriented text file.
-// Unknown identifier words are appended in encounter order and are
-// immediately reusable by encode/decode.
+// This replaced an earlier real-BPE implementation (merge table trained
+// once, offline, from this project's own identifier corpus). BPE exists to
+// solve two problems, neither of which applies to this interpreter:
+//   1. Bounding vocabulary size for a fixed-size learned embedding table -
+//      there is no embedding table here; SymbolId (Symbol.h), the interned
+//      identifier space the interpreter actually dispatches on, is already
+//      unbounded and needs no compression.
+//   2. Reducing token-stream length because attention cost is
+//      superlinear in sequence length - IntegerParser's per-token cost is
+//      O(1) (a switch, an array index), so more tokens costs proportionally
+//      more, linearly, not quadratically.
+// Since neither justification holds, byte-level tokens are not a
+// simplification at the cost of correctness or speed - they are the
+// right-sized design for a deterministic, non-neural tree-walking
+// interpreter, and they are faster to produce than merged tokens were (no
+// merge search at all) with only a small, linear increase in how many
+// token entries a long identifier spans.
 //
-// Determinism holds within one process run: once a spelling is assigned an
-// ID (whether loaded from the checked-in model.txt or appended during this
-// run), every later lookup of that same spelling returns that same ID for
-// the rest of the run - entries_ is append-only and never reordered or
-// rewritten. prime() further makes a single file's own newly-discovered
-// words get IDs in a fixed (lexical) order, independent of incidental
-// parser backtracking or statement-chunking order. What is NOT guaranteed
-// is cross-run stability of IDs assigned to words that are genuinely new to
-// this checkout's model.txt: two runs (or two machines) that first meet
-// different not-yet-vocabulary words in a different order will grow the
-// checked-in file differently. That is a property of any incrementally
-// learned, checked-in vocabulary, not a correctness bug in a single run -
-// nothing here reads a dynamically assigned ID's numeric value, only its
-// identity/equality.
+// encode/encodeWithOffsets are called with one already-delimited word at a
+// time (an identifier, or a mixfix anchor lexeme) - word-boundary detection
+// (comments, strings, whitespace, digits, fixed punctuation/operators,
+// keywords) happens earlier, in IntegerTokenList's static lexing pass.
+// IntegerParser::consumeNameRange() reconstructs an identifier's actual
+// spelling straight from source bytes rather than decoding tokens (see its
+// own comment), so it already tolerates one identifier spanning any number
+// of adjacent token entries - going from a handful of merged pieces to one
+// piece per byte needed no parser change at all.
 class WordVocabulary {
 public:
-  explicit WordVocabulary(std::filesystem::path modelPath = {});
+  WordVocabulary() = default;
 
   std::vector<int> encode(std::string_view text) const;
   std::vector<EncodedToken> encodeWithOffsets(std::string_view text) const;
   std::string decode(std::span<const int> tokens) const;
-  // Reserve unknown identifier words in lexical order before the parser
-  // traverses the source. This makes newly assigned line IDs independent of
-  // parser backtracking and statement chunking.
-  void prime(std::string_view source) const;
 
-  const std::filesystem::path &modelPath() const noexcept { return modelPath_; }
-
-private:
-  struct Entry {
-    std::string spelling;
-    std::string bytes;
-  };
-
-  void loadModel();
-  void ensureFixedVocabulary();
-  // matchOrder is for the longest-match punctuation/operator scan only
-  // (encodeWithOffsets's non-word, non-digit fallback); word-byte runs and
-  // digits are always looked up by exact spelling via findToken/byBytes_
-  // and never reach that scan, so appending them there too would only cost
-  // an O(matchOrder_ size) re-sort per new identifier for an entry that can
-  // never be found again. Only the single "unrecognized punctuation byte"
-  // call site passes true.
-  int appendToken(std::string_view bytes, bool addToMatchOrder) const;
-  int findToken(std::string_view bytes) const;
-  void appendModelLine(std::string_view bytes) const;
-  void indexEntry(std::size_t index) const;
-
-  std::filesystem::path modelPath_;
-  mutable std::vector<Entry> entries_;
-  mutable std::vector<std::pair<std::string, int>> matchOrder_;
-  // findToken used to scan entries_ linearly (O(vocabulary size) per
-  // identifier occurrence, every occurrence, in every program - the one
-  // table it never skips). This index makes an exact-spelling lookup O(1)
-  // average instead, which is the lookup encodeWithOffsets performs for
-  // every identifier and digit run it sees. Keyed by the same `bytes` (the
-  // decoded, actual text) findToken compares by.
-  mutable std::unordered_map<std::string, int> byBytes_;
-  mutable std::mutex mutex_;
+  // Derived from the fixed grammar table itself, not a hand-copied count:
+  // grammar IDs are 1..std::size(kBuiltinTokens) (see FelidaeGrammar.h), so
+  // byte tokens start right after. A hardcoded number here would silently
+  // go stale (byte tokens colliding with grammar IDs, no compile error) the
+  // moment a fixed grammar spelling is ever added or removed.
+  static constexpr int kFirstByteToken = static_cast<int>(std::size(kBuiltinTokens)) + 1;
+  static constexpr int kVocabularySize = kFirstByteToken + 256;
 };
-
-std::filesystem::path defaultTokenizerModelPath();
 
 } // namespace Felidae

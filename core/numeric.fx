@@ -15,16 +15,16 @@
 # would fail to parse as a call the same way Logic.negate and math.clamp
 # already do.
 
-clamp(value: number, low: number, high: number) =>
+def clamp(value: number, low: number, high: number) =>
     return max([low, min([high, value])])
 
-lerp(a: number, b: number, t: number) =>
+def lerp(a: number, b: number, t: number) =>
     return a + (b - a) * t
 
-diff(a: number, b: number) =>
+def diff(a: number, b: number) =>
     return math.abs(value: a - b)
 
-weightedAverage(a: number, b: number, weightA: number, weightB: number) =>
+def weightedAverage(a: number, b: number, weightA: number, weightB: number) =>
     where weightA + weightB == 0
     total := a + b
     return total / 2
@@ -33,19 +33,19 @@ else
     totalWeight := weightA + weightB
     return weighted / totalWeight
 
-square(value: number) =>
+def square(value: number) =>
     return value * value
 
-cube(value: number) =>
+def cube(value: number) =>
     return value * value * value
 
-reciprocal(value: number) =>
+def reciprocal(value: number) =>
     where value == 0
     return 0
 else
     return 1 / value
 
-sign(value: number) =>
+def sign(value: number) =>
     if value > 0 then
         return 1
     elif value < 0 then
@@ -55,7 +55,7 @@ sign(value: number) =>
     end
 end
 
-trunc(value: number) =>
+def trunc(value: number) =>
     if value >= 0 then
         return math.floor(value: value)
     else
@@ -63,5 +63,5 @@ trunc(value: number) =>
     end
 end
 
-inRange(value: number, low: number, high: number) =>
+def inRange(value: number, low: number, high: number) =>
     return value >= low and value <= high

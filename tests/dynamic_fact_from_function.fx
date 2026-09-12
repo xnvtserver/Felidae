@@ -5,7 +5,7 @@ class School
     active: number
 end
 
-make_school(name: string, district: string, students: number) =>
+def make_school(name: string, district: string, students: number) =>
     return School.insert(values: {
         name: name,
         district: district,
@@ -14,7 +14,7 @@ make_school(name: string, district: string, students: number) =>
     })
 end
 
-main() =>
+def main() =>
     inserted := make_school(
         name: "Function School",
         district: "central",
