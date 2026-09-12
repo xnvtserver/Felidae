@@ -1012,9 +1012,10 @@ public:
 class GlobalBindingStmt final : public Statement {
 public:
     GlobalBindingStmt(std::string name, std::shared_ptr<Expr> expr)
-        : name(std::move(name)), expr(std::move(expr)) {}
+        : name(std::move(name)), nameId(symbolIdForName(this->name)), expr(std::move(expr)) {}
 
     std::string name;
+    SymbolId nameId = 0;
     std::shared_ptr<Expr> expr;
 
     StatementKind kind() const override { return StatementKind::GlobalBinding; }
