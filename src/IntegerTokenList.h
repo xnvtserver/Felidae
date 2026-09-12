@@ -6,9 +6,22 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Felidae {
+
+// The one place a spelling is checked against the fixed grammar/reserved-word
+// table (keywords, punctuation, operators, and the lexer-owned reserved words
+// - class/end/index/extends/elif/def) - returns TokenId::UNKNOWN if `spelling`
+// is not one of them. encodeNextStatement uses this for ordinary source
+// scanning; IntegerParser::registerOperatorPattern must use the exact same
+// lookup when computing a mixfix anchor's token IDs, or an anchor whose
+// literal text happens to equal a keyword (e.g. "as") would be registered
+// under different IDs than the source scanner ever produces for it, and
+// could never match - the bug this function exists to make impossible by
+// construction rather than by two call sites happening to agree.
+TokenId::Id fixedGrammarTokenId(std::string_view spelling);
 
 // The sole source-tokenization result. WordVocabulary encodes complete
 // dot-terminated statement spans, so multiline statements and `then` chains

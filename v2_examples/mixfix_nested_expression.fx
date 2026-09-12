@@ -7,7 +7,7 @@ Context(domain: "animal-behaviour")
 @mixfix(
     pattern: "reason {subject: expr} using {evidence: Evidence} within {context: Context}"
 )
-reasonFactValue() =>
+def reasonFactValue() =>
     return Explanation(
         subject: subject,
         evidence: evidence,
@@ -17,13 +17,13 @@ reasonFactValue() =>
 @mixfix(
     pattern: "validate {claim: expr} with {expected: string}"
 )
-validateReasonValue() =>
+def validateReasonValue() =>
     return Validation(
         claim: claim,
         expected: expected
     )
 
-main() =>
+def main() =>
     evidence := Evidence(kind: "observed")
     context := Context(domain: "animal-behaviour")
     claim := (reason "tiger" using evidence within context)

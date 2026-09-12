@@ -1,5 +1,5 @@
 import "tooling_imported.fx".
 
-main() =>
+def main() =>
     return ImportedFact.count()
 end

@@ -1,7 +1,7 @@
 class Person
     name: string
 
-    label() =>
+    def label() =>
         return self.name
     end
 end
@@ -9,12 +9,12 @@ end
 class Student extends Person
     grade: number
 
-    promoted() =>
+    def promoted() =>
         return Student(name: self.name, grade: self.grade + 1)
     end
 end
 
-main() =>
+def main() =>
     student := Student(name: "Ada", grade: 10)
     promoted := student.promoted()
     return (

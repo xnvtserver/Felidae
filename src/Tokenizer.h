@@ -1,4 +1,5 @@
 #pragma once
+#include "FelidaeGrammar.h"
 
 #include <cstddef>
 #include <span>
@@ -15,8 +16,8 @@ struct EncodedToken {
 };
 
 // Byte-level, training-free tokenizer (ByT5-style): every byte of an
-// already-delimited word becomes exactly one token, offset past the 59
-// fixed grammar IDs (kFelidaeBuiltinTokenIds). No merge table, no corpus,
+// already-delimited word becomes exactly one token, offset past the fixed
+// grammar IDs (kBuiltinTokens, FelidaeGrammar.h). No merge table, no corpus,
 // no training, no file on disk at all - the complete vocabulary (59 grammar
 // tokens + 256 byte tokens = 315 total) is fixed at compile time, so
 // construction and every encode call are pure, allocation-light functions
@@ -57,7 +58,12 @@ public:
   std::vector<EncodedToken> encodeWithOffsets(std::string_view text) const;
   std::string decode(std::span<const int> tokens) const;
 
-  static constexpr int kFirstByteToken = 59; // right after the fixed grammar IDs
+  // Derived from the fixed grammar table itself, not a hand-copied count:
+  // grammar IDs are 1..std::size(kBuiltinTokens) (see FelidaeGrammar.h), so
+  // byte tokens start right after. A hardcoded number here would silently
+  // go stale (byte tokens colliding with grammar IDs, no compile error) the
+  // moment a fixed grammar spelling is ever added or removed.
+  static constexpr int kFirstByteToken = static_cast<int>(std::size(kBuiltinTokens)) + 1;
   static constexpr int kVocabularySize = kFirstByteToken + 256;
 };
 

@@ -1,6 +1,6 @@
 School(name: "North", active: 1.0).
 
-main() =>
+def main() =>
     inserted := School.insert(values: {name: "Temporary", active: 1.0})
     updated := School.where(name: "North").update(values: {active: 0.0})
     deleted := School.where(name: "Temporary").delete()

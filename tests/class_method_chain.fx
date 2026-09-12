@@ -1,16 +1,16 @@
 class Counter
     value: number
 
-    increment(amount: number) =>
+    def increment(amount: number) =>
         return Counter(value: self.value + amount)
     end
 
-    doubled() =>
+    def doubled() =>
         return Counter(value: self.value * 2)
     end
 end
 
-main() =>
+def main() =>
     counter := Counter(value: 2)
     return counter.increment(amount: 3).doubled().value
 end

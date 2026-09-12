@@ -502,7 +502,6 @@ static std::string astNodeKind(const std::shared_ptr<AstNode>& node) {
     if (auto clause = std::dynamic_pointer_cast<ClauseStmt>(node)) {
         if (clause->clauseKind == ClauseKind::Fact) return "fact";
         if (clause->clauseKind == ClauseKind::NativeDeclaration) return "native";
-        if (clause->clauseKind == ClauseKind::EntryCall) return "entry";
         return "func";
     }
     if (std::dynamic_pointer_cast<ImportStmt>(node)) return "stmt";
@@ -1211,7 +1210,14 @@ void Interpreter::addProgram(const Program& program) {
                     break;
                 case StatementKind::Clause: {
                     auto clause = std::static_pointer_cast<ClauseStmt>(statement);
-                    if (clause->clauseKind == ClauseKind::EntryCall) {
+                    // A bare `name(...)` with no arrow parses as a fact
+                    // (IntegerParser.cpp's `def`-less clause path) because
+                    // Felidae's fact syntax is legitimately bare too
+                    // (`fact(name: "tiger").`). Only once declarations up to
+                    // this point are visible can the two be told apart: if
+                    // `name` already names a declared clause, this is a call
+                    // to it, executed immediately, not a second declaration.
+                    if (clause->isFact() && findClauses(clause->head.name, clause->head.nameId)) {
                         autoEntryCalls_.push_back(clause->head);
                         autoEntryResults_.push_back(loadEvaluationEnabled_
                             ? executeEntryCall(clause->head)
@@ -1267,7 +1273,9 @@ void Interpreter::addStreamedStatement(std::shared_ptr<Statement> statement) {
         // into the cast made non-fact clauses become null before they were
         // wrapped in the singleton Program.
         auto clause = std::static_pointer_cast<ClauseStmt>(statement);
-        if (clause->clauseKind == ClauseKind::EntryCall) {
+        // Same disambiguation as addProgram above: a bare fact-shaped clause
+        // whose name is already declared is a call to it, not a new fact.
+        if (clause->isFact() && findClauses(clause->head.name, clause->head.nameId)) {
             autoEntryCalls_.push_back(clause->head);
             autoEntryResults_.push_back(loadEvaluationEnabled_
                 ? executeEntryCall(clause->head)

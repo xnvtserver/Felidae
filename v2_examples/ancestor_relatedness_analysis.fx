@@ -36,7 +36,7 @@ Eagle extend Bird(name: "", weight_kg: 0).
 # shared immediate parent) as "close": identical-type pairs (distance 0,
 # degree 1) and siblings (distance 2, degree 0.333) both clear it; cousins
 # and unrelated pairs (both distance 4, degree 0.2) fall under it.
-relationshipReport(left: any, right: any) =>
+def relationshipReport(left: any, right: any) =>
     return {
         left: left,
         right: right,
@@ -48,7 +48,7 @@ relationshipReport(left: any, right: any) =>
         weight_similarity: similarity(a: left.weight_kg, b: right.weight_kg)
     }
 
-main() =>
+def main() =>
     rex := Dog(name: "Rex", weight_kg: 30)
     fido := Dog(name: "Fido", weight_kg: 28)
     wolfie := Wolf(name: "Wolfie", weight_kg: 40)
