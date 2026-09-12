@@ -1229,7 +1229,7 @@ void Interpreter::addProgram(const Program& program) {
                 }
                 case StatementKind::GlobalBinding: {
                     auto binding = std::static_pointer_cast<GlobalBindingStmt>(statement);
-                    if (globals_.count(binding->name) || findClauses(binding->name, symbolIdForName(binding->name))) {
+                    if (globals_.count(binding->nameId) || findClauses(binding->name, binding->nameId)) {
                         throw InterpreterError("Global '" + binding->name + "' is already defined and immutable");
                     }
                     Env env;
@@ -1347,10 +1347,8 @@ void Interpreter::validateNegationStratification(const Program& program) const {
         for (const auto& branch : clause->fallbackBranches) collectGoals(collectGoals, clause->head.name, branch);
     };
 
-    for (const auto& bucket : *clauses_) {
-        for (const auto& nameBucket : bucket.second) {
-            for (const auto& clause : nameBucket.clauses) addClause(clause);
-        }
+    for (const auto& entry : *clauses_) {
+        for (const auto& clause : entry.second) addClause(clause);
     }
     for (const auto& statement : program.statements) {
         if (statement->kind() != StatementKind::Clause) continue;
@@ -1584,7 +1582,7 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
             parsed, *pattern, clause->head.name, clause->head.nameId, clause->module));
         operatorClauses_[pattern->patternId].push_back(clause);
     }
-    if (clause->isFact() && globals_.count(clause->head.name) == 0) {
+    if (clause->isFact() && globals_.count(clause->head.nameId) == 0) {
         const auto registrationStarted = std::chrono::steady_clock::now();
         auto materialized = factToMap(*clause);
         memory_.addFact(clause->head.name, clause->parentName, materialized.value,
@@ -7298,105 +7296,121 @@ bool Interpreter::evalCallAsValueOnce(
 }
 
 bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& env, std::shared_ptr<Expr>& out) {
-    if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
-        return evalOperatorExpr(*op, env, out);
+    // Every Expr already carries its own kind() tag (AST.h's ExprKind) -
+    // dispatching on it is one O(1) switch instead of probing the concrete
+    // type with a sequential chain of RTTI dynamic_pointer_casts, which this
+    // function - evaluated for every expression in every goal - used to do
+    // up to seven times over before reaching its (most common) literal
+    // fallthrough case. static_pointer_cast is safe here precisely because
+    // kind() is the single source of truth for an Expr's concrete type.
+    if (expr && expr->kind() == ExprKind::Operator) {
+        return evalOperatorExpr(static_cast<OperatorExpression&>(*expr), env, out);
     }
     auto resolved = resolveExpr(expr, env);
-    if (auto lambda = std::dynamic_pointer_cast<LambdaExpr>(resolved)) {
-        auto sourceValues = valuesForLambdaSource(lambda->source, env);
-        // A type selector is a fact query.  Its documented predicate form
-        // filters facts, including compound predicates that are represented
-        // as a normal boolean expression rather than LambdaExpr::op/right.
-        // Array sources retain their mapping behaviour for compatibility.
-        const auto sourceVariable = std::dynamic_pointer_cast<VarExpr>(lambda->source);
-        const bool sourceIsFactType =
-            std::dynamic_pointer_cast<StringExpr>(lambda->source) != nullptr ||
-            (sourceVariable && sourceVariable->isCapitalized &&
-             globals_.find(sourceVariable->nameId) == globals_.end());
-        std::vector<std::shared_ptr<Expr>> results;
-        for (const auto& item : sourceValues) {
-            Env lambdaEnv = env;
-            lambdaEnv[lambda->variableId] = item;
-            PipelineResultClearScope clearPipelineResults(pipelineResults_);
-            if (lambda->op != TokenId::UNKNOWN) {
-                std::shared_ptr<Expr> left;
-                std::shared_ptr<Expr> right;
-                if (!evalExprValue(lambda->body, lambdaEnv, left) ||
-                    !evalExprValue(lambda->right, lambdaEnv, right)) {
+    switch (resolved->kind()) {
+        case ExprKind::Lambda: {
+            auto lambda = std::static_pointer_cast<LambdaExpr>(resolved);
+            auto sourceValues = valuesForLambdaSource(lambda->source, env);
+            // A type selector is a fact query.  Its documented predicate form
+            // filters facts, including compound predicates that are represented
+            // as a normal boolean expression rather than LambdaExpr::op/right.
+            // Array sources retain their mapping behaviour for compatibility.
+            const auto sourceVariable = std::dynamic_pointer_cast<VarExpr>(lambda->source);
+            const bool sourceIsFactType =
+                std::dynamic_pointer_cast<StringExpr>(lambda->source) != nullptr ||
+                (sourceVariable && sourceVariable->isCapitalized &&
+                 globals_.find(sourceVariable->nameId) == globals_.end());
+            std::vector<std::shared_ptr<Expr>> results;
+            for (const auto& item : sourceValues) {
+                Env lambdaEnv = env;
+                lambdaEnv[lambda->variableId] = item;
+                PipelineResultClearScope clearPipelineResults(pipelineResults_);
+                if (lambda->op != TokenId::UNKNOWN) {
+                    std::shared_ptr<Expr> left;
+                    std::shared_ptr<Expr> right;
+                    if (!evalExprValue(lambda->body, lambdaEnv, left) ||
+                        !evalExprValue(lambda->right, lambdaEnv, right)) {
+                        continue;
+                    }
+                    bool ok = lambda->op == TokenId::EQUAL ? unifyExpr(left, right, lambdaEnv) :
+                              lambda->op == TokenId::NOT_EQUAL ? !unifyExpr(left, right, lambdaEnv) :
+                              compareResolved(left, lambda->op, right);
+                    if (ok) results.push_back(item->clone());
                     continue;
                 }
-                bool ok = lambda->op == TokenId::EQUAL ? unifyExpr(left, right, lambdaEnv) :
-                          lambda->op == TokenId::NOT_EQUAL ? !unifyExpr(left, right, lambdaEnv) :
-                          compareResolved(left, lambda->op, right);
-                if (ok) results.push_back(item->clone());
-                continue;
-            }
-            std::shared_ptr<Expr> mapped;
-            if (evalExprValue(lambda->body, lambdaEnv, mapped) && !isMethodTruthTupleWithFalse(mapped)) {
-                if (sourceIsFactType) {
-                    if (const auto predicate = std::dynamic_pointer_cast<BoolExpr>(mapped)) {
-                        if (predicate->value) results.push_back(item->clone());
+                std::shared_ptr<Expr> mapped;
+                if (evalExprValue(lambda->body, lambdaEnv, mapped) && !isMethodTruthTupleWithFalse(mapped)) {
+                    if (sourceIsFactType) {
+                        if (const auto predicate = std::dynamic_pointer_cast<BoolExpr>(mapped)) {
+                            if (predicate->value) results.push_back(item->clone());
+                        } else {
+                            results.push_back(mapped);
+                        }
                     } else {
                         results.push_back(mapped);
                     }
-                } else {
-                    results.push_back(mapped);
                 }
             }
-        }
-        out = std::make_shared<ArrayExpr>(std::move(results));
-        return true;
-    }
-    if (auto term = std::dynamic_pointer_cast<TermExpr>(resolved)) {
-        return evalBuiltinTerm(*term, env, out) || instantiateClass(*term, env, out);
-    }
-    if (auto array = std::dynamic_pointer_cast<ArrayExpr>(resolved)) {
-        std::vector<std::shared_ptr<Expr>> items;
-        items.reserve(array->items.size());
-        for (const auto& item : array->items) {
-            std::shared_ptr<Expr> value;
-            if (!evalExprValue(item, env, value)) return false;
-            items.push_back(value);
-        }
-        out = std::make_shared<ArrayExpr>(std::move(items));
-        return true;
-    }
-    if (auto map = std::dynamic_pointer_cast<MapExpr>(resolved)) {
-        std::vector<MapEntry> entries;
-        entries.reserve(map->entries.size());
-        for (const auto& entry : map->entries) {
-            std::shared_ptr<Expr> value;
-            if (!evalExprValue(entry.value, env, value)) return false;
-            entries.push_back(MapEntry{entry.key, value});
-        }
-        auto evaluated = std::make_shared<MapExpr>(std::move(entries));
-        // Evaluating a stored fact resolves field expressions but must not
-        // discard its runtime-only identity.  This keeps aliases and values
-        // retrieved through Fact.all/select attached to the same fact record.
-        evaluated->factIdentity = map->factIdentity;
-        evaluated->factType = map->factType;
-        out = std::move(evaluated);
-        return true;
-    }
-    if (auto access = std::dynamic_pointer_cast<AccessExpr>(resolved)) {
-        std::shared_ptr<Expr> target;
-        if (!evalExprValue(access->target, env, target)) return false;
-        auto value = findMapValue(target, access->key);
-        if (!value) return false;
-        return evalExprValue(value, env, out);
-    }
-    if (auto var = std::dynamic_pointer_cast<VarExpr>(resolved)) {
-        auto globalIt = globals_.find(var->name);
-        if (globalIt != globals_.end()) return evalExprValue(globalIt->second, env, out);
-        const SymbolId designationId = symbolIdForName(var->name);
-        if (memory_.hasDesignation(designationId)) {
-            out = std::make_shared<FactSelectionExpr>(
-                "", memory_.captureSnapshot(), "", nullptr,
-                std::vector<SymbolId>{designationId},
-                std::vector<std::string>{var->name});
+            out = std::make_shared<ArrayExpr>(std::move(results));
             return true;
         }
-        return false;
+        case ExprKind::Term: {
+            auto term = std::static_pointer_cast<TermExpr>(resolved);
+            return evalBuiltinTerm(*term, env, out) || instantiateClass(*term, env, out);
+        }
+        case ExprKind::Array: {
+            auto array = std::static_pointer_cast<ArrayExpr>(resolved);
+            std::vector<std::shared_ptr<Expr>> items;
+            items.reserve(array->items.size());
+            for (const auto& item : array->items) {
+                std::shared_ptr<Expr> value;
+                if (!evalExprValue(item, env, value)) return false;
+                items.push_back(value);
+            }
+            out = std::make_shared<ArrayExpr>(std::move(items));
+            return true;
+        }
+        case ExprKind::Map: {
+            auto map = std::static_pointer_cast<MapExpr>(resolved);
+            std::vector<MapEntry> entries;
+            entries.reserve(map->entries.size());
+            for (const auto& entry : map->entries) {
+                std::shared_ptr<Expr> value;
+                if (!evalExprValue(entry.value, env, value)) return false;
+                entries.push_back(MapEntry{entry.key, value});
+            }
+            auto evaluated = std::make_shared<MapExpr>(std::move(entries));
+            // Evaluating a stored fact resolves field expressions but must not
+            // discard its runtime-only identity.  This keeps aliases and values
+            // retrieved through Fact.all/select attached to the same fact record.
+            evaluated->factIdentity = map->factIdentity;
+            evaluated->factType = map->factType;
+            out = std::move(evaluated);
+            return true;
+        }
+        case ExprKind::Access: {
+            auto access = std::static_pointer_cast<AccessExpr>(resolved);
+            std::shared_ptr<Expr> target;
+            if (!evalExprValue(access->target, env, target)) return false;
+            auto value = findMapValue(target, access->key);
+            if (!value) return false;
+            return evalExprValue(value, env, out);
+        }
+        case ExprKind::Var: {
+            auto var = std::static_pointer_cast<VarExpr>(resolved);
+            auto globalIt = globals_.find(var->nameId);
+            if (globalIt != globals_.end()) return evalExprValue(globalIt->second, env, out);
+            if (memory_.hasDesignation(var->nameId)) {
+                out = std::make_shared<FactSelectionExpr>(
+                    "", memory_.captureSnapshot(), "", nullptr,
+                    std::vector<SymbolId>{var->nameId},
+                    std::vector<std::string>{var->name});
+                return true;
+            }
+            return false;
+        }
+        default:
+            break;
     }
     out = resolved->clone();
     return true;
@@ -7839,9 +7853,9 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
                 return pipelineResults_.back();
             }
             if (!resolving.insert(variable->nameId).second) return syntax;
-            auto local = env.find(variable->name);
+            auto local = env.find(variable->nameId);
             if (local != env.end()) return self(self, local->second, resolving);
-            auto global = globals_.find(variable->name);
+            auto global = globals_.find(variable->nameId);
             if (global != globals_.end()) return self(self, global->second, resolving);
             return syntax;
         }
@@ -8578,42 +8592,44 @@ bool Interpreter::unifyExpr(const std::shared_ptr<Expr>& a,
 }
 
 std::shared_ptr<Expr> Interpreter::resolveExpr(const std::shared_ptr<Expr>& expr, const Env& env) const {
-    auto var = std::dynamic_pointer_cast<VarExpr>(expr);
-    if (var && var->nameId == InternalSymbol::SystemResultId) {
-        if (pipelineResults_.empty()) {
-            throw InterpreterError("system.result is only available inside a then pipeline");
-        }
-        return pipelineResults_.back()->clone();
-    }
-    if (!var) {
-        if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
-            if (access->keyId == InternalSymbol::ResultId) {
-                auto targetVar = std::dynamic_pointer_cast<VarExpr>(access->target);
-                if (targetVar && targetVar->nameId == InternalSymbol::SystemId) {
-                    if (pipelineResults_.empty()) {
-                        throw InterpreterError("system.result is only available inside a then pipeline");
-                    }
-                    return pipelineResults_.back()->clone();
-                }
+    // Only a Var or an Access can ever resolve to something other than
+    // themselves; every other kind (the common case - literals, already
+    // evaluated arrays/maps, ...) returns unchanged. kind() answers that in
+    // one virtual call instead of two failed RTTI probes per literal.
+    if (!expr || (expr->kind() != ExprKind::Var && expr->kind() != ExprKind::Access)) return expr;
+    if (expr->kind() == ExprKind::Var) {
+        auto var = std::static_pointer_cast<VarExpr>(expr);
+        if (var->nameId == InternalSymbol::SystemResultId) {
+            if (pipelineResults_.empty()) {
+                throw InterpreterError("system.result is only available inside a then pipeline");
             }
-            std::shared_ptr<Expr> target;
-            if (!const_cast<Interpreter*>(this)->evalExprValue(access->target, env, target)) return expr;
-            auto value = findMapValue(target, access->key);
-            if (!value) return expr;
-            return resolveExpr(value, env);
+            return pipelineResults_.back()->clone();
         }
-        return expr;
+        auto it = env.find(var->nameId);
+        if (it == env.end()) {
+            auto globalIt = globals_.find(var->nameId);
+            if (globalIt != globals_.end()) return resolveExpr(globalIt->second, env);
+            return expr;
+        }
+        // Follow standardized variable aliases to their resolved value.
+        return resolveExpr(it->second, env);
     }
 
-    auto it = env.find(var->nameId);
-    if (it == env.end()) {
-        auto globalIt = globals_.find(var->nameId);
-        if (globalIt != globals_.end()) return resolveExpr(globalIt->second, env);
-        return expr;
+    auto access = std::static_pointer_cast<AccessExpr>(expr);
+    if (access->keyId == InternalSymbol::ResultId) {
+        auto targetVar = std::dynamic_pointer_cast<VarExpr>(access->target);
+        if (targetVar && targetVar->nameId == InternalSymbol::SystemId) {
+            if (pipelineResults_.empty()) {
+                throw InterpreterError("system.result is only available inside a then pipeline");
+            }
+            return pipelineResults_.back()->clone();
+        }
     }
-
-    // Follow standardized variable aliases to their resolved value.
-    return resolveExpr(it->second, env);
+    std::shared_ptr<Expr> target;
+    if (!const_cast<Interpreter*>(this)->evalExprValue(access->target, env, target)) return expr;
+    auto value = findMapValue(target, access->key);
+    if (!value) return expr;
+    return resolveExpr(value, env);
 }
 
 std::string Interpreter::exprToString(const std::shared_ptr<Expr>& expr, const Env& env) const {
@@ -9238,17 +9254,16 @@ std::vector<std::shared_ptr<Expr>> Interpreter::valuesForLambdaSource(const std:
         return values;
     }
     if (var) {
-        auto globalIt = globals_.find(var->name);
+        auto globalIt = globals_.find(var->nameId);
         if (globalIt != globals_.end()) {
             std::shared_ptr<Expr> value;
             if (!evalExprValue(globalIt->second, env, value)) return {};
             if (auto array = std::dynamic_pointer_cast<ArrayExpr>(value)) return array->items;
             return {value};
         }
-        const SymbolId designationId = symbolIdForName(var->name);
-        if (memory_.hasDesignation(designationId)) {
+        if (memory_.hasDesignation(var->nameId)) {
             std::vector<std::shared_ptr<Expr>> values;
-            for (const size_t factIndex : memory_.currentFactIndexes(memory_.designationIndexes({designationId}))) {
+            for (const size_t factIndex : memory_.currentFactIndexes(memory_.designationIndexes({var->nameId}))) {
                 if (const auto value = memory_.factValue(factIndex)) values.push_back(value);
             }
             return values;
@@ -9306,15 +9321,8 @@ Interpreter::ClauseList* Interpreter::findClauses(const std::string& name, Symbo
         if (cacheInvalidationDepth_ == 0) clauseLookupCache_[name] = nullptr;
         return nullptr;
     }
-    for (auto& bucket : found->second) {
-        if (bucket.name == name) {
-            auto* clauses = &bucket.clauses;
-            if (cacheInvalidationDepth_ == 0) clauseLookupCache_[name] = clauses;
-            return clauses;
-        }
-    }
-    if (cacheInvalidationDepth_ == 0) clauseLookupCache_[name] = nullptr;
-    return nullptr;
+    if (cacheInvalidationDepth_ == 0) clauseLookupCache_[name] = &found->second;
+    return &found->second;
 }
 
 const Interpreter::ClauseList* Interpreter::findClauses(const std::string& name, SymbolId nameId) const {
@@ -9332,40 +9340,15 @@ const Interpreter::ClauseList* Interpreter::findClauses(const std::string& name,
         if (cacheInvalidationDepth_ == 0) clauseLookupCache_[name] = nullptr;
         return nullptr;
     }
-    for (const auto& bucket : found->second) {
-        if (bucket.name == name) {
-            auto* clauses = const_cast<ClauseList*>(&bucket.clauses);
-            if (cacheInvalidationDepth_ == 0) clauseLookupCache_[name] = clauses;
-            return clauses;
-        }
-    }
-    if (cacheInvalidationDepth_ == 0) clauseLookupCache_[name] = nullptr;
-    return nullptr;
+    auto* clauses = const_cast<ClauseList*>(&found->second);
+    if (cacheInvalidationDepth_ == 0) clauseLookupCache_[name] = clauses;
+    return clauses;
 }
 
 Interpreter::ClauseList& Interpreter::getOrCreateClauseList(const std::string& name, SymbolId nameId) {
     if (nameId == 0) nameId = symbolIdForName(name);
     ensureClauseTableUnique();
-    auto& buckets = (*clauses_)[nameId];
-    for (auto& bucket : buckets) {
-        if (bucket.name == name) return bucket.clauses;
-    }
-    buckets.push_back(ClauseBucket{name, {}});
-    return buckets.back().clauses;
-}
-
-void Interpreter::removeClauseBucket(const std::string& name, SymbolId nameId) {
-    if (nameId == 0) nameId = symbolIdForName(name);
-    ensureClauseTableUnique();
-    auto found = clauses_->find(nameId);
-    if (found == clauses_->end()) return;
-    auto& buckets = found->second;
-    buckets.erase(
-        std::remove_if(buckets.begin(), buckets.end(), [&](const ClauseBucket& bucket) {
-            return bucket.name == name;
-        }),
-        buckets.end());
-    if (buckets.empty()) clauses_->erase(found);
+    return (*clauses_)[nameId];
 }
 
 void Interpreter::ensureClauseTableUnique() {

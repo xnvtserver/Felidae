@@ -166,11 +166,12 @@ private:
         std::uint64_t canonicalGeneration = 0;
         bool dirty = true;
     };
-    struct ClauseBucket {
-        std::string name;
-        ClauseList clauses;
-    };
-    using ClauseTable = std::unordered_map<SymbolId, std::vector<ClauseBucket>>;
+    // Keyed by SymbolId alone: SymbolInterner (Symbol.h) already guarantees a
+    // collision-free, bijective id per distinct spelling, so a name-checked
+    // bucket list under each id could never hold more than one entry - that
+    // extra layer used to duplicate, with strings, the uniqueness the
+    // interner already owns as the single source of truth for identity.
+    using ClauseTable = std::unordered_map<SymbolId, ClauseList>;
 
     struct ProvenanceNode {
         // Reuses ClauseKind (AST.h) rather than a private Fact/Rule enum:
@@ -425,7 +426,6 @@ private:
     ClauseList* findClauses(const std::string& name, SymbolId nameId);
     const ClauseList* findClauses(const std::string& name, SymbolId nameId) const;
     ClauseList& getOrCreateClauseList(const std::string& name, SymbolId nameId);
-    void removeClauseBucket(const std::string& name, SymbolId nameId);
     void ensureClauseTableUnique();
     std::string solveCacheKey(const std::vector<std::shared_ptr<Goal>>& goals, size_t maxSolutions) const;
     std::size_t estimateCachedSolutionsBytes(const std::string& key,
