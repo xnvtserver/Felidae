@@ -11,8 +11,9 @@ $cmake = (Get-Command cmake -ErrorAction Stop).Source
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $buildType = if ($Configuration -eq "debug" -or $Configuration -eq "sanitize") { "Debug" } else { "Release" }
 $buildDir = Join-Path $root "build\windows-x64\$($buildType.ToLowerInvariant())"
+$sanitizers = if ($Configuration -eq "sanitize") { "ON" } else { "OFF" }
 
-& $cmake -S $root -B $buildDir "-DCMAKE_BUILD_TYPE=$buildType" "-DFELIDAE_BUILD_TESTS=$($Test.IsPresent)"
+& $cmake -S $root -B $buildDir "-DCMAKE_BUILD_TYPE=$buildType" "-DFELIDAE_BUILD_TESTS=$($Test.IsPresent)" "-DFELIDAE_ENABLE_SANITIZERS=$sanitizers"
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
 & $cmake --build $buildDir --config $buildType --target felidae --parallel 1
 if ($LASTEXITCODE -ne 0) { throw "Felidae interpreter build failed" }

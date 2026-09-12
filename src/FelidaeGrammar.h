@@ -141,8 +141,6 @@ enum class BuiltinId {
     JsonRemove,
     JsonToText,
 
-    VisualizeGraphJson,
-
     ThreadCreateThread,
     ThreadStart,
     ThreadPause,

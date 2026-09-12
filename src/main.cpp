@@ -1,6 +1,7 @@
 #include "Interpreter.h"
 #include "FelidaeRuntime.h"
 #include "Symbol.h"
+#include "ToolingMain.h"
 #include "Version.h"
 
 #include <algorithm>
@@ -14,11 +15,24 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
 using namespace Felidae;
+
+static bool isToolingInvocation(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view arg(argv[i]);
+        if (arg == "--check" || arg == "--check-json" || arg == "--lsp" ||
+            arg == "--list-libraries" || arg == "--list-builtins" ||
+            arg == "--symbols-json" || arg == "--operators-json") {
+            return true;
+        }
+    }
+    return false;
+}
 
 struct CliOptions {
     bool showHelp = false;
@@ -127,6 +141,8 @@ static void printHelp() {
               << "  felidae --repl program.fx\n"
               << "  felidae program.fx --repl\n"
               << "  felidae program.fx --debug\n"
+              << "  felidae program.fx --check-json\n"
+              << "  felidae --lsp\n"
               << "  felidae program.fx --metrics-json\n"
               << "  felidae program.fx --serve\n"
               << "  felidae program.fx --benchmark-repeat 100 --metrics-json\n"
@@ -139,6 +155,13 @@ static void printHelp() {
               << "  --repl program.fx                   Start interactive REPL\n"
               << "  program.fx --repl                   Start interactive REPL\n"
               << "  program.fx --debug                  Run with debug adapter diagnostics enabled\n"
+              << "  program.fx --check                  Emit text parser and AST diagnostics\n"
+              << "  program.fx --check-json             Emit JSON parser and AST diagnostics\n"
+              << "  --lsp                               Run the stdio language server\n"
+              << "  --list-libraries                    List importable core libraries as JSON\n"
+              << "  --list-builtins                     List builtin functions as JSON\n"
+              << "  program.fx --symbols-json           Emit source symbol metadata\n"
+              << "  program.fx --operators-json         Emit dynamic operator metadata\n"
               << "  --metrics-json                      Emit load and runtime performance counters to stderr\n"
               << "  --serve                             Run source and reload the AST interpreter when source changes\n"
               << "  --benchmark-repeat N                Repeat the entry method or external query in one runtime\n"
@@ -379,6 +402,9 @@ private:
 };
 
 int main(int argc, char** argv) {
+    if (isToolingInvocation(argc, argv)) {
+        return Felidae::runToolingMain(argc, argv);
+    }
     try {
         CliOptions options = parseCli(argc, argv);
         if (options.showHelp) {
@@ -397,7 +423,7 @@ int main(int argc, char** argv) {
         using Clock = std::chrono::steady_clock;
         const auto loadStarted = Clock::now();
         Interpreter interpreter;
-        DebugSession debugSession;
+        std::optional<DebugSession> debugSession;
         // Attached before loadProgramRoot below, not after: a program with
         // no main() executes its bare top-level calls during loading itself
         // (Interpreter::addProgram's EntryCall handling), so attaching any
@@ -405,13 +431,17 @@ int main(int argc, char** argv) {
         if (options.debug) {
             std::cerr << "Felidae debug session for " << options.programFile->string()
                       << " - stopped on entry, waiting on stdin.\n";
-            debugSession.attach(interpreter);
+            debugSession.emplace();
+            debugSession->attach(interpreter);
         }
         fs::path entryFile = resolveProgramEntryPath(*options.programFile);
         if (entryFile.extension() != FILE_EXTENSION) {
             throw std::runtime_error("Felidae source files must use .fx extension");
         }
         if (options.serve) {
+            if (options.debug) {
+                throw std::runtime_error("--serve cannot be combined with --debug");
+            }
             if (options.repl) {
                 throw std::runtime_error("--serve cannot be combined with --repl");
             }
