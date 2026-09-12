@@ -23,9 +23,7 @@ native_modules/**/*.exp
 # Third-party working trees are ignored by default. Pinned dependencies are
 # registered as Git submodules and remain tracked as gitlinks.
 third_party/*
-!third_party/cpp-httplib/
 !third_party/rapidcsv/
-!third_party/Eigen/
 
 # CMake generated files
 CMakeFiles/

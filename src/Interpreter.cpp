@@ -1213,7 +1213,9 @@ void Interpreter::addProgram(const Program& program) {
                     auto clause = std::static_pointer_cast<ClauseStmt>(statement);
                     if (clause->clauseKind == ClauseKind::EntryCall) {
                         autoEntryCalls_.push_back(clause->head);
-                        autoEntryResults_.push_back(executeEntryCall(clause->head));
+                        autoEntryResults_.push_back(loadEvaluationEnabled_
+                            ? executeEntryCall(clause->head)
+                            : std::shared_ptr<Expr>{});
                         break;
                     }
                     addClause(clause);
@@ -1226,7 +1228,9 @@ void Interpreter::addProgram(const Program& program) {
                     }
                     Env env;
                     std::shared_ptr<Expr> value;
-                    if (!evalExprValue(binding->expr, env, value)) {
+                    if (!loadEvaluationEnabled_) {
+                        value = binding->expr->clone();
+                    } else if (!evalExprValue(binding->expr, env, value)) {
                         throw InterpreterError("Cannot evaluate global binding '" + binding->name + "'");
                     }
                     globals_.bind(binding->name, value, currentLoadingFile_);
@@ -1256,6 +1260,7 @@ void Interpreter::addProgram(const Program& program) {
 }
 
 void Interpreter::addStreamedStatement(std::shared_ptr<Statement> statement) {
+    if (statementLoadHook_ && statement) statementLoadHook_(statement);
     if (!statement || statement->kind() == StatementKind::Import) return;
     if (statement->kind() == StatementKind::Clause) {
         // Keep statement alive for the validated rule path below. Moving it
@@ -1264,7 +1269,9 @@ void Interpreter::addStreamedStatement(std::shared_ptr<Statement> statement) {
         auto clause = std::static_pointer_cast<ClauseStmt>(statement);
         if (clause->clauseKind == ClauseKind::EntryCall) {
             autoEntryCalls_.push_back(clause->head);
-            autoEntryResults_.push_back(executeEntryCall(clause->head));
+            autoEntryResults_.push_back(loadEvaluationEnabled_
+                ? executeEntryCall(clause->head)
+                : std::shared_ptr<Expr>{});
             return;
         }
         // Facts cannot introduce rule dependency edges, globals, or method
@@ -2157,8 +2164,11 @@ bool Interpreter::solveAssignGoal(const AssignGoal& goal, Env& env) {
     if (globals_.count(goal.nameId)) {
         throw InterpreterError("Variable '" + goal.name + "' is already assigned and immutable");
     }
+    // Presence is the assignment invariant. `nil` is a first-class value,
+    // not an unbound-slot marker, so assigning nil must still consume the
+    // variable's single assignment.
     auto existing = env.find(goal.nameId);
-    if (existing != env.end() && !std::dynamic_pointer_cast<NilExpr>(resolveExpr(existing->second, env))) {
+    if (existing != env.end()) {
         throw InterpreterError("Variable '" + goal.name + "' is already assigned and immutable");
     }
 
@@ -2205,8 +2215,7 @@ bool Interpreter::solveMultiAssignGoal(const MultiAssignGoal& goal, Env& env) {
                 throw InterpreterError("Variable '" + target.name + "' is already assigned and immutable");
             }
             auto existing = env.find(target.nameId);
-            if (existing != env.end() &&
-                !std::dynamic_pointer_cast<NilExpr>(resolveExpr(existing->second, env))) {
+            if (existing != env.end()) {
                 throw InterpreterError("Variable '" + target.name + "' is already assigned and immutable");
             }
             if (!target.type.empty() && !valueMatchesBuiltinType(items[i], target.type)) {
@@ -5222,6 +5231,29 @@ bool Interpreter::evalArrayWherePredicate(const TermExpr& term, const Env& env, 
     return true;
 }
 
+std::shared_ptr<MapExpr> Interpreter::prepareInsertedFact(
+    const std::string& type, const MapExpr& values, const Env& env) {
+    const auto declared = classDefinitions_.find(symbolIdForName(type));
+    if (declared == classDefinitions_.end()) {
+        auto fact = std::static_pointer_cast<MapExpr>(values.clone());
+        fact->factType = type;
+        return fact;
+    }
+
+    std::vector<Arg> arguments;
+    arguments.reserve(values.entries.size());
+    for (const auto& entry : values.entries) {
+        arguments.emplace_back(entry.key, entry.keyId, cloneExprOrNil(entry.value));
+    }
+    std::shared_ptr<Expr> constructed;
+    if (!instantiateClass(TermExpr(type, std::move(arguments)), env, constructed)) {
+        throw InterpreterError("Cannot construct declared class '" + type + "'");
+    }
+    const auto fact = std::dynamic_pointer_cast<MapExpr>(constructed);
+    if (!fact) throw InterpreterError("Class constructor did not produce a fact value");
+    return fact;
+}
+
 // Shared by csv.toFacts (raw CSV text) and csv.toFelidaeFacts (an
 // already-parsed array, e.g. from csv.parse): each row's own fields become
 // one new fact of `type`, the same way Type.insert(values:) already does
@@ -5236,8 +5268,7 @@ std::shared_ptr<ArrayExpr> Interpreter::insertFactsFromRows(const std::string& t
     for (const auto& row : rows) {
         const auto rowMap = std::dynamic_pointer_cast<MapExpr>(row);
         if (!rowMap) throw InterpreterError("csv.toFacts expects every row to be a map of fields");
-        auto fact = std::static_pointer_cast<MapExpr>(rowMap->clone());
-        fact->factType = type;
+        auto fact = prepareInsertedFact(type, *rowMap, Env{});
         memory_.addFact(type, {}, fact, source);
         inserted.push_back(fact);
     }
@@ -5245,6 +5276,57 @@ std::shared_ptr<ArrayExpr> Interpreter::insertFactsFromRows(const std::string& t
 }
 
 bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out) {
+    if (term.name == kMemberInvokeTerm) {
+        if (term.args.size() < 2) {
+            throw InterpreterError("Invalid member invocation expression");
+        }
+        std::shared_ptr<Expr> receiver;
+        if (!evalExprValue(term.args[0].value, env, receiver)) return false;
+        const auto object = std::dynamic_pointer_cast<MapExpr>(receiver);
+        const auto member = std::dynamic_pointer_cast<StringExpr>(term.args[1].value);
+        if (!object || object->factType.empty() || !member || member->value.empty()) {
+            throw InterpreterError("Method receiver must be a class or fact value");
+        }
+
+        std::vector<std::string> level{object->factType};
+        std::unordered_set<std::string> visited;
+        std::string methodName;
+        while (!level.empty() && methodName.empty()) {
+            std::vector<std::string> next;
+            std::vector<std::string> matches;
+            for (const auto& type : level) {
+                if (!visited.insert(type).second) continue;
+                const std::string candidate = type + "." + member->value;
+                if (hasMethod(candidate)) matches.push_back(candidate);
+                for (const auto& parent : memory_.parentsOf(type)) {
+                    if (!visited.count(parent)) next.push_back(parent);
+                }
+            }
+            std::sort(matches.begin(), matches.end());
+            matches.erase(std::unique(matches.begin(), matches.end()), matches.end());
+            if (matches.size() > 1) {
+                throw InterpreterError(
+                    "Ambiguous inherited method '" + member->value + "' for " + object->factType);
+            }
+            if (!matches.empty()) methodName = std::move(matches.front());
+            level = std::move(next);
+        }
+        if (methodName.empty()) {
+            throw InterpreterError(
+                "Type '" + object->factType + "' has no method '" + member->value + "'");
+        }
+
+        std::vector<Arg> callArgs;
+        callArgs.reserve(term.args.size() - 1);
+        callArgs.emplace_back("self", std::move(receiver));
+        for (std::size_t index = 2; index < term.args.size(); ++index) {
+            callArgs.push_back(Arg{
+                term.args[index].name,
+                term.args[index].nameId,
+                term.args[index].value->clone()});
+        }
+        return evalCallAsValue(TermExpr(methodName, std::move(callArgs)), env, out);
+    }
     if (term.builtinId == BuiltinId::CommonAncestors ||
         term.builtinId == BuiltinId::LowestCommonAncestor ||
         term.builtinId == BuiltinId::HighestCommonAncestor ||
@@ -5511,8 +5593,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
             if (!type || type->value.empty() || !value) {
                 throw InterpreterError("Type.insert expects a type and values map");
             }
-            auto inserted = std::static_pointer_cast<MapExpr>(value->clone());
-            inserted->factType = type->value;
+            auto inserted = prepareInsertedFact(type->value, *value, env);
             memory_.addFact(type->value, {}, inserted, currentLoadingFile_);
             out = inserted;
             return true;
@@ -7272,26 +7353,96 @@ bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& en
     return true;
 }
 
+std::vector<const ClassFieldDecl*> Interpreter::classFieldsFor(const ClassStmt& schema) const {
+    std::vector<const ClassFieldDecl*> orderedFields;
+    std::unordered_map<SymbolId, const ClassFieldDecl*> fields;
+    std::unordered_set<SymbolId> visiting;
+    std::unordered_set<SymbolId> visitedClasses;
+    const auto collectFields = [&](const auto& self, const ClassStmt& current) -> void {
+        if (!visiting.insert(current.nameId).second) {
+            throw InterpreterError("Cyclic class inheritance involving '" + current.name + "'");
+        }
+        if (!visitedClasses.insert(current.nameId).second) {
+            visiting.erase(current.nameId);
+            return;
+        }
+        for (const auto& parentName : current.parentNames) {
+            const auto parent = classDefinitions_.find(symbolIdForName(parentName));
+            if (parent != classDefinitions_.end()) self(self, *parent->second);
+        }
+        for (const auto& field : current.fields) {
+            const auto existing = fields.find(field.nameId);
+            if (existing != fields.end()) {
+                throw InterpreterError(
+                    "Class '" + schema.name + "' inherits duplicate field '" + field.name + "'");
+            }
+            fields.emplace(field.nameId, &field);
+            orderedFields.push_back(&field);
+        }
+        visiting.erase(current.nameId);
+    };
+    collectFields(collectFields, schema);
+    return orderedFields;
+}
+
+std::optional<std::size_t> Interpreter::nearestPrototypeFact(const std::string& type) {
+    std::vector<std::string> pending{type};
+    std::unordered_set<std::string> visited;
+    for (std::size_t cursor = 0; cursor < pending.size(); ++cursor) {
+        const std::string current = pending[cursor];
+        if (!visited.insert(current).second) continue;
+        const auto& candidates = memory_.compatibleFactIndexes(current);
+        const auto exact = std::find_if(candidates.begin(), candidates.end(), [&](std::size_t index) {
+            const auto& fact = memory_.fact(index);
+            return fact.active && fact.type == current;
+        });
+        if (exact != candidates.end()) return *exact;
+        for (const auto& parent : memory_.parentsOf(current)) pending.push_back(parent);
+    }
+    return std::nullopt;
+}
+
 bool Interpreter::instantiateClass(const TermExpr& term, const Env& env,
                                    std::shared_ptr<Expr>& out) {
     const auto declared = classDefinitions_.find(term.nameId);
     if (declared == classDefinitions_.end()) return false;
     const ClassStmt& schema = *declared->second;
-    if (term.args.size() > schema.fields.size()) {
+    const auto orderedFields = classFieldsFor(schema);
+
+    if (term.args.size() > orderedFields.size()) {
         throw InterpreterError("Class '" + schema.name + "' received too many constructor arguments");
     }
-
     std::unordered_map<SymbolId, const ClassFieldDecl*> fields;
-    fields.reserve(schema.fields.size());
-    for (const auto& field : schema.fields) fields.emplace(field.nameId, &field);
+    fields.reserve(orderedFields.size());
+    for (const auto* field : orderedFields) fields.emplace(field->nameId, field);
     std::unordered_set<SymbolId> supplied;
     std::vector<MapEntry> entries;
-    entries.reserve(term.args.size());
+    for (const auto& parentName : schema.parentNames) {
+        const auto prototypeIndex = nearestPrototypeFact(parentName);
+        if (!prototypeIndex) continue;
+        const auto prototype = memory_.factValue(*prototypeIndex);
+        if (!prototype) continue;
+        for (const auto& inherited : prototype->entries) {
+            if (inherited.keyId == InternalSymbol::TypeId ||
+                inherited.keyId == InternalSymbol::ParentId) continue;
+            const auto existing = std::find_if(entries.begin(), entries.end(), [&](const MapEntry& entry) {
+                return entry.keyId == inherited.keyId && entry.key == inherited.key;
+            });
+            if (existing == entries.end()) {
+                entries.emplace_back(inherited.key, inherited.keyId, inherited.value->clone());
+            } else if (!exprEqualsLiteral(existing->value, inherited.value) &&
+                       fields.count(inherited.keyId) == 0) {
+                throw InterpreterError(
+                    "Class '" + schema.name + "' inherits ambiguous prototype field '" + inherited.key + "'");
+            }
+        }
+    }
+    entries.reserve(entries.size() + term.args.size());
     for (std::size_t index = 0; index < term.args.size(); ++index) {
         const Arg& argument = term.args[index];
         const ClassFieldDecl* field = nullptr;
         if (argument.name.empty()) {
-            field = &schema.fields[index];
+            field = orderedFields[index];
         } else {
             const auto found = fields.find(argument.nameId);
             if (found == fields.end()) {
@@ -7315,10 +7466,10 @@ bool Interpreter::instantiateClass(const TermExpr& term, const Env& env,
                 throw InterpreterError("Class field '" + field->name + "' expects " + field->typeName);
             }
         }
-        entries.emplace_back(field->name, field->nameId, std::move(value));
+        upsertEntry(entries, field->name, std::move(value));
     }
-    if (supplied.size() != schema.fields.size()) {
-        throw InterpreterError("Class '" + schema.name + "' requires every declared field");
+    if (supplied.size() != orderedFields.size()) {
+        throw InterpreterError("Class '" + schema.name + "' requires every inherited and declared field");
     }
     auto value = std::make_shared<MapExpr>(std::move(entries));
     value->factType = schema.name;
@@ -8935,13 +9086,34 @@ Interpreter::FactMaterialization Interpreter::factToMap(const ClauseStmt& clause
     for (const auto& arg : clause.head.args) childFields.insert(arg.name);
     for (const auto& parentType : parentNames) {
         if (parentType.empty()) continue;
-        const auto parentIndexes = memory_.compatibleFactIndexes(parentType);
-        const auto parent = std::find_if(parentIndexes.begin(), parentIndexes.end(), [&](size_t index) {
-            const auto& fact = memory_.fact(index);
-            return fact.type == parentType && fact.active;
-        });
-        if (parent == parentIndexes.end()) {
-            if (parentType == "OperatorRequirement") continue;
+        const auto declaredClass = classDefinitions_.find(symbolIdForName(parentType));
+        if (declaredClass != classDefinitions_.end()) {
+            const auto requiredFields = classFieldsFor(*declaredClass->second);
+            std::vector<Arg> constructorArgs;
+            constructorArgs.reserve(requiredFields.size());
+            for (const auto* required : requiredFields) {
+                const auto supplied = std::find_if(
+                    clause.head.args.begin(), clause.head.args.end(), [&](const Arg& argument) {
+                        return argument.nameId == required->nameId && argument.name == required->name;
+                    });
+                if (supplied == clause.head.args.end()) {
+                    throw InterpreterError(
+                        "Fact '" + clause.head.name + "' is missing class field '" + required->name + "'");
+                }
+                constructorArgs.emplace_back(
+                    supplied->name, supplied->nameId, supplied->value->clone());
+            }
+            std::shared_ptr<Expr> validated;
+            (void)instantiateClass(
+                TermExpr(parentType, std::move(constructorArgs)), Env{}, validated);
+        }
+
+        const auto parent = nearestPrototypeFact(parentType);
+        if (!parent) {
+            if (parentType == "OperatorRequirement" || declaredClass != classDefinitions_.end()) {
+                parentFactIds.push_back(0);
+                continue;
+            }
             throw InterpreterError("Unknown parent fact/type '" + parentType + "'");
         }
         const auto parentValue = memory_.factValue(*parent);

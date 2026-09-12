@@ -1,0 +1,58 @@
+name: Interpreter stabilization
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure
+        run: >-
+          cmake -S . -B build/debug
+          -DCMAKE_BUILD_TYPE=Debug
+          -DFELIDAE_BUILD_TESTS=ON
+          -DFELIDAE_ENABLE_STRICT_WARNINGS=ON
+      - name: Build
+        run: cmake --build build/debug --config Debug --parallel 2
+      - name: Test
+        run: ctest --test-dir build/debug --build-config Debug --output-on-failure
+      - name: Smoke unified tooling (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          build/debug/felidae --version
+          build/debug/felidae tests/direct_ast_smoke.fx --check-json
+      - name: Smoke unified tooling (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          build/debug/Debug/felidae.exe --version
+          build/debug/Debug/felidae.exe tests/direct_ast_smoke.fx --check-json
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure
+        run: >-
+          cmake -S . -B build/asan
+          -DCMAKE_BUILD_TYPE=Debug
+          -DFELIDAE_BUILD_TESTS=ON
+          -DFELIDAE_ENABLE_SANITIZERS=ON
+      - name: Build
+        run: cmake --build build/asan --parallel 2
+      - name: Test
+        run: ctest --test-dir build/asan --output-on-failure

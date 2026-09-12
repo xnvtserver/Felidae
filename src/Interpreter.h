@@ -68,6 +68,16 @@ public:
     // module is owned by the frontend; callers add it to any watch set.
     std::vector<std::filesystem::path> loadedSourceFiles() const;
 
+    // Source analysis needs the real import resolver and operator registry,
+    // but must never run entry calls or evaluate global initializers. Set this
+    // before loading any program; normal interpreters keep the default.
+    void setLoadEvaluationEnabled(bool enabled) { loadEvaluationEnabled_ = enabled; }
+    using StatementLoadHook =
+        std::function<void(const std::shared_ptr<Statement>& statement)>;
+    void setStatementLoadHook(StatementLoadHook hook) {
+        statementLoadHook_ = std::move(hook);
+    }
+
     // Real (not simulated) execution control for a driving debugger: called
     // once per goal, immediately before it runs, from solveIterative's
     // dispatch loop - the same point every top-level goal and every method
@@ -301,6 +311,8 @@ private:
     ParserMetrics parserMetrics_;
     std::size_t factRegistrationMicros_ = 0;
     GoalHook goalHook_;
+    bool loadEvaluationEnabled_ = true;
+    StatementLoadHook statementLoadHook_;
     mutable std::size_t dispatchCacheHits_ = 0;
     mutable std::size_t dispatchCacheMisses_ = 0;
     std::size_t tableCacheHits_ = 0;
@@ -338,6 +350,8 @@ private:
     bool solveBuiltin(const Call& call, Env& env);
     bool solveNativeCall(const Call& call, Env& env);
     bool evalBuiltinTerm(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
+    std::vector<const ClassFieldDecl*> classFieldsFor(const ClassStmt& schema) const;
+    std::optional<std::size_t> nearestPrototypeFact(const std::string& type);
     bool instantiateClass(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
     bool evalAncestorAnalysis(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
     bool evalFactPropagation(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
@@ -351,6 +365,9 @@ private:
     bool evalArrayWherePredicate(const TermExpr& term,
                                  const Env& env,
                                  std::shared_ptr<Expr>& out);
+    std::shared_ptr<MapExpr> prepareInsertedFact(const std::string& type,
+                                                 const MapExpr& values,
+                                                 const Env& env);
     std::shared_ptr<ArrayExpr> insertFactsFromRows(const std::string& type,
                                                    const std::vector<std::shared_ptr<Expr>>& rows,
                                                    const std::filesystem::path& source);

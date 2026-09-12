@@ -1,8 +1,9 @@
 #include "BuiltinRegistry.h"
+#include "FelidaeRuntime.h"
 #include "OperatorAnnotation.h"
+#include "ToolingMain.h"
 #include "Version.h"
 #include "debugger/AstAnalyzer.h"
-#include "tooling/SourceParser.h"
 
 #include <nlohmann/json.hpp>
 
@@ -12,6 +13,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -28,8 +30,35 @@
 namespace fs = std::filesystem;
 using namespace Felidae;
 
+namespace {
+
+struct LoadedSources {
+  std::vector<std::filesystem::path> files;
+  std::vector<std::string> unresolvedImports;
+  std::shared_ptr<OperatorRegistry> operators;
+};
+
+static LoadedSources loadProgramStatements(
+    const fs::path &entryFile, bool loadImports,
+    const std::function<void(const std::shared_ptr<Statement> &)> &consume) {
+  LoadedSources result;
+  if (!loadImports) {
+    result.operators = std::make_shared<OperatorRegistry>();
+    parseProgramFileStatements(entryFile, consume, result.operators);
+    result.files = {resolveProgramEntryPath(entryFile)};
+    return result;
+  }
+  Interpreter interpreter;
+  interpreter.setLoadEvaluationEnabled(false);
+  interpreter.setStatementLoadHook(consume);
+  loadProgramRoot(entryFile, interpreter);
+  result.files = interpreter.loadedSourceFiles();
+  result.operators = interpreter.operatorRegistry();
+  return result;
+}
+
 struct DebugOptions {
-  bool stopOnEntry = false;
+  bool check = false;
   bool loadImports = false;
   bool checkJson = false;
   bool metricsJson = false;
@@ -47,18 +76,12 @@ static DebugOptions parseDebugCli(int argc, char **argv) {
   DebugOptions options;
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
-    if (arg == "--stop-on-entry") {
-      options.stopOnEntry = true;
-      continue;
-    }
     if (arg == "--load-imports") {
       options.loadImports = true;
       continue;
     }
     if (arg == "--check") {
-      // Accepted for compatibility with documented usage; the default
-      // (non --check-json) path below already does exactly this: parse,
-      // print FELIDAE_DIAGNOSTIC records, and report FELIDAE_CHECK_OK.
+      options.check = true;
       continue;
     }
     if (arg == "--check-json") {
@@ -97,13 +120,12 @@ static DebugOptions parseDebugCli(int argc, char **argv) {
       options.help = true;
       continue;
     }
-    if (arg == "--inspect-graph" || arg == "--visualize-data-json" ||
-        arg == "--visualize-data-html" || arg == "--json" || arg == "--html") {
-      throw std::runtime_error("Visualization options are no longer supported");
-    }
     if (arg == "--query" || (!arg.empty() && arg.front() == '?')) {
-      throw std::runtime_error("felidae_debug does not execute queries. Run "
+      throw std::runtime_error("tooling modes do not execute queries. Run "
                                "felidae program.fx '? Query(...)'");
+    }
+    if (!arg.empty() && arg.front() == '-') {
+      throw std::runtime_error("Unknown tooling option: " + arg);
     }
     if (!options.programFile) {
       options.programFile = fs::path(arg);
@@ -111,13 +133,23 @@ static DebugOptions parseDebugCli(int argc, char **argv) {
     }
     throw std::runtime_error("Unexpected debugger argument: " + arg);
   }
+  const int modes = static_cast<int>(options.check) +
+                    static_cast<int>(options.checkJson) +
+                    static_cast<int>(options.lspMode) +
+                    static_cast<int>(options.listLibraries) +
+                    static_cast<int>(options.listBuiltins) +
+                    static_cast<int>(options.symbolsJson) +
+                    static_cast<int>(options.operatorsJson);
+  if (modes > 1) {
+    throw std::runtime_error("Choose exactly one tooling mode");
+  }
   return options;
 }
 
 static void printDebugUsage(std::ostream &out) {
-  out << "Felidae AST debugger " << LANGUAGE_VERSION << "\n"
+  out << "Felidae source tooling " << LANGUAGE_VERSION << "\n"
       << "Pipeline: word vocabulary -> Integer Parser -> AST Analyzer\n"
-      << "Usage: felidae_debug <file.fx> [--check|--check-json] "
+      << "Usage: felidae <file.fx> [--check|--check-json] "
          "[--load-imports]\n"
       << "\n"
       << "Options:\n"
@@ -126,7 +158,6 @@ static void printDebugUsage(std::ostream &out) {
          "integrations.\n"
       << "  --load-imports   Parse source imports before AST analysis; native "
          "imports are ignored.\n"
-      << "  --stop-on-entry  Wait for a debugger command before analysis.\n"
       << "  --lsp            Start the Felidae JSON-RPC diagnostics server "
          "over stdio.\n"
       << "  --list-libraries Print a JSON array of importable core library "
@@ -155,24 +186,6 @@ static void printDebugUsage(std::ostream &out) {
 }
 
 static std::string trimText(const std::string &text);
-
-static void waitForContinue() {
-  std::cout << "FELIDAE_DEBUG_STOPPED reason=entry\n" << std::flush;
-  std::string command;
-  while (std::getline(std::cin, command)) {
-    command = trimText(command);
-    if (command == "continue" || command == "c" || command == "next" ||
-        command == "stepIn" || command == "stepOut") {
-      std::cout << "FELIDAE_DEBUG_CONTINUED\n" << std::flush;
-      return;
-    }
-    if (command == "disconnect" || command == "terminate" ||
-        command == "exit") {
-      std::cout << "FELIDAE_DEBUG_TERMINATED\n" << std::flush;
-      std::exit(0);
-    }
-  }
-}
 
 static std::string trimText(const std::string &text) {
   std::size_t start = 0;
@@ -352,6 +365,8 @@ static const char *operatorPrecedenceName(OperatorPrecedence value) {
     return "multiplicative";
   case OperatorPrecedence::Prefix:
     return "prefix";
+  case OperatorPrecedence::Postfix:
+    return "postfix";
   }
   return "relationship";
 }
@@ -626,7 +641,7 @@ static std::string analyzeTextJson(const fs::path &path,
       cached->second.lastUsed = ++textCacheClock;
       diagnostics = cached->second.diagnostics;
     } else {
-      Program program = Tooling::parseText(text);
+      Program program = parseProgramText(text);
       diagnostics = analyzeProgramAst(program);
       for (auto &diagnostic : diagnostics)
         diagnostic.file = key;
@@ -655,7 +670,7 @@ static std::string analyzeTextJson(const fs::path &path,
 static std::string analyzeFileJson(const fs::path &path) {
   try {
     AstAnalysisSession analysis;
-    Tooling::loadProgramStatements(
+    loadProgramStatements(
         path, true, [&](const std::shared_ptr<Statement> &statement) {
           analysis.consume(statement);
         });
@@ -672,7 +687,7 @@ static std::string analyzeFileJson(const fs::path &path) {
 static std::string symbolsFileJson(const fs::path &path, bool loadImports) {
   try {
     AstAnalysisSession analysis;
-    auto loaded = Tooling::loadProgramStatements(
+    auto loaded = loadProgramStatements(
         path, loadImports, [&](const std::shared_ptr<Statement> &statement) {
           analysis.consume(statement);
         });
@@ -686,7 +701,7 @@ static std::string symbolsFileJson(const fs::path &path, bool loadImports) {
 static std::string operatorsFileJson(const fs::path &path, bool loadImports) {
   try {
     std::vector<std::shared_ptr<ClauseStmt>> clauses;
-    auto loaded = Tooling::loadProgramStatements(
+    auto loaded = loadProgramStatements(
         path, loadImports, [&](const std::shared_ptr<Statement> &statement) {
           if (auto clause = std::dynamic_pointer_cast<ClauseStmt>(statement)) {
             clauses.push_back(std::move(clause));
@@ -850,11 +865,11 @@ symbolsForDocument(const std::map<std::string, std::string> &documents,
     if (existing != documents.end()) {
       // Unsaved editor contents: parse what the client sent, so the
       // outline tracks the buffer rather than the file on disk.
-      Program program = Tooling::parseText(existing->second);
+      Program program = parseProgramText(existing->second);
       for (const auto &statement : program.statements)
         analysis.consume(statement);
     } else {
-      Tooling::loadProgramStatements(
+      loadProgramStatements(
           fileUriToPath(uri), false,
           [&](const std::shared_ptr<Statement> &statement) {
             analysis.consume(statement);
@@ -1035,7 +1050,7 @@ static int runLspServer() {
               {"documentSymbolProvider", true},
               {"definitionProvider", true}}},
             {"serverInfo",
-             {{"name", "felidae_debug"}, {"version", LANGUAGE_VERSION}}}}}}
+             {{"name", "felidae"}, {"version", LANGUAGE_VERSION}}}}}}
                           .dump());
     } else if (method == "textDocument/documentSymbol") {
       writeLspMessage(
@@ -1099,7 +1114,9 @@ static int runLspServer() {
   return 0;
 }
 
-int main(int argc, char **argv) {
+} // namespace
+
+int Felidae::runToolingMain(int argc, char **argv) {
   DebugOptions options;
   try {
     options = parseDebugCli(argc, argv);
@@ -1108,7 +1125,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     if (options.version) {
-      std::cout << versionJson("felidae_debug") << "\n" << std::flush;
+      std::cout << versionJson("felidae") << "\n" << std::flush;
       return 0;
     }
     if (options.lspMode) {
@@ -1117,9 +1134,9 @@ int main(int argc, char **argv) {
     if (options.listLibraries) {
       fs::path startDir =
           options.programFile
-              ? Tooling::resolveEntryPath(*options.programFile).parent_path()
+              ? resolveProgramEntryPath(*options.programFile).parent_path()
               : fs::current_path();
-      std::cout << librariesJson(Tooling::listCoreLibraries(startDir)) << "\n"
+      std::cout << librariesJson(Felidae::listCoreLibraries(startDir)) << "\n"
                 << std::flush;
       return 0;
     }
@@ -1128,7 +1145,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     if (!options.programFile) {
-      std::cerr << "error: felidae_debug requires a .fx program file\n";
+      std::cerr << "error: this tooling mode requires a .fx program file\n";
       printDebugUsage(std::cerr);
       return 1;
     }
@@ -1155,13 +1172,9 @@ int main(int argc, char **argv) {
                 << options.programFile->string() << "\n"
                 << std::flush;
     }
-    if (options.stopOnEntry) {
-      waitForContinue();
-    }
-
     AstAnalysisSession analysis;
     const auto analysisStarted = std::chrono::steady_clock::now();
-    Tooling::loadProgramStatements(
+    loadProgramStatements(
         *options.programFile, options.loadImports,
         [&](const std::shared_ptr<Statement> &statement) {
           analysis.consume(statement);
@@ -1176,7 +1189,7 @@ int main(int argc, char **argv) {
             std::chrono::steady_clock::now() - analysisStarted)
             .count();
     if (!dataOutputOnly) {
-      std::cerr << "Felidae AST debugger analyzing "
+      std::cerr << "Felidae source tooling analyzing "
                 << options.programFile->string() << "\n";
     }
 

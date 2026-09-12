@@ -13,6 +13,18 @@
   the exact command to the user, let the user run it, and diagnose the final
   output they return. Short configuration checks and focused diagnostics are
   allowed.
+- Test interpreter and language behavior primarily with Felidae programs. Put
+  temporary diagnostic `.fx` probes under `build/` and promote only stable,
+  intentional regressions to `tests/`; do not scatter ad-hoc C++ test files
+  through the repository.
+- When a current `felidae` executable is available, run focused `.fx` probes
+  through the interpreter before adding or changing C++ tests. Use `--debug`
+  to inspect Felidae goal execution and a native C++ debugger when the fault is
+  below the language boundary. Compare both views when diagnosing parser,
+  interpreter, fact-store, inheritance, or debugger behavior.
+- Reserve C++ unit tests for mature internal contracts that cannot be observed
+  reliably through a Felidae program. Do not use native compilation as the
+  default feedback loop for language-level behavior.
 - Do not repeatedly poll or stream routine build progress. Ask for the final
   failure block or success summary to avoid wasting context and tokens.
 - When a build/test command is backgrounded, do not block-wait on the task and

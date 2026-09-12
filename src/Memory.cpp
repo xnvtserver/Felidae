@@ -177,7 +177,8 @@ std::shared_ptr<MapExpr> FactMemory::materializeFact(
             const auto parentIdRow = store.factIndexById.find(record.parentFactIds[parentIndex]);
             if (parentIdRow && *parentIdRow < store.facts.size() &&
                 store.facts.at(*parentIdRow).active &&
-                store.facts.at(*parentIdRow).type == parentType) {
+                isCompatibleTypeInData(
+                    store, parentType, store.facts.at(*parentIdRow).type)) {
                 explicitParentRow = *parentIdRow;
             }
         }
