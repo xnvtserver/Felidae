@@ -5,7 +5,7 @@ VM, or statistical mixfix model in the supported path.
 
 ```text
 source.fx
-  -> word vocabulary tokenizer (stable line IDs and byte offsets)
+  -> byte-level tokenizer (stable IDs and byte offsets)
   -> IntegerTokenList
   -> IntegerParser
   -> Program AST / SymbolId interning
@@ -13,12 +13,13 @@ source.fx
   -> solve / callMain / callAutoEntry
 ```
 
-`models/felidae-bpe/model.txt` is the checked-in, line-oriented identifier
-vocabulary: line N is token ID N. The normal lexer owns fixed syntax, comments,
-numbers, and strings; only identifiers and mixfix anchors go through the word
-vocabulary (a deterministic dictionary lookup, not byte-pair encoding - the
-directory name is a historical holdover, see `src/Tokenizer.h`). Unknown
-identifier words are added in source order, and execution needs no training.
+`WordVocabulary` (`src/Tokenizer.h`) is a fixed, compile-time vocabulary:
+59 fixed grammar IDs plus one token per possible byte value (315 entries
+total), with no file on disk and no training step. The normal lexer owns
+fixed syntax, comments, numbers, and strings; only identifiers and mixfix
+anchors go through the byte-level tokenizer, one byte per token. See
+`src/Tokenizer.h` for why byte-level tokens, rather than subword merging,
+are the right fit for this interpreter.
 
 `FactMemory` is Felidae's in-process fact database. It uses immutable,
 copy-on-write relation roots and bounded snapshots; the interpreter reuses its

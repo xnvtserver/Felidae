@@ -2,9 +2,32 @@
 
 #include <cctype>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace Felidae {
 namespace {
+
+// Built once, on first use: a hash lookup instead of a linear chain of
+// string_view comparisons (up to 59 of them) against every word and
+// punctuation candidate encodeNextStatement scans - which used to run for
+// every single identifier too, since a non-keyword only falls through to
+// tokenization after failing every comparison in the chain.
+const std::unordered_map<std::string_view, TokenId::Id>& fixedIdTable() {
+    static const std::unordered_map<std::string_view, TokenId::Id> table = [] {
+        std::unordered_map<std::string_view, TokenId::Id> map;
+        map.reserve(std::size(kBuiltinTokens) + 5);
+        for (std::size_t index = 0; index < std::size(kBuiltinTokens); ++index) {
+            map.emplace(kBuiltinTokens[index].spelling, kFelidaeBuiltinTokenIds[index]);
+        }
+        map.emplace("class", TokenId::CLASS);
+        map.emplace("end", TokenId::END);
+        map.emplace("index", TokenId::INDEX);
+        map.emplace("extends", TokenId::EXTENDS);
+        map.emplace("elif", TokenId::ELIF);
+        return map;
+    }();
+    return table;
+}
 
 std::size_t statementEnd(std::string_view source, std::size_t begin) {
   bool quoted = false;
@@ -80,16 +103,9 @@ void IntegerTokenList::encodeNextStatement() const {
     entries_.push_back(Entry{id, begin + first, begin + last});
   };
   const auto fixedId = [](std::string_view spelling) -> TokenId::Id {
-    for (std::size_t index = 0; index < std::size(kBuiltinTokens); ++index) {
-      if (kBuiltinTokens[index].spelling == spelling)
-        return kFelidaeBuiltinTokenIds[index];
-    }
-    if (spelling == "class") return TokenId::CLASS;
-    if (spelling == "end") return TokenId::END;
-    if (spelling == "index") return TokenId::INDEX;
-    if (spelling == "extends") return TokenId::EXTENDS;
-    if (spelling == "elif") return TokenId::ELIF;
-    return TokenId::UNKNOWN;
+    const auto& table = fixedIdTable();
+    const auto found = table.find(spelling);
+    return found == table.end() ? TokenId::UNKNOWN : found->second;
   };
   for (std::size_t offset = 0; offset < statement.size();) {
     const unsigned char byte = static_cast<unsigned char>(statement[offset]);

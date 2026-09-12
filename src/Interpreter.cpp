@@ -5995,6 +5995,10 @@ bool Interpreter::evalCallAsValueOnce(
         if (!evalNamed("data", 0, dataValue)) {
             throw InterpreterError("get expects a receiver value");
         }
+        // A fact selection (e.g. School.where(...)) is lazy until displayed
+        // or otherwise materialized; get/len/push all need the concrete
+        // rows, not the deferred query descriptor.
+        dataValue = materializeIfFactSelection(dataValue);
         std::shared_ptr<Expr> keyValue;
         const auto namedKey = std::find_if(term.args.begin(), term.args.end(),
             [](const Arg& argument) {
@@ -6027,6 +6031,43 @@ bool Interpreter::evalCallAsValueOnce(
             throw InterpreterError("array.get position is outside the array");
         }
         out = data->items[resolvedIndex]->clone();
+        return true;
+    }
+
+    if (builtin == BuiltinId::ArrayLen) {
+        // Only ArrayGet used to be handled here; ArrayLen/ArrayPush were
+        // dispatched solely from the goal/predicate form (solveBuiltin's
+        // arrayPredicateBuiltin branch), so `receiver.len()`/`.push(...)`
+        // used in expression position (e.g. inside a return field) fell
+        // through unhandled and reported "did not evaluate" instead of a
+        // value - confirmed via tests/dynamic_fact_from_function.fx's
+        // `count: matches.len()`.
+        std::shared_ptr<Expr> dataValue;
+        if (!evalNamed("data", 0, dataValue) && !evalNamed("array", 0, dataValue)) {
+            throw InterpreterError("array.len expects a receiver value");
+        }
+        dataValue = materializeIfFactSelection(dataValue);
+        auto data = std::dynamic_pointer_cast<ArrayExpr>(dataValue);
+        if (!data) throw InterpreterError("array.len expects an array receiver, got " + dataValue->debug());
+        out = std::make_shared<NumberExpr>(static_cast<double>(data->items.size()));
+        return true;
+    }
+
+    if (builtin == BuiltinId::ArrayPush) {
+        std::shared_ptr<Expr> dataValue;
+        if (!evalNamed("data", 0, dataValue) && !evalNamed("array", 0, dataValue)) {
+            throw InterpreterError("array.push expects a receiver value");
+        }
+        dataValue = materializeIfFactSelection(dataValue);
+        auto data = std::dynamic_pointer_cast<ArrayExpr>(dataValue);
+        if (!data) throw InterpreterError("array.push expects an array receiver, got " + dataValue->debug());
+        std::shared_ptr<Expr> pushedValue;
+        if (!evalNamed("value", 1, pushedValue)) {
+            throw InterpreterError("array.push expects a named 'value' argument");
+        }
+        auto items = data->items;
+        items.push_back(pushedValue);
+        out = std::make_shared<ArrayExpr>(std::move(items));
         return true;
     }
 

@@ -95,13 +95,12 @@ main() => return reason "tiger" with "observed"
 
 ## Tokenization
 
-The deterministic word-vocabulary model is `models/felidae-bpe/model.txt`
-(not byte-pair encoding despite the directory name - see `src/Tokenizer.h`).
-The normal lexer owns its fixed first 59 syntax IDs, comments, strings,
-numbers, punctuation, operators, and reserved words (including `class`,
-`extends`, `index`, and `end`). The remaining line-oriented text dictionary
-stores identifiers and mixfix anchors only; missing identifiers are appended
-in source order without training.
+Identifiers and mixfix anchors are tokenized by `WordVocabulary`
+(`src/Tokenizer.h`), a fixed, compile-time, byte-level vocabulary - one
+token per byte, offset past the 59 fixed grammar IDs, no file on disk and
+no training step. The normal lexer owns its fixed first 59 syntax IDs,
+comments, strings, numbers, punctuation, operators, and reserved words
+(including `class`, `extends`, `index`, and `end`).
 
 ## Reloading source
 
