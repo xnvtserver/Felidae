@@ -7,6 +7,7 @@
 #include <memory>
 #include <stdexcept>
 #include <unordered_set>
+#include <vector>
 
 namespace Felidae {
 
@@ -53,6 +54,14 @@ private:
     std::size_t recursionDepth_ = 0;
     bool lastClauseUsedBlockEnd_ = false;
     IntegerParserMetrics metrics_;
+    // Byte offsets of every NEWLINE/CARRIAGE_RETURN token, built once (lazily,
+    // on first use) and binary-searched by span()/sourceContainsLineBreak()/
+    // sourceLineIndent() instead of each replaying the whole token stream
+    // from position 0 on every call - see their definitions for why that
+    // used to make parsing a long straight-line statement list quadratic.
+    mutable std::vector<std::size_t> lineBreakOffsets_;
+    mutable bool lineBreakOffsetsBuilt_ = false;
+    const std::vector<std::size_t>& lineBreakOffsets() const;
 
     static constexpr std::size_t kMaximumRecursionDepth = 512;
     static constexpr std::size_t kMaximumIterations = 1'000'000;
