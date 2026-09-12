@@ -1,19 +1,14 @@
 #pragma once
 
 #include "AST.h"
-#include "FelidaeIr.h"
 #include "IntegerTokenList.h"
 
 #include <cstddef>
 #include <memory>
 #include <stdexcept>
-#include <unordered_map>
 #include <unordered_set>
 
 namespace Felidae {
-
-class MixfixStateModel;
-struct MixfixContext;
 
 struct IntegerParserMetrics {
     std::size_t tokenCount = 0;
@@ -29,33 +24,21 @@ public:
     explicit IntegerParserError(const std::string& message) : std::runtime_error(message) {}
 };
 
-// Direct SentencePiece-ID parser. It has no secondary tokenizer,
+// Direct BPE-token-ID grammar assembler. It has no secondary tokenizer,
 // source-character syntax scanner, or spelling-to-token lookup table. IDs
 // determine all syntax; original source is retained only to copy an already
-// bounded identifier payload into short-lived compiler symbol interning.
+// bounded identifier payload into the IR for SymbolId interning.
 class IntegerParser {
 public:
     explicit IntegerParser(const IntegerTokenList& input,
-                           std::shared_ptr<OperatorRegistry> operators = {},
-                           MixfixStateModel* mixfixModel = nullptr);
+                           std::shared_ptr<OperatorRegistry> operators = {});
 
     Program parseProgram();
     std::vector<std::shared_ptr<Goal>> parseQuery();
     std::shared_ptr<Expr> parseExpressionText();
-    // Transitional direct lowering for the primitive expression subset.  It
-    // consumes the existing SentencePiece stream once and returns executable
-    // canonical IR without an interpreter invocation.
-    FelidaeIr compileExpressionIr();
-    // Compiler-SSM entry point. The caller selects an existing SentencePiece
-    // span; this method never retokenizes source text and always verifies the
-    // finite-vocabulary model output before returning IR.
-    FelidaeIr compileVerifiedMixfixSpanIr(MixfixStateModel& model,
-                                          const MixfixContext& context,
-                                          FelidaeIr irShell,
-                                          std::size_t firstPiece,
-                                          std::size_t pastLastPiece) const;
     bool startsQuery();
     const IntegerParserMetrics& metrics() const noexcept { return metrics_; }
+
 private:
     struct QualifiedName {
         std::string spelling;
@@ -63,22 +46,14 @@ private:
         BuiltinId builtinId = BuiltinId::Unknown;
         bool isCapitalized = false;
     };
-    struct StringLiteral {
-        std::string value;
-        std::vector<std::uint32_t> sentencePieceIds;
-        bool containsEscape = false;
-    };
     const IntegerTokenList& input_;
     std::shared_ptr<OperatorRegistry> operators_;
-    // Optional compiler backend.  Normal grammar is always deterministic;
-    // only an assembled custom mixfix expression can reach this model.
-    MixfixStateModel* mixfixModel_ = nullptr;
     std::size_t piece_ = 0;
     std::size_t byte_ = 0;
     std::size_t recursionDepth_ = 0;
     bool lastClauseUsedBlockEnd_ = false;
     IntegerParserMetrics metrics_;
-    std::vector<std::size_t> lineStarts_;
+
     static constexpr std::size_t kMaximumRecursionDepth = 512;
     static constexpr std::size_t kMaximumIterations = 1'000'000;
 
@@ -93,10 +68,8 @@ private:
     void step();
     void skipTrivia();
     void alignPiece();
-    std::size_t builtinSequenceLength(TokenId::Id id) const;
     bool at(TokenId::Id id);
     bool match(TokenId::Id id);
-    bool matchBindingOperator();
     bool atBlockEnd();
     bool matchBlockEnd();
     void require(TokenId::Id id, const char* message);
@@ -117,7 +90,8 @@ private:
     std::shared_ptr<Expr> parseArray();
     std::shared_ptr<Expr> parseMap();
     std::vector<Arg> parseArguments(bool allowAnnotationBindings = false);
-    QualifiedName consumeQualifiedName(bool allowNamespaceSeparators = true);
+    QualifiedName consumeQualifiedName(bool allowNamespaceSeparators = true,
+                                       bool allowDottedName = true);
     Call parseCall();
     std::shared_ptr<Goal> parseGoal();
     std::vector<std::shared_ptr<Goal>> parseGoalList(TokenId::Id terminator);
@@ -125,23 +99,17 @@ private:
     std::shared_ptr<ClassStmt> parseClassStatement(std::size_t begin);
     Call parseAnnotation();
     void prepareOperatorAnnotation(const Call& annotation);
-    void registerOperatorImplementation(const Call& annotation, const ClauseStmt& method);
     const OperatorPatternDefinition& registerOperatorPattern(OperatorPatternDefinition pattern);
-    SymbolId resolveMixfixMethod(const OperatorExpression& expression) const;
-    SymbolId resolveModelMixfixMethod(const std::shared_ptr<OperatorExpression>& expression) const;
-    std::string consumeNameRange(bool allowLoneKeyword = false);
-    StringLiteral consumeString();
+    std::string consumeNameRange();
+    std::string consumeString();
     double consumeNumber();
-    bool atNameRange(bool allowLoneKeyword = false);
+    bool atNameRange();
     bool sourceContainsLineBreak(std::size_t begin, std::size_t end) const;
     bool lineBreakBeforeNextSignificantPiece() const;
     std::size_t sourceLineIndent(std::size_t offset) const;
     void consumeStatementTerminator(std::size_t statementBegin);
     SourceSpan span(std::size_t begin, std::size_t end) const;
-    std::pair<int, int> sourcePosition(std::size_t offset) const;
-    std::size_t sourceOffset(int line, int column) const;
     void stamp(const std::shared_ptr<AstNode>& node, std::size_t begin, std::size_t end) const;
-    FelidaeIr compileModelRoutedMixfixExpressionIr(const std::shared_ptr<Expr>& expression) const;
 };
 
 } // namespace Felidae

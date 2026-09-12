@@ -7,8 +7,10 @@
 #include <cctype>
 #include <filesystem>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -20,6 +22,7 @@ struct CliOptions {
     bool repl = false;
     bool debug = false;
     bool metricsJson = false;
+    bool serve = false;
     size_t benchmarkRepeat = 1;
     std::optional<fs::path> programFile;
     std::optional<std::string> query;
@@ -53,6 +56,10 @@ static CliOptions parseCli(int argc, char** argv) {
         }
         if (arg == "--metrics-json") {
             options.metricsJson = true;
+            continue;
+        }
+        if (arg == "--serve") {
+            options.serve = true;
             continue;
         }
         if (arg == "--visualize-data-json" || arg == "--visualize-data-html" ||
@@ -117,6 +124,7 @@ static void printHelp() {
               << "  felidae program.fx --repl\n"
               << "  felidae program.fx --debug\n"
               << "  felidae program.fx --metrics-json\n"
+              << "  felidae program.fx --serve\n"
               << "  felidae program.fx --benchmark-repeat 100 --metrics-json\n"
               << "  felidae program.fx '? Query(key: x)' --benchmark-repeat 100 --metrics-json\n"
               << "  felidae --help\n"
@@ -128,6 +136,7 @@ static void printHelp() {
               << "  program.fx --repl                   Start interactive REPL\n"
               << "  program.fx --debug                  Run with debug adapter diagnostics enabled\n"
               << "  --metrics-json                      Emit load and runtime performance counters to stderr\n"
+              << "  --serve                             Run source and reload the AST interpreter when source changes\n"
               << "  --benchmark-repeat N                Repeat the entry method or external query in one runtime\n"
               << "  --help                              Show this help screen\n"
               << "  --version                           Show version information\n\n"
@@ -188,6 +197,45 @@ static void runRepl(Interpreter& interpreter) {
     }
 }
 
+using SourceTimes = std::map<fs::path, fs::file_time_type>;
+
+static SourceTimes sourceTimes(const fs::path& root, const Interpreter& interpreter) {
+    SourceTimes result;
+    const auto add = [&](const fs::path& source) {
+        std::error_code error;
+        const auto normalized = fs::absolute(source, error).lexically_normal();
+        result.emplace(normalized, error ? fs::file_time_type::min()
+                                         : fs::last_write_time(normalized, error));
+        if (error) result[normalized] = fs::file_time_type::min();
+    };
+    add(root);
+    for (const auto& source : interpreter.loadedSourceFiles()) add(source);
+    return result;
+}
+
+static bool sourceChanged(const SourceTimes& watched) {
+    for (const auto& [source, previous] : watched) {
+        std::error_code error;
+        const auto current = fs::last_write_time(source, error);
+        if (error || current != previous) return true;
+    }
+    return false;
+}
+
+static void runServeEntry(Interpreter& interpreter, const CliOptions& options) {
+    if (options.query) {
+        const auto goals = parseQueryText(*options.query);
+        printSolutions(interpreter, goals, interpreter.solve(goals, 1000), std::cout);
+        return;
+    }
+    if (interpreter.hasMethod("main") || interpreter.hasAutoEntryCall()) {
+        const auto result = interpreter.hasMethod("main")
+            ? interpreter.callMain(makeSystemInput(options.remainingArgs))
+            : interpreter.callAutoEntry();
+        std::cout << interpreter.valueToDisplayString(result) << "\n";
+    }
+}
+
 int main(int argc, char** argv) {
     try {
         CliOptions options = parseCli(argc, argv);
@@ -210,6 +258,34 @@ int main(int argc, char** argv) {
         fs::path entryFile = resolveProgramEntryPath(*options.programFile);
         if (entryFile.extension() != FILE_EXTENSION) {
             throw std::runtime_error("Felidae source files must use .fx extension");
+        }
+        if (options.serve) {
+            if (options.repl) {
+                throw std::runtime_error("--serve cannot be combined with --repl");
+            }
+            std::unique_ptr<Interpreter> interpreter;
+            SourceTimes watched;
+            const auto reload = [&]() {
+                auto next = std::make_unique<Interpreter>();
+                loadProgramRoot(entryFile, *next);
+                watched = sourceTimes(entryFile, *next);
+                interpreter = std::move(next);
+                runServeEntry(*interpreter, options);
+                std::cerr << "Felidae source interpreter ready: " << entryFile.string() << "\n";
+            };
+            reload();
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                if (!sourceChanged(watched)) continue;
+                try {
+                    reload();
+                } catch (const std::exception& error) {
+                    // Keep the last successfully constructed interpreter live;
+                    // a bad save must not discard the running source program.
+                    watched = sourceTimes(entryFile, *interpreter);
+                    std::cerr << "source reload failed: " << error.what() << "\n";
+                }
+            }
         }
         // A source file becomes executable only after its imports and every
         // declaration have registered successfully. Running main while the

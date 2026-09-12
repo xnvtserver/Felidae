@@ -1,5 +1,5 @@
-# Classes are compiler-only fact schemas. Mixfix methods produce ordinary
-# Association facts that remain queryable through the standard fact DML API.
+# Classes declare direct-interpreter fact schemas. Mixfix methods produce
+# ordinary Association facts queryable through the standard fact API.
 class Person
     id: number
     name: string
@@ -35,9 +35,7 @@ worksAt() =>
 end
 
 main() =>
-    people := fx.cast_<array(Person)>(Person.all())
-    companies := fx.cast_<array(Company)>(Company.all())
-    person := people.get(position: 0)
-    company := companies.get(position: 0)
+    person := Person.get(pos: 0)
+    company := Company.get(pos: 0)
     return person works at company
 end

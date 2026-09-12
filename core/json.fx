@@ -1,5 +1,4 @@
-# JSON operations are compiler-known declarations. The compiler emits a
-# Builtin IR instruction and RegisterVm calls src/form/libs/Json.cpp directly.
+# JSON operations are declared in source and dispatched by the AST interpreter.
 
 json.parse(data: string) => ()
 json.get(data: any, key: string) => ()

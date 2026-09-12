@@ -523,7 +523,7 @@
   },
   "csv:parse": {
     "heading": "csv.parse",
-    "description": "Parses CSV text directly in RegisterVm and returns an array of row maps.",
+    "description": "Parses CSV text in the direct interpreter and returns an array of row maps.",
     "example": "rows := csv.parse(data: csvText)",
     "params": [
       {
@@ -533,7 +533,7 @@
   },
   "csv:toFacts": {
     "heading": "csv.toFacts",
-    "description": "Parses CSV text into retained native facts of a type declared in the loaded IR module.",
+    "description": "Parses CSV text into fact maps of the requested source-level type.",
     "example": "schools := csv.toFacts(data: csvText, type: \"School\")",
     "params": [
       {
@@ -546,7 +546,7 @@
   },
   "csv:toText": {
     "heading": "csv.toText",
-    "description": "Writes an array of row maps back to CSV text directly in RegisterVm.",
+    "description": "Writes an array of row maps back to CSV text in the direct interpreter.",
     "example": "text := csv.toText(data: rows)",
     "params": [
       {
@@ -605,7 +605,7 @@
   },
   "file:readFile": {
     "heading": "file.readFile",
-    "description": "Reads a bounded file as text directly through the RegisterVm file service.",
+    "description": "Reads a bounded file as text through the direct interpreter file service.",
     "example": "text := file.readFile(file: \"data.txt\")",
     "params": [
       {
