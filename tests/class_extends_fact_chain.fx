@@ -8,7 +8,7 @@ class Leaf extends Layer
     label: string
 end
 
-main() =>
+def main() =>
     leaf := Leaf(depth: 2, label: "mixed")
     return (
         inherited_fact_field: leaf.code,

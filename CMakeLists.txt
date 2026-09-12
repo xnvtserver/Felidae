@@ -12,8 +12,7 @@ option(FELIDAE_ENABLE_STRICT_WARNINGS "Enable strict warnings" OFF)
 
 function(felidae_common target)
   target_include_directories(${target} PUBLIC
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/models)
+    ${CMAKE_SOURCE_DIR}/src)
   # NativeJson.h parses through the real, vendored nlohmann::json library
   # (single-header form: no separate build target needed) rather than a
   # bespoke recursive-descent parser. csv.parse/csv.toFacts likewise parse
@@ -51,8 +50,8 @@ set(FELIDAE_RUNTIME_SOURCES
 
 add_library(felidae_runtime STATIC ${FELIDAE_RUNTIME_SOURCES})
 felidae_common(felidae_runtime)
-target_compile_definitions(felidae_runtime PRIVATE
-  FELIDAE_TOKENIZER_MODEL_PATH="${CMAKE_SOURCE_DIR}/models/felidae-bpe/model.txt")
+# WordVocabulary (src/Tokenizer.h) is a fixed, compile-time, byte-level
+# vocabulary now - no model file on disk, so no path needs defining here.
 
 add_executable(felidae
   src/main.cpp

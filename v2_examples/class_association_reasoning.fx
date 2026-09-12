@@ -25,7 +25,7 @@ Person(id: 1, name: "Ada")
 Company(id: 7, name: "Felidae")
 
 @mixfix(pattern: "{person: Person} works at {company: Company}")
-worksAt() =>
+def worksAt() =>
     return Association(
         left_id: person.id,
         right_id: company.id,
@@ -34,7 +34,7 @@ worksAt() =>
     )
 end
 
-main() =>
+def main() =>
     person := Person.get(pos: 0)
     company := Company.get(pos: 0)
     return person works at company
