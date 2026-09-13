@@ -16,7 +16,7 @@ searchData := [
     56, 57, 58, 59, 60, 61, 62, 63
 ]
 
-linearSearchFrom(data: array, target: number, index: number, size: number) =>
+def linearSearchFrom(data: array, target: number, index: number, size: number) =>
     where index >= size
     return -1
 else
@@ -27,7 +27,7 @@ else
         size: size
     )
 
-linearSearchAt(data: array, target: number, index: number, size: number) =>
+def linearSearchAt(data: array, target: number, index: number, size: number) =>
     current := array:get(data: data, position: index)
     where current == target
     return index
@@ -39,7 +39,7 @@ else
         size: size
     )
 
-linearSearch(data: array, target: number) =>
+def linearSearch(data: array, target: number) =>
     return linearSearchFrom(
         data: data,
         target: target,
@@ -47,7 +47,7 @@ linearSearch(data: array, target: number) =>
         size: count(data: data)
     )
 
-binarySearchBetween(data: array, target: number, low: number, high: number) =>
+def binarySearchBetween(data: array, target: number, low: number, high: number) =>
     where low > high
     return -1
 else
@@ -58,7 +58,7 @@ else
         high: high
     )
 
-binarySearchAt(data: array, target: number, low: number, high: number) =>
+def binarySearchAt(data: array, target: number, low: number, high: number) =>
     middle := math.floor(value: (low + high) / 2)
     current := array:get(data: data, position: middle)
     where current == target
@@ -82,7 +82,7 @@ else
             high: middle - 1
         )
 
-binarySearch(data: array, target: number) =>
+def binarySearch(data: array, target: number) =>
     return binarySearchBetween(
         data: data,
         target: target,
@@ -90,19 +90,19 @@ binarySearch(data: array, target: number) =>
         high: count(data: data) - 1
     )
 
-linearSearchLast() =>
+def linearSearchLast() =>
     return linearSearch(data: searchData, target: 63)
 
-binarySearchLast() =>
+def binarySearchLast() =>
     return binarySearch(data: searchData, target: 63)
 
-searchMissing() =>
+def searchMissing() =>
     return (
         linear: linearSearch(data: searchData, target: 100),
         binary: binarySearch(data: searchData, target: 100)
     )
 
-main() =>
+def main() =>
     return (
         linear_last: linearSearchLast(),
         binary_last: binarySearchLast(),

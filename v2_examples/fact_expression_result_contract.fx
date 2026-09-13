@@ -13,7 +13,7 @@ Evidence(subject: nil, field: "", value: nil)
 @mixfix(
     pattern: "evaluate {subject: Animal} as {mode: string}"
 )
-evaluateFactExpression() =>
+def evaluateFactExpression() =>
     if mode == "crisp" then
         return subject.legs == 4
     else
@@ -31,7 +31,7 @@ evaluateFactExpression() =>
                         Evidence(subject: subject, field: "legs", value: subject.legs)
                     ]
 
-main() =>
+def main() =>
     cat := Cat(name: "sony", legs: 4)
     crisp := evaluate cat as "crisp"
     probability := evaluate cat as "probability"

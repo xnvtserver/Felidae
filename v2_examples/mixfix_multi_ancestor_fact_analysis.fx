@@ -59,7 +59,7 @@ SimilarityReport(
     evidence: []
 )
 
-Mammal.membership(input: Mammal, against: Mammal) =>
+def Mammal.membership(input: Mammal, against: Mammal) =>
     return {
         warm_blooded: input.warm_blooded,
         legs: input.legs,
@@ -69,9 +69,10 @@ Mammal.membership(input: Mammal, against: Mammal) =>
         habitat: input.habitat
     }
 
-buildSimilarityReport(left: Mammal, right: Mammal, context: string) =>
+def buildSimilarityReport(left: Mammal, right: Mammal, context: string) =>
     ancestors := commonAncestors(left, right)
-    score := similarity(left, right)
+    comparison := Relation.compare(left: left, right: right)
+    score := comparison.evidence.similarity
     return SimilarityReport(
         context: context,
         left_type: type(left),
@@ -81,9 +82,9 @@ buildSimilarityReport(left: Mammal, right: Mammal, context: string) =>
         evidence: [
             ancestorAnalysis(left: left, right: right),
             EvidenceSummary(
-                ancestor_count: array.len(data: ancestors),
-                matched_fields: [],
-                conflicting_fields: []
+                ancestor_count: array.len(data: ancestors.common),
+                matched_fields: comparison.evidence.matchedFields,
+                conflicting_fields: comparison.evidence.conflictingFields
             )
         ]
     )
@@ -91,10 +92,10 @@ buildSimilarityReport(left: Mammal, right: Mammal, context: string) =>
 @mixfix(
     pattern: "compare {left: Mammal} through {context: string} with {right: Mammal}"
 )
-compareFactsWithContext() =>
+def compareFactsWithContext() =>
     return buildSimilarityReport(left: left, right: right, context: context)
 
-main() =>
+def main() =>
     tigers := lambda(Tiger, fact => fact.name == "shira")
     cats := lambda(Cat, fact => fact.name == "sony")
     dogs := lambda(Dog, fact => fact.name == "max")

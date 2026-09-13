@@ -5,20 +5,20 @@ import ("array", "system")
 # a same-named declared procedure -- a real, silent language sharp edge with
 # no error/warning. Lowercase procedure names here avoid that ambiguity;
 # see v2_examples/where_guard_chain.fx for the same fix on the same issue.
-increment(value: number) =>
+def increment(value: number) =>
     return value + 1
 
-double(value: number) =>
+def double(value: number) =>
     return value * 2
 
-eligible(score: number, active: bool) =>
+def eligible(score: number, active: bool) =>
     where score >= 70
     where active == 1.0
     return 1.0
 else
     return 0.0
 
-main() =>
+def main() =>
     point := {x: 3, y: 4}
     record := {owner: {name: "Ava"}, scores: [10, 20, 30]}
     # lambda(...) is fact-query sugar over a declared fact type (see

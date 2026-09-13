@@ -32,28 +32,31 @@ RuleEvidence(rule: "", satisfied: 0.0, contribution: 0)
 ApprovalDecision(applicant: nil, policy: nil, score: 0, evidence: [])
 Error(reason: "", code: "", subject: nil)
 
-creditScore(subject: Applicant, policy: Policy) =>
+def creditScore(subject: Applicant, policy: Policy) =>
     if subject.credit >= policy.minimum_credit then
         return 0.45
     else
         return 0.10
+end
 
-incomeScore(subject: Applicant, policy: Policy) =>
+def incomeScore(subject: Applicant, policy: Policy) =>
     if subject.income >= policy.minimum_income then
         return 0.35
     else
         return 0.05
+end
 
-verificationScore(subject: Applicant) =>
+def verificationScore(subject: Applicant) =>
     if subject.verified == 1.0 then
         return 0.20
     else
         return 0
+end
 
 @mixfix(
     pattern: "assess {subject: Applicant} against {policy: Policy}"
 )
-assessApplicant() =>
+def assessApplicant() =>
     credit := creditScore(subject: subject, policy: policy)
     income := incomeScore(subject: subject, policy: policy)
     verification := verificationScore(subject: subject)
@@ -82,25 +85,28 @@ assessApplicant() =>
             )
         ]
     )
+end
 
 @mixfix(
     pattern: "{assessment: Assessment} qualifies for {minimum: number}"
 )
-assessmentQualifies() =>
+def assessmentQualifies() =>
     return assessment.score >= minimum
+end
 
 @mixfix(
     pattern: "explain {assessment: Assessment}"
 )
-explainAssessment() =>
+def explainAssessment() =>
     return ApprovalDecision(
         applicant: assessment.applicant,
         policy: assessment.policy,
         score: assessment.score,
         evidence: assessment.evidence
     )
+end
 
-decide(subject: Applicant, policy: Policy) =>
+def decide(subject: Applicant, policy: Policy) =>
     assessment := assess subject against policy
     if assessment qualifies for policy.minimum_score then
         return assessment then explain system.result
@@ -110,12 +116,13 @@ decide(subject: Applicant, policy: Policy) =>
             code: "InsufficientEvidence",
             subject: subject
         )
+end
 
 Applicant(name: "ava", credit: 780, income: 120000, verified: 1.0)
 Applicant(name: "mira", credit: 580, income: 35000, verified: 0.0)
 Policy(name: "prime", minimum_credit: 700, minimum_income: 80000, minimum_score: 0.80)
 
-main() =>
+def main() =>
     approvedApplicants := lambda(Applicant, fact => fact.name == "ava")
     declinedApplicants := lambda(Applicant, fact => fact.name == "mira")
     policies := lambda(Policy, fact => fact.name == "prime")
@@ -126,3 +133,4 @@ main() =>
         decide(subject: ava, policy: prime),
         decide(subject: mira, policy: prime)
     ]
+end
