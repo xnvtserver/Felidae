@@ -20,6 +20,36 @@ std::shared_ptr<MapExpr> markFact(
     return value;
 }
 
+// The three standard t-norm/t-conorm pairs, exactly as core/fuzzy.fx exposes
+// them to Felidae source (fuzzyAnd/fuzzyOr, fuzzyAlgebraicAnd/Or,
+// fuzzyBoundedAnd/Or) - a ReasoningProfile names which pair combines
+// Reasoning.grade's per-evidence degree with its reliability (conjunction)
+// and aggregates across evidence items (evidence_aggregation), so this is
+// one formula in two places by necessity (this one works over plain
+// doubles inside a hot evidence loop; the Felidae one is the composable,
+// user-facing form) rather than duplicated logic drifting apart by accident.
+double applyConjunctionPolicy(const std::string& policy, double a, double b) {
+    if (policy == "minimum") return std::min(a, b);
+    if (policy == "lukasiewicz") return std::max(0.0, a + b - 1.0);
+    return a * b; // "product" - also this profile's long-standing default.
+}
+double applyDisjunctionPolicy(const std::string& policy, double a, double b) {
+    if (policy == "product") return a + b - a * b;
+    if (policy == "lukasiewicz") return std::min(1.0, a + b);
+    return std::max(a, b); // "maximum" - also this profile's default.
+}
+
+// Reasoning.contrary/prove/grade's argument names, resolved once instead of
+// compared against by string at every named-argument check below.
+const SymbolId kPositiveArgNameId = symbolIdForName("positive");
+const SymbolId kNegativeArgNameId = symbolIdForName("negative");
+const SymbolId kQueryArgNameId = symbolIdForName("query");
+const SymbolId kConclusionArgNameId = symbolIdForName("conclusion");
+const SymbolId kEvidenceArgNameId = symbolIdForName("evidence");
+const SymbolId kProfileArgNameId = symbolIdForName("profile");
+const SymbolId kProbabilityArgNameId = symbolIdForName("probability");
+const SymbolId kSimilarityArgNameId = symbolIdForName("similarity");
+
 } // namespace
 
 bool Interpreter::isTableEligibleGoal(
@@ -726,13 +756,19 @@ std::shared_ptr<MapExpr> Interpreter::materializeDerivationResult(
         {"__type", std::make_shared<StringExpr>("DerivationResult")},
         {"conclusion", callAsFact(query)},
         {"truth_status", std::make_shared<StringExpr>(truth)},
-        {"exact", std::make_shared<BoolExpr>(true)},
+        {"exact", makeTruthValue(true)},
+        // Always true when this is reached: tableCallAnswers (the only path
+        // into this function) computes a predicate's full tabled fixpoint -
+        // every answer the current fact base can ever derive, not a capped
+        // search - or evalReasoningProve throws before getting here at all
+        // for a predicate the tabling engine can't evaluate soundly. There
+        // is no silently-partial outcome for Reasoning.prove to report.
+        {"exhaustive", makeTruthValue(true)},
         {"fuzzy_degree", std::make_shared<NilExpr>()},
         {"confidence", std::make_shared<NilExpr>()},
         {"probability", std::make_shared<NilExpr>()},
         {"similarity", std::make_shared<NilExpr>()},
-        {"contradictory", std::make_shared<BoolExpr>(
-            hasPositive && hasNegative)},
+        {"contradictory", makeTruthValue(hasPositive && hasNegative)},
         {"supporting_facts", factIdArray(positive.factIds)},
         {"opposing_facts", factIdArray(negative.factIds)},
         {"supporting_rules", stringArray(positive.rules)},
@@ -755,11 +791,11 @@ bool Interpreter::evalReasoningContrary(
         const auto& argument = term.args[i];
         std::shared_ptr<Expr> resolved;
         if (!evalExprValue(argument.value, env, resolved)) return false;
-        if (argument.name == "positive" ||
-            (argument.name.empty() && i == 0)) {
+        if (argument.nameId == kPositiveArgNameId ||
+            (argument.nameId == 0 && i == 0)) {
             positiveValue = std::move(resolved);
-        } else if (argument.name == "negative" ||
-                   (argument.name.empty() && i == 1)) {
+        } else if (argument.nameId == kNegativeArgNameId ||
+                   (argument.nameId == 0 && i == 1)) {
             negativeValue = std::move(resolved);
         }
     }
@@ -800,8 +836,8 @@ bool Interpreter::evalReasoningProve(
     std::shared_ptr<Expr>& out) {
     const Arg* queryArgument = nullptr;
     for (std::size_t i = 0; i < term.args.size(); ++i) {
-        if (term.args[i].name == "query" ||
-            (term.args[i].name.empty() && i == 0)) {
+        if (term.args[i].nameId == kQueryArgNameId ||
+            (term.args[i].nameId == 0 && i == 0)) {
             queryArgument = &term.args[i];
             break;
         }
@@ -920,9 +956,9 @@ bool Interpreter::evalReasoningGrade(
     std::shared_ptr<Expr> similarityValue;
     for (std::size_t i = 0; i < term.args.size(); ++i) {
         const auto& argument = term.args[i];
-        if (argument.name == "query") continue;
+        if (argument.nameId == kQueryArgNameId) continue;
         std::shared_ptr<Expr> value;
-        if (argument.name == "conclusion") {
+        if (argument.nameId == kConclusionArgNameId) {
             // A conclusion is data, not an evaluation request. Preserve a
             // predicate-shaped term as a typed fact value instead of invoking
             // a rule with the same name.
@@ -943,16 +979,16 @@ bool Interpreter::evalReasoningGrade(
             }
         }
         if (!value && !evalExprValue(argument.value, env, value)) return false;
-        if (argument.name == "evidence" ||
-            (argument.name.empty() && i == 0)) {
+        if (argument.nameId == kEvidenceArgNameId ||
+            (argument.nameId == 0 && i == 0)) {
             evidenceValue = std::move(value);
-        } else if (argument.name == "profile") {
+        } else if (argument.nameId == kProfileArgNameId) {
             profileValue = std::move(value);
-        } else if (argument.name == "conclusion") {
+        } else if (argument.nameId == kConclusionArgNameId) {
             conclusionValue = std::move(value);
-        } else if (argument.name == "probability") {
+        } else if (argument.nameId == kProbabilityArgNameId) {
             probabilityValue = std::move(value);
-        } else if (argument.name == "similarity") {
+        } else if (argument.nameId == kSimilarityArgNameId) {
             similarityValue = std::move(value);
         }
     }
@@ -962,6 +998,16 @@ bool Interpreter::evalReasoningGrade(
     }
     if (!conclusionValue) conclusionValue = std::make_shared<NilExpr>();
 
+    // Which t-norm/t-conorm pair combines a degree with its reliability
+    // (conjunction) and aggregates across evidence items
+    // (evidence_aggregation) - the same three pairs core/fuzzy.fx offers
+    // Felidae source (Zadeh min/max, algebraic product/sum, Lukasiewicz
+    // bounded product/sum). Defaults ("product"/"maximum") are exactly the
+    // formulas this function always used before these were configurable, so
+    // a program that never names a profile computes identical numbers to
+    // before; naming "minimum" or "lukasiewicz" explicitly is new.
+    std::string conjunctionPolicy = "product";
+    std::string disjunctionPolicy = "maximum";
     if (profileValue) {
         const auto profileType = std::dynamic_pointer_cast<StringExpr>(
             reasoningMapValue(profileValue, "__type"));
@@ -969,33 +1015,38 @@ bool Interpreter::evalReasoningGrade(
             throw InterpreterError(
                 "Reasoning.grade profile must be ReasoningProfile(...)");
         }
-        const auto requirePolicy =
+        const auto resolvePolicy =
             [&](const std::string& field,
-                std::initializer_list<const char*> allowed) {
+                std::initializer_list<const char*> allowed,
+                const std::string& fallback) -> std::string {
                 const auto value = std::dynamic_pointer_cast<StringExpr>(
                     reasoningMapValue(profileValue, field));
-                if (!value) return;
+                if (!value) return fallback;
                 for (const char* candidate : allowed) {
-                    if (value->value == candidate) return;
+                    if (value->value == candidate) return value->value;
                 }
                 throw InterpreterError(
                     "Unsupported ReasoningProfile " + field +
                     " policy '" + value->value + "'");
             };
-        requirePolicy("conjunction", {"minimum"});
-        requirePolicy("disjunction", {"maximum"});
-        requirePolicy("evidence_aggregation", {"maximum"});
-        requirePolicy("negation", {"standard", "one_minus"});
+        conjunctionPolicy = resolvePolicy(
+            "conjunction", {"minimum", "product", "lukasiewicz"}, conjunctionPolicy);
+        resolvePolicy("disjunction", {"maximum", "product", "lukasiewicz"}, disjunctionPolicy);
+        disjunctionPolicy = resolvePolicy(
+            "evidence_aggregation", {"maximum", "product", "lukasiewicz"}, disjunctionPolicy);
+        // "standard" and "one_minus" name the same formula (fuzzyNot's
+        // 1 - x); validated for a recognizable name, not branched on.
+        resolvePolicy("negation", {"standard", "one_minus"}, "one_minus");
     } else {
         profileValue = markFact(std::make_shared<MapExpr>(
             std::vector<MapEntry>{
                 {"__type", std::make_shared<StringExpr>(
                     "ReasoningProfile")},
                 {"name", std::make_shared<StringExpr>("default")},
-                {"conjunction", std::make_shared<StringExpr>("minimum")},
-                {"disjunction", std::make_shared<StringExpr>("maximum")},
+                {"conjunction", std::make_shared<StringExpr>(conjunctionPolicy)},
+                {"disjunction", std::make_shared<StringExpr>(disjunctionPolicy)},
                 {"evidence_aggregation", std::make_shared<StringExpr>(
-                    "maximum")},
+                    disjunctionPolicy)},
                 {"negation", std::make_shared<StringExpr>("one_minus")}}),
             "ReasoningProfile");
     }
@@ -1032,7 +1083,7 @@ bool Interpreter::evalReasoningGrade(
                 reasoningMapValue(evidence, "similarity"));
             const auto confidenceValue = std::dynamic_pointer_cast<NumberExpr>(
                 reasoningMapValue(evidence, "relationalConfidence"));
-            const auto contradictory = std::dynamic_pointer_cast<BoolExpr>(
+            const auto contradictory = numericTruth(
                 reasoningMapValue(evidence, "contradictory"));
             const auto conflicting = std::dynamic_pointer_cast<ArrayExpr>(
                 reasoningMapValue(evidence, "conflictingFields"));
@@ -1046,17 +1097,18 @@ bool Interpreter::evalReasoningGrade(
                 throw InterpreterError(
                     "Comparison evidence relationalConfidence must be between 0 and 1");
             }
-            const bool opposed = (contradictory && contradictory->value) ||
+            const bool opposed = (contradictory && *contradictory) ||
                 (conflicting && !conflicting->items.empty());
             confidence = std::max(confidence, reliability);
             if (opposed) {
                 hasOpposition = true;
-                opposition = std::max(opposition,
-                    (1.0 - similarity->value) * reliability);
+                opposition = applyDisjunctionPolicy(disjunctionPolicy, opposition,
+                    applyConjunctionPolicy(conjunctionPolicy, 1.0 - similarity->value, reliability));
             }
             if (similarity->value > 0.0) {
                 hasSupport = true;
-                support = std::max(support, similarity->value * reliability);
+                support = applyDisjunctionPolicy(disjunctionPolicy, support,
+                    applyConjunctionPolicy(conjunctionPolicy, similarity->value, reliability));
             }
             continue;
         }
@@ -1085,19 +1137,18 @@ bool Interpreter::evalReasoningGrade(
                 throw InterpreterError(
                     "Evidence polarity must be 'support' or 'oppose'");
             }
-        } else if (const auto supports =
-                       std::dynamic_pointer_cast<BoolExpr>(
-                           reasoningMapValue(evidence, "supports"))) {
-            opposing = !supports->value;
+        } else if (const auto supports = numericTruth(
+                       reasoningMapValue(evidence, "supports"))) {
+            opposing = !*supports;
         }
-        const double discounted = degree->value * reliability;
+        const double discounted = applyConjunctionPolicy(conjunctionPolicy, degree->value, reliability);
         confidence = std::max(confidence, reliability);
         if (opposing) {
             hasOpposition = true;
-            opposition = std::max(opposition, discounted);
+            opposition = applyDisjunctionPolicy(disjunctionPolicy, opposition, discounted);
         } else {
             hasSupport = true;
-            support = std::max(support, discounted);
+            support = applyDisjunctionPolicy(disjunctionPolicy, support, discounted);
         }
     }
 
@@ -1138,8 +1189,7 @@ bool Interpreter::evalReasoningGrade(
     reasoningSetValue(resultEntries, "conclusion", conclusionValue->clone());
     reasoningSetValue(resultEntries, "truth_status",
         std::make_shared<StringExpr>(truth));
-    reasoningSetValue(resultEntries, "exact",
-        std::make_shared<BoolExpr>(static_cast<bool>(exact)));
+    reasoningSetValue(resultEntries, "exact", makeTruthValue(static_cast<bool>(exact)));
     reasoningSetValue(resultEntries, "fuzzy_degree", hasSupport
         ? std::shared_ptr<Expr>(std::make_shared<NumberExpr>(support))
         : std::shared_ptr<Expr>(std::make_shared<NilExpr>()));
@@ -1157,8 +1207,7 @@ bool Interpreter::evalReasoningGrade(
     reasoningSetValue(resultEntries, "similarity",
         validatedOptionalGrade(similarityValue, "similarity"));
     reasoningSetValue(resultEntries, "contradictory",
-        std::make_shared<BoolExpr>(
-            truth == "both" || (hasSupport && hasOpposition)));
+        makeTruthValue(truth == "both" || (hasSupport && hasOpposition)));
     reasoningSetValue(resultEntries, "recommendation",
         std::make_shared<StringExpr>(recommendation));
     reasoningSetValue(resultEntries, "profile", profileValue->clone());

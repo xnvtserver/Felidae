@@ -116,10 +116,9 @@ public:
                                      SymbolId typeId = 0) const;
     std::uint64_t hierarchyGeneration() const;
     FactMemoryStats stats() const;
-    // A selection captures an immutable logical view.  It remains valid
-    // until explicitly released by the runtime/library owner.
-    std::uint64_t captureSnapshot();
-    bool releaseSnapshot(std::uint64_t snapshotGeneration);
+    // A selection captures an immutable logical view. Its shared lease keeps
+    // that generation alive until the final selection clone is destroyed.
+    std::shared_ptr<FactSnapshotLease> captureSnapshot();
     std::vector<size_t> selectionIndexes(const std::string& type,
                                          const std::string& property = {},
                                          const std::shared_ptr<Expr>& value = nullptr,
@@ -175,6 +174,7 @@ public:
     std::vector<std::pair<std::string, std::string>> hierarchyEdges() const;
     const std::unordered_map<std::string, std::filesystem::path>& parentOrigins() const;
     std::vector<size_t> factIndexesFromOrigin(const std::filesystem::path& origin) const;
+    std::vector<std::filesystem::path> originsForType(const std::string& type) const;
     bool hasOrigin(const std::filesystem::path& origin) const;
     void removeOrigin(const std::filesystem::path& origin);
     // Language-level mutations preserve stable fact identity. Updates append
@@ -275,7 +275,6 @@ private:
                 Empty,
                 String,
                 Number,
-                Bool,
                 Nil,
                 Structured,
                 Mixed
@@ -358,8 +357,17 @@ private:
         std::shared_ptr<ValueArena> valueArena = std::make_shared<ValueArena>();
     };
 
+    struct SnapshotRegistry {
+        struct Entry {
+            std::shared_ptr<const Data> data;
+            std::size_t leases = 0;
+        };
+        mutable std::mutex mutex;
+        std::unordered_map<std::uint64_t, Entry> entries;
+    };
+
     std::shared_ptr<Data> data_;
-    std::unordered_map<std::uint64_t, std::shared_ptr<const Data>> snapshots_;
+    std::shared_ptr<SnapshotRegistry> snapshots_;
     std::unordered_map<SymbolId, std::vector<size_t>> compatibleFactCache_;
     std::unordered_map<PropertyQueryKey, std::vector<size_t>, PropertyQueryKeyHash> propertyQueryCache_;
     mutable std::size_t adaptiveEqualityIndexes_ = 0;

@@ -64,7 +64,15 @@ private:
     const std::vector<std::size_t>& lineBreakOffsets() const;
 
     static constexpr std::size_t kMaximumRecursionDepth = 512;
-    static constexpr std::size_t kMaximumIterations = 1'000'000;
+    // A safety net against a genuinely non-terminating parse loop (a real
+    // parser bug), not a cap on legitimate program size. Cost is linear -
+    // confirmed by measurement, ~52 iterations per simple statement - so a
+    // real 19k-statement program (unremarkable for a generated fact base or
+    // a large rule set spread across several imports) used to trip this at
+    // only 1,000,000 with an opaque "iteration budget exceeded" error. Wide
+    // enough now for a ~1M-statement program (~50M iterations) while still
+    // catching a runaway loop in a few seconds rather than hanging forever.
+    static constexpr std::size_t kMaximumIterations = 50'000'000;
 
     class RecursionScope {
     public:
@@ -87,6 +95,13 @@ private:
     std::shared_ptr<Expr> parseBinaryExpression(int minimumPrecedence,
                                                 TokenId::Id stop = TokenId::UNKNOWN,
                                                 const std::vector<PatternLexeme>* stopAnchor = nullptr);
+    // The precedence-climbing continuation shared by parseBinaryExpression
+    // (which parses `left` itself first) and any caller that already has a
+    // fully-parsed left operand from elsewhere - see its definition.
+    std::shared_ptr<Expr> continueBinaryExpression(std::shared_ptr<Expr> left,
+                                                    int minimumPrecedence,
+                                                    TokenId::Id stop = TokenId::UNKNOWN,
+                                                    const std::vector<PatternLexeme>* stopAnchor = nullptr);
     std::shared_ptr<Expr> parseUnary();
     std::shared_ptr<Expr> tryParseLeadingPattern();
     std::shared_ptr<Expr> tryParseTrailingPattern(std::shared_ptr<Expr> left,
@@ -99,8 +114,17 @@ private:
     std::shared_ptr<Expr> parseArray();
     std::shared_ptr<Expr> parseMap();
     std::vector<Arg> parseArguments(bool allowAnnotationBindings = false);
+    // `allowCapitalizedDotted` exists for the one place `Capitalized.name`
+    // is unambiguous: a `def` declaration head. Everywhere else, a
+    // capitalized dotted name in source is deferred to parseUnary's postfix
+    // loop, because there `Type.member` might be a fact-fluent method whose
+    // receiver evaluates to a runtime value - a decision this function has
+    // no way to make. A declaration head is never that: `def Logic.negate(`
+    // always declares a method on `Logic`, the same shape parseClassStatement
+    // already synthesizes for class methods.
     QualifiedName consumeQualifiedName(bool allowNamespaceSeparators = true,
-                                       bool allowDottedName = true);
+                                       bool allowDottedName = true,
+                                       bool allowCapitalizedDotted = false);
     Call parseCall();
     std::shared_ptr<Goal> parseGoal();
     std::vector<std::shared_ptr<Goal>> parseGoalList(TokenId::Id terminator);
@@ -118,6 +142,13 @@ private:
     std::size_t sourceLineIndent(std::size_t offset) const;
     bool startsOwnLine(std::size_t offset) const;
     void consumeStatementTerminator(std::size_t statementBegin);
+    // Every parse error's location suffix, e.g. " at source byte 42 (found
+    // 'end')". Quotes the user's own source text at the offending offset
+    // rather than a raw token/piece ID - the only way to describe an ID that
+    // is correct for every ID range at once (fixed grammar, reserved words,
+    // and the byte-level pieces that make up an identifier) without a second
+    // ID-to-text table that would only have to agree with the lexer's own.
+    std::string describeLocation(std::size_t offset) const;
     SourceSpan span(std::size_t begin, std::size_t end) const;
     void stamp(const std::shared_ptr<AstNode>& node, std::size_t begin, std::size_t end) const;
 };

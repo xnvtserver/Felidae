@@ -4,4 +4,4 @@ Animal(name: "generic")
 Dog extend Animal(name: "fido")
 Cat extend Animal(name: "milo")
 
-main() => return Animal.all()
+def main() => return Animal.all()

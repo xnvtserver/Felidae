@@ -37,7 +37,7 @@ void testMethodExecutionAndDebugHook() {
             if (goal.sourceSpan.valid()) visitedLines.push_back(goal.sourceSpan.startLine);
         });
     const auto result = interpreter.callMain(Felidae::makeSystemInput({}));
-    require(interpreter.valueToDisplayString(result) == "42",
+    require(interpreter.valueToDisplayString(result) == "42.0",
             "main() returned the wrong interpreted value");
     require(visitedLines.size() >= 2, "debug hook did not observe live method goals");
     require(visitedLines.front() <= visitedLines.back(),

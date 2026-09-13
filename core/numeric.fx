@@ -65,3 +65,18 @@ end
 
 def inRange(value: number, low: number, high: number) =>
     return value >= low and value <= high
+
+def avg(a: number, b: number) =>
+    return (a + b) / 2
+
+# The canonical IEEE 754 test: NaN is the only double that compares unequal
+# to itself.
+def isNaN(value: number) =>
+    return value != value
+
+# x - x is exactly 0 for every finite x (even a very large one - the
+# cancellation is exact), but Infinity - Infinity and NaN - NaN are both
+# NaN, and NaN never equals 0. One formula covers both non-finite cases
+# without checking them separately.
+def isFinite(value: number) =>
+    return (value - value) == 0

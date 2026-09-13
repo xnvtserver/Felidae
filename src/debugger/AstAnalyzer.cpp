@@ -46,8 +46,6 @@ std::vector<SymbolParameter> collectHeadParameters(const Call &head) {
       param.type = "string";
     } else if (std::dynamic_pointer_cast<NumberExpr>(arg.value)) {
       param.type = "number";
-    } else if (std::dynamic_pointer_cast<BoolExpr>(arg.value)) {
-      param.type = "bool";
     }
     if (param.name.empty())
       continue;

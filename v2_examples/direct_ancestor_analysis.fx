@@ -7,7 +7,7 @@ Beta extend Root(name: "beta")
 Left extend Alpha, Beta(name: "left")
 Right extend Alpha, Beta(name: "right")
 
-main() =>
+def main() =>
     left := Left(name: "left")
     right := Right(name: "right")
 
