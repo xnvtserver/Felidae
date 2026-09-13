@@ -16,6 +16,13 @@ namespace Felidae {
 // the receiver's runtime fact/class type is known. It is intentionally absent
 // from the public builtin registry.
 inline constexpr std::string_view kMemberInvokeTerm = "Object:invokeMember";
+// The interpreter's single check for "is this term a member-invoke marker"
+// compares this cached SymbolId against TermExpr::nameId (already computed
+// once, at construction) rather than re-comparing term.name against the
+// string above on every expression evaluation - the same reasoning behind
+// every other fixed-id comparison in this codebase, applied to this one
+// sentinel name instead of a registered TokenId/BuiltinId.
+inline const SymbolId kMemberInvokeTermId = symbolIdForName(kMemberInvokeTerm);
 
 inline constexpr bool isCustomOperatorCharacter(char value) {
     switch (value) {
@@ -111,10 +118,8 @@ enum class BuiltinId {
     FactExists,
     FactSelect,
     FactMaterialize,
-    FactRelease,
     FactTimeline,
     FactReferences,
-    DbSync,
     FactInsert,
     FactUpdate,
     FactDelete,
@@ -122,6 +127,9 @@ enum class BuiltinId {
     FactOrWhere,
     FactLimit,
     FactJoin,
+    FactProject,
+    FactAggregate,
+    FactSearch,
     ArrayWhere,
     ArrayOrderBy,
 

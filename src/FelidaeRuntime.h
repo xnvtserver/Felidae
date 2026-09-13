@@ -37,10 +37,15 @@ void loadProgramRoot(const std::filesystem::path& file,
                      const Program& program,
                      Interpreter& interpreter);
 std::vector<std::shared_ptr<Goal>> parseQueryText(const std::string& query);
+// `exhaustive` reports whether `solutions` is every answer or the search
+// was cut off at its solution cap with alternatives still untried - pass
+// false (from Interpreter::solve's own out-parameter) rather than let a
+// truncated answer set print silently as if it were complete.
 void printSolutions(Interpreter& interpreter,
                     const std::vector<std::shared_ptr<Goal>>& queryGoals,
                     const std::vector<Solution>& solutions,
-                    std::ostream& out);
+                    std::ostream& out,
+                    bool exhaustive = true);
 std::shared_ptr<Expr> makeSystemInput(const std::vector<std::string>& args);
 std::string trim(const std::string& text);
 bool isBareIdentifier(const std::string& text);
