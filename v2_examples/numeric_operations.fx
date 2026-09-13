@@ -1,4 +1,4 @@
-main() =>
+def main() =>
     return (
         minimum: min(0.8, 0.3),
         maximum: max(0.8, 0.3),
@@ -27,3 +27,4 @@ main() =>
         finite: is_finite(1.5),
         nan: is_nan(1.5)
     )
+end

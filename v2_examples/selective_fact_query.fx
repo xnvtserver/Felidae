@@ -14,5 +14,5 @@ Candidate(id: "c09", region: "north", role: "analyst", active: 0.0)
 Candidate(id: "c10", region: "south", role: "analyst", active: 0.0)
 
 def main() =>
-    matches := Candidate.select(region: "north", role: "analyst", active: 1.0)
+    matches := Candidate.where(region: "north", role: "analyst", active: 1.0)
     return (matches: matches, count: count(data: matches))

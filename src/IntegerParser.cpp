@@ -121,7 +121,7 @@ bool IntegerParser::matchBlockEnd() {
 
 void IntegerParser::require(TokenId::Id id, const char* message) {
     if (!match(id)) {
-        throw IntegerParserError(std::string(message) + " at source byte " + std::to_string(byte_));
+        throw IntegerParserError(std::string(message) + describeLocation(byte_));
     }
 }
 
@@ -235,16 +235,32 @@ bool IntegerParser::startsOwnLine(std::size_t offset) const {
 void IntegerParser::consumeStatementTerminator(std::size_t statementBegin) {
     if (match(TokenId::DOT) || atEnd()) return;
     if (sourceContainsLineBreak(statementBegin, byte_)) return;
-    throw IntegerParserError("Expected '.' or newline after statement at source byte " +
-                             std::to_string(byte_));
+    throw IntegerParserError("Expected '.' or newline after statement" + describeLocation(byte_));
+}
+
+std::string IntegerParser::describeLocation(std::size_t offset) const {
+    const auto& source = input_.source();
+    const std::string suffix = " at source byte " + std::to_string(offset);
+    if (offset >= source.size()) return suffix + " (end of input)";
+    const unsigned char first = static_cast<unsigned char>(source[offset]);
+    if (std::isspace(first)) return suffix + " (whitespace)";
+    std::size_t end = offset;
+    if (std::isalnum(first) || first == '_' || first >= 0x80) {
+        while (end < source.size()) {
+            const unsigned char current = static_cast<unsigned char>(source[end]);
+            if (!(std::isalnum(current) || current == '_' || current >= 0x80)) break;
+            ++end;
+        }
+    } else {
+        end = offset + 1;
+    }
+    return suffix + " (found '" + std::string(source.substr(offset, end - offset)) + "')";
 }
 
 std::string IntegerParser::consumeNameRange() {
     skipTrivia();
     if (!atNameRange()) {
-        const auto id = piece_ < input_.entries().size() ? input_.entries()[piece_].id : TokenId::UNKNOWN;
-        throw IntegerParserError("Expected a token name range at source byte " +
-                                 std::to_string(byte_) + " (ID " + std::to_string(id) + ")");
+        throw IntegerParserError("Expected a token name range" + describeLocation(byte_));
     }
     const std::size_t begin = byte_;
     const auto& pieces = input_.entries();
@@ -338,6 +354,15 @@ std::shared_ptr<Expr> IntegerParser::parseArray() {
 std::vector<Arg> IntegerParser::parseArguments(bool allowAnnotationBindings) {
     require(TokenId::LPAREN, "Expected '('");
     std::vector<Arg> arguments;
+    // One shared parser for every parenthesized name-list this grammar has -
+    // a `def` head's parameters, a call's arguments, an annotation's
+    // bindings - so a repeated name is rejected here once, for all of them,
+    // the same way a class body already rejects a repeated field and a
+    // mixfix pattern already rejects a repeated capture. Before this, a
+    // duplicate named parameter (`def foo(x: number, x: number)`) or a
+    // duplicate named argument at a call site silently let the last one win
+    // rather than reporting the shape mismatch a real `def foo(x, x)` is.
+    std::unordered_set<SymbolId> namedArgumentIds;
     if (!at(TokenId::RPAREN)) {
         do {
             skipTrivia();
@@ -393,6 +418,9 @@ std::vector<Arg> IntegerParser::parseArguments(bool allowAnnotationBindings) {
             }
             if (!value) value = parseExpression();
             if (byte_ == before) throw IntegerParserError("Integer parser made no progress in argument list");
+            if (named && !namedArgumentIds.insert(name.nameId).second) {
+                throw IntegerParserError("Duplicate named argument '" + name.spelling + "'");
+            }
             arguments.emplace_back(named ? std::move(name.spelling) : std::string{},
                                    named ? name.nameId : 0, std::move(value));
         } while (match(TokenId::COMMA));
@@ -402,7 +430,8 @@ std::vector<Arg> IntegerParser::parseArguments(bool allowAnnotationBindings) {
 }
 
 IntegerParser::QualifiedName IntegerParser::consumeQualifiedName(bool allowNamespaceSeparators,
-                                                                  bool allowDottedName) {
+                                                                  bool allowDottedName,
+                                                                  bool allowCapitalizedDotted) {
     skipTrivia();
     const auto firstPiece = piece_;
     const bool capitalized =
@@ -410,7 +439,7 @@ IntegerParser::QualifiedName IntegerParser::consumeQualifiedName(bool allowNames
         std::isupper(static_cast<unsigned char>(input_.source().at(
             input_.entries()[piece_].begin))) != 0;
     QualifiedName name{consumeNameRange(), 0, BuiltinId::Unknown, capitalized};
-    while ((allowDottedName && !capitalized && at(TokenId::DOT)) ||
+    while ((allowDottedName && (allowCapitalizedDotted || !capitalized) && at(TokenId::DOT)) ||
            (allowNamespaceSeparators && (at(TokenId::COLON) || at(TokenId::DOUBLE_COLON)))) {
         const auto beforeByte = byte_;
         const auto beforePiece = piece_;
@@ -562,7 +591,7 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
                     coreOperatorDefinition(comparison->coreOperator).token, comparison->capture(1));
             }
             return std::make_shared<BinaryGoal>(std::move(conditionExpression), TokenId::EQUAL,
-                                                std::make_shared<BoolExpr>(true));
+                                                makeTruthValue(true));
         };
         struct Branch {
             std::size_t begin;
@@ -632,6 +661,18 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
                 } while (match(TokenId::COMMA));
             }
             require(TokenId::RPAREN, "Expected ')' after return fields");
+            // `return (` is ambiguous: `return (a: 1, b: 2)` is a record and
+            // `return (1, 2)` a positional tuple, but `return (a + b) / c`
+            // is just an ordinary expression whose grouped sub-expression
+            // happens to come first. A name or a second field settles it as
+            // a tuple; a single unnamed field does not, so resume the exact
+            // same precedence climb an ordinary expression would have used
+            // from here, in case more of it follows this ')'.
+            if (fields.size() == 1 && fields.front().name.empty()) {
+                fields.front().value = continueBinaryExpression(
+                    std::move(fields.front().value),
+                    static_cast<int>(OperatorPrecedence::Control));
+            }
         } else {
             // `return value` is the established method form.  The source is
             // already one token stream; this merely assembles the
@@ -781,17 +822,18 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
     // declaration" from "goal in the current body" apart; it just checks
     // for this one token.
     if (match(TokenId::DEF)) {
-        // Native and user clauses may use qualified heads such as `math.sin`.
-        // The separators are already atomic grammar IDs, so assemble the entire
-        // head before requiring its argument list.
-        const auto clauseName = consumeQualifiedName();
+        // Native and user clauses may use qualified heads such as `math.sin`
+        // or `Logic.negate` - a `def` head is never ambiguous the way a
+        // dotted expression can be, so capitalized dotted names are allowed
+        // here specifically (see consumeQualifiedName's comment).
+        const auto clauseName = consumeQualifiedName(true, true, true);
         std::vector<std::string> parentNames;
         if (match(TokenId::EXTEND)) {
             do { parentNames.push_back(consumeQualifiedName().spelling); } while (match(TokenId::COMMA));
         }
         if (!at(TokenId::LPAREN)) {
             throw IntegerParserError("Expected '(' after 'def " + clauseName.spelling +
-                                     "' at source byte " + std::to_string(byte_));
+                                     "'" + describeLocation(byte_));
         }
         Call head(clauseName.spelling, clauseName.nameId, parseArguments(), clauseName.builtinId);
         if (match(TokenId::AS)) {
@@ -803,7 +845,7 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
         }
         if (!match(TokenId::ARROW)) {
             throw IntegerParserError("Expected '=>' after 'def " + clauseName.spelling +
-                                     "(...)' at source byte " + std::to_string(byte_));
+                                     "(...)'" + describeLocation(byte_));
         }
         std::vector<std::shared_ptr<Goal>> body;
         std::vector<std::vector<std::shared_ptr<Goal>>> fallbackBranches;
@@ -872,8 +914,11 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
     // ClauseKind::Fact at parse time and Interpreter::addStreamedStatement/
     // addProgram resolve it: if the name already names a declared clause,
     // it is treated as an entry call (executed immediately) instead of a
-    // new fact.
-    const auto clauseName = consumeQualifiedName();
+    // new fact. A capitalized dotted name is allowed here too (see
+    // consumeQualifiedName's comment) so a bare top-level entry call to an
+    // already-declared `def Logic.negate(...)`-style function parses the
+    // same as its declaration does.
+    const auto clauseName = consumeQualifiedName(true, true, true);
     // A fact can declare its parent type too (`Employee extend NamedEntity(...)`),
     // the same as a def'd clause can.
     std::vector<std::string> parentNames;
@@ -882,7 +927,7 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
     }
     if (!at(TokenId::LPAREN)) {
         throw IntegerParserError("Expected '(' after '" + clauseName.spelling +
-                                 "' at source byte " + std::to_string(byte_) +
+                                 "'" + describeLocation(byte_) +
                                  " (declarations need a 'def' prefix)");
     }
     Call head(clauseName.spelling, clauseName.nameId, parseArguments(), clauseName.builtinId);
@@ -1020,8 +1065,8 @@ std::shared_ptr<Expr> IntegerParser::parsePrimary() {
         stamp(result, begin, byte_);
         return result;
     }
-    if (match(TokenId::TRUE)) { auto result = std::make_shared<BoolExpr>(true); stamp(result, begin, byte_); return result; }
-    if (match(TokenId::FALSE)) { auto result = std::make_shared<BoolExpr>(false); stamp(result, begin, byte_); return result; }
+    if (match(TokenId::TRUE)) { auto result = makeTruthValue(true); stamp(result, begin, byte_); return result; }
+    if (match(TokenId::FALSE)) { auto result = makeTruthValue(false); stamp(result, begin, byte_); return result; }
     if (match(TokenId::NIL)) { auto result = std::make_shared<NilExpr>(); stamp(result, begin, byte_); return result; }
     if (match(TokenId::LAMBDA)) {
         require(TokenId::LPAREN, "Expected '(' after lambda");
@@ -1317,8 +1362,7 @@ std::shared_ptr<Expr> IntegerParser::tryParseTrailingPattern(std::shared_ptr<Exp
             if (anchorIndex >= selected->anchorLexemes.size() ||
                 !matchPatternAnchor(selected->anchorLexemes[anchorIndex])) {
                 throw IntegerParserError("Expected integer mixfix literal anchor for '" +
-                                         selected->operatorName + "' at source byte " +
-                                         std::to_string(byte_));
+                                         selected->operatorName + "'" + describeLocation(byte_));
             }
         }
     }
@@ -1368,16 +1412,6 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
             arguments.insert(arguments.begin(), Arg{name, std::move(value)});
         };
         if (type && type->isCapitalized) {
-            if (member == "all") {
-                prepend(std::make_shared<StringExpr>(type->name), "type");
-                result = std::make_shared<TermExpr>("Fact:all", std::move(arguments), BuiltinId::FactAll);
-                continue;
-            }
-            if (member == "count") {
-                prepend(std::make_shared<StringExpr>(type->name), "type");
-                result = std::make_shared<TermExpr>("Fact:count", std::move(arguments), BuiltinId::FactCount);
-                continue;
-            }
             if (member == "get") {
                 if (arguments.size() != 1 ||
                     (arguments.front().name != "pos" &&
@@ -1399,12 +1433,35 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
                 std::vector<Arg> selectArgs;
                 selectArgs.emplace_back("type", std::make_shared<StringExpr>(type->name));
                 selectArgs.emplace_back("match", std::make_shared<MapExpr>(std::move(fields)));
-                result = std::make_shared<TermExpr>("Fact:select", std::move(selectArgs), BuiltinId::FactSelect);
+                result = std::make_shared<TermExpr>("Fact:where", std::move(selectArgs), BuiltinId::FactSelect);
                 continue;
             }
-            if (member == "insert") {
-                prepend(std::make_shared<StringExpr>(type->name), "type");
-                result = std::make_shared<TermExpr>("Fact:insert", std::move(arguments), BuiltinId::FactInsert);
+            const std::string qualified = "Fact:" + member;
+            const BuiltinId factBuiltin = builtinIdForName(qualified);
+            if (factBuiltin == BuiltinId::FactAll ||
+                factBuiltin == BuiltinId::FactCount ||
+                factBuiltin == BuiltinId::FactInsert ||
+                factBuiltin == BuiltinId::FactProject ||
+                factBuiltin == BuiltinId::FactSearch ||
+                factBuiltin == BuiltinId::FactJoin) {
+                const char* receiverName =
+                    factBuiltin == BuiltinId::FactProject ||
+                    factBuiltin == BuiltinId::FactSearch ||
+                    factBuiltin == BuiltinId::FactJoin ? "fact" : "type";
+                prepend(std::make_shared<StringExpr>(type->name), receiverName);
+                result = std::make_shared<TermExpr>(qualified, std::move(arguments), factBuiltin);
+                continue;
+            }
+            const BuiltinId aggregate = builtinIdForName(member);
+            if (aggregate == BuiltinId::Sum || aggregate == BuiltinId::Average ||
+                aggregate == BuiltinId::Min || aggregate == BuiltinId::Max) {
+                const double operation = aggregate == BuiltinId::Sum ? 0.0 :
+                    aggregate == BuiltinId::Average ? 1.0 :
+                    aggregate == BuiltinId::Min ? 2.0 : 3.0;
+                prepend(std::make_shared<NumberExpr>(operation), "operation");
+                prepend(std::make_shared<StringExpr>(type->name), "fact");
+                result = std::make_shared<TermExpr>(
+                    "Fact:aggregate", std::move(arguments), BuiltinId::FactAggregate);
                 continue;
             }
         }
@@ -1496,6 +1553,17 @@ std::shared_ptr<Expr> IntegerParser::parseBinaryExpression(
     int minimumPrecedence, TokenId::Id stop, const std::vector<PatternLexeme>* stopAnchor) {
     RecursionScope recursion(*this);
     auto left = parseUnary();
+    return continueBinaryExpression(std::move(left), minimumPrecedence, stop, stopAnchor);
+}
+
+// The operator-precedence loop proper, factored out of parseBinaryExpression
+// so a value already parsed some other way - e.g. `return (a + b) / c`'s
+// leading `(a + b)`, parsed as a return-tuple candidate before it was known
+// to be a plain grouped expression instead - can resume the exact same
+// continuation instead of a second copy of this precedence climb.
+std::shared_ptr<Expr> IntegerParser::continueBinaryExpression(
+    std::shared_ptr<Expr> left, int minimumPrecedence, TokenId::Id stop,
+    const std::vector<PatternLexeme>* stopAnchor) {
     while (true) {
         step();
         skipTrivia();

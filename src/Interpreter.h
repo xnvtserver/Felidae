@@ -10,6 +10,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <set>
@@ -45,8 +46,15 @@ public:
     void commitModuleTransaction();
     void rollbackModuleTransaction();
 
+    // `exhaustive`, when given, is set to whether `queryGoals` was searched
+    // to completion (every solution found) rather than cut off at
+    // maxSolutions - the search space still had untried alternatives left
+    // when it stopped. A caller that needs to know rather than assume its
+    // answer set is complete (Reasoning.prove's certificate, a query tool
+    // reporting truncation) passes this instead of trusting silence.
     std::vector<Solution> solve(const std::vector<std::shared_ptr<Goal>>& queryGoals,
-                                size_t maxSolutions = 1000);
+                                size_t maxSolutions = 1000,
+                                bool* exhaustive = nullptr);
 
     std::shared_ptr<Expr> resolveExpr(const std::shared_ptr<Expr>& expr, const Env& env) const;
     std::string exprToString(const std::shared_ptr<Expr>& expr, const Env& env) const;
@@ -62,7 +70,6 @@ public:
     std::string runtimeMetricsJson() const;
     void recordStreamedModuleMicros(std::size_t micros);
     void recordParserMetrics(const ParserMetrics& metrics);
-    std::size_t syncFactSource(const std::filesystem::path& file);
     std::shared_ptr<OperatorRegistry> operatorRegistry() const { return operators_; }
     // Imported source files registered by the current interpreter.  The root
     // module is owned by the frontend; callers add it to any watch set.
@@ -124,6 +131,11 @@ private:
         std::vector<Solution> solutions;
         std::list<std::string>::iterator recency;
         std::size_t estimatedBytes = 0;
+        // Whether `solutions` is every solution (search space fully explored)
+        // or was cut off by maxSolutions - cached alongside the answers
+        // themselves so a cache hit doesn't lose the completeness the
+        // original solve() call established.
+        bool exhaustive = true;
     };
     struct ComparisonDispatchKey {
         SymbolId sourceTypeId = 0;
@@ -166,11 +178,12 @@ private:
         std::uint64_t canonicalGeneration = 0;
         bool dirty = true;
     };
-    struct ClauseBucket {
-        std::string name;
-        ClauseList clauses;
-    };
-    using ClauseTable = std::unordered_map<SymbolId, std::vector<ClauseBucket>>;
+    // Keyed by SymbolId alone: SymbolInterner (Symbol.h) already guarantees a
+    // collision-free, bijective id per distinct spelling, so a name-checked
+    // bucket list under each id could never hold more than one entry - that
+    // extra layer used to duplicate, with strings, the uniqueness the
+    // interner already owns as the single source of truth for identity.
+    using ClauseTable = std::unordered_map<SymbolId, ClauseList>;
 
     struct ProvenanceNode {
         // Reuses ClauseKind (AST.h) rather than a private Fact/Rule enum:
@@ -249,7 +262,20 @@ private:
     std::list<std::string> solveCacheRecency_;
     std::size_t solveCacheBytes_ = 0;
     mutable std::unordered_map<const ClauseStmt*, MethodRuntimeInfo> methodRuntimeCache_;
-    mutable std::unordered_map<std::string, ClauseList*> clauseLookupCache_;
+    // Keyed by SymbolId, not name: every lookup here is on the hottest
+    // dispatch path in the interpreter (every call), and a SymbolId hashes
+    // in O(1) where a variable-length name hashes in O(len) - the cache
+    // itself must not be the one place a fast, ID-based dispatch design
+    // still pays a string cost on every hit.
+    mutable std::unordered_map<SymbolId, ClauseList*> clauseLookupCache_;
+    // Set (never cleared mid-search) whenever any level of solveIterative -
+    // the top-level query or a nested method-call sub-solve - stops because
+    // it hit its maxSolutions budget while alternatives remained, rather
+    // than because the search space was actually exhausted. solve() resets
+    // this before it starts and reads it back when done, so a truncation
+    // anywhere in a nested solve is never lost by the time it reaches the
+    // caller that asked whether the answer set is complete.
+    bool searchTruncated_ = false;
     mutable std::unordered_map<SymbolId, std::vector<std::string>> typeAncestryCache_;
     mutable std::unordered_map<SymbolId,
         std::unordered_map<std::string, std::size_t>> typeAncestorDistanceCache_;
@@ -425,12 +451,12 @@ private:
     ClauseList* findClauses(const std::string& name, SymbolId nameId);
     const ClauseList* findClauses(const std::string& name, SymbolId nameId) const;
     ClauseList& getOrCreateClauseList(const std::string& name, SymbolId nameId);
-    void removeClauseBucket(const std::string& name, SymbolId nameId);
     void ensureClauseTableUnique();
     std::string solveCacheKey(const std::vector<std::shared_ptr<Goal>>& goals, size_t maxSolutions) const;
     std::size_t estimateCachedSolutionsBytes(const std::string& key,
                                              const std::vector<Solution>& solutions) const;
-    void storeCachedSolutions(const std::string& key, const std::vector<Solution>& solutions);
+    void storeCachedSolutions(const std::string& key, const std::vector<Solution>& solutions,
+                              bool exhaustive);
     void invalidateCaches();
     void beginCacheInvalidationBatch();
     void endCacheInvalidationBatch();
@@ -499,7 +525,43 @@ private:
         std::vector<std::uint64_t> parentFactIds;
     };
     FactMaterialization factToMap(const ClauseStmt& clause);
-    std::shared_ptr<ArrayExpr> materializeFactSelection(const std::shared_ptr<Expr>& selection);
+    std::shared_ptr<FactSelectionExpr> makeFactSelection(
+        const std::string& type,
+        const std::shared_ptr<MapExpr>& match = {});
+    std::shared_ptr<ArrayExpr> projectFacts(
+        const std::shared_ptr<FactSelectionExpr>& selection,
+        const ArrayExpr& fields);
+    double aggregateFacts(const std::shared_ptr<FactSelectionExpr>& selection,
+                          const std::string& field,
+                          std::uint8_t operation);
+    std::shared_ptr<ArrayExpr> searchFacts(
+        const std::shared_ptr<FactSelectionExpr>& selection,
+        const std::string& field,
+        const MapExpr& options);
+    std::shared_ptr<ArrayExpr> joinFacts(const std::string& leftType,
+                                         const std::string& rightType,
+                                         const std::string& leftField,
+                                         const std::string& rightField,
+                                         std::uint8_t kind);
+    std::shared_ptr<MapExpr> insertFact(
+        const std::string& type,
+        const MapExpr& values,
+        const Env& env,
+        const std::optional<std::filesystem::path>& source);
+    std::shared_ptr<ArrayExpr> updateFacts(
+        const std::shared_ptr<FactSelectionExpr>& selection,
+        const MapExpr& values);
+    double deleteFacts(const std::shared_ptr<FactSelectionExpr>& selection);
+    void persistFactSource(
+        const std::filesystem::path& source,
+        const std::shared_ptr<MapExpr>& emptySchema = {});
+    static bool exprEqualsLiteral(const std::shared_ptr<Expr>& left,
+                                  const std::shared_ptr<Expr>& right);
+    static bool exprContainsLiteral(const std::shared_ptr<Expr>& value,
+                                    const std::shared_ptr<Expr>& expected);
+    std::shared_ptr<ArrayExpr> materializeFactSelection(
+        const std::shared_ptr<Expr>& selection,
+        std::optional<std::size_t> maximumRows = std::nullopt);
     std::shared_ptr<Expr> materializeIfFactSelection(const std::shared_ptr<Expr>& value);
     void refreshAncestryCaches() const;
     const std::vector<std::string>& typeAncestry(const std::string& type) const;

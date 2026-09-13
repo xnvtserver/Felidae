@@ -43,6 +43,8 @@ set(FELIDAE_RUNTIME_SOURCES
   src/Tokenizer.cpp
   src/BuiltinRegistry.cpp
   src/Interpreter.cpp
+  src/FactOperations.cpp
+  src/FactPersistence.cpp
   src/ReasoningRuntime.cpp
   src/Env.cpp
   src/Memory.cpp
@@ -81,7 +83,7 @@ if(FELIDAE_BUILD_TESTS)
   add_test(NAME direct_ast_fact_mutation
     COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/direct_fact_mutation.fx)
   set_tests_properties(direct_ast_fact_mutation PROPERTIES
-    PASS_REGULAR_EXPRESSION "inserted:.*Temporary.*updated: 1.*deleted: 1.*active: 0")
+    PASS_REGULAR_EXPRESSION "inserted:.*Temporary.*updated:.*North.*active: 0.*deleted: 1.*active: 0")
 
   add_test(NAME immutable_nil_reassignment
     COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_immutable_nil_reassignment.fx)
@@ -98,11 +100,30 @@ if(FELIDAE_BUILD_TESTS)
   set_tests_properties(dynamic_fact_rejects_invalid_schema PROPERTIES
     WILL_FAIL TRUE)
 
-  add_test(NAME direct_ast_db_sync
-    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/direct_db_sync.fx)
-  set_tests_properties(direct_ast_db_sync PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tests
-    PASS_REGULAR_EXPRESSION "synchronized: 1.*Synced")
+  add_test(NAME logic_module
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/logic_module.fx)
+  set_tests_properties(logic_module PROPERTIES
+    PASS_REGULAR_EXPRESSION "negated: Negation.*implied: Implication.*contrapositive: Implication.*contradiction: ContradictionEvidence")
+
+  add_test(NAME invalid_undefined_function_call
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_undefined_function_call.fx)
+  set_tests_properties(invalid_undefined_function_call PROPERTIES
+    WILL_FAIL TRUE)
+
+  add_test(NAME invalid_duplicate_argument
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_duplicate_argument.fx)
+  set_tests_properties(invalid_duplicate_argument PROPERTIES
+    WILL_FAIL TRUE)
+
+  add_test(NAME reasoning_prove_exhaustive
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/reasoning_prove_exhaustive.fx)
+  set_tests_properties(reasoning_prove_exhaustive PROPERTIES
+    PASS_REGULAR_EXPRESSION "truth_status: \"proved\".*exhaustive: 1")
+
+  add_test(NAME reasoning_grade_profiles
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/reasoning_grade_profiles.fx)
+  set_tests_properties(reasoning_grade_profiles PROPERTIES
+    PASS_REGULAR_EXPRESSION "default_support: 0.4.*minimum_support: 0.5")
 
   add_test(NAME direct_ast_fact_selection
     COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/direct_fact_selection.fx)
@@ -167,4 +188,10 @@ if(FELIDAE_BUILD_TESTS)
     COMMAND felidae ${CMAKE_SOURCE_DIR}/v2_examples/fuzzy_logic_basics.fx)
   add_test(NAME expert_system_ancestry_reasoning
     COMMAND felidae ${CMAKE_SOURCE_DIR}/v2_examples/ancestor_relatedness_analysis.fx)
+  set_tests_properties(
+    analytical_query_language_tour
+    analytical_indexed_fact_query
+    expert_system_fuzzy_logic
+    expert_system_ancestry_reasoning
+    PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()

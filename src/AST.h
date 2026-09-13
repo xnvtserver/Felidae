@@ -3,8 +3,10 @@
 #include "Operator.h"
 #include "FelidaeGrammar.h"
 #include <cstdint>
+#include <functional>
 #include <iomanip>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -16,7 +18,6 @@ namespace Felidae {
 enum class ExprKind {
     String,
     Number,
-    Bool,
     Nil,
     Var,
     Array,
@@ -117,19 +118,26 @@ public:
     std::string debug() const override {
         std::ostringstream oss;
         oss << std::setprecision(15) << value;
-        return oss.str();
+        std::string result = oss.str();
+        if (result.find_first_of(".eE") == std::string::npos) result += ".0";
+        return result;
     }
 };
 
-class BoolExpr final : public Expr {
-public:
-    explicit BoolExpr(bool value) : value(value) {}
-    bool value;
+// Felidae truth is numeric: predicates use exactly 0.0 or 1.0 while ordinary
+// and fuzzy numeric results remain unrestricted doubles.
+inline std::shared_ptr<NumberExpr> makeTruthValue(bool value) {
+    return std::make_shared<NumberExpr>(value ? 1.0 : 0.0);
+}
 
-    ExprKind kind() const override { return ExprKind::Bool; }
-    std::shared_ptr<Expr> clone() const override { return std::make_shared<BoolExpr>(value); }
-    std::string debug() const override { return value ? "true" : "false"; }
-};
+inline std::optional<bool> numericTruth(const std::shared_ptr<Expr>& value) {
+    if (const auto number = std::dynamic_pointer_cast<NumberExpr>(value)) {
+        if (number->value == 0.0) return false;
+        if (number->value == 1.0) return true;
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
 
 class NilExpr final : public Expr {
 public:
@@ -282,12 +290,37 @@ struct FactSelectionFilter {
     std::shared_ptr<Expr> value;
 };
 
+// Shared by every clone of one lazy selection. The opaque retained state
+// keeps the immutable fact root alive, while the final owner releases its
+// generation from FactMemory's lookup registry. This avoids both premature
+// expiry between chained operations and generation-by-generation leaks.
+class FactSnapshotLease final {
+public:
+    FactSnapshotLease(std::uint64_t generation,
+                      std::shared_ptr<const void> retainedState,
+                      std::function<void()> release)
+        : generation(generation), retainedState_(std::move(retainedState)),
+          release_(std::move(release)) {}
+    ~FactSnapshotLease() {
+        if (release_) release_();
+    }
+
+    FactSnapshotLease(const FactSnapshotLease&) = delete;
+    FactSnapshotLease& operator=(const FactSnapshotLease&) = delete;
+
+    std::uint64_t generation = 0;
+
+private:
+    std::shared_ptr<const void> retainedState_;
+    std::function<void()> release_;
+};
+
 // Runtime-only lazy fact query. It deliberately is not a MapExpr: user map
 // operations cannot mutate or counterfeit its snapshot/cursor metadata.
 class FactSelectionExpr final : public Expr {
 public:
     FactSelectionExpr(std::string factType,
-                      std::uint64_t snapshotGeneration,
+                      std::shared_ptr<FactSnapshotLease> snapshotLease,
                       std::string field = {},
                       std::shared_ptr<Expr> equals = nullptr,
                       std::vector<SymbolId> designationIds = {},
@@ -295,7 +328,8 @@ public:
                       std::vector<FactSelectionFilter> filters = {})
         : factType(std::move(factType)),
           factTypeId(this->factType.empty() ? 0 : symbolIdForName(this->factType)),
-          snapshotGeneration(snapshotGeneration),
+          snapshotGeneration(snapshotLease ? snapshotLease->generation : 0),
+          snapshotLease(std::move(snapshotLease)),
           field(std::move(field)),
           fieldId(this->field.empty() ? 0 : symbolIdForName(this->field)),
           equals(std::move(equals)),
@@ -306,6 +340,7 @@ public:
     std::string factType;
     SymbolId factTypeId = 0;
     std::uint64_t snapshotGeneration = 0;
+    std::shared_ptr<FactSnapshotLease> snapshotLease;
     std::string field;
     SymbolId fieldId = 0;
     std::shared_ptr<Expr> equals;
@@ -326,7 +361,7 @@ public:
         }
         return std::make_shared<FactSelectionExpr>(
             factType,
-            snapshotGeneration,
+            snapshotLease,
             field,
             equals ? equals->clone() : nullptr,
             designationIds,
@@ -1012,9 +1047,10 @@ public:
 class GlobalBindingStmt final : public Statement {
 public:
     GlobalBindingStmt(std::string name, std::shared_ptr<Expr> expr)
-        : name(std::move(name)), expr(std::move(expr)) {}
+        : name(std::move(name)), nameId(symbolIdForName(this->name)), expr(std::move(expr)) {}
 
     std::string name;
+    SymbolId nameId = 0;
     std::shared_ptr<Expr> expr;
 
     StatementKind kind() const override { return StatementKind::GlobalBinding; }

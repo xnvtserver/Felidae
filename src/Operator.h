@@ -68,7 +68,6 @@ struct OperatorTypeBinding {
 // model-local integer sequences, never a second token category.
 struct PatternLexeme {
     std::string spelling;
-    SymbolId symbolId = 0;
     std::vector<int> pieceIds;
 };
 
@@ -494,7 +493,7 @@ public:
                 const std::string word = anchor.substr(
                     wordStart,
                     wordEnd == std::string::npos ? std::string::npos : wordEnd - wordStart);
-                lexemes.push_back(PatternLexeme{word, symbolIdForName(word), {}});
+                lexemes.push_back(PatternLexeme{word, {}});
                 wordStart = wordEnd == std::string::npos ? anchor.size() : wordEnd + 1;
             }
             pattern.anchorLexemes.push_back(std::move(lexemes));

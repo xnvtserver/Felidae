@@ -282,7 +282,8 @@ static std::vector<SymbolId> collectQueryVars(const std::vector<std::shared_ptr<
 void printSolutions(Interpreter& interpreter,
                     const std::vector<std::shared_ptr<Goal>>& queryGoals,
                     const std::vector<Solution>& solutions,
-                    std::ostream& out) {
+                    std::ostream& out,
+                    bool exhaustive) {
     auto queryVars = collectQueryVars(queryGoals);
     if (solutions.empty()) {
         out << "false\n";
@@ -301,6 +302,10 @@ void printSolutions(Interpreter& interpreter,
             out << name << " = " << interpreter.exprToString(varExpr, solutions[i].env);
         }
         out << "\n";
+    }
+    if (!exhaustive) {
+        out << "(truncated at " << solutions.size()
+            << " solutions - more may exist; this is not the complete answer set)\n";
     }
 }
 

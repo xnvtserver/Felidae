@@ -204,8 +204,9 @@ static void runRepl(Interpreter& interpreter) {
         try {
             if (!line.empty() && line[0] == '?') {
                 auto queryGoals = parseQueryText(line);
-                auto solutions = interpreter.solve(queryGoals, 1000);
-                printSolutions(interpreter, queryGoals, solutions, std::cout);
+                bool exhaustive = true;
+                auto solutions = interpreter.solve(queryGoals, 1000, &exhaustive);
+                printSolutions(interpreter, queryGoals, solutions, std::cout, exhaustive);
                 continue;
             }
             if (isBareIdentifier(line) && interpreter.hasGlobal(line)) {
@@ -248,7 +249,9 @@ static bool sourceChanged(const SourceTimes& watched) {
 static void runServeEntry(Interpreter& interpreter, const CliOptions& options) {
     if (options.query) {
         const auto goals = parseQueryText(*options.query);
-        printSolutions(interpreter, goals, interpreter.solve(goals, 1000), std::cout);
+        bool exhaustive = true;
+        const auto solutions = interpreter.solve(goals, 1000, &exhaustive);
+        printSolutions(interpreter, goals, solutions, std::cout, exhaustive);
         return;
     }
     if (interpreter.hasMethod("main") || interpreter.hasAutoEntryCall()) {
@@ -362,10 +365,11 @@ int main(int argc, char** argv) {
         if (options.query) {
             auto queryGoals = parseQueryText(*options.query);
             std::vector<Solution> solutions;
+            bool exhaustive = true;
             double repeatedQueryTotalMs = 0.0;
             for (size_t run = 0; run < options.benchmarkRepeat; ++run) {
                 const auto queryStarted = Clock::now();
-                solutions = interpreter.solve(queryGoals, 1000);
+                solutions = interpreter.solve(queryGoals, 1000, &exhaustive);
                 const auto queryFinished = Clock::now();
                 const double queryMs = static_cast<double>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -381,7 +385,7 @@ int main(int argc, char** argv) {
                 repeatedQueryAverageMs =
                     repeatedQueryTotalMs / static_cast<double>(options.benchmarkRepeat - 1);
             }
-            printSolutions(interpreter, queryGoals, solutions, std::cout);
+            printSolutions(interpreter, queryGoals, solutions, std::cout, exhaustive);
             reportMetrics();
             return 0;
         }

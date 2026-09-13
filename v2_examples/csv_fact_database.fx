@@ -5,7 +5,7 @@ import "csv"
 
 School(name: "Existing School", district: "north", students: 190.0, active: 1.0)
 
-main() =>
+def main() =>
     csvData := file.readFile(file: "datasets/examples/schools.csv")
     imported := csv.toFacts(data: csvData, type: "School", source: "build/runtime/schools.csv")
     allSchools := School.all()
