@@ -8,7 +8,7 @@ Catalog(title: "Alpha Guide", confidence: 0.82, category: Book)
 Catalog(title: "beta guide", confidence: 0.74, category: Magazine)
 Catalog(title: "Reference", confidence: 0.40, category: Publication)
 
-main() =>
+def main() =>
     guides := Catalog.search(
         field: "title",
         query: "%guide",

@@ -63,8 +63,9 @@ removed := School.where(name: "Riverside").delete()
 first := School.get(pos: 0)
 ```
 
-`db.sync(path:)` atomically reloads a fact-only `.fx` source file while
-preserving unchanged logical identities. It is exposed by `core/db.fx`.
+Facts imported from CSV or a fact-only `.fx` file retain source ownership.
+Conditional insert, update, and delete operations persist that source
+automatically with staged atomic replacement; there is no public sync call.
 
 ```felidae
 Animal(name: "tiger", habitat: "forest").
