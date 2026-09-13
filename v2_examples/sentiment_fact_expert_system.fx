@@ -41,7 +41,7 @@ SentimentAssessment(
     explanation: ""
 )
 
-sentimentLabel(score: number, policy: SentimentPolicy) =>
+def sentimentLabel(score: number, policy: SentimentPolicy) =>
     if score >= policy.positive_threshold then
         return "positive"
     else
@@ -50,7 +50,7 @@ sentimentLabel(score: number, policy: SentimentPolicy) =>
         else
             return "mixed"
 
-sentimentExplanation(label: string, positives: number, negatives: number, negations: number) =>
+def sentimentExplanation(label: string, positives: number, negatives: number, negations: number) =>
     if label == "positive" then
         return "positive cue facts outweigh opposing cue facts"
     else
@@ -62,7 +62,7 @@ sentimentExplanation(label: string, positives: number, negatives: number, negati
             else
                 return "supporting and opposing cue facts are too close for a crisp label"
 
-boundedEvidenceDegree(value: number) =>
+def boundedEvidenceDegree(value: number) =>
     if value >= 1 then
         return 1
     else
@@ -71,7 +71,7 @@ boundedEvidenceDegree(value: number) =>
         else
             return value
 
-analyseSentiment(review: Review, policy: SentimentPolicy) =>
+def analyseSentiment(review: Review, policy: SentimentPolicy) =>
     positives := lambda(PositiveCue, cue => cue.token != "" and str.contains(data: review.text, needle: cue.token))
     negatives := lambda(NegativeCue, cue => cue.token != "" and str.contains(data: review.text, needle: cue.token))
     negations := lambda(NegationCue, cue => cue.token != "" and str.contains(data: review.text, needle: cue.token))
@@ -123,7 +123,7 @@ analyseSentiment(review: Review, policy: SentimentPolicy) =>
         )
     )
 
-main() =>
+def main() =>
     reviews := lambda(Review, review => review.domain == "product")
     policies := lambda(SentimentPolicy, policy => policy.name == "product-review")
     policy := array.get(data: policies, position: 0)

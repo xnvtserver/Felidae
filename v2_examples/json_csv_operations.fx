@@ -1,6 +1,6 @@
 import ("json", "csv")
 
-main() =>
+def main() =>
     source := {name: "Ada", score: 42},
     updated := json.set(data: source, key: "active", value: 1),
     rows := [source, {name: "Grace", score: 37}],

@@ -60,7 +60,7 @@ DogMale extend Carnivore, Domestic(
 # relating tiger to cat does not also relate cat to tiger. Querying both
 # directions with plain field-equality lambdas makes that explicit instead of
 # hiding it behind a comparison engine.
-TigerFemale.membership(input: TigerFemale, against: Mammal) =>
+def TigerFemale.membership(input: TigerFemale, against: Mammal) =>
     return {
         legs: input.legs,
         diet: input.diet,
@@ -70,7 +70,7 @@ TigerFemale.membership(input: TigerFemale, against: Mammal) =>
         territory: input.territory
     }
 
-CatFemale.membership(input: CatFemale, against: Mammal) =>
+def CatFemale.membership(input: CatFemale, against: Mammal) =>
     return {
         legs: input.legs,
         diet: input.diet,
@@ -79,7 +79,7 @@ CatFemale.membership(input: CatFemale, against: Mammal) =>
         habitat: input.habitat
     }
 
-main() =>
+def main() =>
     tiger_females := lambda(TigerFemale, fact => fact.name == "shira")
     tiger_males := lambda(TigerMale, fact => fact.name == "raja")
     cat_females := lambda(CatFemale, fact => fact.name == "lilly")

@@ -7314,11 +7314,22 @@ bool Interpreter::evalCallAsValueOnce(
     }
 
     if (builtin == BuiltinId::Min || builtin == BuiltinId::Max || builtin == BuiltinId::Sort) {
-        if (args.size() != 1) throw InterpreterError(term.name + " expects one array");
-        auto array = std::dynamic_pointer_cast<ArrayExpr>(args[0]);
-        if (!array) throw InterpreterError(term.name + " expects an array");
+        if (args.empty()) throw InterpreterError(term.name + " expects an array or one or more values");
+        // A single array argument (the original, still-supported shape) is
+        // unpacked into its items; anything else - one bare value, or
+        // several - is compared directly, so `min([a, b])` and `min(a, b)`
+        // reach the same comparison below instead of needing two versions
+        // of it.
         std::vector<std::shared_ptr<Expr>> items;
-        for (const auto& item : array->items) items.push_back(item->clone());
+        if (args.size() == 1) {
+            if (auto array = std::dynamic_pointer_cast<ArrayExpr>(args[0])) {
+                for (const auto& item : array->items) items.push_back(item->clone());
+            } else {
+                items.push_back(args[0]->clone());
+            }
+        } else {
+            for (const auto& arg : args) items.push_back(arg->clone());
+        }
         auto less = [](const std::shared_ptr<Expr>& lhs, const std::shared_ptr<Expr>& rhs) {
             double ln = 0.0, rn = 0.0;
             if (argAsNumber(lhs, ln) && argAsNumber(rhs, rn)) return ln < rn;

@@ -1104,7 +1104,7 @@ std::shared_ptr<Expr> IntegerParser::parsePrimary() {
         stamp(result, begin, byte_);
         return result;
     }
-    throw IntegerParserError("Expected an expression");
+    throw IntegerParserError("Expected an expression" + describeLocation(byte_));
 }
 
 std::shared_ptr<Expr> IntegerParser::parseExpression() {

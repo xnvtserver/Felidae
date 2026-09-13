@@ -16,13 +16,13 @@ Target extend Entity(name: "target", active: 1.0)
 Signal extend Entity(name: "signal", active: 1.0)
 Decoration extend Entity(name: "decoration", active: 1.0)
 
-Source.membership(input: Source, against: Entity) =>
+def Source.membership(input: Source, against: Entity) =>
     return (active: input.active)
 
-Target.membership(input: Target, against: Entity) =>
+def Target.membership(input: Target, against: Entity) =>
     return (active: input.active)
 
-main() =>
+def main() =>
     sources := lambda(Source, fact => fact.name == "source")
     targets := lambda(Target, fact => fact.name == "target")
     signals := lambda(Signal, fact => fact.name == "signal")
