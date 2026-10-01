@@ -14,10 +14,11 @@ import "csv"
 
 ImportedSchool(name: "", district: "", students: 0, active: 1.0)
 
-importExample() =>
+def importExample() =>
     raw := file.readFile(file: "datasets/examples/schools.csv")
     imported := csv.toFacts(data: raw, type: "ImportedSchool", source: "build/runtime/language_tour_schools.csv")
     return count(data: imported)
+end
 
 # --- 1. Facts and hierarchy -------------------------------------------------
 # `extend` builds an ancestry: Mammal and Reptile both specialize Animal, so
@@ -30,24 +31,28 @@ Reptile extend Animal(name: "")
 School(id: 10, name: "North", district: "central", students: 420, active: 1.0)
 School(id: 20, name: "West", district: "west", students: 280, active: 0.0)
 School(id: 30, name: "Lake", district: "central", students: 350, active: 1.0)
+School(id: 99, name: "Remote", district: "remote", students: 25, active: 1.0)
 Teacher(name: "Ada", subject: "math", school_id: 10)
 Teacher(name: "Grace", subject: "science", school_id: 99)
+Link(from: Teacher(name: "Ada"), to: School(id: 10), properties: {kind: "teaches_at"})
+Link(from: Teacher(name: "Grace"), to: School(id: 99), properties: {kind: "teaches_at"})
 
 # --- 2. Guard clauses --------------------------------------------------------
 # `where` narrows a method to the cases it actually handles; the implicit
 # `else` branch runs when the guard does not hold. Truth in Felidae is
 # numeric: 1.0/0.0, never a separate boolean.
-classifyEnrollment(count: number) =>
+def classifyEnrollment(count: number) =>
     where count >= 400
     return "large"
 else
     return "standard"
+end
 
 # --- 3. Fact queries: where / AndWhere / OrWhere / limit --------------------
 # `.where(...)` filters by named-field equality; chaining `.AndWhere`/
 # `.OrWhere` composes further conditions left to right, and `.limit(records:)`
 # bounds the result without truncating silently on invalid input.
-queryExamples() =>
+def queryExamples() =>
     active_central := School.where(district: "central", active: 1.0)
     central_or_west := School.where(district: "central").OrWhere(district: "west")
     large_central := School.where(district: "central").AndWhere(active: 1.0)
@@ -58,17 +63,19 @@ queryExamples() =>
         large_central_count: count(data: large_central),
         top_one_count: count(data: top_one)
     )
+end
 
 # --- 4. Projection: select ---------------------------------------------------
 # `.select(fields:, match:)` returns only the requested fields, never the
 # whole fact -- useful once a query is answering a specific question rather
 # than handing back full records.
-projectionExample() =>
+def projectionExample() =>
     return School.select(fields: ["name", "district"], match: {active: 1.0})
+end
 
 # --- 5. Aggregates: count / sum / average / min / max -----------------------
 # Each aggregate accepts the same optional `match:` a query would use.
-aggregateExamples() =>
+def aggregateExamples() =>
     return (
         total_schools: School.count(),
         total_students: School.sum(field: "students"),
@@ -76,21 +83,23 @@ aggregateExamples() =>
         smallest: School.min(field: "students"),
         largest: School.max(field: "students")
     )
+end
 
 # --- 6. Joins ---------------------------------------------------------------
-# A join result is ephemeral: it never enters fact storage on its own, so
-# joining never inflates School.count() or Teacher.count(). Only an explicit
-# .insert() persists anything. join() is inner by default; kind selects an
-# outer variant without creating parallel method names.
-joinExamples() =>
-    inner := School.join(type: Teacher, left: "id", right: "school_id")
-    left := School.join(type: Teacher, left: "id", right: "school_id", kind: "left")
-    return (inner_count: count(data: inner), left_count: count(data: left))
+# A Link is durable; a join result is an ephemeral bounded cursor result and
+# never enters fact storage. The source selection can use a primary key or
+# index, Link properties select an edge family, and a trailing where filters
+# left/properties/right fields.
+def joinExamples() =>
+    joined := School().join(properties: {kind: "teaches_at"}, direction: backward.class)
+    ada := joined.where(right.name == "Ada")
+    return (joined_count: count(data: joined), ada_count: count(data: ada))
+end
 
 # --- 7. DML: insert / update / delete ----------------------------------------
 # `match:` is mandatory for update and delete -- there is no conditionless
 # mutation, unlike a bare SQL UPDATE with no WHERE.
-mutationExamples() =>
+def mutationExamples() =>
     inserted := School.insert(values: {id: 40, name: "Riverside", district: "east", students: 210, active: 1.0})
     updated := School.where(district: "east").update(values: {students: 230.0})
     deleted := School.where(name: "Riverside").delete()
@@ -99,27 +108,31 @@ mutationExamples() =>
         updated_count: count(data: updated),
         deleted_count: deleted
     )
+end
 
 # --- 8. Ancestry reasoning ---------------------------------------------------
 # commonAncestors reads the `extend` graph declared in section 1. Selecting
 # one candidate as contextually best belongs to the calling application.
-ancestryExamples() =>
+def ancestryExamples() =>
     cat := Mammal(name: "cat")
     lizard := Reptile(name: "lizard")
     return (
         common: commonAncestors(left: cat, right: lizard)
     )
+end
 
 # --- 9. Mixfix syntax --------------------------------------------------------
 # @mixfix declares a natural-language-shaped call pattern; it lowers to an
 # ordinary call underneath, so it composes with everything above it.
 @mixfix(pattern: "{value:number} rated above {minimum:number}")
-ratedAbove() => return value > minimum
+def ratedAbove() => return value > minimum
+end
 
-mixfixExample() =>
+def mixfixExample() =>
     return 82 rated above 75
+end
 
-main() =>
+def main() =>
     return (
         imported_count: importExample(),
         classification: classifyEnrollment(count: 420),
@@ -131,3 +144,4 @@ main() =>
         ancestry: ancestryExamples(),
         mixfix: mixfixExample()
     )
+end

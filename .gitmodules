@@ -31,3 +31,7 @@
 [submodule "tree-sitter-felidae"]
 	path = tree-sitter-felidae
 	url = https://github.com/vishalkrishnaag/tree-sitter-felidae.git
+[submodule "third_party/rocksdb"]
+	path = third_party/rocksdb
+	url = https://github.com/facebook/rocksdb.git
+	shallow = true
