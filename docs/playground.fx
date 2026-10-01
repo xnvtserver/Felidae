@@ -1,4 +1,0 @@
-import "html_components.fx".
-
-DocsPlayground() =>
-    return (HtmlPlaygroundData(id: "playground", title: "Playground", p: "Edit a Felidae sample and run its source directly with the interpreter.", example: "RainDay(month: \"August\", day: \"monday\", chance: 5.2).\nRainDay(month: \"August\", day: \"tuesday\", chance: 0.3).\nRainDay(month: \"August\", day: \"wednesday\", chance: 2.4).\nCat1(name: \"kitten\").\nCat1(name: \"tiger\").\nCat2(name: \"joy\").\nCat2(name: \"snowbell\").\n\nCompareCats() =>\n    leftCount := Cat1.count(),\n    rightCount := Cat2.count(),\n    total := leftCount + rightCount,\n    return (leftShare: leftCount / total, rightShare: rightCount / total).\n\nmain() =>\n    return (days: RainDay.where(month: \"August\"), cats: CompareCats()).", command: "build/debug/felidae sample.fx", note: "The CLI parses and evaluates source directly; no binary conversion is required." )).
