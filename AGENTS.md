@@ -4,7 +4,7 @@
 - Use named subdirectories such as `build/debug`, `build/asan`, and
   `build/release` when configurations need isolation.
 - Do not create peer directories such as `build-debug`, `build-clang`, or
-  `build-sentencepiece` at the repository root.
+  other `build-*` trees at the repository root.
 - Keep source, documentation, and explicitly generated model files in their
   repository-defined locations; do not redirect unrelated output into the
   source tree.
@@ -32,9 +32,9 @@
   only the tail (and grep for `error`/`FAILED` if needed). Scanning entire
   build logs (compiler warnings, dependency output, etc.) wastes context for
   no benefit — the tail plus an error grep is enough to know what happened.
-- Keep compiler, VM, model training, checkpointing, and TorchScript export in
-  C++. Do not introduce Python scripts or Python subprocesses into the build,
-  training, inference, testing, or model-export pipeline.
+- Keep the interpreter, native runtime, RocksDB integration, and native
+  packages in C++. Do not introduce Python scripts or Python subprocesses
+  into the build, execution, testing, or storage pipeline.
 - Before adding a helper, representation, parser path, validation, or other
   logic, search for an existing implementation and reuse or simplify it.
   Prefer correcting and consolidating existing code over creating parallel

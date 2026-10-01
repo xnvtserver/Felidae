@@ -9,7 +9,7 @@ ComfortableObservation extend ClimateObservation(zone: "", temperature: 0, humid
 HvacPlant(name: "", available: 0, sensor_valid: 0)
 HeatPump extend HvacPlant(name: "", available: 0, sensor_valid: 0)
 
-observationUnifies(observation: any) =>
+def observationUnifies(observation: any) =>
     return isA(
         left: observation,
         right: ClimateObservation(
@@ -19,8 +19,9 @@ observationUnifies(observation: any) =>
             occupied: 0
         )
     )
+end
 
-proveCooling(observation: any, plant: any) =>
+def proveCooling(observation: any, plant: any) =>
     return (
         observationUnifies(observation: observation) == 1.0
         and observation.temperature > 24.0
@@ -28,8 +29,9 @@ proveCooling(observation: any, plant: any) =>
         and plant.available == 1.0
         and plant.sensor_valid == 1.0
     )
+end
 
-proveHeating(observation: any, plant: any) =>
+def proveHeating(observation: any, plant: any) =>
     return (
         observationUnifies(observation: observation) == 1.0
         and observation.temperature < 19.0
@@ -37,34 +39,41 @@ proveHeating(observation: any, plant: any) =>
         and plant.available == 1.0
         and plant.sensor_valid == 1.0
     )
+end
 
-proveVentilation(observation: any, plant: any) =>
+def proveVentilation(observation: any, plant: any) =>
     return (
         observationUnifies(observation: observation) == 1.0
         and observation.humidity > 65.0
         and plant.available == 1.0
         and plant.sensor_valid == 1.0
     )
+end
 
-proveIdle(observation: any, plant: any) =>
+def proveIdle(observation: any, plant: any) =>
     return (
         observationUnifies(observation: observation) == 1.0
         and plant.sensor_valid == 1.0
     )
+end
 
-chooseIdle(idle_proof: number) =>
+def chooseIdle(idle_proof: number) =>
     if idle_proof == 1.0 then
         return "idle"
     else
         return "fault_lockout"
+    end
+end
 
-chooseVentilation(ventilation_proof: number, idle_proof: number) =>
+def chooseVentilation(ventilation_proof: number, idle_proof: number) =>
     if ventilation_proof == 1.0 then
         return "ventilate"
     else
         return chooseIdle(idle_proof: idle_proof)
+    end
+end
 
-chooseHeating(heating_proof: number, ventilation_proof: number, idle_proof: number) =>
+def chooseHeating(heating_proof: number, ventilation_proof: number, idle_proof: number) =>
     if heating_proof == 1.0 then
         return "heat"
     else
@@ -72,8 +81,10 @@ chooseHeating(heating_proof: number, ventilation_proof: number, idle_proof: numb
             ventilation_proof: ventilation_proof,
             idle_proof: idle_proof
         )
+    end
+end
 
-chooseCooling(cooling_proof: number, heating_proof: number, ventilation_proof: number, idle_proof: number) =>
+def chooseCooling(cooling_proof: number, heating_proof: number, ventilation_proof: number, idle_proof: number) =>
     if cooling_proof == 1.0 then
         return "cool"
     else
@@ -82,15 +93,19 @@ chooseCooling(cooling_proof: number, heating_proof: number, ventilation_proof: n
             ventilation_proof: ventilation_proof,
             idle_proof: idle_proof
         )
+    end
+end
 
 @mixfix(pattern: "{evidence: number} warrants {action: string}")
-warrant(evidence: number, action: string) =>
+def warrant(evidence: number, action: string) =>
     if evidence == 1.0 then
         return action
     else
         return "unproved"
+    end
+end
 
-solve(observation: any, plant: any) =>
+def solve(observation: any, plant: any) =>
     cooling_proof := proveCooling(observation: observation, plant: plant)
     heating_proof := proveHeating(observation: observation, plant: plant)
     ventilation_proof := proveVentilation(observation: observation, plant: plant)
@@ -110,8 +125,9 @@ solve(observation: any, plant: any) =>
         ventilation_proof: ventilation_proof,
         idle_proof: idle_proof
     )
+end
 
-main() =>
+def main() =>
     plant := HeatPump(name: "north-wing", available: 1.0, sensor_valid: 1.0)
     faulty := HeatPump(name: "south-wing", available: 1.0, sensor_valid: 0.0)
     hot := HotObservation(zone: "office", temperature: 29, humidity: 52, occupied: 1.0)
@@ -121,3 +137,4 @@ main() =>
         empty_humid: solve(observation: humid_empty, plant: plant),
         invalid_sensor: solve(observation: hot, plant: faulty)
     )
+end

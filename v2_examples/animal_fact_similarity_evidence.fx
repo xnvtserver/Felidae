@@ -80,7 +80,7 @@ AnimalSimilarityEvidence(
 # One inherited projection defines which properties have meaning for this
 # comparison. Native hierarchy and similarity operations supply evidence for
 # every Mammal subtype without duplicating the comparison algorithm.
-Mammal.membership(input: Mammal, against: Mammal) =>
+def Mammal.membership(input: Mammal, against: Mammal) =>
     return {
         legs: input.legs,
         warm_blooded: input.warm_blooded,
@@ -91,19 +91,18 @@ Mammal.membership(input: Mammal, against: Mammal) =>
         produces_milk: input.produces_milk,
         nurtures_young: input.nurtures_young
     }
+end
 
-@overload(
-    operator: animalSimilarity,
-    pattern: "{left} similarTo {right}",
-    captures: {left: Mammal, right: Mammal},
-    result: AnimalSimilarityEvidence,
-    precedence: relationship,
-    associativity: none,
-    cardinality: one,
-    effects: pure,
-    visibility: private
+@mixfix(
+    pattern: "{left: Mammal} similarTo {right: Mammal}",
+    result: AnimalSimilarityEvidence.class,
+    precedence: "relationship",
+    associativity: "none",
+    cardinality: "one",
+    effects: "pure",
+    visibility: "private"
 )
-compareMammals() =>
+def compareMammals() =>
     ancestors := commonAncestors(left, right)
     score := similarity(left, right)
     return AnimalSimilarityEvidence(
@@ -120,8 +119,9 @@ compareMammals() =>
         ancestor_evidence: ancestors,
         property_evidence: []
     )
+end
 
-main() =>
+def main() =>
     tigerFemales := lambda(TigerFemale, animal => animal.name == "Shira")
     tigerMales := lambda(TigerMale, animal => animal.name == "Raja")
     catFemales := lambda(CatFemale, animal => animal.name == "Lilly")
@@ -146,3 +146,4 @@ main() =>
             male_tiger_to_female_tiger: sameSpeciesPair.similar
         }
     }
+end
