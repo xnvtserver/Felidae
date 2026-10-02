@@ -1,13 +1,13 @@
-mainCall() =>
+def mainCall() =>
     return 2 lateCombine 3
+end
 
 mainCall()
 
-@overload(
-    operator: lateCombine,
-    pattern: "{left} lateCombine {right}",
-    captures: {left: number, right: number},
-    result: number
+@mixfix(
+    pattern: "{left: number} lateCombine {right: number}",
+    result: number.class
 )
-combineLate() =>
+def combineLate() =>
     return left + right
+end

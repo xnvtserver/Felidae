@@ -1,8 +1,8 @@
 class Entity
     id: string
 
-    identity() =>
-        return self.id
+    def identity() =>
+        return this.id
     end
 end
 
@@ -16,7 +16,7 @@ Employee extend NamedEntity(
     role: "analyst"
 )
 
-main() =>
+def main() =>
     employee := Employee.get(pos: 0)
     return (
         id: employee.identity(),

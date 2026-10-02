@@ -1,4 +1,5 @@
 #include "Interpreter.h"
+#include "RocksFactStore.h"
 
 #include <algorithm>
 #include <cmath>
@@ -332,15 +333,23 @@ Interpreter::buildTableEvaluation(
         auto inserted =
             evaluation->predicates.emplace(entry.first, std::move(table));
         auto& predicate = inserted.first->second;
-        for (const std::size_t factIndex :
-             memory_.compatibleFactIndexes(entry.second, entry.first)) {
-            const auto& fact = memory_.fact(factIndex);
-            if (!fact.active) continue;
+        const auto appendFact = [&](const StoredFact& fact) {
             Call answer(entry.second, {});
             answer.nameId = entry.first;
-            answer.args = memory_.factArguments(factIndex);
+            for (const auto& field : fact.value->entries) {
+                if (field.keyId == InternalSymbol::TypeId ||
+                    field.keyId == InternalSymbol::ParentId) continue;
+                answer.args.emplace_back(
+                    field.key, field.keyId,
+                    field.value ? field.value->clone()
+                                : std::make_shared<NilExpr>());
+            }
             const std::string key = answer.debug();
 
+            if (evaluation->provenance.size() >= MaxProvenanceNodes) {
+                throw InterpreterError(
+                    "Reasoning provenance exceeded the 2000000-node safety limit");
+            }
             ProvenanceNode node;
             node.kind = ClauseKind::Fact;
             node.factId = fact.id;
@@ -349,6 +358,10 @@ Interpreter::buildTableEvaluation(
 
             const auto existing = predicate.answerByKey.find(key);
             if (existing == predicate.answerByKey.end()) {
+                if (predicate.answers.size() >= MaxTableAnswers) {
+                    throw InterpreterError(
+                        "Reasoning table exceeded the 1000000-answer safety limit");
+                }
                 const std::size_t answerIndex = predicate.answers.size();
                 predicate.answerByKey.emplace(key, answerIndex);
                 predicate.answers.push_back(
@@ -360,12 +373,29 @@ Interpreter::buildTableEvaluation(
                 predicate.answers[existing->second].provenance.push_back(
                     provenance);
             }
-            evaluation->relationGenerations[fact.typeId] =
-                memory_.relationGeneration(fact.type, fact.typeId);
+            return true;
+        };
+        if (durableStore_) {
+            for (const auto& bucket : durableFactBuckets(entry.second)) {
+                durableStore_->scanFacts(bucket, 0, appendFact);
+            }
+        } else {
+            for (const std::size_t factIndex :
+                 memory_.compatibleFactIndexes(entry.second, entry.first)) {
+                const auto& record = memory_.fact(factIndex);
+                if (!record.active) continue;
+                StoredFact fact;
+                fact.id = record.id;
+                fact.type = record.type;
+                fact.value = memory_.factValue(factIndex);
+                if (fact.value) appendFact(fact);
+                evaluation->relationGenerations[record.typeId] =
+                    memory_.relationGeneration(record.type, record.typeId);
+            }
+            evaluation->relationGenerations.try_emplace(
+                entry.first,
+                memory_.relationGeneration(entry.second, entry.first));
         }
-        evaluation->relationGenerations.try_emplace(
-            entry.first,
-            memory_.relationGeneration(entry.second, entry.first));
     }
 
     std::unordered_map<SymbolId, std::size_t> stratum;
@@ -573,19 +603,6 @@ std::shared_ptr<Expr> reasoningMapValue(
     return {};
 }
 
-void reasoningSetValue(std::vector<MapEntry>& entries,
-                       const std::string& key,
-                       std::shared_ptr<Expr> value) {
-    const SymbolId keyId = symbolIdForName(key);
-    for (auto& entry : entries) {
-        if (entry.keyId == keyId && entry.key == key) {
-            entry.value = std::move(value);
-            return;
-        }
-    }
-    entries.emplace_back(key, std::move(value));
-}
-
 std::shared_ptr<MapExpr> callAsFact(const Call& call) {
     std::vector<MapEntry> entries;
     entries.emplace_back(
@@ -626,10 +643,6 @@ std::shared_ptr<ArrayExpr> factIdArray(
                     std::to_string(value))}}), "FactReference"));
     }
     return std::make_shared<ArrayExpr>(std::move(items));
-}
-
-bool finiteUnitInterval(double value) {
-    return std::isfinite(value) && value >= 0.0 && value <= 1.0;
 }
 
 } // namespace
@@ -727,7 +740,6 @@ std::shared_ptr<MapExpr> Interpreter::materializeDerivationResult(
         {"conclusion", callAsFact(query)},
         {"truth_status", std::make_shared<StringExpr>(truth)},
         {"exact", std::make_shared<BoolExpr>(true)},
-        {"fuzzy_degree", std::make_shared<NilExpr>()},
         {"confidence", std::make_shared<NilExpr>()},
         {"probability", std::make_shared<NilExpr>()},
         {"similarity", std::make_shared<NilExpr>()},
@@ -770,19 +782,19 @@ bool Interpreter::evalReasoningContrary(
     if (!positive || positive->value.empty() ||
         !negative || negative->value.empty()) {
         throw InterpreterError(
-            "Reasoning.contrary expects non-empty string predicates "
+            "reasoning.contrary expects non-empty string predicates "
             "'positive' and 'negative'");
     }
     if (positive->value == negative->value) {
         throw InterpreterError(
-            "Reasoning.contrary predicates must be different");
+            "reasoning.contrary predicates must be different");
     }
     const SymbolId positiveId = symbolIdForName(positive->value);
     const auto existing = contraries_.find(positiveId);
     if (existing != contraries_.end() &&
         existing->second != negative->value) {
         throw InterpreterError(
-            "Reasoning.contrary already maps '" + positive->value +
+            "reasoning.contrary already maps '" + positive->value +
             "' to '" + existing->second + "'");
     }
     contraries_[positiveId] = negative->value;
@@ -807,7 +819,7 @@ bool Interpreter::evalReasoningProve(
         }
     }
     if (!queryArgument) {
-        throw InterpreterError("Reasoning.prove expects 'query'");
+        throw InterpreterError("reasoning.prove expects 'query'");
     }
 
     Call query;
@@ -815,7 +827,7 @@ bool Interpreter::evalReasoningProve(
             std::dynamic_pointer_cast<TermExpr>(queryArgument->value)) {
         if (queryTerm->builtinId != BuiltinId::Unknown) {
             throw InterpreterError(
-                "Reasoning.prove expects a relational predicate, not a builtin");
+                "reasoning.prove expects a relational predicate, not a builtin");
         }
         query = Call(queryTerm->name, {});
         query.nameId = queryTerm->nameId;
@@ -824,7 +836,7 @@ bool Interpreter::evalReasoningProve(
             if (!evalExprValue(argument.value, env, value) ||
                 !isGroundLiteral(value)) {
                 throw InterpreterError(
-                    "Reasoning.prove query arguments must be ground");
+                    "reasoning.prove query arguments must be ground");
             }
             query.args.emplace_back(argument.name, argument.nameId, std::move(value));
         }
@@ -840,7 +852,7 @@ bool Interpreter::evalReasoningProve(
                 internalSymbolString(InternalSymbolKind::Type)));
         if (!map || !type || type->value.empty()) {
             throw InterpreterError(
-                "Reasoning.prove expects a typed fact query");
+                "reasoning.prove expects a typed fact query");
         }
         query = Call(type->value, {});
         for (const auto& entry : map->entries) {
@@ -848,13 +860,15 @@ bool Interpreter::evalReasoningProve(
                 entry.keyId == InternalSymbol::ParentId) continue;
             if (!isGroundLiteral(entry.value)) {
                 throw InterpreterError(
-                    "Reasoning.prove query arguments must be ground");
+                    "reasoning.prove query arguments must be ground");
             }
             query.args.emplace_back(entry.key, entry.keyId, entry.value->clone());
         }
     }
 
-    if (!findClauses(query.name, query.nameId) &&
+    const bool durableQueryType = durableStore_ &&
+        factTypeContracts_.find(query.name) != factTypeContracts_.end();
+    if (!findClauses(query.name, query.nameId) && !durableQueryType &&
         !memory_.hasActiveRelation(query.name, query.nameId) &&
         !contraries_.count(query.nameId)) {
         throw InterpreterError(
@@ -870,7 +884,7 @@ bool Interpreter::evalReasoningProve(
             &positiveEvaluation,
             false)) {
         throw InterpreterError(
-            "Reasoning.prove requires a pure relational predicate: '" +
+            "reasoning.prove requires a pure relational predicate: '" +
             query.name + "'");
     }
 
@@ -884,7 +898,9 @@ bool Interpreter::evalReasoningProve(
             negative.args.emplace_back(
                 argument.name, argument.value->clone());
         }
-        if (findClauses(negative.name, negative.nameId) ||
+        const bool durableContraryType = durableStore_ &&
+            factTypeContracts_.find(negative.name) != factTypeContracts_.end();
+        if (findClauses(negative.name, negative.nameId) || durableContraryType ||
             memory_.hasActiveRelation(negative.name, negative.nameId)) {
             if (!tableCallAnswers(
                     negative,
@@ -908,268 +924,6 @@ bool Interpreter::evalReasoningProve(
     return true;
 }
 
-bool Interpreter::evalReasoningGrade(
-    const TermExpr& term,
-    const Env& env,
-    std::shared_ptr<Expr>& out,
-    const std::shared_ptr<MapExpr>& exact) {
-    std::shared_ptr<Expr> evidenceValue;
-    std::shared_ptr<Expr> profileValue;
-    std::shared_ptr<Expr> conclusionValue;
-    std::shared_ptr<Expr> probabilityValue;
-    std::shared_ptr<Expr> similarityValue;
-    for (std::size_t i = 0; i < term.args.size(); ++i) {
-        const auto& argument = term.args[i];
-        if (argument.name == "query") continue;
-        std::shared_ptr<Expr> value;
-        if (argument.name == "conclusion") {
-            // A conclusion is data, not an evaluation request. Preserve a
-            // predicate-shaped term as a typed fact value instead of invoking
-            // a rule with the same name.
-            if (const auto conclusion =
-                    std::dynamic_pointer_cast<TermExpr>(argument.value)) {
-                std::vector<MapEntry> fields;
-                fields.emplace_back(
-                    "__type",
-                    std::make_shared<StringExpr>(conclusion->name));
-                for (const auto& field : conclusion->args) {
-                    std::shared_ptr<Expr> resolved;
-                    if (!evalExprValue(field.value, env, resolved)) return false;
-                    fields.emplace_back(field.name, field.nameId, std::move(resolved));
-                }
-                value = markFact(
-                    std::make_shared<MapExpr>(std::move(fields)),
-                    conclusion->name);
-            }
-        }
-        if (!value && !evalExprValue(argument.value, env, value)) return false;
-        if (argument.name == "evidence" ||
-            (argument.name.empty() && i == 0)) {
-            evidenceValue = std::move(value);
-        } else if (argument.name == "profile") {
-            profileValue = std::move(value);
-        } else if (argument.name == "conclusion") {
-            conclusionValue = std::move(value);
-        } else if (argument.name == "probability") {
-            probabilityValue = std::move(value);
-        } else if (argument.name == "similarity") {
-            similarityValue = std::move(value);
-        }
-    }
-
-    if (exact && !conclusionValue) {
-        conclusionValue = reasoningMapValue(exact, "conclusion");
-    }
-    if (!conclusionValue) conclusionValue = std::make_shared<NilExpr>();
-
-    if (profileValue) {
-        const auto profileType = std::dynamic_pointer_cast<StringExpr>(
-            reasoningMapValue(profileValue, "__type"));
-        if (!profileType || profileType->value != "ReasoningProfile") {
-            throw InterpreterError(
-                "Reasoning.grade profile must be ReasoningProfile(...)");
-        }
-        const auto requirePolicy =
-            [&](const std::string& field,
-                std::initializer_list<const char*> allowed) {
-                const auto value = std::dynamic_pointer_cast<StringExpr>(
-                    reasoningMapValue(profileValue, field));
-                if (!value) return;
-                for (const char* candidate : allowed) {
-                    if (value->value == candidate) return;
-                }
-                throw InterpreterError(
-                    "Unsupported ReasoningProfile " + field +
-                    " policy '" + value->value + "'");
-            };
-        requirePolicy("conjunction", {"minimum"});
-        requirePolicy("disjunction", {"maximum"});
-        requirePolicy("evidence_aggregation", {"maximum"});
-        requirePolicy("negation", {"standard", "one_minus"});
-    } else {
-        profileValue = markFact(std::make_shared<MapExpr>(
-            std::vector<MapEntry>{
-                {"__type", std::make_shared<StringExpr>(
-                    "ReasoningProfile")},
-                {"name", std::make_shared<StringExpr>("default")},
-                {"conjunction", std::make_shared<StringExpr>("minimum")},
-                {"disjunction", std::make_shared<StringExpr>("maximum")},
-                {"evidence_aggregation", std::make_shared<StringExpr>(
-                    "maximum")},
-                {"negation", std::make_shared<StringExpr>("one_minus")}}),
-            "ReasoningProfile");
-    }
-
-    std::vector<std::shared_ptr<Expr>> evidenceItems;
-    if (evidenceValue) {
-        const auto array =
-            std::dynamic_pointer_cast<ArrayExpr>(evidenceValue);
-        if (!array) {
-            throw InterpreterError(
-                "Reasoning.grade evidence must be an array");
-        }
-        evidenceItems = array->items;
-    }
-
-    bool hasSupport = false;
-    bool hasOpposition = false;
-    double support = 0.0;
-    double opposition = 0.0;
-    double confidence = 0.0;
-    for (const auto& evidence : evidenceItems) {
-        const auto type = std::dynamic_pointer_cast<StringExpr>(
-            reasoningMapValue(evidence, "__type"));
-        if (!type ||
-            (type->value != "Evidence" &&
-             type->value != "FuzzyMembership" &&
-             type->value != "Comparison")) {
-            throw InterpreterError(
-                "Reasoning.grade entries must be Evidence(...), "
-                "FuzzyMembership(...), or Comparison(...)");
-        }
-        if (type->value == "Comparison") {
-            const auto similarity = std::dynamic_pointer_cast<NumberExpr>(
-                reasoningMapValue(evidence, "similarity"));
-            const auto confidenceValue = std::dynamic_pointer_cast<NumberExpr>(
-                reasoningMapValue(evidence, "relationalConfidence"));
-            const auto contradictory = std::dynamic_pointer_cast<BoolExpr>(
-                reasoningMapValue(evidence, "contradictory"));
-            const auto conflicting = std::dynamic_pointer_cast<ArrayExpr>(
-                reasoningMapValue(evidence, "conflictingFields"));
-            if (!similarity || !finiteUnitInterval(similarity->value)) {
-                throw InterpreterError(
-                    "Comparison evidence similarity must be finite and between 0 and 1");
-            }
-            const double reliability = confidenceValue
-                ? confidenceValue->value : 1.0;
-            if (!finiteUnitInterval(reliability)) {
-                throw InterpreterError(
-                    "Comparison evidence relationalConfidence must be between 0 and 1");
-            }
-            const bool opposed = (contradictory && contradictory->value) ||
-                (conflicting && !conflicting->items.empty());
-            confidence = std::max(confidence, reliability);
-            if (opposed) {
-                hasOpposition = true;
-                opposition = std::max(opposition,
-                    (1.0 - similarity->value) * reliability);
-            }
-            if (similarity->value > 0.0) {
-                hasSupport = true;
-                support = std::max(support, similarity->value * reliability);
-            }
-            continue;
-        }
-        const auto degree = std::dynamic_pointer_cast<NumberExpr>(
-            reasoningMapValue(evidence, "degree"));
-        const auto reliabilityValue =
-            std::dynamic_pointer_cast<NumberExpr>(
-                reasoningMapValue(evidence, "reliability"));
-        const double reliability =
-            reliabilityValue ? reliabilityValue->value : 1.0;
-        if (!degree || !finiteUnitInterval(degree->value) ||
-            !finiteUnitInterval(reliability)) {
-            throw InterpreterError(
-                "Reasoning grades and reliability must be finite values "
-                "between 0 and 1");
-        }
-        bool opposing = false;
-        if (const auto polarity = std::dynamic_pointer_cast<StringExpr>(
-                reasoningMapValue(evidence, "polarity"))) {
-            opposing =
-                polarity->value == "oppose" ||
-                polarity->value == "opposing" ||
-                polarity->value == "refute";
-            if (!opposing && polarity->value != "support" &&
-                polarity->value != "supporting") {
-                throw InterpreterError(
-                    "Evidence polarity must be 'support' or 'oppose'");
-            }
-        } else if (const auto supports =
-                       std::dynamic_pointer_cast<BoolExpr>(
-                           reasoningMapValue(evidence, "supports"))) {
-            opposing = !supports->value;
-        }
-        const double discounted = degree->value * reliability;
-        confidence = std::max(confidence, reliability);
-        if (opposing) {
-            hasOpposition = true;
-            opposition = std::max(opposition, discounted);
-        } else {
-            hasSupport = true;
-            support = std::max(support, discounted);
-        }
-    }
-
-    const auto validatedOptionalGrade =
-        [&](const std::shared_ptr<Expr>& value,
-            const std::string& name) -> std::shared_ptr<Expr> {
-            if (!value) return std::make_shared<NilExpr>();
-            const auto number =
-                std::dynamic_pointer_cast<NumberExpr>(value);
-            if (!number || !finiteUnitInterval(number->value)) {
-                throw InterpreterError(
-                    "Reasoning " + name +
-                    " must be a finite value between 0 and 1");
-            }
-            return number->clone();
-        };
-
-    std::string truth = "unknown";
-    if (exact) {
-        if (const auto status = std::dynamic_pointer_cast<StringExpr>(
-                reasoningMapValue(exact, "truth_status"))) {
-            truth = status->value;
-        }
-    }
-    const std::string recommendation =
-        support > opposition ? "recommend" :
-        opposition > support ? "reject" : "undetermined";
-
-    std::vector<MapEntry> resultEntries;
-    if (exact) {
-        resultEntries.reserve(exact->entries.size() + 8);
-        for (const auto& entry : exact->entries) {
-            resultEntries.emplace_back(entry.key, entry.keyId, entry.value->clone());
-        }
-    }
-    reasoningSetValue(resultEntries, "__type",
-        std::make_shared<StringExpr>("DerivationResult"));
-    reasoningSetValue(resultEntries, "conclusion", conclusionValue->clone());
-    reasoningSetValue(resultEntries, "truth_status",
-        std::make_shared<StringExpr>(truth));
-    reasoningSetValue(resultEntries, "exact",
-        std::make_shared<BoolExpr>(static_cast<bool>(exact)));
-    reasoningSetValue(resultEntries, "fuzzy_degree", hasSupport
-        ? std::shared_ptr<Expr>(std::make_shared<NumberExpr>(support))
-        : std::shared_ptr<Expr>(std::make_shared<NilExpr>()));
-    reasoningSetValue(resultEntries, "support_degree", hasSupport
-        ? std::shared_ptr<Expr>(std::make_shared<NumberExpr>(support))
-        : std::shared_ptr<Expr>(std::make_shared<NilExpr>()));
-    reasoningSetValue(resultEntries, "opposition_degree", hasOpposition
-        ? std::shared_ptr<Expr>(std::make_shared<NumberExpr>(opposition))
-        : std::shared_ptr<Expr>(std::make_shared<NilExpr>()));
-    reasoningSetValue(resultEntries, "confidence", evidenceItems.empty()
-        ? std::shared_ptr<Expr>(std::make_shared<NilExpr>())
-        : std::shared_ptr<Expr>(std::make_shared<NumberExpr>(confidence)));
-    reasoningSetValue(resultEntries, "probability",
-        validatedOptionalGrade(probabilityValue, "probability"));
-    reasoningSetValue(resultEntries, "similarity",
-        validatedOptionalGrade(similarityValue, "similarity"));
-    reasoningSetValue(resultEntries, "contradictory",
-        std::make_shared<BoolExpr>(
-            truth == "both" || (hasSupport && hasOpposition)));
-    reasoningSetValue(resultEntries, "recommendation",
-        std::make_shared<StringExpr>(recommendation));
-    reasoningSetValue(resultEntries, "profile", profileValue->clone());
-    reasoningSetValue(resultEntries, "evidence",
-        std::make_shared<ArrayExpr>(evidenceItems));
-    out = markFact(
-        std::make_shared<MapExpr>(std::move(resultEntries)),
-        "DerivationResult");
-    return true;
-}
-
 bool Interpreter::evalReasoningBuiltin(
     const TermExpr& term,
     const Env& env,
@@ -1179,15 +933,6 @@ bool Interpreter::evalReasoningBuiltin(
             return evalReasoningContrary(term, env, out);
         case BuiltinId::ReasoningProve:
             return evalReasoningProve(term, env, out);
-        case BuiltinId::ReasoningGrade:
-            return evalReasoningGrade(term, env, out);
-        case BuiltinId::ReasoningDecide: {
-            std::shared_ptr<Expr> exactValue;
-            if (!evalReasoningProve(term, env, exactValue)) return false;
-            const auto exact =
-                std::dynamic_pointer_cast<MapExpr>(exactValue);
-            return evalReasoningGrade(term, env, out, exact);
-        }
         default:
             return false;
     }

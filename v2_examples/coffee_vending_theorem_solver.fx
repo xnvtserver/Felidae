@@ -8,13 +8,14 @@ TeaRequest extend VendRequest(selection: "tea", credit: 0)
 VendingMachine(name: "", water: 0, beans: 0, tea: 0, ready: 0)
 HotDrinkMachine extend VendingMachine(name: "", water: 0, beans: 0, tea: 0, ready: 0)
 
-requestUnifies(request: any) =>
+def requestUnifies(request: any) =>
     return isA(
         left: request,
         right: VendRequest(selection: "", credit: 0)
     )
+end
 
-proveCoffee(request: any, machine: any) =>
+def proveCoffee(request: any, machine: any) =>
     return (
         requestUnifies(request: request) == 1.0
         and request.selection == "coffee"
@@ -23,8 +24,9 @@ proveCoffee(request: any, machine: any) =>
         and machine.water >= 1.0
         and machine.beans >= 1.0
     )
+end
 
-proveTea(request: any, machine: any) =>
+def proveTea(request: any, machine: any) =>
     return (
         requestUnifies(request: request) == 1.0
         and request.selection == "tea"
@@ -33,37 +35,47 @@ proveTea(request: any, machine: any) =>
         and machine.water >= 1.0
         and machine.tea >= 1.0
     )
+end
 
-proveRefund(request: any) => return request.credit > 0.0
+def proveRefund(request: any) => return request.credit > 0.0
+end
 
 # These selectors are explicit, ordered choice points. A failed proof falls
 # through to the next candidate, which is bounded backtracking.
-chooseRefund(refund_proof: number) =>
+def chooseRefund(refund_proof: number) =>
     if refund_proof == 1.0 then
         return "refund"
     else
         return "safe_halt"
+    end
+end
 
-chooseTea(tea_proof: number, refund_proof: number) =>
+def chooseTea(tea_proof: number, refund_proof: number) =>
     if tea_proof == 1.0 then
         return "dispense_tea"
     else
         return chooseRefund(refund_proof: refund_proof)
+    end
+end
 
-chooseCoffee(coffee_proof: number, tea_proof: number, refund_proof: number) =>
+def chooseCoffee(coffee_proof: number, tea_proof: number, refund_proof: number) =>
     if coffee_proof == 1.0 then
         return "dispense_coffee"
     else
         return chooseTea(tea_proof: tea_proof, refund_proof: refund_proof)
+    end
+end
 
 @mixfix(pattern: "{evidence: number} entails {conclusion: string}")
-entail(evidence: number, conclusion: string) =>
+def entail(evidence: number, conclusion: string) =>
     if evidence == 1.0 then
         return conclusion
     else
         return "unproved"
+    end
+end
 
-solve(request: any, machine: any) =>
+def solve(request: any, machine: any) =>
     coffee_proof := proveCoffee(request: request, machine: machine)
     tea_proof := proveTea(request: request, machine: machine)
     refund_proof := proveRefund(request: request)
@@ -80,8 +92,9 @@ solve(request: any, machine: any) =>
         tea_proof: tea_proof,
         refund_proof: refund_proof
     )
+end
 
-main() =>
+def main() =>
     healthy := HotDrinkMachine(
         name: "lobby",
         water: 8,
@@ -101,3 +114,4 @@ main() =>
         normal: solve(request: request, machine: healthy),
         degraded: solve(request: request, machine: depleted)
     )
+end

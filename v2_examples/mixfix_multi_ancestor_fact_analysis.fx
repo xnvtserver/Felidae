@@ -59,7 +59,7 @@ SimilarityReport(
     evidence: []
 )
 
-Mammal.membership(input: Mammal, against: Mammal) =>
+def Mammal.membership(input: Mammal, against: Mammal) =>
     return {
         warm_blooded: input.warm_blooded,
         legs: input.legs,
@@ -68,8 +68,9 @@ Mammal.membership(input: Mammal, against: Mammal) =>
         species: input.species,
         habitat: input.habitat
     }
+end
 
-buildSimilarityReport(left: Mammal, right: Mammal, context: string) =>
+def buildSimilarityReport(left: Mammal, right: Mammal, context: string) =>
     ancestors := commonAncestors(left, right)
     score := similarity(left, right)
     return SimilarityReport(
@@ -87,14 +88,16 @@ buildSimilarityReport(left: Mammal, right: Mammal, context: string) =>
             )
         ]
     )
+end
 
 @mixfix(
     pattern: "compare {left: Mammal} through {context: string} with {right: Mammal}"
 )
-compareFactsWithContext() =>
+def compareFactsWithContext() =>
     return buildSimilarityReport(left: left, right: right, context: context)
+end
 
-main() =>
+def main() =>
     tigers := lambda(Tiger, fact => fact.name == "shira")
     cats := lambda(Cat, fact => fact.name == "sony")
     dogs := lambda(Dog, fact => fact.name == "max")
@@ -106,3 +109,4 @@ main() =>
     feline_pair := compare tiger through "shared-feline-lineage" with cat
     mammal_pair := compare cat through "shared-mammal-lineage" with dog
     return [feline_pair, mammal_pair]
+end

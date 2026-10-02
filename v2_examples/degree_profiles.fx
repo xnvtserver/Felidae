@@ -11,32 +11,39 @@ DegreeReport(subject: "", similarity: 0, membership: 0, confidence: 0, truth_deg
 # return 2` pair fails the same way, independent of content or the fact
 # vocabulary) — a pre-existing IntegerParser.cpp bug, not something to design
 # examples around. Each clause body goes on its own indented line instead.
-critical() =>
+def critical() =>
     return RatingProfile(name: "Critical / Strongly Disagree", peak: 0, fades_in: 0, fades_out: 30)
+end
 
-subpar() =>
+def subpar() =>
     return RatingProfile(name: "Subpar / Disagree", peak: 30, fades_in: 10, fades_out: 50)
+end
 
-acceptable() =>
+def acceptable() =>
     return RatingProfile(name: "Acceptable / Neutral", peak: 50, fades_in: 30, fades_out: 70)
+end
 
-strong() =>
+def strong() =>
     return RatingProfile(name: "Strong / Agree", peak: 75, fades_in: 50, fades_out: 90)
+end
 
-exceptional() =>
+def exceptional() =>
     return RatingProfile(name: "Exceptional / Strongly Agree", peak: 100, fades_in: 75, fades_out: 100)
+end
 
 # `75%` (a bare numeric percent suffix) is not a supported literal — it is
 # not used anywhere else in the codebase and fails to parse ("Expected an
 # expression") the moment it is actually exercised; 0.75 is the equivalent
 # plain decimal degree.
-threshold(degree: number) =>
+def threshold(degree: number) =>
     if degree >= 0.75 then
         return "met"
     else
         return "not-met"
+    end
+end
 
-main() =>
+def main() =>
     score := 68
     profile := strong()
     membershipDegree := membership(score: score, profile: profile)
@@ -44,3 +51,4 @@ main() =>
     report := DegreeReport(subject: "quality", similarity: closenessDegree, membership: membershipDegree, confidence: 0.82, truth_degree: membershipDegree)
     state := threshold(degree: membershipDegree)
     return {rating: profile, report: report, threshold: state}
+end

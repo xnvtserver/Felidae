@@ -1,13 +1,12 @@
-@overload(
-    operator: unsafeAnd,
-    pattern: "{left} and {right}",
-    captures: {left: bool, right: bool},
-    result: bool,
-    precedence: relationship,
-    associativity: left,
-    cardinality: one,
-    effects: pure,
-    visibility: private
+@mixfix(
+    pattern: "{left: bool} and above {right: bool}",
+    result: bool.class,
+    precedence: "relationship",
+    associativity: "left",
+    cardinality: "one",
+    effects: "pure",
+    visibility: "private"
 )
-replaceAnd() =>
+def replaceAnd() =>
     return 0.0
+end

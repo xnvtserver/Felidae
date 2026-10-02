@@ -133,6 +133,18 @@ constexpr Id END = -2;
 constexpr Id INDEX = -3;
 constexpr Id EXTENDS = -4;
 constexpr Id ELIF = -5;
+constexpr Id NEW = -6;
+constexpr Id FOR = -7;
+constexpr Id IN = -8;
+constexpr Id WHILE = -9;
+constexpr Id SWITCH = -10;
+constexpr Id CASE = -11;
+constexpr Id DEFAULT = -12;
+constexpr Id BREAK = -13;
+constexpr Id CONTINUE = -14;
+constexpr Id DEF = -15;
+constexpr Id THIS = -16;
+constexpr Id SUPER = -17;
 } // namespace TokenId
 
 inline constexpr bool isCapitalizedIdentifierStartId(TokenId::Id id) {

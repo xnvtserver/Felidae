@@ -9,6 +9,63 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(FELIDAE_BUILD_TESTS "Build Felidae regression tests" ON)
 option(FELIDAE_ENABLE_SANITIZERS "Enable address and undefined behavior sanitizers" OFF)
 option(FELIDAE_ENABLE_STRICT_WARNINGS "Enable strict warnings" OFF)
+option(FELIDAE_USE_SYSTEM_ROCKSDB "Use an installed RocksDB package" OFF)
+set(FELIDAE_DEPENDENCY_JOBS "1" CACHE STRING
+    "Maximum parallel compiler processes used inside vendored dependencies")
+if(NOT FELIDAE_DEPENDENCY_JOBS MATCHES "^[1-9][0-9]*$")
+  message(FATAL_ERROR "FELIDAE_DEPENDENCY_JOBS must be a positive integer")
+endif()
+
+# RocksDB is distributed under Apache-2.0 or GPLv2. Felidae consumes it under
+# Apache-2.0. Keep the version pinned so the durable format and build remain
+# reproducible on Windows, Linux, and macOS.
+if(FELIDAE_USE_SYSTEM_ROCKSDB)
+  find_package(RocksDB 11.8.1 CONFIG REQUIRED)
+else()
+  set(WITH_TESTS OFF CACHE BOOL "" FORCE)
+  set(WITH_BENCHMARK_TOOLS OFF CACHE BOOL "" FORCE)
+  set(WITH_TOOLS OFF CACHE BOOL "" FORCE)
+  set(WITH_CORE_TOOLS OFF CACHE BOOL "" FORCE)
+  set(WITH_GFLAGS OFF CACHE BOOL "" FORCE)
+  set(WITH_SNAPPY OFF CACHE BOOL "" FORCE)
+  set(WITH_LZ4 OFF CACHE BOOL "" FORCE)
+  set(WITH_ZSTD OFF CACHE BOOL "" FORCE)
+  set(WITH_ZLIB OFF CACHE BOOL "" FORCE)
+  set(WITH_BZ2 OFF CACHE BOOL "" FORCE)
+  # Build a baseline CPU-compatible RocksDB. Its default PORTABLE=0 probes the
+  # build machine and selected /arch:AVX2 on current MSVC, producing binaries
+  # that can fail on older x64 processors.
+  set(PORTABLE 1 CACHE STRING "" FORCE)
+  # RocksDB enables /WX by default. New MSVC releases can introduce warnings
+  # in the pinned upstream source. Dependency diagnostics must not make a
+  # Felidae build fail; FELIDAE_ENABLE_STRICT_WARNINGS governs our own targets
+  # independently through felidae_common().
+  set(FAIL_ON_WARNINGS OFF CACHE BOOL "" FORCE)
+  # RocksDB's supported MSVC fast-build mode enables /MP, optimized Debug
+  # dependency objects, FASTLINK, and its maintained warning suppressions.
+  # This affects only the vendored dependency, not Felidae Debug code.
+  if(MSVC)
+    set(WIN_CI ON CACHE BOOL "" FORCE)
+  endif()
+  set(ROCKSDB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+  set(FELIDAE_ROCKSDB_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/rocksdb")
+  if(NOT EXISTS "${FELIDAE_ROCKSDB_SOURCE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR
+      "RocksDB submodule is missing. Run: git submodule update --init --recursive")
+  endif()
+  add_subdirectory(
+    "${FELIDAE_ROCKSDB_SOURCE_DIR}"
+    "${CMAKE_BINARY_DIR}/_deps/rocksdb-build"
+    EXCLUDE_FROM_ALL)
+  # Treat vendored RocksDB as an external dependency. Its pinned source is not
+  # maintained in this repository, so keep its warnings out of normal build
+  # output while retaining Felidae's own /W4 or -Wall diagnostics.
+  if(MSVC AND TARGET rocksdb)
+    target_compile_options(rocksdb PRIVATE
+      /w
+      "/MP${FELIDAE_DEPENDENCY_JOBS}")
+  endif()
+endif()
 
 function(felidae_common target)
   target_include_directories(${target} PUBLIC
@@ -26,14 +83,24 @@ function(felidae_common target)
   if(UNIX AND NOT APPLE)
     target_link_libraries(${target} PRIVATE dl)
   endif()
-  if(FELIDAE_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
-    target_link_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+  if(FELIDAE_ENABLE_SANITIZERS)
+    if(MSVC)
+      target_compile_options(${target} PRIVATE /fsanitize=address /Zi /RTC-)
+      target_link_options(${target} PRIVATE /INCREMENTAL:NO)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+      target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+      target_link_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    else()
+      message(FATAL_ERROR "FELIDAE_ENABLE_SANITIZERS is unsupported by this compiler")
+    endif()
   endif()
   if(FELIDAE_ENABLE_STRICT_WARNINGS)
     target_compile_options(${target} PRIVATE
       $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive->
       $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion -Wshadow>)
+  endif()
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /bigobj)
   endif()
 endfunction()
 
@@ -47,37 +114,84 @@ set(FELIDAE_RUNTIME_SOURCES
   src/ReasoningRuntime.cpp
   src/Env.cpp
   src/Memory.cpp
+  src/RocksFactStore.cpp
   src/NativeRuntime.cpp)
 
 add_library(felidae_runtime STATIC ${FELIDAE_RUNTIME_SOURCES})
 felidae_common(felidae_runtime)
 target_compile_definitions(felidae_runtime PRIVATE
   FELIDAE_TOKENIZER_MODEL_PATH="${CMAKE_SOURCE_DIR}/models/felidae-bpe/model.txt")
+if(TARGET RocksDB::rocksdb)
+  target_link_libraries(felidae_runtime PRIVATE RocksDB::rocksdb)
+else()
+  target_link_libraries(felidae_runtime PRIVATE rocksdb)
+endif()
 
 add_executable(felidae
   src/main.cpp
+  src/DatabaseService.cpp
   src/DebugSession.cpp
-  src/debugger/main.cpp
-  src/debugger/AstAnalyzer.cpp)
+  src/ReplLineEditor.cpp
+  src/TerminalUi.cpp)
 target_link_libraries(felidae PRIVATE felidae_runtime)
+if(WIN32)
+  target_link_libraries(felidae PRIVATE ws2_32)
+endif()
 felidae_common(felidae)
 
 if(FELIDAE_BUILD_TESTS)
   enable_testing()
-  add_executable(felidae_interpreter_tests tests/InterpreterTests.cpp)
-  target_link_libraries(felidae_interpreter_tests PRIVATE felidae_runtime)
-  felidae_common(felidae_interpreter_tests)
-  add_test(NAME interpreter_unit COMMAND felidae_interpreter_tests)
+  add_executable(felidae_storage_tests tests/InterpreterTests.cpp)
+  target_link_libraries(felidae_storage_tests PRIVATE felidae_runtime)
+  felidae_common(felidae_storage_tests)
+  add_test(NAME storage_key_encoding_unit COMMAND felidae_storage_tests)
 
   add_test(NAME direct_ast_smoke
     COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/direct_ast_smoke.fx)
   set_tests_properties(direct_ast_smoke PROPERTIES
     PASS_REGULAR_EXPRESSION "answer: 42.*literal: 42.*decimal: 3.14")
 
+  add_test(NAME standalone_repl
+    COMMAND ${CMAKE_COMMAND}
+      -DFELIDAE_EXE=$<TARGET_FILE:felidae>
+      -DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/repl-test
+      -P ${CMAKE_SOURCE_DIR}/cmake/RunReplTest.cmake)
+
+  add_test(NAME invalid_syntax_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_syntax.fx)
+  set_tests_properties(invalid_syntax_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME missing_def_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_missing_def.fx)
+  set_tests_properties(missing_def_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME missing_function_end_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_missing_function_end.fx)
+  set_tests_properties(missing_function_end_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME missing_if_end_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_missing_if_end.fx)
+  set_tests_properties(missing_if_end_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME namespace_separator_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_namespace_separator.fx)
+  set_tests_properties(namespace_separator_rejected PROPERTIES WILL_FAIL TRUE)
+
   add_test(NAME direct_ast_fact_query
     COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/direct_ast_smoke.fx "? fact(name: x)")
   set_tests_properties(direct_ast_fact_query PROPERTIES
     PASS_REGULAR_EXPRESSION "x = \"tiger\"")
+
+  add_test(NAME durable_solver_backtracking
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/solver_durable_backtracking.fx
+            "? Candidate(id: x), x == \"b\"")
+  set_tests_properties(durable_solver_backtracking PROPERTIES
+    PASS_REGULAR_EXPRESSION "x = \"b\"")
+
+  add_test(NAME rocks_reasoning_facts
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/rocks_reasoning_facts.fx)
+  set_tests_properties(rocks_reasoning_facts PROPERTIES
+    PASS_REGULAR_EXPRESSION "truth: \"proved\".*support: 1.*provenance: 1.*rules: 1")
 
   add_test(NAME direct_ast_fact_mutation
     COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/direct_fact_mutation.fx)
@@ -110,10 +224,25 @@ if(FELIDAE_BUILD_TESTS)
   set_tests_properties(direct_ast_fact_selection PROPERTIES
     PASS_REGULAR_EXPRESSION "or_count: 3.*and_count: 1.*limited: [[]School")
 
+  add_test(NAME indexed_filtered_limit
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/indexed_filtered_limit.fx)
+  set_tests_properties(indexed_filtered_limit PROPERTIES
+    PASS_REGULAR_EXPRESSION "count: 1.*id: \"b\"")
+
   add_test(NAME direct_ast_mixfix
     COMMAND felidae ${CMAKE_SOURCE_DIR}/v2_examples/mixfix_nested_expression.fx)
   set_tests_properties(direct_ast_mixfix PROPERTIES
     PASS_REGULAR_EXPRESSION "direct: Validation")
+
+  add_test(NAME imported_operator_shared_tokenizer
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/imported_operator_tokenizer.fx)
+  set_tests_properties(imported_operator_shared_tokenizer PROPERTIES
+    PASS_REGULAR_EXPRESSION "result: 42")
+
+  add_test(NAME mixfix_type_overload
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/v2_examples/mixfix_type_overload.fx)
+  set_tests_properties(mixfix_type_overload PROPERTIES
+    PASS_REGULAR_EXPRESSION "number_result: 42.*string_result: string-overload")
 
   add_test(NAME direct_ast_class_end
     COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/direct_class_end.fx)
@@ -135,30 +264,447 @@ if(FELIDAE_BUILD_TESTS)
   set_tests_properties(class_method_chain PROPERTIES
     PASS_REGULAR_EXPRESSION "10")
 
+  add_test(NAME class_object_identity
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/class_object_identity.fx)
+  set_tests_properties(class_object_identity PROPERTIES
+    PASS_REGULAR_EXPRESSION "original: 4.*returned: 4.*retrieved: 4")
+
+  add_test(NAME super_parent_graph
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/super_parent_graph.fx)
+  set_tests_properties(super_parent_graph PROPERTIES
+    PASS_REGULAR_EXPRESSION "description: \"Ada:Research\".*parent_id: \"employee-1\".*root_id: \"employee-1\"")
+
+  add_test(NAME class_field_types_and_mutation
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/class_field_types_and_mutation.fx)
+  set_tests_properties(class_field_types_and_mutation PROPERTIES
+    PASS_REGULAR_EXPRESSION "label: \"after\".*changed_label: \"after\".*enabled: true.*note: nil.*score_count: 0.*pair_count: 2.*held_label: \"after\".*stored_pair_count: 2")
+
+  add_test(NAME typed_local_collections
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/typed_local_collections.fx)
+  set_tests_properties(typed_local_collections PROPERTIES
+    PASS_REGULAR_EXPRESSION "number_count: 3.*pair_count: 2.*node_id: \"node-1\".*missing: nil.*payload_count: 2")
+
+  add_test(NAME typed_local_element_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_typed_local_element.fx)
+  set_tests_properties(typed_local_element_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME logic_library
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/logic_library.fx)
+  set_tests_properties(logic_library PROPERTIES
+    PASS_REGULAR_EXPRESSION "antecedent: \"wet\".*consequent: \"rain\".*negated_antecedent: \"wet\".*negated_consequent: \"rain\".*positive: \"wet\".*negative: \"dry\"")
+
+  add_test(NAME optional_primary_key_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_optional_key.fx)
+  set_tests_properties(optional_primary_key_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME nested_list_type_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_nested_list_type.fx)
+  set_tests_properties(nested_list_type_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME field_assignment_requires_this
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_field_reassignment.fx)
+  set_tests_properties(field_assignment_requires_this PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME class_graph
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/class_graph.fx)
+  set_tests_properties(class_graph PROPERTIES
+    PASS_REGULAR_EXPRESSION "inherited_neighbor_count: 1.*adjacency_count: 1.*direct_count: 2")
+
+  add_test(NAME graph_cursor_iteration
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/graph_cursor_iteration.fx)
+  set_tests_properties(graph_cursor_iteration PROPERTIES
+    PASS_REGULAR_EXPRESSION "edge_count: 2.*seen_count: 2")
+
   add_test(NAME class_inherited_constructor
     COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/class_inherited_constructor.fx)
   set_tests_properties(class_inherited_constructor PROPERTIES
     PASS_REGULAR_EXPRESSION "inherited_field: \"Ada\".*inherited_method: \"Ada\".*grade: 11")
 
-  add_test(NAME tooling_check_json
-    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/direct_ast_smoke.fx --check-json)
-  set_tests_properties(tooling_check_json PROPERTIES
-    PASS_REGULAR_EXPRESSION "\\[.*\\]")
+  add_test(NAME fact_extends_class_chain
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/fact_extends_class_chain.fx)
+  set_tests_properties(fact_extends_class_chain PROPERTIES
+    PASS_REGULAR_EXPRESSION "id: \"employee-1\".*name: \"Ada\".*role: \"analyst\".*visible_as_entity: 1")
 
-  add_test(NAME tooling_symbols_json
-    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/tooling_import_root.fx --symbols-json --load-imports)
-  set_tests_properties(tooling_symbols_json PROPERTIES
-    PASS_REGULAR_EXPRESSION "\"ImportedFact\"")
+  add_test(NAME class_extends_fact_chain
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/class_extends_fact_chain.fx)
+  set_tests_properties(class_extends_fact_chain PROPERTIES
+    PASS_REGULAR_EXPRESSION "inherited_fact_field: \"root\".*inherited_class_field: 2.*own_field: \"mixed\".*visible_as_root: 2")
 
-  add_test(NAME tooling_lists_builtins
-    COMMAND felidae --list-builtins)
-  set_tests_properties(tooling_lists_builtins PROPERTIES
-    PASS_REGULAR_EXPRESSION "\"name\".*\"effect\"")
+  add_test(NAME recursive_mixed_inheritance_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/recursive_mixed_cycle.fx)
+  set_tests_properties(recursive_mixed_inheritance_rejected PROPERTIES WILL_FAIL TRUE)
 
-  add_test(NAME tooling_rejects_invalid_source
-    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_syntax.fx --check-json)
-  set_tests_properties(tooling_rejects_invalid_source PROPERTIES
+  add_test(NAME class_key_persistence
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/class_key_persistence.fx)
+  set_tests_properties(class_key_persistence PROPERTIES
+    PASS_REGULAR_EXPRESSION "count: 2.*saved_name: \"West\".*stored_name: \"West\"")
+
+  add_test(NAME unquoted_identifier_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_unquoted_identifier.fx)
+  set_tests_properties(unquoted_identifier_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME control_flow
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/control_flow.fx)
+  set_tests_properties(control_flow PROPERTIES
+    PASS_REGULAR_EXPRESSION "for_count: 4.*while_count: 2.*middle_count: 1.*fallthrough_count: 1.*default_count: 0")
+
+  add_test(NAME for_non_iterable_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_for_non_iterable.fx)
+  set_tests_properties(for_non_iterable_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME non_boolean_while_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_non_boolean_while.fx)
+  set_tests_properties(non_boolean_while_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME non_boolean_if_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_non_boolean_if.fx)
+  set_tests_properties(non_boolean_if_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME this_outside_class_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_this_outside_class.fx)
+  set_tests_properties(this_outside_class_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME class_instance_call_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_class_instance_call.fx)
+  set_tests_properties(class_instance_call_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME non_boolean_graph_where_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_graph_where_non_boolean.fx)
+  set_tests_properties(non_boolean_graph_where_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME non_boolean_fact_query_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_fact_query_non_boolean.fx)
+  set_tests_properties(non_boolean_fact_query_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME source_locator
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/source_locator.fx)
+  set_tests_properties(source_locator PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tests
+    PASS_REGULAR_EXPRESSION "employee-1")
+
+  add_test(NAME source_locator_line_mismatch_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_source_locator_line.fx)
+  set_tests_properties(source_locator_line_mismatch_rejected PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tests
     WILL_FAIL TRUE)
+
+  add_test(NAME builtin_method_override
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/builtin_method_override.fx)
+  set_tests_properties(builtin_method_override PROPERTIES
+    PASS_REGULAR_EXPRESSION "overridden_count: 77.*overridden_join: \"custom-join\".*builtin_without_override: 0")
+
+  add_test(NAME duplicate_fact_key_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_duplicate_fact_key.fx)
+  set_tests_properties(duplicate_fact_key_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME dotted_related_class
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/dotted_related_class.fx)
+  set_tests_properties(dotted_related_class PROPERTIES
+    PASS_REGULAR_EXPRESSION "School.Student.*student-1.*grade: 10")
+
+  add_test(NAME dynamic_fact_schema_lock
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/dynamic_fact_schema_lock.fx)
+  set_tests_properties(dynamic_fact_schema_lock PROPERTIES
+    PASS_REGULAR_EXPRESSION "stored: 2.*transient: 30")
+
+  add_test(NAME rocks_graph_properties
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/rocks_graph_properties.fx)
+  set_tests_properties(rocks_graph_properties PROPERTIES
+    PASS_REGULAR_EXPRESSION "count: 1.*strong: 1.*primary_key_match: 1.*employee: \"Ada\".*department: \"Research\".*since: 2024")
+
+  add_test(NAME invalid_missing_link_target
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_missing_link_target.fx)
+  set_tests_properties(invalid_missing_link_target PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME rocks_graph_traversal
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/rocks_graph_traversal.fx)
+  set_tests_properties(rocks_graph_traversal PROPERTIES
+    PASS_REGULAR_EXPRESSION "direct_count: 3.*limited_count: 1.*both_count: 2.*recursive_count: 2.*shortest_depth: 2")
+
+  add_test(NAME invalid_graph_property_filter
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_graph_property_filter.fx)
+  set_tests_properties(invalid_graph_property_filter PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME relationship_class_syntax_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_relationship_class.fx)
+  set_tests_properties(relationship_class_syntax_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME link_relationship_argument_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_link_relationship_argument.fx)
+  set_tests_properties(link_relationship_argument_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME link_class_name_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_link_class.fx)
+  set_tests_properties(link_class_name_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME rocks_graph_sync_cycle
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/rocks_graph_sync_cycle.fx)
+  set_tests_properties(rocks_graph_sync_cycle PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tests
+    PASS_REGULAR_EXPRESSION "synchronized: 2.*direct: 2.*recursive: 1")
+
+  add_test(NAME rocks_graph_sync_preserves_links
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/rocks_graph_sync_preserves_links.fx)
+  set_tests_properties(rocks_graph_sync_preserves_links PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tests
+    PASS_REGULAR_EXPRESSION "first_sync: 2.*changed: 1.*second_sync: 2.*links: 1.*source_label: \"source\"")
+
+  add_test(NAME sync_link_source_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_sync_link.fx)
+  set_tests_properties(sync_link_source_rejected PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tests
+    WILL_FAIL TRUE)
+
+  add_test(NAME rocks_graph_multiple_links
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/rocks_graph_multiple_links.fx)
+  set_tests_properties(rocks_graph_multiple_links PROPERTIES
+    PASS_REGULAR_EXPRESSION "all_links: 5.*connected: 2.*assigned: 2.*reversed: \"second\".*key_match: 1")
+
+  add_test(NAME duplicate_runtime_link_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_duplicate_runtime_link.fx)
+  set_tests_properties(duplicate_runtime_link_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME dynamic_link_variables
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/dynamic_link_variables.fx)
+  set_tests_properties(dynamic_link_variables PROPERTIES
+    PASS_REGULAR_EXPRESSION "created_to: \"department-1\".*count: 1.*confidence: 0.9")
+
+  add_test(NAME rocks_graph_link_survives_update
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/rocks_graph_link_survives_update.fx)
+  set_tests_properties(rocks_graph_link_survives_update PROPERTIES
+    PASS_REGULAR_EXPRESSION "changed: 1.*source: \"after\".*target: \"target\"")
+
+  add_test(NAME rocks_graph_composite_reverse
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/rocks_graph_composite_reverse.fx)
+  set_tests_properties(rocks_graph_composite_reverse PROPERTIES
+    PASS_REGULAR_EXPRESSION "count: 1.*city: \"Bengaluru\".*employee: \"e1\"")
+
+  add_test(NAME rocks_graph_inherited_link
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/rocks_graph_inherited_link.fx)
+  set_tests_properties(rocks_graph_inherited_link PROPERTIES
+    PASS_REGULAR_EXPRESSION "count: 1.*department: \"Research\"")
+
+  add_test(NAME rocks_subtype_visibility
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/rocks_subtype_visibility.fx)
+  set_tests_properties(rocks_subtype_visibility PROPERTIES
+    PASS_REGULAR_EXPRESSION "entities: 1.*notes: 1")
+
+  add_test(NAME rocks_graph_restrict_delete
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_restrict_delete.fx)
+  set_tests_properties(rocks_graph_restrict_delete PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME rocks_graph_restrict_key_update
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_referenced_key_update.fx)
+  set_tests_properties(rocks_graph_restrict_key_update PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME graph_debugger
+    COMMAND ${CMAKE_COMMAND}
+      -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
+      -DFELIDAE_SOURCE=${CMAKE_SOURCE_DIR}/tests/debug_graph.fx
+      -DFELIDAE_COMMANDS=${CMAKE_SOURCE_DIR}/tests/debug_graph_commands.txt
+      -P ${CMAKE_SOURCE_DIR}/cmake/RunGraphDebugTest.cmake)
+
+  set(FELIDAE_PERSISTENCE_TEST_DB "${CMAKE_CURRENT_BINARY_DIR}/test-data/persistence.db")
+  add_test(NAME rocks_persistence_clean
+    COMMAND ${CMAKE_COMMAND} -E remove_directory ${FELIDAE_PERSISTENCE_TEST_DB})
+  set_tests_properties(rocks_persistence_clean PROPERTIES FIXTURES_SETUP persistence_clean)
+
+  add_test(NAME rocks_persistence_seed
+    COMMAND felidae --db ${FELIDAE_PERSISTENCE_TEST_DB}
+            ${CMAKE_SOURCE_DIR}/tests/rocks_persistence_seed.fx)
+  set_tests_properties(rocks_persistence_seed PROPERTIES
+    FIXTURES_REQUIRED persistence_clean
+    FIXTURES_SETUP persistence_seeded
+    PASS_REGULAR_EXPRESSION "1")
+
+  add_test(NAME rocks_persistence_idempotent_reseed
+    COMMAND felidae --db ${FELIDAE_PERSISTENCE_TEST_DB}
+            ${CMAKE_SOURCE_DIR}/tests/rocks_persistence_reseed.fx)
+  set_tests_properties(rocks_persistence_idempotent_reseed PROPERTIES
+    FIXTURES_REQUIRED persistence_seeded
+    FIXTURES_SETUP persistence_reseeded
+    PASS_REGULAR_EXPRESSION "1")
+
+  add_test(NAME rocks_persistence_read
+    COMMAND felidae --db ${FELIDAE_PERSISTENCE_TEST_DB}
+            ${CMAKE_SOURCE_DIR}/tests/rocks_persistence_read.fx)
+  set_tests_properties(rocks_persistence_read PROPERTIES
+    FIXTURES_REQUIRED persistence_reseeded
+    PASS_REGULAR_EXPRESSION "42")
+  add_test(NAME rocks_persistence_stop
+    COMMAND felidae db stop --db ${FELIDAE_PERSISTENCE_TEST_DB})
+  set_tests_properties(rocks_persistence_stop PROPERTIES
+    FIXTURES_CLEANUP "persistence_clean;persistence_seeded;persistence_reseeded")
+
+  set(FELIDAE_SCHEMA_TEST_DB "${CMAKE_CURRENT_BINARY_DIR}/test-data/schema.db")
+  add_test(NAME rocks_schema_clean
+    COMMAND ${CMAKE_COMMAND} -E remove_directory ${FELIDAE_SCHEMA_TEST_DB})
+  set_tests_properties(rocks_schema_clean PROPERTIES FIXTURES_SETUP schema_clean)
+
+  add_test(NAME rocks_schema_seed
+    COMMAND felidae --db ${FELIDAE_SCHEMA_TEST_DB}
+            ${CMAKE_SOURCE_DIR}/tests/rocks_schema_seed.fx)
+  set_tests_properties(rocks_schema_seed PROPERTIES
+    FIXTURES_REQUIRED schema_clean
+    FIXTURES_SETUP schema_seeded
+    PASS_REGULAR_EXPRESSION "1")
+
+  add_test(NAME rocks_schema_change_rejected
+    COMMAND felidae --db ${FELIDAE_SCHEMA_TEST_DB}
+            ${CMAKE_SOURCE_DIR}/tests/invalid_rocks_schema_change.fx)
+  set_tests_properties(rocks_schema_change_rejected PROPERTIES
+    FIXTURES_REQUIRED schema_seeded
+    WILL_FAIL TRUE)
+  add_test(NAME rocks_schema_stop
+    COMMAND felidae db stop --db ${FELIDAE_SCHEMA_TEST_DB})
+  set_tests_properties(rocks_schema_stop PROPERTIES
+    FIXTURES_CLEANUP "schema_clean;schema_seeded")
+
+  set(FELIDAE_PROMOTION_TEST_DB "${CMAKE_CURRENT_BINARY_DIR}/test-data/promotion.db")
+  add_test(NAME schemaless_promotion_clean
+    COMMAND ${CMAKE_COMMAND} -E remove_directory ${FELIDAE_PROMOTION_TEST_DB})
+  set_tests_properties(schemaless_promotion_clean PROPERTIES
+    FIXTURES_SETUP promotion_clean)
+
+  add_test(NAME schemaless_promotion_seed
+    COMMAND felidae --db ${FELIDAE_PROMOTION_TEST_DB}
+            ${CMAKE_SOURCE_DIR}/tests/schemaless_promotion_seed.fx)
+  set_tests_properties(schemaless_promotion_seed PROPERTIES
+    FIXTURES_REQUIRED promotion_clean
+    FIXTURES_SETUP promotion_seeded
+    PASS_REGULAR_EXPRESSION "1")
+
+  add_test(NAME schemaless_promotion_class
+    COMMAND felidae --db ${FELIDAE_PROMOTION_TEST_DB}
+            ${CMAKE_SOURCE_DIR}/tests/schemaless_promotion_class.fx)
+  set_tests_properties(schemaless_promotion_class PROPERTIES
+    FIXTURES_REQUIRED promotion_seeded
+    FIXTURES_SETUP promotion_declared
+    PASS_REGULAR_EXPRESSION "count: 1.*doubled: 42")
+
+  add_test(NAME schemaless_promotion_stop
+    COMMAND felidae db stop --db ${FELIDAE_PROMOTION_TEST_DB})
+  set_tests_properties(schemaless_promotion_stop PROPERTIES
+    FIXTURES_CLEANUP "promotion_clean;promotion_seeded;promotion_declared")
+
+  add_test(NAME schemaless_promotion_key_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_schemaless_promotion_key.fx)
+  set_tests_properties(schemaless_promotion_key_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME schemaless_promotion_type_rejected
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/invalid_schemaless_promotion_type.fx)
+  set_tests_properties(schemaless_promotion_type_rejected PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME schemaless_promotion_same_module
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/schemaless_promotion_same_module.fx)
+  set_tests_properties(schemaless_promotion_same_module PROPERTIES
+    PASS_REGULAR_EXPRESSION "count: 1.*doubled: 20")
+
+  set(FELIDAE_INDEX_TEST_DB "${CMAKE_CURRENT_BINARY_DIR}/test-data/index.db")
+  add_test(NAME rocks_index_clean
+    COMMAND ${CMAKE_COMMAND} -E remove_directory ${FELIDAE_INDEX_TEST_DB})
+  set_tests_properties(rocks_index_clean PROPERTIES FIXTURES_SETUP index_clean)
+
+  add_test(NAME rocks_index_seed
+    COMMAND felidae --db ${FELIDAE_INDEX_TEST_DB}
+            ${CMAKE_SOURCE_DIR}/tests/rocks_index_seed.fx)
+  set_tests_properties(rocks_index_seed PROPERTIES
+    FIXTURES_REQUIRED index_clean
+    FIXTURES_SETUP index_seeded
+    PASS_REGULAR_EXPRESSION "2")
+
+  add_test(NAME rocks_index_update
+    COMMAND felidae --db ${FELIDAE_INDEX_TEST_DB}
+            ${CMAKE_SOURCE_DIR}/tests/rocks_index_update.fx)
+  set_tests_properties(rocks_index_update PROPERTIES
+    FIXTURES_REQUIRED index_seeded
+    FIXTURES_SETUP index_updated
+    PASS_REGULAR_EXPRESSION "changed: 1.*active: 1")
+
+  set(FELIDAE_DESIGNATION_TEST_DB "${CMAKE_CURRENT_BINARY_DIR}/test-data/designation.db")
+  add_test(NAME rocks_designation_clean
+    COMMAND ${CMAKE_COMMAND} -E remove_directory ${FELIDAE_DESIGNATION_TEST_DB})
+  set_tests_properties(rocks_designation_clean PROPERTIES
+    FIXTURES_SETUP designation_clean)
+
+  add_test(NAME rocks_designation_seed
+    COMMAND felidae --db ${FELIDAE_DESIGNATION_TEST_DB}
+            ${CMAKE_SOURCE_DIR}/tests/rocks_designation_seed.fx)
+  set_tests_properties(rocks_designation_seed PROPERTIES
+    FIXTURES_REQUIRED designation_clean
+    FIXTURES_SETUP designation_seeded
+    PASS_REGULAR_EXPRESSION "1")
+
+  add_test(NAME rocks_designation_read
+    COMMAND felidae --db ${FELIDAE_DESIGNATION_TEST_DB}
+            ${CMAKE_SOURCE_DIR}/tests/rocks_designation_read.fx)
+  set_tests_properties(rocks_designation_read PROPERTIES
+    FIXTURES_REQUIRED designation_seeded
+    PASS_REGULAR_EXPRESSION "1")
+  add_test(NAME rocks_designation_stop
+    COMMAND felidae db stop --db ${FELIDAE_DESIGNATION_TEST_DB})
+  set_tests_properties(rocks_designation_stop PROPERTIES
+    FIXTURES_CLEANUP "designation_clean;designation_seeded")
+
+  add_test(NAME rocks_index_restart_read
+    COMMAND felidae --db ${FELIDAE_INDEX_TEST_DB}
+            ${CMAKE_SOURCE_DIR}/tests/rocks_index_read.fx)
+  set_tests_properties(rocks_index_restart_read PROPERTIES
+    FIXTURES_REQUIRED index_updated
+    PASS_REGULAR_EXPRESSION "active: 1.*inactive: 1")
+  add_test(NAME rocks_index_stop
+    COMMAND felidae db stop --db ${FELIDAE_INDEX_TEST_DB})
+  set_tests_properties(rocks_index_stop PROPERTIES
+    FIXTURES_CLEANUP "index_clean;index_seeded;index_updated")
+
+  set(FELIDAE_INHERITANCE_TEST_DB "${CMAKE_CURRENT_BINARY_DIR}/test-data/inheritance.db")
+  add_test(NAME rocks_inheritance_clean
+    COMMAND ${CMAKE_COMMAND} -E remove_directory ${FELIDAE_INHERITANCE_TEST_DB})
+  set_tests_properties(rocks_inheritance_clean PROPERTIES FIXTURES_SETUP inheritance_clean)
+
+  add_test(NAME rocks_inheritance_seed
+    COMMAND felidae --db ${FELIDAE_INHERITANCE_TEST_DB}
+            ${CMAKE_SOURCE_DIR}/tests/rocks_inheritance_seed.fx)
+  set_tests_properties(rocks_inheritance_seed PROPERTIES
+    FIXTURES_REQUIRED inheritance_clean
+    FIXTURES_SETUP inheritance_seeded
+    PASS_REGULAR_EXPRESSION "2")
+
+  add_test(NAME rocks_inheritance_restart_read
+    COMMAND felidae --db ${FELIDAE_INHERITANCE_TEST_DB}
+            ${CMAKE_SOURCE_DIR}/tests/rocks_inheritance_read.fx)
+  set_tests_properties(rocks_inheritance_restart_read PROPERTIES
+    FIXTURES_REQUIRED inheritance_seeded
+    PASS_REGULAR_EXPRESSION "2")
+  add_test(NAME rocks_inheritance_stop
+    COMMAND felidae db stop --db ${FELIDAE_INHERITANCE_TEST_DB})
+  set_tests_properties(rocks_inheritance_stop PROPERTIES
+    FIXTURES_CLEANUP "inheritance_clean;inheritance_seeded")
+
+  set(FELIDAE_CONFIG_TEST_DB "${CMAKE_CURRENT_BINARY_DIR}/test-data/config.db")
+  add_test(NAME rocks_config_clean
+    COMMAND ${CMAKE_COMMAND} -E remove_directory ${FELIDAE_CONFIG_TEST_DB})
+  set_tests_properties(rocks_config_clean PROPERTIES FIXTURES_SETUP config_clean)
+
+  add_test(NAME rocks_config_set
+    COMMAND felidae --db ${FELIDAE_CONFIG_TEST_DB}
+            ${CMAKE_SOURCE_DIR}/tests/rocks_config_set.fx)
+  set_tests_properties(rocks_config_set PROPERTIES
+    FIXTURES_REQUIRED config_clean
+    FIXTURES_SETUP config_written
+    PASS_REGULAR_EXPRESSION "max_background_jobs: 3.*bytes_per_sync: 1048576.*fact_writes: 1")
+
+  add_test(NAME rocks_config_restart_read
+    COMMAND felidae --db ${FELIDAE_CONFIG_TEST_DB}
+            ${CMAKE_SOURCE_DIR}/tests/rocks_config_read.fx)
+  set_tests_properties(rocks_config_restart_read PROPERTIES
+    FIXTURES_REQUIRED config_written
+    PASS_REGULAR_EXPRESSION "max_background_jobs: 3.*bytes_per_sync: 1048576")
+
+  add_test(NAME rocks_config_stop
+    COMMAND felidae db stop --db ${FELIDAE_CONFIG_TEST_DB})
+  set_tests_properties(rocks_config_stop PROPERTIES
+    FIXTURES_CLEANUP "config_clean;config_written")
 
   add_test(NAME analytical_query_language_tour
     COMMAND felidae ${CMAKE_SOURCE_DIR}/v2_examples/felidae_language_tour.fx)

@@ -1,6 +1,6 @@
 import ("set")
 
-main() =>
+def main() =>
     left := [{id: 1, kind: "a"}, {id: 2, kind: "b"}],
     right := [{id: 2, kind: "b"}, {id: 3, kind: "c"}],
     return (
@@ -15,3 +15,4 @@ main() =>
         cardinality: Set.cardinality(set: left),
         contains: Set.containsBy(set: left, value: 2, fields: ["id"])
     )
+end

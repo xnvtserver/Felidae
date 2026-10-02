@@ -5,7 +5,7 @@ end
 
 Person(id: 1, name: "Ada")
 
-main() =>
+def main() =>
     person := Person.get(pos: 0)
     people := Person.all()
     from_array := people.get(pos: 0)

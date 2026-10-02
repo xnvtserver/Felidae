@@ -1,9 +1,15 @@
 # Native thread stdlib declarations. A thread runs a method on an independent
 # interpreter snapshot and returns a handle that can be started and joined.
 
-thread.createThread(function: string) => ()
-thread.start(thread: any) => ()
-thread.pause(thread: any) => ()
-thread.stop(thread: any) => ()
-thread.status(thread: any) => ()
-thread.result(thread: any) => ()
+def thread.createThread(function: string) => ()
+end
+def thread.start(thread: any) => ()
+end
+def thread.pause(thread: any) => ()
+end
+def thread.stop(thread: any) => ()
+end
+def thread.status(thread: any) => ()
+end
+def thread.result(thread: any) => ()
+end

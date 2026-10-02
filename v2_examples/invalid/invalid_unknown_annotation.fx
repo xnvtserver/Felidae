@@ -1,6 +1,8 @@
 @missingAnnotation(label: "unknown")
-decorated() =>
+def decorated() =>
     return "unreachable"
+end
 
-main() =>
+def main() =>
     return decorated()
+end

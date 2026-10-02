@@ -1,32 +1,25 @@
-# Type.search provides one fact-native path for SQL-LIKE text filtering,
-# hierarchy properties, regular expressions, and bounded degree evidence.
+# Search is expressed with ordinary lazy fact predicates. Text helpers remain
+# library calls and numeric confidence is data, never implicit truth.
 Publication(name: "")
 Book extend Publication(name: "")
 Magazine extend Publication(name: "")
 
-Catalog(title: "Alpha Guide", confidence: 0.82, category: Book)
-Catalog(title: "beta guide", confidence: 0.74, category: Magazine)
-Catalog(title: "Reference", confidence: 0.40, category: Publication)
+Catalog(title: "Alpha Guide", confidence: 0.82, category: Book.class)
+Catalog(title: "beta guide", confidence: 0.74, category: Magazine.class)
+Catalog(title: "Reference", confidence: 0.40, category: Publication.class)
 
-main() =>
-    guides := Catalog.search(
-        field: "title",
-        query: "%guide",
-        type: "like",
-        case: "insensitive"
+def main() =>
+    guides := lambda(Catalog, row => str.contains(
+        data: str.lower(data: row.title),
+        needle: "guide"
+    ))
+    related := lambda(Catalog, row =>
+        row.category == Book.class or
+        row.category == Magazine.class or
+        row.category == Publication.class
     )
-    related := Catalog.search(
-        field: "category",
-        query: Publication,
-        type: "hierarchy",
-        direction: "descendants",
-        includeSelf: 0.0
-    )
-    confident := Catalog.search(
-        field: "confidence",
-        type: "degree",
-        minimum: 0.70,
-        maximum: 0.90
+    confident := lambda(Catalog, row =>
+        row.confidence >= 0.70 and row.confidence <= 0.90
     )
     return (
         guides: count(data: guides),

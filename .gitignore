@@ -1,10 +1,6 @@
 # Build outputs
 build/
 /dist/
-models/*.model
-models/FelidaeSentencePieceIds.h
-models/**/*.pt
-models/**/manifest.txt
 *.exe
 *.obj
 # Native module linker export files (including nested package folders)
@@ -24,6 +20,7 @@ native_modules/**/*.exp
 # registered as Git submodules and remain tracked as gitlinks.
 third_party/*
 !third_party/rapidcsv/
+!third_party/rocksdb
 
 # CMake generated files
 CMakeFiles/

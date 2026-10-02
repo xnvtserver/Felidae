@@ -24,6 +24,12 @@ public:
     explicit IntegerParserError(const std::string& message) : std::runtime_error(message) {}
 };
 
+class IntegerParserIncomplete : public IntegerParserError {
+public:
+    explicit IntegerParserIncomplete(const std::string& message)
+        : IntegerParserError(message) {}
+};
+
 // Direct word-vocabulary-token-ID grammar assembler. It has no secondary
 // tokenizer, source-character syntax scanner, or spelling-to-token lookup
 // table. IDs determine all syntax; original source is retained only to copy
@@ -36,7 +42,9 @@ public:
     Program parseProgram();
     std::vector<std::shared_ptr<Goal>> parseQuery();
     std::shared_ptr<Expr> parseExpressionText();
+    bool emptyInput();
     bool startsQuery();
+    bool startsProgramStatement();
     const IntegerParserMetrics& metrics() const noexcept { return metrics_; }
 
 private:
@@ -52,6 +60,7 @@ private:
     std::size_t byte_ = 0;
     std::size_t recursionDepth_ = 0;
     bool lastClauseUsedBlockEnd_ = false;
+    bool insideClassMethod_ = false;
     IntegerParserMetrics metrics_;
 
     static constexpr std::size_t kMaximumRecursionDepth = 512;
@@ -72,6 +81,7 @@ private:
     bool match(TokenId::Id id);
     bool atBlockEnd();
     bool matchBlockEnd();
+    void requireBlockEnd(const char* message);
     void require(TokenId::Id id, const char* message);
     bool atEnd();
     std::shared_ptr<Expr> parseExpression();
@@ -90,8 +100,8 @@ private:
     std::shared_ptr<Expr> parseArray();
     std::shared_ptr<Expr> parseMap();
     std::vector<Arg> parseArguments(bool allowAnnotationBindings = false);
-    QualifiedName consumeQualifiedName(bool allowNamespaceSeparators = true,
-                                       bool allowDottedName = true);
+    TypeRef parseTypeReference();
+    QualifiedName consumeQualifiedName(bool allowDottedName = true);
     Call parseCall();
     std::shared_ptr<Goal> parseGoal();
     std::vector<std::shared_ptr<Goal>> parseGoalList(TokenId::Id terminator);

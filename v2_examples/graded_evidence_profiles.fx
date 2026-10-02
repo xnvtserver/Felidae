@@ -16,7 +16,7 @@ RatingProfile extend Assessment(
     fades_out: 0
 )
 
-profile(name: string, peak: number, fadesIn: number, fadesOut: number) =>
+def profile(name: string, peak: number, fadesIn: number, fadesOut: number) =>
     return RatingProfile(
         name: name,
         subject: "quality",
@@ -27,8 +27,9 @@ profile(name: string, peak: number, fadesIn: number, fadesOut: number) =>
         fades_in: fadesIn,
         fades_out: fadesOut
     )
+end
 
-makeReport(score: number) =>
+def makeReport(score: number) =>
     critical := profile(name: "Critical / Strongly Disagree", peak: 0, fadesIn: 0, fadesOut: 30)
     subpar := profile(name: "Subpar / Disagree", peak: 30, fadesIn: 10, fadesOut: 50)
     acceptable := profile(name: "Acceptable / Neutral", peak: 50, fadesIn: 30, fadesOut: 70)
@@ -48,6 +49,8 @@ makeReport(score: number) =>
             fades_out: 90
         )
     }
+end
 
-main() =>
+def main() =>
     return makeReport(score: 68)
+end

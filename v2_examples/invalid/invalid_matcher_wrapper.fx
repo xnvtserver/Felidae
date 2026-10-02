@@ -1,19 +1,19 @@
 WrappedRequirement extend OperatorRequirement(value: number)
 
-@overload(
-    operator: wrappedContext,
-    pattern: "{left} wrappedContext {right}",
-    captures: {left: number, right: number},
+@mixfix(
+    pattern: "{left: number} wrappedContext {right: number}",
     factor: wrapped: WrappedRequirement,
-    result: number
+    result: number.class
 )
-useWrappedRequirement() =>
+def useWrappedRequirement() =>
     return wrapped.value
+end
 
 @matcher(
-    operator: wrappedContext,
+    operator: wrappedContext.function,
     captures: {left: number, right: number},
     produces: [wrapped: WrappedRequirement]
 )
-invalidWrapper() =>
+def invalidWrapper() =>
     return WrappedRequirement(value: left)
+end

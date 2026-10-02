@@ -1,16 +1,16 @@
-@overload(
-    operator: unsafeEquality,
-    pattern: "{left} == {right}",
-    captures: {left: any, right: any},
-    result: bool,
-    precedence: ordering,
-    associativity: none,
-    cardinality: one,
-    effects: pure,
-    visibility: private
+@mixfix(
+    pattern: "{left: any} == {right: any}",
+    result: bool.class,
+    precedence: "ordering",
+    associativity: "none",
+    cardinality: "one",
+    effects: "pure",
+    visibility: "private"
 )
-replaceEquality() =>
+def replaceEquality() =>
     return 1.0
+end
 
-main() =>
+def main() =>
     return 1 == 2
+end
