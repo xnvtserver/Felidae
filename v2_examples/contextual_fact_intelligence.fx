@@ -99,23 +99,25 @@ QuantityAnswer(
 )
 
 @mixfix(pattern: "{context:obj} bank")
-interpretBankContext() =>
+def interpretBankContext() =>
     return KnowledgeContext(
         term: "bank",
         context: context.text,
         article: nil
     )
+end
 
 @mixfix(pattern: "a {subject:obj}")
-applyArticleContext() =>
+def applyArticleContext() =>
     return KnowledgeContext(
         term: subject.term,
         context: subject.context,
         article: "a"
     )
+end
 
 @mixfix(pattern: "what is {subject:obj}")
-explainLearnedTerm() =>
+def explainLearnedTerm() =>
     term := subject.text
     matches := lambda(Knowledge, fact => fact.name == term)
     matchCount := array.len(data: matches)
@@ -161,9 +163,12 @@ explainLearnedTerm() =>
                 candidates: matches,
                 evidence: []
             )
+        end
+    end
+end
 
 @mixfix(pattern: "what is {subject:obj}")
-explainLearnedContext() =>
+def explainLearnedContext() =>
     matches := lambda(BankMeaning, fact => fact.context == subject.context)
     matchCount := array.len(data: matches)
     if matchCount == 1 then
@@ -196,9 +201,11 @@ explainLearnedContext() =>
             candidates: matches,
             evidence: []
         )
+    end
+end
 
 @mixfix(pattern: "how many {property:obj} {subject:obj} have")
-answerLearnedQuantity() =>
+def answerLearnedQuantity() =>
     propertyName := property.text
     subjectName := subject.text
     matches := lambda(Knowledge, fact => fact.name == subjectName)
@@ -236,8 +243,10 @@ answerLearnedQuantity() =>
             value: nil,
             evidence: []
         )
+    end
+end
 
-main() =>
+def main() =>
     felidae := what is felidae
     unlearned := what is quantum
     ambiguousBank := what is bank
@@ -252,3 +261,4 @@ main() =>
         article_bank: articleBank,
         sony_legs: sonyLegs
     )
+end

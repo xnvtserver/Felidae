@@ -1,9 +1,8 @@
-@overload(
-    operator: conflictMerge,
-    pattern: "{left} conflictMerge {right}",
-    captures: {left: number, right: number},
-    result: number,
-    visibility: public
+@mixfix(
+    pattern: "{left: number} conflictMerge {right: number}",
+    result: number.class,
+    visibility: "public"
 )
-mergeFromB() =>
+def mergeFromB() =>
     return left - right
+end

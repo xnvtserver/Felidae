@@ -1,6 +1,8 @@
 @mixfix(pattern: "{source: string} routes {destination: string} toward {owner: string}")
-routeValue() =>
+def routeValue() =>
     return source
+end
 
-main() =>
+def main() =>
     return "felidae" routes "reasoner"
+end

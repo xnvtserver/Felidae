@@ -89,6 +89,18 @@ void IntegerTokenList::encodeNextStatement() const {
     if (spelling == "index") return TokenId::INDEX;
     if (spelling == "extends") return TokenId::EXTENDS;
     if (spelling == "elif") return TokenId::ELIF;
+    if (spelling == "new") return TokenId::NEW;
+    if (spelling == "for") return TokenId::FOR;
+    if (spelling == "in") return TokenId::IN;
+    if (spelling == "while") return TokenId::WHILE;
+    if (spelling == "switch") return TokenId::SWITCH;
+    if (spelling == "case") return TokenId::CASE;
+    if (spelling == "default") return TokenId::DEFAULT;
+    if (spelling == "break") return TokenId::BREAK;
+    if (spelling == "continue") return TokenId::CONTINUE;
+    if (spelling == "def") return TokenId::DEF;
+    if (spelling == "this") return TokenId::THIS;
+    if (spelling == "super") return TokenId::SUPER;
     return TokenId::UNKNOWN;
   };
   for (std::size_t offset = 0; offset < statement.size();) {
@@ -165,7 +177,10 @@ void IntegerTokenList::encodeNextStatement() const {
     const std::string_view word = statement.substr(first, offset - first);
     const TokenId::Id keyword = fixedId(word);
     if (keyword != TokenId::UNKNOWN || word == "class" || word == "end" ||
-        word == "index" || word == "extends" || word == "elif") {
+        word == "index" || word == "extends" || word == "elif" || word == "new" ||
+        word == "for" || word == "in" || word == "while" || word == "switch" ||
+        word == "case" || word == "default" || word == "break" ||
+        word == "continue" || word == "def") {
       push(keyword, first, offset);
       continue;
     }

@@ -4,7 +4,7 @@ Felidae is developed as open-source infrastructure, and funding helps turn commu
 
 Support is used for:
 
-* **Development** — language features, compiler/runtime improvements, and tooling
+* **Development** — language features and interpreter/runtime improvements
 * **Stabilization** — bug fixes, reliability improvements, and compatibility work
 * **Documentation** — guides, examples, API references, and learning materials
 * **Testing** — test coverage, regression testing, and CI infrastructure

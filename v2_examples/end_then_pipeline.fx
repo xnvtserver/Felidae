@@ -1,15 +1,15 @@
 # Explicit `end` delimiters close methods and nested decisions while the AST
 # interpreter preserves the existing `then` pipeline semantics.
 
-increment(value: number) =>
+def increment(value: number) =>
     return value + 1
 end
 
-double(value: number) =>
+def double(value: number) =>
     return value * 2
 end
 
-evaluate(value: number) =>
+def evaluate(value: number) =>
     if value >= 0 then
         processed := increment(value: value)
             then double(value: system.result)
@@ -19,7 +19,7 @@ evaluate(value: number) =>
     end
 end
 
-main() =>
+def main() =>
     return (
         accepted: evaluate(value: 4),
         rejected: evaluate(value: -4)

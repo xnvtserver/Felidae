@@ -7,7 +7,9 @@
 #include "ParserMetrics.h"
 #include <filesystem>
 #include <functional>
+#include <iosfwd>
 #include <list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -20,6 +22,12 @@
 
 namespace Felidae {
 
+class RocksFactStore;
+class WordVocabulary;
+struct StoredFactIndex;
+struct StoredLink;
+struct StoredClassEdge;
+
 class InterpreterError : public std::runtime_error {
 public:
     explicit InterpreterError(const std::string& msg) : std::runtime_error(msg) {}
@@ -27,9 +35,19 @@ public:
 
 class Interpreter {
 public:
+    using MetricValues = std::map<std::string, std::uint64_t>;
     using ClauseList = std::vector<std::shared_ptr<ClauseStmt>>;
 
+    Interpreter();
     ~Interpreter();
+    void openDatabase(const std::filesystem::path& directory);
+    // Console builtins use streams owned by the caller. This keeps database
+    // service sessions isolated; the default terminal streams remain the
+    // fallback for embedded callers that do not configure them.
+    void setIoStreams(std::istream& input, std::ostream& output) noexcept {
+        inputStream_ = &input;
+        outputStream_ = &output;
+    }
 
     void addProgram(const Program& program);
     // Fast registration boundary for a parser that emits one statement at a
@@ -59,24 +77,17 @@ public:
     std::shared_ptr<Expr> callAutoEntry();
     std::string valueToString(const std::shared_ptr<Expr>& value) const;
     std::string valueToDisplayString(const std::shared_ptr<Expr>& value) const;
+    std::string valueToDebugString(const std::shared_ptr<Expr>& value) const;
     std::string runtimeMetricsJson() const;
+    // Read-only snapshots used by interactive diagnostics. They are collected
+    // only on request and add no work to normal file execution.
+    MetricValues runtimeCounters() const;
+    MetricValues databaseStatistics() const;
     void recordStreamedModuleMicros(std::size_t micros);
     void recordParserMetrics(const ParserMetrics& metrics);
     std::size_t syncFactSource(const std::filesystem::path& file);
     std::shared_ptr<OperatorRegistry> operatorRegistry() const { return operators_; }
-    // Imported source files registered by the current interpreter.  The root
-    // module is owned by the frontend; callers add it to any watch set.
-    std::vector<std::filesystem::path> loadedSourceFiles() const;
-
-    // Source analysis needs the real import resolver and operator registry,
-    // but must never run entry calls or evaluate global initializers. Set this
-    // before loading any program; normal interpreters keep the default.
-    void setLoadEvaluationEnabled(bool enabled) { loadEvaluationEnabled_ = enabled; }
-    using StatementLoadHook =
-        std::function<void(const std::shared_ptr<Statement>& statement)>;
-    void setStatementLoadHook(StatementLoadHook hook) {
-        statementLoadHook_ = std::move(hook);
-    }
+    std::shared_ptr<WordVocabulary> tokenizer() const { return tokenizer_; }
 
     // Real (not simulated) execution control for a driving debugger: called
     // once per goal, immediately before it runs, from solveIterative's
@@ -96,6 +107,10 @@ public:
     // step modes.
     using GoalHook = std::function<void(const Goal& goal, const Env& env, std::size_t callDepth)>;
     void setGoalHook(GoalHook hook) { goalHook_ = std::move(hook); }
+    using CancellationCheck = std::function<bool()>;
+    void setCancellationCheck(CancellationCheck check) {
+        cancellationCheck_ = std::move(check);
+    }
 
 private:
     struct ThreadTask {
@@ -124,47 +139,6 @@ private:
         std::vector<Solution> solutions;
         std::list<std::string>::iterator recency;
         std::size_t estimatedBytes = 0;
-    };
-    struct ComparisonDispatchKey {
-        SymbolId sourceTypeId = 0;
-        SymbolId targetTypeId = 0;
-        std::string sourceType;
-        std::string targetType;
-
-        bool operator==(const ComparisonDispatchKey& other) const {
-            return sourceTypeId == other.sourceTypeId && targetTypeId == other.targetTypeId &&
-                   sourceType == other.sourceType && targetType == other.targetType;
-        }
-    };
-    struct ComparisonDispatchKeyHash {
-        std::size_t operator()(const ComparisonDispatchKey& key) const {
-            std::size_t seed = std::hash<SymbolId>{}(key.sourceTypeId);
-            seed ^= std::hash<SymbolId>{}(key.targetTypeId) + 0x9e3779b9U +
-                    (seed << 6U) + (seed >> 2U);
-            seed ^= std::hash<std::string>{}(key.sourceType) + 0x9e3779b9U +
-                    (seed << 6U) + (seed >> 2U);
-            return seed ^ (std::hash<std::string>{}(key.targetType) + 0x9e3779b9U +
-                           (seed << 6U) + (seed >> 2U));
-        }
-    };
-    struct ComparisonDispatchPlan {
-        std::shared_ptr<ClauseStmt> membershipClause;
-        std::shared_ptr<ClauseStmt> comparisonClause;
-        std::string membershipName;
-        std::string comparisonName;
-        std::string targetFamily;
-    };
-    struct ReferenceAttachment {
-        std::uint64_t id = 0;
-        std::uint64_t sourceFactId = 0;
-        std::string callableName;
-        std::shared_ptr<ClauseStmt> callable;
-        std::shared_ptr<Expr> defaultFactor;
-        std::shared_ptr<MapExpr> descriptor;
-        std::size_t creationOrder = 0;
-        std::shared_ptr<MapExpr> canonicalResult;
-        std::uint64_t canonicalGeneration = 0;
-        bool dirty = true;
     };
     struct ClauseBucket {
         std::string name;
@@ -219,10 +193,15 @@ private:
         FactMemory memory;
         GlobalEnv globals;
         std::unordered_map<SymbolId, std::shared_ptr<ClassStmt>> classDefinitions;
-        std::unordered_map<std::uint64_t, std::vector<ReferenceAttachment>> referencesBySource;
-        std::uint64_t nextReferenceAttachmentId = 1;
-        std::size_t nextReferenceCreationOrder = 0;
-        std::uint64_t referenceEvaluationGeneration = 0;
+        std::unordered_set<std::string> persistedClassSchemas;
+        struct FactTypeContractSnapshot {
+            std::vector<std::string> fields;
+            std::vector<ExprKind> kinds;
+            std::vector<std::string> keyFields;
+            std::vector<std::vector<std::string>> indexes;
+            bool declaredClass = false;
+        };
+        std::unordered_map<std::string, FactTypeContractSnapshot> factTypeContracts;
         std::set<std::filesystem::path> loadedFiles;
         std::unordered_set<std::string> packageDiscoveryAttempts;
         std::unordered_map<const ClauseStmt*, std::filesystem::path> clauseOrigins;
@@ -236,15 +215,29 @@ private:
 
     std::shared_ptr<ClauseTable> clauses_ = std::make_shared<ClauseTable>();
     std::shared_ptr<OperatorRegistry> operators_ = std::make_shared<OperatorRegistry>();
+    std::shared_ptr<WordVocabulary> tokenizer_;
     std::unordered_map<PatternId, std::vector<std::shared_ptr<ClauseStmt>>> operatorClauses_;
     std::unique_ptr<ModuleTransactionState> moduleTransaction_;
     std::vector<Call> autoEntryCalls_;
     std::vector<std::shared_ptr<Expr>> autoEntryResults_;
     FactMemory memory_;
     GlobalEnv globals_;
-    // Class declarations are retained as AST schema metadata.  A constructor
-    // call creates a typed map directly; it never passes through IR or a VM.
+    // Class declarations are retained as AST schema metadata. A constructor
+    // call creates a typed map directly.
     std::unordered_map<SymbolId, std::shared_ptr<ClassStmt>> classDefinitions_;
+    // Declarations reconstructed from RocksDB carry schema only. The first
+    // matching source declaration replaces one so methods are loaded exactly
+    // once; subsequent source declarations remain an error.
+    std::unordered_set<std::string> persistedClassSchemas_;
+    struct FactTypeContract {
+        std::vector<std::string> fields;
+        std::vector<ExprKind> kinds;
+        std::vector<std::string> keyFields;
+        std::vector<std::vector<std::string>> indexes;
+        bool declaredClass = false;
+    };
+    std::unordered_map<std::string, FactTypeContract> factTypeContracts_;
+    std::unique_ptr<RocksFactStore> durableStore_;
     std::unordered_map<std::string, SolveCacheEntry> solveCache_;
     std::list<std::string> solveCacheRecency_;
     std::size_t solveCacheBytes_ = 0;
@@ -258,14 +251,6 @@ private:
     // Fact mutations retain query indexes, but hierarchy changes must never
     // let a previous ancestry answer leak into a later analysis.
     mutable std::uint64_t ancestryCacheGeneration_ = 0;
-    std::unordered_map<ComparisonDispatchKey,
-                       ComparisonDispatchPlan,
-                       ComparisonDispatchKeyHash> comparisonDispatchCache_;
-    std::unordered_map<std::uint64_t, std::vector<ReferenceAttachment>> referencesBySource_;
-    std::uint64_t nextReferenceAttachmentId_ = 1;
-    std::size_t nextReferenceCreationOrder_ = 0;
-    std::uint64_t referenceEvaluationGeneration_ = 0;
-    std::unordered_set<std::string> activeReferenceEvaluations_;
     std::unordered_set<std::string> activeNegatedPredicates_;
     std::unordered_map<SymbolId, std::string> contraries_;
     std::unordered_map<SymbolId, std::shared_ptr<TableEvaluation>> tableCache_;
@@ -290,13 +275,10 @@ private:
     bool valueCallMode_ = false;
     size_t valueCallTrampolineDepth_ = 0;
     size_t methodCallDepth_ = 0;
-    std::unordered_set<std::string> activeComparisons_;
     std::vector<std::shared_ptr<Expr>> pipelineResults_;
     std::size_t clauseAttempts_ = 0;
     std::size_t unificationAttempts_ = 0;
     std::size_t factCandidates_ = 0;
-    std::size_t relationshipCandidates_ = 0;
-    std::size_t relationshipCandidatesPruned_ = 0;
     std::size_t solutionMaterializations_ = 0;
     std::size_t environmentCopies_ = 0;
     std::size_t standardizedClauses_ = 0;
@@ -311,8 +293,9 @@ private:
     ParserMetrics parserMetrics_;
     std::size_t factRegistrationMicros_ = 0;
     GoalHook goalHook_;
-    bool loadEvaluationEnabled_ = true;
-    StatementLoadHook statementLoadHook_;
+    CancellationCheck cancellationCheck_;
+    std::istream* inputStream_ = nullptr;
+    std::ostream* outputStream_ = nullptr;
     mutable std::size_t dispatchCacheHits_ = 0;
     mutable std::size_t dispatchCacheMisses_ = 0;
     std::size_t tableCacheHits_ = 0;
@@ -346,19 +329,25 @@ private:
                          Env env,
                          std::vector<Solution>& out,
                          size_t maxSolutions,
-                         size_t depth);
+                         size_t depth,
+                         const std::shared_ptr<Expr>& receiver = {});
     bool solveBuiltin(const Call& call, Env& env);
     bool solveNativeCall(const Call& call, Env& env);
     bool evalBuiltinTerm(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
     std::vector<const ClassFieldDecl*> classFieldsFor(const ClassStmt& schema) const;
     std::optional<std::size_t> nearestPrototypeFact(const std::string& type);
+    std::shared_ptr<MapExpr> nearestPrototypeValue(const std::string& type);
     bool instantiateClass(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
+    bool evalDataValue(const std::shared_ptr<Expr>& expression,
+                       const Env& env,
+                       std::shared_ptr<Expr>& out);
+    bool valueMatchesFieldType(const std::shared_ptr<Expr>& value,
+                               const ClassFieldDecl::TypeRef& type) const;
     bool evalAncestorAnalysis(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
     bool evalFactPropagation(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
-    bool evalRelationCompare(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
-    bool evalRelationFind(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
-    bool evalDependencySatisfied(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
-    bool evalFactReferences(const Call& call, const Env& env, std::shared_ptr<Expr>& out);
+    bool isMethodTransitivelyPure(const std::shared_ptr<ClauseStmt>& clause,
+                                  std::unordered_set<const ClauseStmt*>& visiting,
+                                  std::string& reason) const;
     bool evalReasoningBuiltin(const TermExpr& term,
                               const Env& env,
                               std::shared_ptr<Expr>& out);
@@ -368,6 +357,39 @@ private:
     std::shared_ptr<MapExpr> prepareInsertedFact(const std::string& type,
                                                  const MapExpr& values,
                                                  const Env& env);
+    void registerClassContract(const ClassStmt& declaration);
+    bool validateFactWrite(const std::string& type,
+                           const std::shared_ptr<MapExpr>& value,
+                           bool idempotentSeed,
+                           std::optional<std::uint64_t> ignoredFactId = std::nullopt);
+    std::vector<std::shared_ptr<Expr>> factKey(
+        const std::string& type, const std::shared_ptr<MapExpr>& value) const;
+    std::vector<StoredFactIndex> factIndexes(
+        const std::string& type, const std::shared_ptr<MapExpr>& value) const;
+    std::shared_ptr<MapExpr> publishFact(
+        std::string type,
+        std::string parentType,
+        std::shared_ptr<MapExpr> value,
+        std::filesystem::path origin = {},
+        std::vector<std::uint64_t> parentFactIds = {},
+        std::vector<SymbolId> designations = {},
+        std::shared_ptr<MapExpr> temporalMetadata = {},
+        bool idempotentSeed = false);
+    std::shared_ptr<MapExpr> resolveLinkEndpoint(
+        const std::shared_ptr<Expr>& expression,
+        const Env& env);
+    std::shared_ptr<MapExpr> publishLink(
+        const std::vector<Arg>& arguments,
+        const Env& env,
+        bool idempotentSeed);
+    std::shared_ptr<MapExpr> classGraphEdgeValue(const StoredClassEdge& edge) const;
+    std::shared_ptr<MapExpr> createClassGraph(
+        const std::vector<std::shared_ptr<Expr>>& endpoints);
+    bool evalClassGraphMember(const std::shared_ptr<MapExpr>& graph,
+                              const std::string& member,
+                              const std::vector<Arg>& arguments,
+                              const Env& env,
+                              std::shared_ptr<Expr>& out);
     std::shared_ptr<ArrayExpr> insertFactsFromRows(const std::string& type,
                                                    const std::vector<std::shared_ptr<Expr>>& rows,
                                                    const std::filesystem::path& source);
@@ -377,30 +399,14 @@ private:
     bool evalReasoningProve(const TermExpr& term,
                             const Env& env,
                             std::shared_ptr<Expr>& out);
-    bool evalReasoningGrade(const TermExpr& term,
-                            const Env& env,
-                            std::shared_ptr<Expr>& out,
-                            const std::shared_ptr<MapExpr>& exact = {});
-    bool solveFactAttachment(const Call& call, Env& env);
-    bool attachFactReference(const Call& call, Env& env, std::uint64_t sourceFactId);
-    std::shared_ptr<ClauseStmt> resolveReferenceCallable(const std::shared_ptr<Expr>& callable,
-                                                          const std::shared_ptr<Expr>& source,
-                                                          const std::shared_ptr<Expr>& factor,
-                                                          std::string& normalizedName);
-    bool validateReferenceResult(const std::shared_ptr<Expr>& value,
-                                 std::shared_ptr<MapExpr>& result) const;
-    bool isReferenceMethodPure(const std::shared_ptr<ClauseStmt>& clause,
-                               std::unordered_set<const ClauseStmt*>& visiting,
-                               std::string& reason) const;
-    bool referenceValueMatchesType(const std::shared_ptr<Expr>& value,
-                                   const MethodParamPlan& parameter) const;
-    std::shared_ptr<Expr> referenceEffectiveFactor(const ReferenceAttachment& attachment) const;
-    bool invokeComparisonMethod(const std::shared_ptr<ClauseStmt>& clause,
-                                const Call& call,
-                                const Env& env,
-                                std::shared_ptr<Expr>& out);
-    bool evalCallAsValue(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
-    bool evalCallAsValueOnce(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
+    bool evalCallAsValue(const TermExpr& term,
+                         const Env& env,
+                         std::shared_ptr<Expr>& out,
+                         const std::shared_ptr<Expr>& receiver = {});
+    bool evalCallAsValueOnce(const TermExpr& term,
+                             const Env& env,
+                             std::shared_ptr<Expr>& out,
+                             const std::shared_ptr<Expr>& receiver = {});
     bool evalOperatorExpr(const OperatorExpression& expression,
                           const Env& env,
                           std::shared_ptr<Expr>& out);
@@ -499,7 +505,20 @@ private:
         std::vector<std::uint64_t> parentFactIds;
     };
     FactMaterialization factToMap(const ClauseStmt& clause);
-    std::shared_ptr<ArrayExpr> materializeFactSelection(const std::shared_ptr<Expr>& selection);
+    std::vector<std::string> durableFactBuckets(const std::string& type) const;
+    using FactSelectionVisitor =
+        std::function<bool(const std::shared_ptr<MapExpr>&)>;
+    std::shared_ptr<ArrayExpr> materializeFactSelection(
+        const std::shared_ptr<Expr>& selection, std::size_t limit = 0,
+        std::size_t* countOnly = nullptr,
+        const FactSelectionVisitor* visitor = nullptr);
+    std::size_t countFactSelection(const std::shared_ptr<Expr>& selection);
+    using GraphSelectionVisitor =
+        std::function<bool(const std::shared_ptr<MapExpr>&)>;
+    std::shared_ptr<ArrayExpr> materializeGraphSelection(
+        const std::shared_ptr<GraphSelectionExpr>& selection,
+        std::size_t limit = 0,
+        const GraphSelectionVisitor* visitor = nullptr);
     std::shared_ptr<Expr> materializeIfFactSelection(const std::shared_ptr<Expr>& value);
     void refreshAncestryCaches() const;
     const std::vector<std::string>& typeAncestry(const std::string& type) const;

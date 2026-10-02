@@ -12,7 +12,7 @@ Machine(
     active: 1.0
 )
 
-main() =>
+def main() =>
     cats := lambda(Cat, fact => fact.name == "shared-profile")
     machines := lambda(Machine, fact => fact.name == "shared-profile")
     cat := array.get(data: cats, position: 0)
@@ -26,3 +26,4 @@ main() =>
         common_ancestors: ancestors,
         ancestor_evidence: ancestors
     )
+end

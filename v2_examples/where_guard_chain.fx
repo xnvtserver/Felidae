@@ -8,17 +8,19 @@
 # ("a where-guarded clause requires exactly one else branch") rather than a
 # guessed runtime failure behavior.
 
-eligible(score: number, active: number) =>
+def eligible(score: number, active: number) =>
     adjusted := score + 0
     where score >= 70
     where active == 1.0
     return adjusted
 else
     return (0.0)
+end
 
-main() =>
+def main() =>
     return (
         passes: eligible(score: 82, active: 1.0),
         lowScore: eligible(score: 40, active: 1.0),
         inactive: eligible(score: 90, active: 0.0)
     )
+end

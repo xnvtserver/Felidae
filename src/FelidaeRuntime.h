@@ -14,16 +14,32 @@
 namespace Felidae {
 
 Program parseProgramFile(const std::filesystem::path& path);
-Program parseProgramText(std::string text);
+Program parseProgramText(
+    std::string text,
+    std::shared_ptr<WordVocabulary> tokenizer = {},
+    std::shared_ptr<OperatorRegistry> operators = {});
+enum class InteractiveProgramLoad {
+    Empty,
+    Expression,
+    Incomplete,
+    Loaded
+};
+InteractiveProgramLoad loadInteractiveProgramText(
+    std::string text,
+    const std::filesystem::path& importBase,
+    Interpreter& interpreter);
 void parseProgramFileChunks(
     const std::filesystem::path& path,
     const std::function<void(Program&&)>& consume,
-    std::size_t statementsPerChunk = 1);
+    std::size_t statementsPerChunk = 1,
+    std::shared_ptr<OperatorRegistry> operators = {},
+    std::shared_ptr<WordVocabulary> tokenizer = {});
 void parseProgramFileStatements(
     const std::filesystem::path& path,
     const std::function<void(std::shared_ptr<Statement>)>& consume,
     std::shared_ptr<OperatorRegistry> operators = {},
-    ParserMetrics* metrics = nullptr);
+    ParserMetrics* metrics = nullptr,
+    std::shared_ptr<WordVocabulary> tokenizer = {});
 std::string readSourceFile(const std::filesystem::path& path);
 void readSourceLines(const std::filesystem::path& path,
                      const std::function<void(const std::string&)>& onLine);
@@ -36,7 +52,10 @@ void loadProgramRoot(
 void loadProgramRoot(const std::filesystem::path& file,
                      const Program& program,
                      Interpreter& interpreter);
-std::vector<std::shared_ptr<Goal>> parseQueryText(const std::string& query);
+std::vector<std::shared_ptr<Goal>> parseQueryText(
+    const std::string& query,
+    std::shared_ptr<WordVocabulary> tokenizer = {},
+    std::shared_ptr<OperatorRegistry> operators = {});
 void printSolutions(Interpreter& interpreter,
                     const std::vector<std::shared_ptr<Goal>>& queryGoals,
                     const std::vector<Solution>& solutions,

@@ -1,10 +1,9 @@
-@overload(
-    operator: noisyAdd,
-    pattern: "{left} noisyAdd {right}",
-    captures: {left: number, right: number},
-    result: number,
-    effects: pure
+@mixfix(
+    pattern: "{left: number} noisyAdd {right: number}",
+    result: number.class,
+    effects: "pure"
 )
-noisyAddNumbers() =>
+def noisyAddNumbers() =>
     system.print(value: left)
     return left + right
+end

@@ -9,10 +9,10 @@ end
 
 Student(name: "Ada", grade: 10)
 
-increment(value: number) =>
+def increment(value: number) =>
     return value + 1
 end
 
-main() =>
+def main() =>
     return (count: Person.count(), answer: increment(value: 41))
 end

@@ -1,13 +1,12 @@
-@overload(
-    operator: secretBlend,
-    pattern: "{left} secretBlend {right}",
-    captures: {left: number, right: number},
-    result: number,
-    precedence: additive,
-    associativity: left,
-    cardinality: one,
-    effects: pure,
-    visibility: private
+@mixfix(
+    pattern: "{left: number} secretBlend {right: number}",
+    result: number.class,
+    precedence: "additive",
+    associativity: "left",
+    cardinality: "one",
+    effects: "pure",
+    visibility: "private"
 )
-secretBlendNumbers() =>
+def secretBlendNumbers() =>
     return left + right
+end

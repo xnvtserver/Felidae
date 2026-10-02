@@ -1,6 +1,6 @@
 import ("group")
 
-main() =>
+def main() =>
     members := [0, 1],
     table := [
         {left: 0, right: 0, result: 0},
@@ -17,3 +17,4 @@ main() =>
         commutative: Group.commutative(set: members, table: table),
         abelian: Group.abelian(set: members, table: table, identity: 0)
     )
+end

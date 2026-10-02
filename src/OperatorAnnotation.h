@@ -49,7 +49,19 @@ inline ParsedOperatorAnnotation decodeOperatorAnnotation(const Call& annotation)
     const auto text = [&](std::string_view name, bool required = false) -> std::string {
         auto value = argument(name);
         if (auto literal = std::dynamic_pointer_cast<StringExpr>(value)) return literal->value;
-        if (auto symbol = std::dynamic_pointer_cast<VarExpr>(value)) return symbol->name;
+        if (name == "operator") {
+            if (auto function = std::dynamic_pointer_cast<FunctionRefExpr>(value)) {
+                return function->name;
+            }
+        }
+        if (name == "result") {
+            if (auto type = std::dynamic_pointer_cast<ClassRefExpr>(value)) return type->name;
+        }
+        if (value) {
+            throw std::runtime_error(
+                "@" + annotation.name + " requires a typed or quoted '" +
+                std::string(name) + "'");
+        }
         if (required) throw std::runtime_error(
             "@" + annotation.name + " requires '" + std::string(name) + "'");
         return {};

@@ -108,17 +108,8 @@ void WordVocabulary::indexEntry(std::size_t index) const {
 void WordVocabulary::ensureFixedVocabulary() {
   const auto &fixed = fixedVocabulary();
   if (entries_.empty()) {
-    entries_.reserve(fixed.size());
-    for (const auto spelling : fixed)
-      entries_.push_back(
-          Entry{std::string(spelling), decodeModelSpelling(spelling)});
-    std::error_code error;
-    std::filesystem::create_directories(modelPath_.parent_path(), error);
-    std::ofstream output(modelPath_, std::ios::binary | std::ios::trunc);
-    if (!output)
-      throw std::runtime_error("Unable to create tokenizer model: " +
-                               modelPath_.string());
-    for (const auto &entry : entries_) output << entry.spelling << '\n';
+    throw std::runtime_error("Tokenizer model is missing or empty: " +
+                             modelPath_.string());
   } else if (entries_.size() < fixed.size()) {
     throw std::runtime_error("Tokenizer model is missing fixed syntax IDs: " +
                              modelPath_.string());
@@ -154,23 +145,12 @@ int WordVocabulary::findToken(std::string_view bytes) const {
   return found == byBytes_.end() ? -1 : found->second;
 }
 
-void WordVocabulary::appendModelLine(std::string_view bytes) const {
-  std::error_code error;
-  std::filesystem::create_directories(modelPath_.parent_path(), error);
-  std::ofstream output(modelPath_, std::ios::binary | std::ios::app);
-  if (!output)
-    throw std::runtime_error("Unable to append tokenizer model: " +
-                             modelPath_.string());
-  output << encodeModelSpelling(bytes) << '\n';
-}
-
 int WordVocabulary::appendToken(std::string_view bytes, bool addToMatchOrder) const {
   std::lock_guard lock(mutex_);
   const int existing = findToken(bytes);
   if (existing >= 0) return existing;
   const int id = static_cast<int>(entries_.size());
   std::string owned(bytes);
-  appendModelLine(owned);
   entries_.push_back(Entry{encodeModelSpelling(owned), std::move(owned)});
   indexEntry(static_cast<std::size_t>(id));
   if (addToMatchOrder) {

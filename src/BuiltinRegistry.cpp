@@ -13,6 +13,7 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::Type, "type", BuiltinEffect::Pure},
         {BuiltinId::Instanceof, "instanceof", BuiltinEffect::Pure},
         {BuiltinId::Count, "count", BuiltinEffect::Pure},
+        {BuiltinId::Range, "range", BuiltinEffect::Pure},
         {BuiltinId::Sum, "sum", BuiltinEffect::Pure},
         {BuiltinId::Average, "average", BuiltinEffect::Pure},
         {BuiltinId::Min, "min", BuiltinEffect::Pure},
@@ -74,10 +75,11 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::FactMaterialize, "Fact:materialize", BuiltinEffect::Pure},
         {BuiltinId::FactRelease, "Fact:release", BuiltinEffect::WritesExternalState},
         {BuiltinId::FactTimeline, "Fact:timeline", BuiltinEffect::Pure},
-        // Reference evaluation is explicit and can replace the attachment's
-        // private canonical result, so it must never be query-cached.
-        {BuiltinId::FactReferences, "Fact:references", BuiltinEffect::WritesExternalState},
         {BuiltinId::DbSync, "db:sync", BuiltinEffect::WritesExternalState},
+        {BuiltinId::DbStats, "db:stats", BuiltinEffect::ReadsExternalState},
+        {BuiltinId::DbConfig, "db:config", BuiltinEffect::ReadsExternalState},
+        {BuiltinId::DbConfigure, "db:configure", BuiltinEffect::WritesExternalState},
+        {BuiltinId::FxInterpret, "fx:interpret", BuiltinEffect::ReadsExternalState},
         {BuiltinId::FactInsert, "Fact:insert", BuiltinEffect::WritesExternalState},
         {BuiltinId::FactUpdate, "Fact:update", BuiltinEffect::WritesExternalState},
         {BuiltinId::FactDelete, "Fact:delete", BuiltinEffect::WritesExternalState},
@@ -85,6 +87,7 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::FactOrWhere, "Fact:orWhere", BuiltinEffect::Pure},
         {BuiltinId::FactLimit, "Fact:limit", BuiltinEffect::Pure},
         {BuiltinId::FactJoin, "join", BuiltinEffect::Pure},
+        {BuiltinId::Link, "Link", BuiltinEffect::WritesExternalState},
         {BuiltinId::ArrayWhere, "Array:where", BuiltinEffect::Pure},
         {BuiltinId::ArrayOrderBy, "Array:orderBy", BuiltinEffect::Pure},
         {BuiltinId::CommonAncestors, "commonAncestors", BuiltinEffect::Pure},
@@ -92,9 +95,6 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::HighestCommonAncestor, "highestCommonAncestor", BuiltinEffect::Pure},
         {BuiltinId::AncestorAnalysis, "ancestorAnalysis", BuiltinEffect::Pure},
         {BuiltinId::PropagateFact, "propagateFact", BuiltinEffect::Pure},
-        {BuiltinId::RelationCompare, "Relation:compare", BuiltinEffect::Pure},
-        {BuiltinId::RelationFind, "Relation:find", BuiltinEffect::Pure},
-        {BuiltinId::DependencySatisfied, "Dependency:satisfied", BuiltinEffect::Pure},
         {BuiltinId::JsonObject, "json:object", BuiltinEffect::Pure},
         {BuiltinId::JsonParse, "json:parse", BuiltinEffect::Pure},
         {BuiltinId::JsonGet, "json:get", BuiltinEffect::Pure},
@@ -152,17 +152,16 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::ProbabilityUniformCdf, "probability:uniformCdf", BuiltinEffect::Pure},
         {BuiltinId::ProbabilitySample, "probability:sample", BuiltinEffect::Volatile},
         {BuiltinId::ProbabilityWeightedChoice, "probability:weightedChoice", BuiltinEffect::Volatile},
-        {BuiltinId::ReasoningContrary, "Reasoning:contrary", BuiltinEffect::WritesExternalState},
-        {BuiltinId::ReasoningProve, "Reasoning:prove", BuiltinEffect::ReadsExternalState},
-        {BuiltinId::ReasoningGrade, "Reasoning:grade", BuiltinEffect::Pure},
-        {BuiltinId::ReasoningDecide, "Reasoning:decide", BuiltinEffect::ReadsExternalState},
+        {BuiltinId::ReasoningContrary, "reasoning:contrary", BuiltinEffect::WritesExternalState},
+        {BuiltinId::ReasoningProve, "reasoning:prove", BuiltinEffect::ReadsExternalState},
         {BuiltinId::MlSigmoid, "ml:sigmoid", BuiltinEffect::Pure},
         {BuiltinId::MlRelu, "ml:relu", BuiltinEffect::Pure},
         {BuiltinId::MlDot, "ml:dot", BuiltinEffect::Pure},
         {BuiltinId::MlMeanSquaredError, "ml:meanSquaredError", BuiltinEffect::Pure},
         {BuiltinId::OverloadAnnotation, "overload", BuiltinEffect::Pure},
         {BuiltinId::MatcherAnnotation, "matcher", BuiltinEffect::Pure},
-        {BuiltinId::MixfixAnnotation, "mixfix", BuiltinEffect::Pure}
+        {BuiltinId::MixfixAnnotation, "mixfix", BuiltinEffect::Pure},
+        {BuiltinId::OverrideAnnotation, "override", BuiltinEffect::Pure}
 };
 
 constexpr std::size_t builtinInfoCount() {
@@ -202,8 +201,8 @@ BuiltinId builtinIdForName(const std::string& name) {
 BuiltinId builtinIdForName(std::string_view name) {
     auto found = builtinsByName().find(name);
     if (found != builtinsByName().end()) return found->second;
-    // Source member syntax uses dots while the historical builtin registry
-    // stores qualified names with colons.
+    // Source library syntax uses dots; colons remain an internal registry
+    // separator and are not accepted as namespace syntax by the parser.
     std::string canonical(name);
     std::replace(canonical.begin(), canonical.end(), '.', ':');
     found = builtinsByName().find(canonical);

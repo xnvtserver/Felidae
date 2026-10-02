@@ -16,6 +16,8 @@ namespace Felidae {
 // the receiver's runtime fact/class type is known. It is intentionally absent
 // from the public builtin registry.
 inline constexpr std::string_view kMemberInvokeTerm = "Object:invokeMember";
+inline constexpr std::string_view kFieldAssignTerm = "Object:assignField";
+inline constexpr std::string_view kSuperTerm = "Object:super";
 
 inline constexpr bool isCustomOperatorCharacter(char value) {
     switch (value) {
@@ -44,6 +46,7 @@ enum class BuiltinId {
     Instanceof,
 
     Count,
+    Range,
     Sum,
     Average,
     Min,
@@ -113,8 +116,11 @@ enum class BuiltinId {
     FactMaterialize,
     FactRelease,
     FactTimeline,
-    FactReferences,
     DbSync,
+    DbStats,
+    DbConfig,
+    DbConfigure,
+    FxInterpret,
     FactInsert,
     FactUpdate,
     FactDelete,
@@ -122,20 +128,17 @@ enum class BuiltinId {
     FactOrWhere,
     FactLimit,
     FactJoin,
+    Link,
     ArrayWhere,
     ArrayOrderBy,
 
-    // Fact reasoning is language-native.  These operate directly on typed
-    // fact values; FactMemory remains an implementation detail.
+    // Fact reasoning is language-native. These operate directly on typed
+    // fact values regardless of the persistent store implementation.
     CommonAncestors,
     LowestCommonAncestor,
     HighestCommonAncestor,
     AncestorAnalysis,
     PropagateFact,
-
-    RelationCompare,
-    RelationFind,
-    DependencySatisfied,
 
     JsonObject,
     JsonParse,
@@ -200,8 +203,6 @@ enum class BuiltinId {
 
     ReasoningContrary,
     ReasoningProve,
-    ReasoningGrade,
-    ReasoningDecide,
 
     MlSigmoid,
     MlRelu,
@@ -211,13 +212,15 @@ enum class BuiltinId {
     OverloadAnnotation,
     MatcherAnnotation,
     MixfixAnnotation,
+    OverrideAnnotation,
 
-    Last = MixfixAnnotation
+    Last = OverrideAnnotation
 };
 
 enum class LanguageTypeId {
     Unknown = 0,
     Any,
+    Object,
     Array,
     Bool,
     Boolean,
@@ -237,6 +240,7 @@ enum class LanguageTypeId {
 inline constexpr std::string_view languageTypeName(LanguageTypeId type) {
     switch (type) {
         case LanguageTypeId::Any: return "any";
+        case LanguageTypeId::Object: return "object";
         case LanguageTypeId::Array: return "array";
         case LanguageTypeId::Bool: return "bool";
         case LanguageTypeId::Boolean: return "boolean";
@@ -258,6 +262,7 @@ inline constexpr std::string_view languageTypeName(LanguageTypeId type) {
 
 inline LanguageTypeId languageTypeIdForName(const std::string& name) {
     if (name == "any") return LanguageTypeId::Any;
+    if (name == "obj" || name == "object") return LanguageTypeId::Object;
     if (name == "array") return LanguageTypeId::Array;
     if (name == "bool") return LanguageTypeId::Bool;
     if (name == "boolean") return LanguageTypeId::Boolean;

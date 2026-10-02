@@ -1,19 +1,36 @@
 # Set mathematics is dispatched directly by the AST interpreter.
 
-Set.union(sets: array) => ()
-Set.intersection(sets: array) => ()
-Set.intersectionBy(sets: array, fields: array) => ()
-Set.difference(sets: array) => ()
-Set.differenceBy(sets: array, fields: array) => ()
-Set.symmetricDifference(sets: array) => ()
-Set.symmetricDifferenceBy(sets: array, fields: array) => ()
-Set.equals(sets: array) => ()
-Set.equalsBy(sets: array, fields: array) => ()
-Set.subset(sets: array) => ()
-Set.subsetBy(sets: array, fields: array) => ()
-Set.superset(sets: array) => ()
-Set.disjoint(sets: array) => ()
-Set.disjointBy(sets: array, fields: array) => ()
-Set.cardinality(set: any) => ()
-Set.contains(set: any, value: any) => ()
-Set.containsBy(set: any, value: any, fields: array) => ()
+def Set.union(sets: array) => ()
+end
+def Set.intersection(sets: array) => ()
+end
+def Set.intersectionBy(sets: array, fields: array) => ()
+end
+def Set.difference(sets: array) => ()
+end
+def Set.differenceBy(sets: array, fields: array) => ()
+end
+def Set.symmetricDifference(sets: array) => ()
+end
+def Set.symmetricDifferenceBy(sets: array, fields: array) => ()
+end
+def Set.equals(sets: array) => ()
+end
+def Set.equalsBy(sets: array, fields: array) => ()
+end
+def Set.subset(sets: array) => ()
+end
+def Set.subsetBy(sets: array, fields: array) => ()
+end
+def Set.superset(sets: array) => ()
+end
+def Set.disjoint(sets: array) => ()
+end
+def Set.disjointBy(sets: array, fields: array) => ()
+end
+def Set.cardinality(set: any) => ()
+end
+def Set.contains(set: any, value: any) => ()
+end
+def Set.containsBy(set: any, value: any, fields: array) => ()
+end

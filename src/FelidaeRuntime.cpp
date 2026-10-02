@@ -81,19 +81,52 @@ Program parseProgramFile(const fs::path& path) {
     return parseProgramText(readSourceFile(normalized));
 }
 
-Program parseProgramText(std::string text) {
-    auto tokenizer = std::make_shared<WordVocabulary>();
+Program parseProgramText(std::string text,
+                         std::shared_ptr<WordVocabulary> tokenizer,
+                         std::shared_ptr<OperatorRegistry> operators) {
+    if (!tokenizer) tokenizer = std::make_shared<WordVocabulary>();
     IntegerTokenList input(std::move(tokenizer), std::move(text));
-    return IntegerParser(input).parseProgram();
+    return IntegerParser(input, std::move(operators)).parseProgram();
+}
+
+InteractiveProgramLoad loadInteractiveProgramText(
+    std::string text,
+    const fs::path& importBase,
+    Interpreter& interpreter) {
+    IntegerTokenList input(interpreter.tokenizer(), std::move(text));
+    IntegerParser parser(input, interpreter.operatorRegistry());
+    if (parser.emptyInput()) return InteractiveProgramLoad::Empty;
+    if (!parser.startsProgramStatement()) return InteractiveProgramLoad::Expression;
+
+    interpreter.beginModuleTransaction();
+    try {
+        // IntegerParser is the sole authority for both normal source and REPL
+        // declarations. Its structured incomplete-input signal requests
+        // another line without introducing a second block grammar.
+        Program program = parser.parseProgram();
+        for (const auto& imp : program.imports) {
+            for (const auto& path : imp->paths) interpreter.addImport(importBase, path);
+        }
+        interpreter.addProgram(program);
+        interpreter.commitModuleTransaction();
+        return InteractiveProgramLoad::Loaded;
+    } catch (const IntegerParserIncomplete&) {
+        interpreter.rollbackModuleTransaction();
+        return InteractiveProgramLoad::Incomplete;
+    } catch (...) {
+        interpreter.rollbackModuleTransaction();
+        throw;
+    }
 }
 
 void parseProgramFileStatements(
     const fs::path& path,
     const std::function<void(std::shared_ptr<Statement>)>& consume,
     std::shared_ptr<OperatorRegistry> operators,
-    ParserMetrics* metrics) {
+    ParserMetrics* metrics,
+    std::shared_ptr<WordVocabulary> tokenizer) {
     const fs::path normalized = resolveProgramEntryPath(path);
-    auto tokenizer = std::make_shared<WordVocabulary>();
+    if (!tokenizer) tokenizer = std::make_shared<WordVocabulary>();
     IntegerTokenList input(std::move(tokenizer), readSourceFile(normalized));
     IntegerParser parser(input, std::move(operators));
     Program program = parser.parseProgram();
@@ -109,7 +142,9 @@ void parseProgramFileStatements(
 
 void parseProgramFileChunks(const fs::path& path,
                             const std::function<void(Program&&)>& consume,
-                            std::size_t statementsPerChunk) {
+                            std::size_t statementsPerChunk,
+                            std::shared_ptr<OperatorRegistry> operators,
+                            std::shared_ptr<WordVocabulary> tokenizer) {
     if (statementsPerChunk == 0) statementsPerChunk = 1;
     Program chunk;
     parseProgramFileStatements(path, [&](std::shared_ptr<Statement> statement) {
@@ -118,7 +153,7 @@ void parseProgramFileChunks(const fs::path& path,
             consume(std::move(chunk));
             chunk = Program{};
         }
-    });
+    }, std::move(operators), nullptr, std::move(tokenizer));
     if (!chunk.statements.empty()) consume(std::move(chunk));
 }
 
@@ -142,7 +177,7 @@ void loadProgramRoot(const fs::path& file,
                 }
                 interpreter.addProgram(program);
                 afterChunk(program);
-            });
+            }, 1, interpreter.operatorRegistry(), interpreter.tokenizer());
         } else {
             parseProgramFileStatements(normalized, [&](std::shared_ptr<Statement> statement) {
                 if (statement->kind() == StatementKind::Import) {
@@ -151,7 +186,8 @@ void loadProgramRoot(const fs::path& file,
                     return;
                 }
                 interpreter.addStreamedStatement(std::move(statement));
-            }, interpreter.operatorRegistry(), &parserMetrics);
+            }, interpreter.operatorRegistry(), &parserMetrics,
+               interpreter.tokenizer());
         }
         interpreter.commitModuleTransaction();
         interpreter.recordStreamedModuleMicros(static_cast<std::size_t>(
@@ -214,10 +250,13 @@ std::vector<std::string> listCoreLibraries(const fs::path& startDir) {
     return names;
 }
 
-std::vector<std::shared_ptr<Goal>> parseQueryText(const std::string& query) {
-    auto tokenizer = std::make_shared<WordVocabulary>();
+std::vector<std::shared_ptr<Goal>> parseQueryText(
+    const std::string& query,
+    std::shared_ptr<WordVocabulary> tokenizer,
+    std::shared_ptr<OperatorRegistry> operators) {
+    if (!tokenizer) tokenizer = std::make_shared<WordVocabulary>();
     IntegerTokenList input(std::move(tokenizer), query);
-    return IntegerParser(input).parseQuery();
+    return IntegerParser(input, std::move(operators)).parseQuery();
 }
 
 static void collectVarsExpr(const std::shared_ptr<Expr>& expr, std::vector<SymbolId>& vars) {

@@ -1,20 +1,20 @@
 class Person
     name: string
 
-    label() =>
-        return self.name
+    def label() =>
+        return this.name
     end
 end
 
 class Student extends Person
     grade: number
 
-    promoted() =>
-        return Student(name: self.name, grade: self.grade + 1)
+    def promoted() =>
+        return Student(name: this.name, grade: this.grade + 1)
     end
 end
 
-main() =>
+def main() =>
     student := Student(name: "Ada", grade: 10)
     promoted := student.promoted()
     return (

@@ -1,27 +1,25 @@
-@overload(
-    operator: blend,
-    pattern: "{left} blend {right}",
-    captures: {left: number, right: number},
-    result: number,
-    precedence: additive,
-    associativity: left,
-    cardinality: one,
-    effects: pure,
-    visibility: public
+@mixfix(
+    pattern: "{left: number} blend {right: number}",
+    result: number.class,
+    precedence: "additive",
+    associativity: "left",
+    cardinality: "one",
+    effects: "pure",
+    visibility: "public"
 )
-blendNumbers() =>
+def blendNumbers() =>
     return left / 2 + right / 2
+end
 
-@overload(
-    operator: blend,
-    pattern: "{left} difference {right}",
-    captures: {left: number, right: number},
-    result: number,
-    precedence: additive,
-    associativity: left,
-    cardinality: one,
-    effects: pure,
-    visibility: public
+@mixfix(
+    pattern: "{left: number} difference {right: number}",
+    result: number.class,
+    precedence: "additive",
+    associativity: "left",
+    cardinality: "one",
+    effects: "pure",
+    visibility: "public"
 )
-differenceBetweenNumbers() =>
+def differenceBetweenNumbers() =>
     return left / 2 - right / 2
+end

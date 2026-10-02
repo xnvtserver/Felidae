@@ -2,12 +2,6 @@
 # taxonomic paths, concrete facts with contradictory local evidence, and a
 # relationship whose membership is directional by construction.
 
-# Declaring one placeholder instance registers "Relationship" as a known
-# fact type, the same way every other type below does -- required for
-# lambda(Relationship, ...) to be recognized as fact-query sugar rather than
-# an unrecognized bare lambda call.
-Relationship(from: nil, to: nil, name: "", degree: 0, confidence: 0)
-
 Living(name: "living")
 Animal extend Living(name: "animal", cellular: 1.0)
 WarmBlooded extend Animal(name: "warm", temperature: "regulated")
@@ -60,7 +54,7 @@ DogMale extend Carnivore, Domestic(
 # relating tiger to cat does not also relate cat to tiger. Querying both
 # directions with plain field-equality lambdas makes that explicit instead of
 # hiding it behind a comparison engine.
-TigerFemale.membership(input: TigerFemale, against: Mammal) =>
+def TigerFemale.membership(input: TigerFemale, against: Mammal) =>
     return {
         legs: input.legs,
         diet: input.diet,
@@ -69,8 +63,9 @@ TigerFemale.membership(input: TigerFemale, against: Mammal) =>
         hunts: input.hunts,
         territory: input.territory
     }
+end
 
-CatFemale.membership(input: CatFemale, against: Mammal) =>
+def CatFemale.membership(input: CatFemale, against: Mammal) =>
     return {
         legs: input.legs,
         diet: input.diet,
@@ -78,8 +73,9 @@ CatFemale.membership(input: CatFemale, against: Mammal) =>
         produces_milk: input.produces_milk,
         habitat: input.habitat
     }
+end
 
-main() =>
+def main() =>
     tiger_females := lambda(TigerFemale, fact => fact.name == "shira")
     tiger_males := lambda(TigerMale, fact => fact.name == "raja")
     cat_females := lambda(CatFemale, fact => fact.name == "lilly")
@@ -92,16 +88,16 @@ main() =>
     dog_male := array.get(data: dog_males, position: 0)
     wild := array.get(data: wild_families, position: 0)
 
-    # A relationship is just an ordinary fact -- constructing one retains it
-    # immediately, the same as any other fact literal -- not a special
-    # relate() verb. from/to/degree/confidence are plain fields, queryable
-    # the same way as any other fact type.
-    tiger_cat_relationship := Relationship(
+    # Link persists a directed graph edge. Its properties remain ordinary
+    # immutable data and can be used as the join condition.
+    tiger_cat_relationship := Link(
         from: tiger_female,
         to: cat_female,
-        name: "shared-carnivore-evidence",
-        degree: 0.78,
-        confidence: 0.91
+        properties: {
+            kind: "shared_carnivore_evidence",
+            degree: 0.78,
+            confidence: 0.91
+        }
     )
 
     tied_lineage := commonAncestors(left: tiger_female, right: cat_female)
@@ -114,17 +110,18 @@ main() =>
         changes: {habitat: "reserve", name: "wild-animal"}
     )
 
-    # Directed vs. symmetric relationship lookup is a plain field-equality
-    # query over the Relationship facts above -- the same lambda-based
-    # filtering every other fact type already uses, not a bespoke
-    # comparison engine.
-    directed_tiger_cat := lambda(Relationship,
-        r => r.from == tiger_female and r.to == cat_female)
-    directed_cat_tiger := lambda(Relationship,
-        r => r.from == cat_female and r.to == tiger_female)
-    symmetric_tiger_cat := lambda(Relationship,
-        r => (r.from == tiger_female and r.to == cat_female) or
-             (r.from == cat_female and r.to == tiger_female))
+    directed_tiger_cat := TigerFemale().where(name: "shira").join(
+        properties: {kind: "shared_carnivore_evidence"},
+        direction: forward.class
+    )
+    directed_cat_tiger := CatFemale().where(name: "lilly").join(
+        properties: {kind: "shared_carnivore_evidence"},
+        direction: forward.class
+    )
+    symmetric_tiger_cat := TigerFemale().where(name: "shira").join(
+        properties: {kind: "shared_carnivore_evidence"},
+        direction: both.class
+    )
 
     return DeepReasoningReport(
         tied_lineage: tied_lineage,
@@ -136,3 +133,4 @@ main() =>
         directed_cat_tiger: directed_cat_tiger,
         symmetric_tiger_cat: symmetric_tiger_cat
     )
+end

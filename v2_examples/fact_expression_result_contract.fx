@@ -13,7 +13,7 @@ Evidence(subject: nil, field: "", value: nil)
 @mixfix(
     pattern: "evaluate {subject: Animal} as {mode: string}"
 )
-evaluateFactExpression() =>
+def evaluateFactExpression() =>
     if mode == "crisp" then
         return subject.legs == 4
     else
@@ -30,8 +30,13 @@ evaluateFactExpression() =>
                         Classification(fact: subject, category: "companion"),
                         Evidence(subject: subject, field: "legs", value: subject.legs)
                     ]
+                end
+            end
+        end
+    end
+end
 
-main() =>
+def main() =>
     cat := Cat(name: "sony", legs: 4)
     crisp := evaluate cat as "crisp"
     probability := evaluate cat as "probability"
@@ -45,3 +50,4 @@ main() =>
         derived: derived,
         evidence: evidence
     )
+end

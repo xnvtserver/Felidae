@@ -3,7 +3,7 @@ class Measurement
     value: number
 end
 
-main() =>
+def main() =>
     return Measurement.insert(values: {
         sensor: "temperature",
         value: "not-a-number"

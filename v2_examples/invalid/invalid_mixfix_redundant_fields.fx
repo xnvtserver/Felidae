@@ -1,7 +1,8 @@
 @mixfix(
-    operator: redundantPlan,
+    operator: redundantPlan.function,
     pattern: "plan {name: string} using {strategy: string}",
     captures: {name: string, strategy: string}
 )
-planer() =>
+def planer() =>
     return Plan(name: name, strategy: strategy)
+end
