@@ -4,28 +4,33 @@
 # that a converse or a contrapositive is proven merely because a source rule
 # exists; user rules must evaluate the returned antecedent/consequent facts.
 
-Logic.negate(input: any) =>
+def logicalNegate(input: any) =>
     return Negation(input: input)
+end
 
-Logic.implication(antecedent: any, consequent: any) =>
+def logicalImplication(antecedent: any, consequent: any) =>
     return Implication(antecedent: antecedent, consequent: consequent)
+end
 
-Logic.converse(rule: any) =>
+def logicalConverse(rule: any) =>
     return Implication(
         antecedent: rule.consequent,
         consequent: rule.antecedent,
         transformation: "converse"
     )
+end
 
-Logic.contrapositive(rule: any) =>
+def logicalContrapositive(rule: any) =>
     return Implication(
-        antecedent: Logic.negate(input: rule.consequent),
-        consequent: Logic.negate(input: rule.antecedent),
+        antecedent: logicalNegate(input: rule.consequent),
+        consequent: logicalNegate(input: rule.antecedent),
         transformation: "contrapositive"
     )
+end
 
-Logic.contradiction(positive: any, negative: any) =>
+def logicalContradiction(positive: any, negative: any) =>
     return ContradictionEvidence(
         positive: positive,
         negative: negative
     )
+end
