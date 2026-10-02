@@ -1,12 +1,22 @@
 # Native file stdlib declarations. Bodies are implemented by the native/runtime bridge.
 
-file.readFile(path: string) => ()
-file.readLines(path: string) => ()
-file.readLine(path: string, line: int) => ()
-file.writeFile(path: string, data: string) => ()
-file.writeFile(path: string, data: string, mode: string) => ()
-file.writeLines(path: string, data: array) => ()
-file.writeLines(path: string, data: array, mode: string) => ()
-file.appendFile(path: string, data: string) => ()
-file.exists(path: string) => ()
-file.deleteFile(path: string) => ()
+def file.readFile(path: string) => ()
+end
+def file.readLines(path: string) => ()
+end
+def file.readLine(path: string, line: int) => ()
+end
+def file.writeFile(path: string, data: string) => ()
+end
+def file.writeFile(path: string, data: string, mode: string) => ()
+end
+def file.writeLines(path: string, data: array) => ()
+end
+def file.writeLines(path: string, data: array, mode: string) => ()
+end
+def file.appendFile(path: string, data: string) => ()
+end
+def file.exists(path: string) => ()
+end
+def file.deleteFile(path: string) => ()
+end

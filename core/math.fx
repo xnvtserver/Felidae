@@ -1,25 +1,45 @@
 # Native math stdlib declarations. Bodies are implemented by the native/runtime bridge.
 
-math.pi() => ()
-math.e() => ()
-math.random(min: number, max: number) => ()
-math.pow(base: number, exponent: number) => ()
-math.atan2(y: number, x: number) => ()
-math.sqrt(value: number) => ()
-math.sin(value: number) => ()
-math.cos(value: number) => ()
-math.tan(value: number) => ()
-math.asin(value: number) => ()
-math.acos(value: number) => ()
-math.atan(value: number) => ()
-math.log(value: number) => ()
-math.log10(value: number) => ()
-math.exp(value: number) => ()
-math.abs(value: number) => ()
-math.floor(value: number) => ()
-math.ceil(value: number) => ()
-math.round(value: number) => ()
+def math.pi() => ()
+end
+def math.e() => ()
+end
+def math.random(min: number, max: number) => ()
+end
+def math.pow(base: number, exponent: number) => ()
+end
+def math.atan2(y: number, x: number) => ()
+end
+def math.sqrt(value: number) => ()
+end
+def math.sin(value: number) => ()
+end
+def math.cos(value: number) => ()
+end
+def math.tan(value: number) => ()
+end
+def math.asin(value: number) => ()
+end
+def math.acos(value: number) => ()
+end
+def math.atan(value: number) => ()
+end
+def math.log(value: number) => ()
+end
+def math.log10(value: number) => ()
+end
+def math.exp(value: number) => ()
+end
+def math.abs(value: number) => ()
+end
+def math.floor(value: number) => ()
+end
+def math.ceil(value: number) => ()
+end
+def math.round(value: number) => ()
+end
 # Signed cube root (cbrt(-8) == -2): the one operation below that plain
 # arithmetic cannot reproduce, since pow(value, 1/3) is undefined for
 # negative bases in the reals.
-math.cbrt(value: number) => ()
+def math.cbrt(value: number) => ()
+end

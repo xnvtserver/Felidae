@@ -1,9 +1,16 @@
 # JSON operations are declared in source and dispatched by the AST interpreter.
 
-json.parse(data: string) => ()
-json.get(data: any, key: string) => ()
-json.has(data: any, key: string) => ()
-json.keys(data: any) => ()
-json.set(data: any, key: string, value: any) => ()
-json.remove(data: any, key: string) => ()
-json.toText(data: any) => ()
+def json.parse(data: string) => ()
+end
+def json.get(data: any, key: string) => ()
+end
+def json.has(data: any, key: string) => ()
+end
+def json.keys(data: any) => ()
+end
+def json.set(data: any, key: string, value: any) => ()
+end
+def json.remove(data: any, key: string) => ()
+end
+def json.toText(data: any) => ()
+end
