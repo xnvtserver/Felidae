@@ -513,6 +513,10 @@ private:
         std::size_t* countOnly = nullptr,
         const FactSelectionVisitor* visitor = nullptr);
     std::size_t countFactSelection(const std::shared_ptr<Expr>& selection);
+    std::shared_ptr<NumberExpr> aggregateFactSelection(
+        const std::shared_ptr<Expr>& selection,
+        const std::string& field,
+        BuiltinId operation);
     using GraphSelectionVisitor =
         std::function<bool(const std::shared_ptr<MapExpr>&)>;
     std::shared_ptr<ArrayExpr> materializeGraphSelection(

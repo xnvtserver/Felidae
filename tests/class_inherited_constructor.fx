@@ -1,25 +1,25 @@
 class Person
-    name: string
+    name: string.
 
     def label() =>
-        return this.name
+        return this.name.
     end
 end
 
 class Student extends Person
-    grade: number
+    grade: number.
 
     def promoted() =>
-        return Student(name: this.name, grade: this.grade + 1)
+        return Student(name: this.name, grade: this.grade + 1).
     end
 end
 
 def main() =>
-    student := Student(name: "Ada", grade: 10)
-    promoted := student.promoted()
+    student := Student(name: "Ada", grade: 10).
+    promoted := student.promoted().
     return (
         inherited_field: promoted.name,
         inherited_method: promoted.label(),
         grade: promoted.grade
-    )
+    ).
 end

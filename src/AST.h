@@ -1306,7 +1306,7 @@ private:
         for (const auto& field : fields) {
             oss << "  " << field.name << ": " << field.type.canonical();
             if (field.defaultValue) oss << " := " << field.defaultValue->debug();
-            oss << '\n';
+            oss << ".\n";
         }
         if (!key.fields.empty()) {
             oss << "  key(";
@@ -1314,7 +1314,7 @@ private:
                 if (i) oss << ", ";
                 oss << key.fields[i];
             }
-            oss << ")\n";
+            oss << ").\n";
         }
         for (const auto& index : indexes) {
             oss << "  index(";
@@ -1322,7 +1322,7 @@ private:
                 if (i) oss << ", ";
                 oss << index.fields[i];
             }
-            oss << ")\n";
+            oss << ").\n";
         }
         if (includeMethods) {
             for (const auto& method : methods) oss << "  " << method->debug() << '\n';

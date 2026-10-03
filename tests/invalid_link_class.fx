@@ -1,4 +1,4 @@
 class Link
-    key(id)
-    id: string
+    key(id).
+    id: string.
 end

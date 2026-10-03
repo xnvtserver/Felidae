@@ -613,6 +613,11 @@ static bool resolveRuntimeTypeName(const std::shared_ptr<Expr>& value, std::stri
         out = ast->nodeKind;
         return true;
     }
+    if (const auto object = std::dynamic_pointer_cast<MapExpr>(value);
+        object && !object->factType.empty()) {
+        out = object->factType;
+        return true;
+    }
     if (auto typeString = std::dynamic_pointer_cast<StringExpr>(
             findMapValue(value, internalSymbolString(InternalSymbolKind::Type)))) {
         out = typeString->value;
@@ -2763,7 +2768,6 @@ bool Interpreter::solveNotGoal(const NotGoal& goal, Env& env, size_t depth) {
 }
 
 bool Interpreter::solveAssignGoal(const AssignGoal& goal, Env& env) {
-    auto var = std::make_shared<VarExpr>(goal.name, goal.nameId);
     if (globals_.count(goal.nameId)) {
         throw InterpreterError("Variable '" + goal.name + "' is already assigned and immutable");
     }
@@ -2782,7 +2786,16 @@ bool Interpreter::solveAssignGoal(const AssignGoal& goal, Env& env) {
         }
         return false;
     }
-    return unifyExpr(var, value, env);
+    // The target is proven unbound above, so assignment is not a unification
+    // choice point. Bind the evaluated runtime value directly. Re-running it
+    // through unifyExpr re-evaluated list containers and deep-cloned class
+    // objects held by them, breaking reference identity across `list.get`.
+    if (activeBindingTrail_) {
+        activeBindingTrail_->assign(env, goal.nameId, std::move(value));
+    } else {
+        env[goal.nameId] = std::move(value);
+    }
+    return true;
 }
 
 bool Interpreter::solveMultiAssignGoal(const MultiAssignGoal& goal, Env& env) {
@@ -3778,6 +3791,24 @@ bool Interpreter::evalFactPropagation(const Call& call,
 }
 
 bool Interpreter::solveBuiltin(const Call& call, Env& env) {
+    if (call.name == kMemberInvokeTerm) {
+        // Member calls have one runtime dispatch implementation in
+        // evalBuiltinTerm. A call used as an ordinary statement must execute
+        // that same path and treat successful evaluation as goal success;
+        // previously only expression-position calls worked, so
+        // `object.method().` silently failed the enclosing method.
+        TermExpr invocation(call.name, {}, call.builtinId);
+        invocation.nameId = call.nameId;
+        invocation.args.reserve(call.args.size());
+        for (const auto& argument : call.args) {
+            invocation.args.push_back(Arg{
+                argument.name, argument.nameId,
+                argument.value ? argument.value->clone()
+                               : std::make_shared<NilExpr>()});
+        }
+        std::shared_ptr<Expr> ignoredResult;
+        return evalBuiltinTerm(invocation, env, ignoredResult);
+    }
     if (call.name == kFieldAssignTerm) {
         if (call.args.size() != 3) throw InterpreterError("Invalid field assignment");
         std::shared_ptr<Expr> receiverValue;
@@ -3817,6 +3848,17 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         }
         upsertEntry(receiver->entries, field->value, std::move(assignedValue));
         return true;
+    }
+    if (call.builtinId == BuiltinId::Link) {
+        // Link endpoints are syntax-level keyed selectors. Preserve their
+        // constructor-shaped terms until publishLink resolves them against
+        // RocksDB; generic call dispatch would instantiate declared classes
+        // first and incorrectly require every non-key field.
+        TermExpr link(call.name, {}, call.builtinId);
+        link.nameId = call.nameId;
+        link.args = call.args;
+        std::shared_ptr<Expr> ignored;
+        return evalBuiltinTerm(link, env, ignored);
     }
     if (call.builtinId == BuiltinId::CommonAncestors ||
         call.builtinId == BuiltinId::LowestCommonAncestor ||
@@ -5699,6 +5741,9 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         }
         const bool builtinMember =
             member->value == "all" || member->value == "count" || member->value == "get" ||
+            member->value == "first" ||
+            member->value == "sum" || member->value == "average" ||
+            member->value == "min" || member->value == "max" ||
             member->value == "where" || member->value == "select" || member->value == "insert" ||
             member->value == "save" || member->value == "update" || member->value == "delete" ||
             member->value == "AndWhere" || member->value == "OrWhere" ||
@@ -5765,6 +5810,65 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
             selectArgs.push_back(typeArgument());
             selectArgs.emplace_back("match", std::make_shared<MapExpr>(std::move(fields)));
             return evalBuiltinTerm(TermExpr("Fact:select", std::move(selectArgs), BuiltinId::FactSelect), env, out);
+        }
+        if ((classReference || factSelection) &&
+            (member->value == "sum" || member->value == "average" ||
+             member->value == "min" || member->value == "max")) {
+            auto selection = factSelection
+                ? std::dynamic_pointer_cast<FactSelectionExpr>(factSelection->clone())
+                : std::make_shared<FactSelectionExpr>(
+                    classReference->name,
+                    durableStore_ ? 0 : memory_.captureSnapshot());
+            std::string field;
+            for (const auto& argument : arguments) {
+                if (argument.name == "field") {
+                    std::shared_ptr<Expr> evaluated;
+                    if (!evalExprValue(argument.value, env, evaluated) ||
+                        !argAsString(evaluated, field) || field.empty()) {
+                        throw InterpreterError(member->value + " field must be a non-empty string");
+                    }
+                    continue;
+                }
+                if (argument.name == "match") {
+                    std::shared_ptr<Expr> evaluated;
+                    if (!evalDataValue(argument.value, env, evaluated)) {
+                        throw InterpreterError(member->value + " match must be a map");
+                    }
+                    const auto match = std::dynamic_pointer_cast<MapExpr>(evaluated);
+                    if (!match || !match->factType.empty()) {
+                        throw InterpreterError(member->value + " match must be a plain map");
+                    }
+                    for (const auto& entry : match->entries) {
+                        selection->filters.push_back(FactSelectionFilter{
+                            entry.key, entry.keyId, TokenId::EQUAL, entry.value});
+                    }
+                    continue;
+                }
+                throw InterpreterError(
+                    member->value + " accepts only field: and optional match: arguments");
+            }
+            if (field.empty()) {
+                throw InterpreterError(member->value + " requires field: \"name\"");
+            }
+            const BuiltinId operation = member->value == "sum" ? BuiltinId::Sum :
+                member->value == "average" ? BuiltinId::Average :
+                member->value == "min" ? BuiltinId::Min : BuiltinId::Max;
+            out = aggregateFactSelection(selection, field, operation);
+            return true;
+        }
+        if (member->value == "first" && (classReference || factSelection)) {
+            if (!arguments.empty()) {
+                throw InterpreterError("first() does not accept arguments after where(...)");
+            }
+            const auto selection = factSelection
+                ? std::static_pointer_cast<Expr>(factSelection)
+                : std::static_pointer_cast<Expr>(std::make_shared<FactSelectionExpr>(
+                    classReference->name,
+                    durableStore_ ? 0 : memory_.captureSnapshot()));
+            const auto rows = materializeFactSelection(selection, 1);
+            if (rows->items.empty()) return false;
+            out = copyRuntimeValue(rows->items.front());
+            return true;
         }
         if (member->value == "save" && object && !object->factType.empty()) {
             if (!arguments.empty()) throw InterpreterError("save() does not accept arguments");
@@ -6311,7 +6415,17 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
     if (term.builtinId == BuiltinId::FnArray) {
         if (args.size() == 1) {
             if (auto array = std::dynamic_pointer_cast<ArrayExpr>(args[0])) {
-                out = array->clone();
+                // A list is a value container, but declared class/fact values
+                // inside it are object references. Construct a fresh list
+                // while retaining those object identities; a deep AST clone
+                // here made `items.get(...)` return a detached object even
+                // though iteration still reached the original instance.
+                std::vector<std::shared_ptr<Expr>> items;
+                items.reserve(array->items.size());
+                for (const auto& item : array->items) {
+                    items.push_back(copyRuntimeValue(item));
+                }
+                out = std::make_shared<ArrayExpr>(std::move(items));
                 return true;
             }
         }
@@ -6343,6 +6457,13 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         if (evalCallAsValue(term, env, out)) return true;
     }
 
+    // A declared class must be constructed by instantiateClass(), which
+    // applies inherited fields, defaults, optional nils, and type contracts.
+    // Returning false here lets evalExprValue continue to that authoritative
+    // path. Only undeclared constructor-shaped terms remain schemaless facts.
+    if (classDefinitions_.find(term.nameId) != classDefinitions_.end()) {
+        return false;
+    }
     if (term.name.find(':') == std::string::npos && !term.args.empty()) {
         std::vector<MapEntry> entries;
         entries.push_back(MapEntry{std::string(internalSymbolName(InternalSymbolKind::Type)), std::make_shared<StringExpr>(term.name)});
@@ -6375,7 +6496,11 @@ bool Interpreter::evalCallAsValue(const TermExpr& term,
     current.nameId = term.nameId;
     current.args.reserve(term.args.size());
     for (const auto& argument : term.args) {
-        current.args.push_back(Arg{argument.name, argument.nameId, argument.value->clone()});
+        // Expression nodes and value containers are immutable. Class/fact
+        // maps held by them are the intentional mutable object references.
+        // Deep-cloning arguments here detached those objects before every
+        // expression-position builtin (notably list.get).
+        current.args.push_back(Arg{argument.name, argument.nameId, argument.value});
     }
     Env currentEnv = env;
     auto currentReceiver = receiver;
@@ -6652,7 +6777,16 @@ bool Interpreter::evalCallAsValueOnce(
 
     if (builtin == BuiltinId::ArrayGet) {
         std::shared_ptr<Expr> dataValue;
-        if (!evalNamed("data", 0, dataValue)) {
+        for (std::size_t argumentIndex = 0;
+             argumentIndex < term.args.size(); ++argumentIndex) {
+            if (term.args[argumentIndex].name == "data" ||
+                term.args[argumentIndex].name == "array") {
+                dataValue = args[argumentIndex];
+                break;
+            }
+        }
+        if (!dataValue && !args.empty()) dataValue = args.front();
+        if (!dataValue) {
             throw InterpreterError("get expects a receiver value");
         }
         dataValue = materializeIfFactSelection(dataValue);
@@ -8397,7 +8531,10 @@ bool Interpreter::instantiateClass(const TermExpr& term, const Env& env,
     std::unordered_map<SymbolId, const ClassFieldDecl*> fields;
     fields.reserve(orderedFields.size());
     for (const auto* field : orderedFields) fields.emplace(field->nameId, field);
-    std::unordered_set<SymbolId> supplied;
+    // The argument resolver below already maps every named/positional input
+    // to its authoritative field declaration, so track that declaration
+    // directly rather than repeating an identity conversion.
+    std::unordered_set<const ClassFieldDecl*> supplied;
     std::vector<MapEntry> entries;
     const auto safeDefault = [&](const auto& self,
                                  const std::shared_ptr<Expr>& expression) -> bool {
@@ -8451,7 +8588,7 @@ bool Interpreter::instantiateClass(const TermExpr& term, const Env& env,
             }
             field = found->second;
         }
-        if (!supplied.insert(field->nameId).second) {
+        if (!supplied.insert(field).second) {
             throw InterpreterError("Class constructor repeats field '" + field->name + "'");
         }
         std::shared_ptr<Expr> value;
@@ -8463,7 +8600,7 @@ bool Interpreter::instantiateClass(const TermExpr& term, const Env& env,
         upsertEntry(entries, field->name, std::move(value));
     }
     for (const auto* field : orderedFields) {
-        if (supplied.count(field->nameId) != 0) continue;
+        if (supplied.count(field) != 0) continue;
         std::shared_ptr<Expr> value;
         if (field->defaultValue) {
             if (!safeDefault(safeDefault, field->defaultValue)) {
@@ -8664,6 +8801,15 @@ bool Interpreter::evalOperatorExpr(const OperatorExpression& expression,
             return true;
         default:
             break;
+    }
+
+    if (expression.coreOperator == CoreOperator::Add) {
+        const auto leftString = std::dynamic_pointer_cast<StringExpr>(left);
+        const auto rightString = std::dynamic_pointer_cast<StringExpr>(right);
+        if (leftString && rightString) {
+            out = std::make_shared<StringExpr>(leftString->value + rightString->value);
+            return true;
+        }
     }
 
     const auto leftNumber = std::dynamic_pointer_cast<NumberExpr>(left);
@@ -11084,6 +11230,46 @@ std::size_t Interpreter::countFactSelection(
     std::size_t count = 0;
     (void)materializeFactSelection(selection, 0, &count);
     return count;
+}
+
+std::shared_ptr<NumberExpr> Interpreter::aggregateFactSelection(
+    const std::shared_ptr<Expr>& selection,
+    const std::string& field,
+    BuiltinId operation) {
+    double total = 0.0;
+    double extreme = 0.0;
+    std::size_t count = 0;
+    const FactSelectionVisitor visitor = [&](const std::shared_ptr<MapExpr>& fact) {
+        const auto value = findMapValue(fact, field);
+        double number = 0.0;
+        if (!value || !argAsNumber(value, number)) {
+            throw InterpreterError(
+                "Fact aggregate field '" + field + "' must exist and contain only numbers");
+        }
+        if (count == 0) {
+            extreme = number;
+        } else if (operation == BuiltinId::Min) {
+            extreme = std::min(extreme, number);
+        } else if (operation == BuiltinId::Max) {
+            extreme = std::max(extreme, number);
+        }
+        total += number;
+        ++count;
+        return true;
+    };
+    (void)materializeFactSelection(selection, 0, nullptr, &visitor);
+    if (count == 0 && operation != BuiltinId::Sum) {
+        const std::string name = operation == BuiltinId::Average ? "average" :
+            operation == BuiltinId::Min ? "min" : "max";
+        throw InterpreterError(name + " expects at least one matching fact");
+    }
+    if (operation == BuiltinId::Average) {
+        return std::make_shared<NumberExpr>(total / static_cast<double>(count));
+    }
+    if (operation == BuiltinId::Min || operation == BuiltinId::Max) {
+        return std::make_shared<NumberExpr>(extreme);
+    }
+    return std::make_shared<NumberExpr>(total);
 }
 
 std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {

@@ -4,5 +4,5 @@
     visibility: "public"
 )
 def combineAnchoredNumbers() =>
-    return left + right
+    return left + right.
 end

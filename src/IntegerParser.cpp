@@ -104,6 +104,21 @@ bool IntegerParser::match(TokenId::Id id) {
     return true;
 }
 
+bool IntegerParser::atAdjacentDot() {
+    skipTrivia();
+    const auto& pieces = input_.entries();
+    if (piece_ + 1 >= pieces.size() || pieces[piece_].id != TokenId::DOT ||
+        pieces[piece_].end != pieces[piece_ + 1].begin) {
+        return false;
+    }
+    const auto next = pieces[piece_ + 1].id;
+    if (next == TokenId::CLASS) return true;
+    if (next > TokenId::UNKNOWN && !isBuiltinTokenId(next)) return true;
+    const auto spelling = builtinTokenSpelling(next);
+    return !spelling.empty() &&
+           std::isalpha(static_cast<unsigned char>(spelling.front())) != 0;
+}
+
 bool IntegerParser::atBlockEnd() {
     skipTrivia();
     return piece_ < input_.entries().size() && input_.entries()[piece_].id == TokenId::END;
@@ -113,14 +128,18 @@ bool IntegerParser::matchBlockEnd() {
     if (!atBlockEnd()) return false;
     const auto end = input_.entries()[piece_++].end;
     byte_ = end;
-    if (at(TokenId::DOT)) (void)match(TokenId::DOT);
+    if (at(TokenId::DOT)) {
+        throw IntegerParserError(
+            "Unexpected '.' after 'end'; 'end' terminates the block at " +
+            sourceLocation(byte_));
+    }
     return true;
 }
 
 void IntegerParser::require(TokenId::Id id, const char* message) {
     if (!match(id)) {
-        const std::string detail = std::string(message) + " at source byte " +
-                                   std::to_string(byte_);
+        const std::string detail = std::string(message) + " at " +
+                                   sourceLocation(byte_);
         if (atEnd()) throw IntegerParserIncomplete(detail);
         throw IntegerParserError(detail);
     }
@@ -162,52 +181,40 @@ bool IntegerParser::atNameRange() {
     return id > TokenId::UNKNOWN && !isBuiltinTokenId(id);
 }
 
-bool IntegerParser::sourceContainsLineBreak(std::size_t begin, std::size_t end) const {
-    for (const auto& entry : input_.entries()) {
-        if (entry.end <= begin || entry.begin >= end) continue;
-        if (entry.id == TokenId::NEWLINE || entry.id == TokenId::CARRIAGE_RETURN) return true;
-    }
-    return false;
-}
-
-bool IntegerParser::lineBreakBeforeNextSignificantPiece() const {
+std::string IntegerParser::sourceLocation(std::size_t offset) const {
     const auto& source = input_.source();
-    for (std::size_t index = byte_; index < source.size(); ++index) {
-        const char byte = source[index];
-        if (byte == '\n' || byte == '\r') return true;
-        if (byte == '#') {
-            const auto newline = source.find_first_of("\r\n", index);
-            return newline != std::string::npos;
-        }
-        if (byte != ' ' && byte != '\t') return false;
-    }
-    return false;
-}
-
-std::size_t IntegerParser::sourceLineIndent(std::size_t offset) const {
-    std::size_t indent = 0;
-    bool afterLineBreak = true;
-    for (const auto& entry : input_.entries()) {
-        if (entry.begin >= offset) break;
-        if (entry.id == TokenId::NEWLINE || entry.id == TokenId::CARRIAGE_RETURN) {
-            indent = 0;
-            afterLineBreak = true;
-        } else if (afterLineBreak && entry.id == TokenId::SPACE) {
-            ++indent;
-        } else if (afterLineBreak && entry.id == TokenId::TAB) {
-            indent += 4;
+    offset = std::min(offset, source.size());
+    std::size_t line = 1;
+    std::size_t column = 1;
+    for (std::size_t index = 0; index < offset; ++index) {
+        if (source[index] == '\r') {
+            if (index + 1 < offset && source[index + 1] == '\n') ++index;
+            ++line;
+            column = 1;
+        } else if (source[index] == '\n') {
+            ++line;
+            column = 1;
         } else {
-            afterLineBreak = false;
+            ++column;
         }
     }
-    return indent;
+    return "line " + std::to_string(line) + ", column " +
+           std::to_string(column) + " (source byte " +
+           std::to_string(offset) + ")";
 }
 
-void IntegerParser::consumeStatementTerminator(std::size_t statementBegin) {
-    if (match(TokenId::DOT) || atEnd()) return;
-    if (sourceContainsLineBreak(statementBegin, byte_)) return;
-    throw IntegerParserError("Expected '.' or newline after statement at source byte " +
-                             std::to_string(byte_));
+void IntegerParser::consumeStatementTerminator(const char* construct) {
+    if (match(TokenId::DOT)) {
+        if (at(TokenId::DOT)) {
+            throw IntegerParserError(
+                "Consecutive '..' is not valid Felidae syntax at " +
+                sourceLocation(byte_));
+        }
+        return;
+    }
+    throw IntegerParserError(
+        "Expected '.' after " + std::string(construct) + " at " +
+        sourceLocation(byte_));
 }
 
 std::string IntegerParser::consumeNameRange() {
@@ -215,8 +222,9 @@ std::string IntegerParser::consumeNameRange() {
     if (!atNameRange()) {
         if (atEnd()) throw IntegerParserIncomplete("Expected a token name range");
         const auto id = piece_ < input_.entries().size() ? input_.entries()[piece_].id : TokenId::UNKNOWN;
-        throw IntegerParserError("Expected a token name range at source byte " +
-                                 std::to_string(byte_) + " (ID " + std::to_string(id) + ")");
+        throw IntegerParserError("Expected a token name at " +
+                                 sourceLocation(byte_) + " (token ID " +
+                                 std::to_string(id) + ")");
     }
     const std::size_t begin = byte_;
     const auto& pieces = input_.entries();
@@ -316,7 +324,19 @@ std::vector<Arg> IntegerParser::parseArguments(bool allowAnnotationBindings) {
             const std::size_t before = byte_;
             QualifiedName name;
             bool named = false;
-            if (atNameRange()) {
+            if (at(TokenId::CLASS)) {
+                const auto nameStart = byte_;
+                const auto pieceStart = piece_;
+                match(TokenId::CLASS);
+                if (match(TokenId::COLON)) {
+                    name.spelling = "class";
+                    name.nameId = symbolIdForName(name.spelling);
+                    named = true;
+                } else {
+                    byte_ = nameStart;
+                    piece_ = pieceStart;
+                }
+            } else if (atNameRange()) {
                 const auto nameStart = byte_;
                 const auto pieceStart = piece_;
                 const auto candidate = consumeQualifiedName();
@@ -382,13 +402,12 @@ IntegerParser::QualifiedName IntegerParser::consumeQualifiedName(
         std::isupper(static_cast<unsigned char>(input_.source().at(
             input_.entries()[piece_].begin))) != 0;
     QualifiedName name{consumeNameRange(), 0, BuiltinId::Unknown, capitalized};
-    while (allowDottedName && !capitalized && at(TokenId::DOT)) {
+    while (allowDottedName && atAdjacentDot()) {
         const auto beforeByte = byte_;
         const auto beforePiece = piece_;
         const auto separator = input_.entries()[piece_].id;
         match(separator);
-        const auto separatorEnd = byte_;
-        if (!atNameRange() || sourceContainsLineBreak(separatorEnd, byte_)) {
+        if (!atNameRange()) {
             byte_ = beforeByte;
             piece_ = beforePiece;
             break;
@@ -433,7 +452,8 @@ Call IntegerParser::parseAnnotation() {
 
 TypeRef IntegerParser::parseTypeReference() {
     auto name = consumeQualifiedName(false);
-    while (match(TokenId::DOT)) {
+    while (atAdjacentDot()) {
+        match(TokenId::DOT);
         const auto segment = consumeQualifiedName(false);
         name.spelling += "." + segment.spelling;
     }
@@ -540,7 +560,7 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
         auto iterable = parseBinaryExpression(
             static_cast<int>(OperatorPrecedence::Control), TokenId::THEN);
         require(TokenId::THEN, "Expected 'then' after for-loop iterable");
-        auto body = parseGoalList(TokenId::DOT);
+        auto body = parseBlockBody();
         requireBlockEnd("Expected 'end' after for loop");
         auto result = std::make_shared<ForGoal>(variable.spelling, std::move(iterable), std::move(body));
         stamp(result, begin, byte_);
@@ -550,7 +570,7 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
         auto condition = parseBinaryExpression(
             static_cast<int>(OperatorPrecedence::Control), TokenId::THEN);
         require(TokenId::THEN, "Expected 'then' after while condition");
-        auto body = parseGoalList(TokenId::DOT);
+        auto body = parseBlockBody();
         requireBlockEnd("Expected 'end' after while loop");
         auto result = std::make_shared<WhileGoal>(std::move(condition), std::move(body));
         stamp(result, begin, byte_);
@@ -576,7 +596,7 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
             } else {
                 throw IntegerParserError("Expected 'case', 'default', or 'end' in switch");
             }
-            branch.body = parseGoalList(TokenId::DOT);
+            branch.body = parseBlockBody();
             cases.push_back(std::move(branch));
         }
         if (cases.empty()) {
@@ -629,14 +649,14 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
             std::vector<std::shared_ptr<Goal>> thenBranch;
         };
         std::vector<Branch> branches;
-        branches.push_back({begin, parseCondition(), parseGoalList(TokenId::DOT)});
+        branches.push_back({begin, parseCondition(), parseBlockBody()});
         while (true) {
             const auto branchBegin = byte_;
             if (!match(TokenId::ELIF)) break;
-            branches.push_back({branchBegin, parseCondition(), parseGoalList(TokenId::DOT)});
+            branches.push_back({branchBegin, parseCondition(), parseBlockBody()});
         }
         std::vector<std::shared_ptr<Goal>> elseBranch;
-        if (match(TokenId::ELSE)) elseBranch = parseGoalList(TokenId::DOT);
+        if (match(TokenId::ELSE)) elseBranch = parseBlockBody();
         requireBlockEnd("Expected 'end' after if statement");
         std::shared_ptr<Goal> result;
         auto tailElse = std::move(elseBranch);
@@ -672,10 +692,7 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
     }
     if (match(TokenId::RETURN)) {
         std::vector<Arg> fields;
-        // `match` intentionally skips trivia, therefore this boundary must
-        // be observed before probing for the optional parenthesized form.
-        const bool terminatedByLineBreak = lineBreakBeforeNextSignificantPiece();
-        if (!terminatedByLineBreak && match(TokenId::LPAREN)) {
+        if (match(TokenId::LPAREN)) {
             if (!at(TokenId::RPAREN)) {
                 do {
                     skipTrivia();
@@ -692,12 +709,15 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
             }
             require(TokenId::RPAREN, "Expected ')' after return fields");
         } else {
-            // `return value` is the established method form.  The source is
-            // already one token stream; this merely assembles the
-            // following integer range as an expression rather than leaving it
-            // to be misread as the next top-level declaration.
             skipTrivia();
-            if (!terminatedByLineBreak && !atEnd() && !at(TokenId::ELSE) && !at(TokenId::DOT)) {
+            if (atAdjacentDot()) {
+                throw IntegerParserError(
+                    "Member access cannot begin with '.' at " +
+                    sourceLocation(byte_));
+            }
+            if (!atEnd() && !at(TokenId::ELSE) && !at(TokenId::ELIF) &&
+                !at(TokenId::CASE) && !at(TokenId::DEFAULT) &&
+                !atBlockEnd() && !at(TokenId::DOT)) {
                 fields.emplace_back("", parseExpression());
             }
         }
@@ -774,7 +794,9 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
         }
     }
     const auto term = std::dynamic_pointer_cast<TermExpr>(left);
-    if (!term) throw IntegerParserError("Expected a predicate call or comparison goal");
+    if (!term) throw IntegerParserError(
+        "Expected a predicate call or comparison goal at " +
+        sourceLocation(begin));
     Call call(term->name, term->nameId, term->args, term->builtinId);
     for (auto& designation : designations) {
         call.designations.push_back(std::move(designation.spelling));
@@ -785,75 +807,55 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
     return result;
 }
 
-// True when the parser sits at the start of what can only be a new clause
-// head (`qualifiedName(...) =>`, optionally followed by `as designation`),
-// never a goal continuing the current body: no goal is itself a bare
-// callable head immediately followed by an arrow. Checking this shape - independent
-// of indentation - is what stops a same-line body (`f() => return x`, whose
-// one line sits at indent 0 like any top-level clause) from swallowing the
-// clause that follows it; the indentation dedent check in parseGoalList only
-// protects a genuinely indented body. Pure lookahead: parser position is
-// always restored before returning.
-bool IntegerParser::looksLikeClauseHead() {
-    skipTrivia();
-    if (!atNameRange()) return false;
-    const auto savedByte = byte_;
-    const auto savedPiece = piece_;
-    bool result = false;
-    try {
-        consumeQualifiedName();
-        if (match(TokenId::LPAREN)) {
-            std::size_t depth = 1;
-            const auto& pieces = input_.entries();
-            while (depth > 0 && piece_ < pieces.size()) {
-                const auto id = pieces[piece_].id;
-                byte_ = pieces[piece_++].end;
-                if (id == TokenId::LPAREN) ++depth;
-                else if (id == TokenId::RPAREN) --depth;
-            }
-            if (depth == 0) {
-                if (match(TokenId::AS)) {
-                    do { consumeQualifiedName(); } while (match(TokenId::COMMA));
-                }
-                result = at(TokenId::ARROW);
-            }
-        }
-    } catch (const IntegerParserError&) {
-        result = false;
-    }
-    byte_ = savedByte;
-    piece_ = savedPiece;
-    return result;
-}
-
 std::vector<std::shared_ptr<Goal>> IntegerParser::parseGoalList(TokenId::Id terminator) {
     std::vector<std::shared_ptr<Goal>> goals;
     if (at(terminator)) return goals;
-    std::size_t bodyIndent = 0;
-    bool hasBodyIndent = false;
     do {
-        // Measure indentation at the first significant ID, not at the
-        // preceding arrow/terminator.  This keeps a bare return from pulling
-        // the next top-level declaration into its method body.
         skipTrivia();
-        if (atBlockEnd()) break;
-        if (looksLikeClauseHead()) break;
         const auto before = byte_;
-        if (!hasBodyIndent) {
-            bodyIndent = sourceLineIndent(before);
-            hasBodyIndent = true;
-        }
         goals.push_back(parseGoal());
         if (byte_ == before) throw IntegerParserError("Integer parser made no progress in goal list");
-        if (const auto returned = std::dynamic_pointer_cast<ReturnGoal>(goals.back());
-            returned && returned->fields.empty() && sourceContainsLineBreak(before, byte_)) {
-            break;
-        }
         if (match(TokenId::COMMA)) continue;
-        if (atEnd() || at(terminator) || at(TokenId::ELSE) ||
-            at(TokenId::CASE) || at(TokenId::DEFAULT) || atBlockEnd()) break;
-        if (!sourceContainsLineBreak(before, byte_) || sourceLineIndent(byte_) < bodyIndent) break;
+        if (at(terminator)) break;
+        throw IntegerParserError(
+            "Expected ',' or closing delimiter in logical goal list at " +
+            sourceLocation(byte_));
     } while (true);
+    return goals;
+}
+
+std::vector<std::shared_ptr<Goal>> IntegerParser::parseBlockBody() {
+    std::vector<std::shared_ptr<Goal>> goals;
+    while (!atEnd() && !atBlockEnd() && !at(TokenId::ELSE) &&
+           !at(TokenId::ELIF) && !at(TokenId::CASE) &&
+           !at(TokenId::DEFAULT)) {
+        const auto before = byte_;
+        auto goal = parseGoal();
+        if (byte_ == before) {
+            throw IntegerParserError("Integer parser made no progress in block body");
+        }
+        const bool blockStatement =
+            std::dynamic_pointer_cast<IfGoal>(goal) ||
+            std::dynamic_pointer_cast<ForGoal>(goal) ||
+            std::dynamic_pointer_cast<WhileGoal>(goal) ||
+            std::dynamic_pointer_cast<SwitchGoal>(goal);
+        goals.push_back(std::move(goal));
+
+        if (blockStatement) {
+            // `end` is the complete terminator for a nested block.
+            continue;
+        }
+        if (match(TokenId::DOT)) {
+            if (at(TokenId::DOT)) {
+                throw IntegerParserError(
+                    "Consecutive '..' is not valid Felidae syntax at " +
+                    sourceLocation(byte_));
+            }
+            continue;
+        }
+        throw IntegerParserError(
+            "Expected '.' after statement at " + sourceLocation(byte_));
+    }
     return goals;
 }
 
@@ -872,7 +874,14 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
         if (hasDefKeyword) {
             throw IntegerParserError("Class declarations must not begin with 'def'");
         }
-        return parseClassStatement(begin);
+        try {
+            return parseClassStatement(begin);
+        } catch (const IntegerParserIncomplete&) {
+            throw;
+        } catch (const IntegerParserError& error) {
+            throw IntegerParserError(
+                "In class declaration: " + std::string(error.what()));
+        }
     }
     if (match(TokenId::IMPORT)) {
         if (hasDefKeyword) throw IntegerParserError("Import declarations must not begin with 'def'");
@@ -886,7 +895,7 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
         } else {
             paths.push_back(consumeString());
         }
-        consumeStatementTerminator(begin);
+        consumeStatementTerminator("import declaration");
         auto result = std::make_shared<ImportStmt>(std::move(paths));
         stamp(result, begin, byte_);
         return result;
@@ -901,7 +910,7 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
             }
             if (!annotations.empty()) throw IntegerParserError("Annotations can only be applied to method declarations");
             auto result = std::make_shared<GlobalBindingStmt>(name, parseExpression());
-            consumeStatementTerminator(begin);
+            consumeStatementTerminator("global binding");
             stamp(result, begin, byte_);
             return result;
         }
@@ -943,10 +952,10 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
             require(TokenId::RBRACE, "Expected '}' after empty declaration");
             emptyDeclaration = true;
         } else {
-            body = parseGoalList(TokenId::DOT);
+            body = parseBlockBody();
             while (match(TokenId::ELSE)) {
                 const auto beforeBranch = byte_;
-                auto branch = parseGoalList(TokenId::DOT);
+                auto branch = parseBlockBody();
                 if (branch.empty() || byte_ == beforeBranch) {
                     if (atEnd()) {
                         throw IntegerParserIncomplete(
@@ -973,7 +982,7 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
         }
         throw IntegerParserError("Expected '=>' after function or rule declaration");
     }
-    consumeStatementTerminator(begin);
+    if (!hasArrow) consumeStatementTerminator("fact or rule declaration");
     // Annotations describe callable operator implementations.  They are
     // methods even when their body has a bare `return` (or no value return),
     // so classification must not depend solely on ReturnGoal fields.
@@ -994,10 +1003,13 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
 }
 
 std::shared_ptr<ClassStmt> IntegerParser::parseClassStatement(std::size_t begin) {
-    auto className = consumeQualifiedName();
+    // Class-name segments have their own capitalization validation below;
+    // do not let the generic qualified-call parser consume them first.
+    auto className = consumeQualifiedName(false);
     if (!className.isCapitalized)
         throw IntegerParserError("Class names must begin with an uppercase letter");
-    while (match(TokenId::DOT)) {
+    while (atAdjacentDot()) {
+        match(TokenId::DOT);
         const auto related = consumeQualifiedName(false);
         if (!related.isCapitalized) {
             throw IntegerParserError("Every segment of a dotted class name must begin with an uppercase letter");
@@ -1010,9 +1022,10 @@ std::shared_ptr<ClassStmt> IntegerParser::parseClassStatement(std::size_t begin)
             "Link is reserved for persistent graph edges and cannot be declared as a class");
     }
     const auto consumeDottedType = [&]() {
-        auto type = consumeQualifiedName();
+        auto type = consumeQualifiedName(false);
         if (!type.isCapitalized) throw IntegerParserError("Type names must begin with an uppercase letter");
-        while (match(TokenId::DOT)) {
+        while (atAdjacentDot()) {
+            match(TokenId::DOT);
             const auto segment = consumeQualifiedName(false);
             if (!segment.isCapitalized) {
                 throw IntegerParserError("Every segment of a dotted type name must begin with an uppercase letter");
@@ -1040,6 +1053,19 @@ std::shared_ptr<ClassStmt> IntegerParser::parseClassStatement(std::size_t begin)
     std::vector<ClassIndexDecl> indexes;
     std::vector<std::shared_ptr<ClauseStmt>> methods;
     std::unordered_set<SymbolId> fieldIds;
+    const auto finishOrdinaryMember = [&](const char* description) {
+        if (match(TokenId::DOT)) {
+            if (at(TokenId::DOT)) {
+                throw IntegerParserError(
+                    "Consecutive '..' is not valid Felidae syntax at " +
+                    sourceLocation(byte_));
+            }
+            return;
+        }
+        throw IntegerParserError(
+            "Expected '.' after " + std::string(description) +
+            " at " + sourceLocation(byte_));
+    };
     const auto parseClassMethod = [&]() {
         const bool previousClassMethod = insideClassMethod_;
         insideClassMethod_ = true;
@@ -1075,10 +1101,15 @@ std::shared_ptr<ClassStmt> IntegerParser::parseClassStatement(std::size_t begin)
             } while (match(TokenId::COMMA));
             require(TokenId::RPAREN, "Expected ')' after class index fields");
             if (index.fields.empty()) throw IntegerParserError("Class index requires at least one field");
-            consumeStatementTerminator(fieldBegin);
+            finishOrdinaryMember("class index declaration");
             index.sourceSpan = span(fieldBegin, byte_);
             indexes.push_back(std::move(index));
             continue;
+        }
+        if (!atNameRange()) {
+            throw IntegerParserError(
+                "Expected a class member or 'end' at " +
+                sourceLocation(byte_));
         }
         const auto field = consumeQualifiedName();
         if (field.spelling == "foreign") {
@@ -1095,7 +1126,7 @@ std::shared_ptr<ClassStmt> IntegerParser::parseClassStatement(std::size_t begin)
             } while (match(TokenId::COMMA));
             require(TokenId::RPAREN, "Expected ')' after class key fields");
             if (key.fields.empty()) throw IntegerParserError("Class key requires at least one field");
-            consumeStatementTerminator(fieldBegin);
+            finishOrdinaryMember("class key declaration");
             key.sourceSpan = span(fieldBegin, byte_);
             continue;
         }
@@ -1106,12 +1137,19 @@ std::shared_ptr<ClassStmt> IntegerParser::parseClassStatement(std::size_t begin)
             continue;
         }
         require(TokenId::COLON, "Expected ':' after class field name");
-        auto type = parseTypeReference();
+        TypeRef type;
+        try {
+            type = parseTypeReference();
+        } catch (const IntegerParserError& error) {
+            throw IntegerParserError(
+                "While parsing type of class field '" + field.spelling +
+                "': " + error.what());
+        }
         std::shared_ptr<Expr> defaultValue;
         if (match(TokenId::ASSIGN)) defaultValue = parseExpression();
         if (!fieldIds.insert(field.nameId).second)
             throw IntegerParserError("Duplicate class field '" + field.spelling + "'");
-        consumeStatementTerminator(fieldBegin);
+        finishOrdinaryMember("class field declaration");
         fields.emplace_back(field.spelling, field.nameId, std::move(type),
                             std::move(defaultValue), span(fieldBegin, byte_));
     }
@@ -1226,6 +1264,11 @@ std::shared_ptr<Expr> IntegerParser::parsePrimary() {
     RecursionScope recursion(*this);
     skipTrivia();
     const std::size_t begin = byte_;
+    if (at(TokenId::DOT)) {
+        throw IntegerParserError(
+            "Member access cannot begin with '.' at " +
+            sourceLocation(begin));
+    }
     if (at(TokenId::QUOTE)) {
         auto result = std::make_shared<StringExpr>(consumeString());
         stamp(result, begin, byte_);
@@ -1259,9 +1302,12 @@ std::shared_ptr<Expr> IntegerParser::parsePrimary() {
         return result;
     }
     if (match(TokenId::NEW)) {
-        auto type = consumeQualifiedName();
+        // `new School.Student(...)` is a dotted type, not a qualified method
+        // call, so validate each type segment explicitly below.
+        auto type = consumeQualifiedName(false);
         if (!type.isCapitalized) throw IntegerParserError("new expects a capitalized fact or class name");
-        while (match(TokenId::DOT)) {
+        while (atAdjacentDot()) {
+            match(TokenId::DOT);
             const auto related = consumeQualifiedName(false);
             if (!related.isCapitalized) {
                 throw IntegerParserError("Every segment of a dotted type name must begin with an uppercase letter");
@@ -1312,9 +1358,10 @@ std::shared_ptr<Expr> IntegerParser::parsePrimary() {
     }
     if (atEnd()) {
         throw IntegerParserIncomplete(
-            "Expected an expression at source byte " + std::to_string(byte_));
+            "Expected an expression at " + sourceLocation(byte_));
     }
-    throw IntegerParserError("Expected an expression");
+    throw IntegerParserError("Expected an expression at " +
+                             sourceLocation(byte_));
 }
 
 std::shared_ptr<Expr> IntegerParser::parseExpression() {
@@ -1593,16 +1640,14 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
     }
     if (match(TokenId::PLUS)) return parseUnary();
     auto result = parsePrimary();
-    while (at(TokenId::DOT)) {
+    while (atAdjacentDot()) {
         const auto beforeByte = byte_;
         const auto beforePiece = piece_;
         match(TokenId::DOT);
-        const auto separatorEnd = byte_;
         const auto memberKeyword = piece_ < input_.entries().size()
             ? builtinTokenSpelling(input_.entries()[piece_].id) : std::string_view{};
         const bool classReference = at(TokenId::CLASS);
-        if ((!atNameRange() && memberKeyword.empty() && !classReference) ||
-            sourceContainsLineBreak(separatorEnd, byte_)) {
+        if (!atNameRange() && memberKeyword.empty() && !classReference) {
             byte_ = beforeByte;
             piece_ = beforePiece;
             break;
@@ -1634,10 +1679,28 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
                 result = std::make_shared<FunctionRefExpr>(reference->name);
                 continue;
             }
+            if (const auto type = std::dynamic_pointer_cast<VarExpr>(result);
+                type && type->isCapitalized && !member.empty() &&
+                std::isupper(static_cast<unsigned char>(member.front())) != 0) {
+                const std::string dottedType = type->name + "." + member;
+                result = std::make_shared<VarExpr>(
+                    dottedType, symbolIdForName(dottedType),
+                    LanguageTypeId::Unknown, true);
+                continue;
+            }
             result = std::make_shared<AccessExpr>(std::move(result), member);
             continue;
         }
         auto arguments = parseArguments();
+        if (const auto type = std::dynamic_pointer_cast<VarExpr>(result);
+            type && type->isCapitalized && !member.empty() &&
+            std::isupper(static_cast<unsigned char>(member.front())) != 0) {
+            const std::string dottedType = type->name + "." + member;
+            result = std::make_shared<TermExpr>(
+                dottedType, symbolIdForName(dottedType), std::move(arguments),
+                builtinIdForName(dottedType), true);
+            continue;
+        }
         const auto type = std::dynamic_pointer_cast<VarExpr>(result);
         const auto bucket = std::dynamic_pointer_cast<TermExpr>(result);
         const std::string staticType = type && type->isCapitalized
@@ -1645,6 +1708,8 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
             : (bucket && bucket->isCapitalized && bucket->args.empty() ? bucket->name : std::string{});
         const bool runtimeBuiltinMember =
             member == "all" || member == "count" || member == "get" ||
+            member == "first" || member == "sum" || member == "average" ||
+            member == "min" || member == "max" ||
             member == "where" || member == "select" || member == "insert" ||
             member == "save" || member == "update" || member == "delete" ||
             member == "AndWhere" || member == "OrWhere" || member == "limit" ||

@@ -96,7 +96,30 @@ InteractiveProgramLoad loadInteractiveProgramText(
     IntegerTokenList input(interpreter.tokenizer(), std::move(text));
     IntegerParser parser(input, interpreter.operatorRegistry());
     if (parser.emptyInput()) return InteractiveProgramLoad::Empty;
-    if (!parser.startsProgramStatement()) return InteractiveProgramLoad::Expression;
+    // A terminated REPL query also ends in '.', but it is not a persistent
+    // top-level fact/rule declaration. Recognize the explicit query marker
+    // before the general statement classifier so the caller can route it to
+    // IntegerParser::parseQuery using the same grammar as file execution.
+    if (parser.startsQuery()) {
+        try {
+            (void)parser.parseQuery();
+            return InteractiveProgramLoad::Expression;
+        } catch (const IntegerParserIncomplete&) {
+            return InteractiveProgramLoad::Incomplete;
+        }
+    }
+    if (!parser.startsProgramStatement()) {
+        // REPL expressions use the production expression parser as their
+        // completeness oracle. In particular, `Link(` and any other open
+        // call/collection remain at the continuation prompt until their
+        // delimiters close; no parallel bracket counter is maintained here.
+        try {
+            (void)parser.parseExpressionText();
+            return InteractiveProgramLoad::Expression;
+        } catch (const IntegerParserIncomplete&) {
+            return InteractiveProgramLoad::Incomplete;
+        }
+    }
 
     interpreter.beginModuleTransaction();
     try {

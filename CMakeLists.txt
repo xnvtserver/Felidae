@@ -100,7 +100,10 @@ function(felidae_common target)
       $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wconversion -Wshadow>)
   endif()
   if(MSVC)
-    target_compile_options(${target} PRIVATE /bigobj)
+    # Parallel cl.exe processes share the target PDB. /FS serializes PDB
+    # writes through MSVC's compiler server and prevents intermittent C1041
+    # failures when build.cmd is invoked with --jobs greater than one.
+    target_compile_options(${target} PRIVATE /bigobj /FS)
   endif()
 endfunction()
 
@@ -151,6 +154,24 @@ if(FELIDAE_BUILD_TESTS)
   set_tests_properties(direct_ast_smoke PROPERTIES
     PASS_REGULAR_EXPRESSION "answer: 42.*literal: 42.*decimal: 3.14")
 
+  add_test(NAME strict_statement_terminators
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/statement_terminators.fx)
+  set_tests_properties(strict_statement_terminators PROPERTIES
+    PASS_REGULAR_EXPRESSION "42")
+
+  foreach(invalid_case IN ITEMS
+      missing_statement_period
+      missing_top_level_period
+      period_after_end
+      leading_member_access
+      double_member_dot)
+    add_test(NAME syntax_${invalid_case}_rejected
+      COMMAND felidae
+        ${CMAKE_SOURCE_DIR}/tests/invalid/${invalid_case}.fx)
+    set_tests_properties(syntax_${invalid_case}_rejected PROPERTIES
+      WILL_FAIL TRUE)
+  endforeach()
+
   add_test(NAME standalone_repl
     COMMAND ${CMAKE_COMMAND}
       -DFELIDAE_EXE=$<TARGET_FILE:felidae>
@@ -178,13 +199,13 @@ if(FELIDAE_BUILD_TESTS)
   set_tests_properties(namespace_separator_rejected PROPERTIES WILL_FAIL TRUE)
 
   add_test(NAME direct_ast_fact_query
-    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/direct_ast_smoke.fx "? fact(name: x)")
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/direct_ast_smoke.fx "? fact(name: x).")
   set_tests_properties(direct_ast_fact_query PROPERTIES
     PASS_REGULAR_EXPRESSION "x = \"tiger\"")
 
   add_test(NAME durable_solver_backtracking
     COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/solver_durable_backtracking.fx
-            "? Candidate(id: x), x == \"b\"")
+            "? Candidate(id: x), x == \"b\".")
   set_tests_properties(durable_solver_backtracking PROPERTIES
     PASS_REGULAR_EXPRESSION "x = \"b\"")
 
@@ -229,6 +250,11 @@ if(FELIDAE_BUILD_TESTS)
   set_tests_properties(indexed_filtered_limit PROPERTIES
     PASS_REGULAR_EXPRESSION "count: 1.*id: \"b\"")
 
+  add_test(NAME fact_aggregates
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/fact_aggregates.fx)
+  set_tests_properties(fact_aggregates PROPERTIES
+    PASS_REGULAR_EXPRESSION "total: 120.*north_total: 30.*average: 40.*minimum: 10.*maximum: 90")
+
   add_test(NAME direct_ast_mixfix
     COMMAND felidae ${CMAKE_SOURCE_DIR}/v2_examples/mixfix_nested_expression.fx)
   set_tests_properties(direct_ast_mixfix PROPERTIES
@@ -268,6 +294,11 @@ if(FELIDAE_BUILD_TESTS)
     COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/class_object_identity.fx)
   set_tests_properties(class_object_identity PROPERTIES
     PASS_REGULAR_EXPRESSION "original: 4.*returned: 4.*retrieved: 4")
+
+  add_test(NAME class_function_field
+    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/class_function_field.fx)
+  set_tests_properties(class_function_field PROPERTIES
+    PASS_REGULAR_EXPRESSION "transient: \"computed\".*stored: \"computed\".*same_identity: true")
 
   add_test(NAME super_parent_graph
     COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/super_parent_graph.fx)
@@ -714,4 +745,10 @@ if(FELIDAE_BUILD_TESTS)
     COMMAND felidae ${CMAKE_SOURCE_DIR}/v2_examples/fuzzy_logic_basics.fx)
   add_test(NAME expert_system_ancestry_reasoning
     COMMAND felidae ${CMAKE_SOURCE_DIR}/v2_examples/ancestor_relatedness_analysis.fx)
+  set_tests_properties(
+    analytical_query_language_tour
+    analytical_indexed_fact_query
+    expert_system_fuzzy_logic
+    expert_system_ancestry_reasoning
+    PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endif()

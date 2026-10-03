@@ -199,6 +199,13 @@ BuiltinId builtinIdForName(const std::string& name) {
 }
 
 BuiltinId builtinIdForName(std::string_view name) {
+    // `print(...)` is the language-level convenience spelling for the native
+    // line-print operation. Keep the canonical registry entry qualified so
+    // builtin listings and the implementation remain unambiguous, while the
+    // ordinary expression form used in methods and the REPL resolves through
+    // the same builtin path. A source-defined `print` method is still selected
+    // before builtin dispatch by Interpreter::evalCallAsValue.
+    if (name == "print") return BuiltinId::SystemPrint;
     auto found = builtinsByName().find(name);
     if (found != builtinsByName().end()) return found->second;
     // Source library syntax uses dots; colons remain an internal registry
