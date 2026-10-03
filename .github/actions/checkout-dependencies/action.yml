@@ -1,0 +1,15 @@
+name: Checkout build dependencies
+description: >-
+  Fetch only the submodules the build uses (RocksDB, nlohmann/json, rapidcsv)
+  at depth 1. The editor extensions and tree-sitter grammar submodules are not
+  needed to build or test the interpreter.
+runs:
+  using: composite
+  steps:
+    - name: Update build submodules
+      shell: bash
+      run: >-
+        git submodule update --init --depth 1 --
+        third_party/rocksdb
+        third_party/nlohmann_json
+        third_party/rapidcsv

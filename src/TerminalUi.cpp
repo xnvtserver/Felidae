@@ -78,6 +78,7 @@ bool isKeyword(TokenId::Id id) {
         case TokenId::SWITCH: case TokenId::CASE: case TokenId::DEFAULT:
         case TokenId::BREAK: case TokenId::CONTINUE: case TokenId::DEF:
         case TokenId::THIS: case TokenId::SUPER:
+        case TokenId::TRY: case TokenId::CATCH:
             return true;
         default: return false;
     }

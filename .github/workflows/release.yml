@@ -7,6 +7,14 @@ on:
 permissions:
   contents: read
 
+# A release is never cancelled by a later tag; each tag is its own release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 4
+
 jobs:
   native:
     strategy:
@@ -30,18 +38,34 @@ jobs:
             executable: build/release/felidae
             packaged: build/felidae-macos-x86_64
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/checkout-dependencies
+      - name: Cache compiler output
+        if: runner.os != 'Windows'
+        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          submodules: recursive
-      - name: Configure
+          key: release-${{ matrix.os }}
+      - name: Configure (Unix)
+        if: runner.os != 'Windows'
         run: >-
           cmake -S . -B build/release
           -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          -DFELIDAE_BUILD_TESTS=ON
+          -DFELIDAE_ENABLE_STRICT_WARNINGS=ON
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        run: >-
+          cmake -S . -B build/release
+          -DCMAKE_BUILD_TYPE=Release
+          -DFELIDAE_DEPENDENCY_JOBS=4
           -DFELIDAE_BUILD_TESTS=ON
           -DFELIDAE_ENABLE_STRICT_WARNINGS=ON
       - name: Build
-        run: cmake --build build/release --config Release --parallel 2
+        run: cmake --build build/release --config Release
       - name: Test
         run: ctest --test-dir build/release --build-config Release --output-on-failure
       - name: Smoke executable

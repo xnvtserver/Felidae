@@ -79,9 +79,17 @@ std::shared_ptr<RocksFactStoreSharedState> openSharedDatabase(
     options.create_if_missing = true;
     options.paranoid_checks = true;
     auto state = std::make_shared<RocksFactStoreSharedState>();
-    requireStatus(rocksdb::DB::Open(
-                      options, directory.string(), &state->database),
-                  "Open RocksDB");
+    const auto openStatus = rocksdb::DB::Open(
+        options, directory.string(), &state->database);
+    // RocksDB's LOCK file is the only cross-process ownership guard.
+    if (openStatus.IsIOError() &&
+        openStatus.ToString().find("lock") != std::string::npos) {
+        throw std::runtime_error(
+            "RocksDB directory '" + directory.string() +
+            "' is in use by another Felidae process (" +
+            openStatus.ToString() + ")");
+    }
+    requireStatus(openStatus, "Open RocksDB");
 
     std::string version;
     const std::string formatKey = std::string(1, kMetadataPrefix) + "format";
@@ -1219,7 +1227,7 @@ void RocksFactStore::promoteSchemalessSchema(
     const std::string& expectedSchemalessFingerprint,
     const std::string& classFingerprint) {
     [[maybe_unused]] auto writeLock = standaloneWriteLock();
-    constexpr std::string_view header = "schemaless-v2\n";
+    constexpr std::string_view header = "schemaless-v";
     if (expectedSchemalessFingerprint.rfind(header, 0) != 0) {
         throw std::invalid_argument("Schema promotion requires a schemaless source contract");
     }

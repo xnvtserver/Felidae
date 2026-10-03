@@ -101,6 +101,8 @@ void IntegerTokenList::encodeNextStatement() const {
     if (spelling == "def") return TokenId::DEF;
     if (spelling == "this") return TokenId::THIS;
     if (spelling == "super") return TokenId::SUPER;
+    if (spelling == "try") return TokenId::TRY;
+    if (spelling == "catch") return TokenId::CATCH;
     return TokenId::UNKNOWN;
   };
   for (std::size_t offset = 0; offset < statement.size();) {
@@ -180,7 +182,8 @@ void IntegerTokenList::encodeNextStatement() const {
         word == "index" || word == "extends" || word == "elif" || word == "new" ||
         word == "for" || word == "in" || word == "while" || word == "switch" ||
         word == "case" || word == "default" || word == "break" ||
-        word == "continue" || word == "def") {
+        word == "continue" || word == "def" ||
+        word == "try" || word == "catch") {
       push(keyword, first, offset);
       continue;
     }

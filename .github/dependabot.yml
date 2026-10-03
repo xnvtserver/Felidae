@@ -1,23 +1,32 @@
 version: 2
 
 updates:
-  # GitHub Actions used under .github/workflows/
-  # - package-ecosystem: "github-actions"
-  #   directory: "/"
-  #   schedule:
-  #     interval: "weekly"
-  #     day: "monday"
-  #     time: "09:00"
-  #     timezone: "Asia/Kolkata"
-  #   open-pull-requests-limit: 5
-  #   labels:
-  #     - "dependencies"
-  #     - "github-actions"
-  #   commit-message:
-  #     prefix: "deps"
-  #     include: "scope"
+  # Actions used under .github/workflows/ and .github/actions/. Keeping the pins
+  # current also stops one workflow drifting to a different major version than
+  # the others.
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+      - "/.github/actions/*"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Kolkata"
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
 
-  # Active source dependencies tracked as Git submodules.
+  # Active source dependencies tracked as Git submodules (RocksDB, nlohmann/json,
+  # rapidcsv and the editor integrations).
   - package-ecosystem: "gitsubmodule"
     directory: "/"
     schedule:

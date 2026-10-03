@@ -2,9 +2,11 @@
 
 #include "AST.h"
 #include "Env.h"
-#include "Memory.h"
 #include "NativeRuntime.h"
 #include "ParserMetrics.h"
+#include "TypeHierarchy.h"
+#include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <iosfwd>
@@ -12,6 +14,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <set>
@@ -33,6 +36,16 @@ public:
     explicit InterpreterError(const std::string& msg) : std::runtime_error(msg) {}
 };
 
+// An exception object raised by throw(exception: {kind: "...", message: "..."}).
+// It is an InterpreterError, so an uncaught one reports its message; try/catch
+// binds {kind, message} to the catch variable.
+class FelidaeException : public InterpreterError {
+public:
+    FelidaeException(std::string kind, const std::string& message)
+        : InterpreterError(message), kind(std::move(kind)) {}
+    std::string kind;
+};
+
 class Interpreter {
 public:
     using MetricValues = std::map<std::string, std::uint64_t>;
@@ -43,9 +56,8 @@ public:
     void openDatabase(const std::filesystem::path& directory);
     void configureDatabase(
         const std::map<std::string, std::uint64_t>& options);
-    // Console builtins use streams owned by the caller. This keeps database
-    // service sessions isolated; the default terminal streams remain the
-    // fallback for embedded callers that do not configure them.
+    // Console builtins use streams owned by the caller; the default terminal
+    // streams remain the fallback for embedded callers that do not configure them.
     void setIoStreams(std::istream& input, std::ostream& output) noexcept {
         inputStream_ = &input;
         outputStream_ = &output;
@@ -87,6 +99,12 @@ public:
     MetricValues databaseStatistics() const;
     void recordStreamedModuleMicros(std::size_t micros);
     void recordParserMetrics(const ParserMetrics& metrics);
+    // Loads one source file in a module transaction (the caller's, when one is
+    // open) with currentLoadingFile_ set to it. Class source locators, fact
+    // origins and relative imports all depend on that, so the entry file must
+    // be loaded through here as well as imports.
+    void loadProgramFile(const std::filesystem::path& file,
+                         ParserMetrics* metrics = nullptr);
     std::size_t syncFactSource(const std::filesystem::path& file);
     std::shared_ptr<OperatorRegistry> operatorRegistry() const { return operators_; }
     std::shared_ptr<WordVocabulary> tokenizer() const { return tokenizer_; }
@@ -109,10 +127,6 @@ public:
     // step modes.
     using GoalHook = std::function<void(const Goal& goal, const Env& env, std::size_t callDepth)>;
     void setGoalHook(GoalHook hook) { goalHook_ = std::move(hook); }
-    using CancellationCheck = std::function<bool()>;
-    void setCancellationCheck(CancellationCheck check) {
-        cancellationCheck_ = std::move(check);
-    }
 
 private:
     struct ThreadTask {
@@ -175,7 +189,6 @@ private:
         std::string rootName;
         std::uint64_t hierarchyGeneration = 0;
         std::unordered_map<SymbolId, std::uint64_t> callableGenerations;
-        std::unordered_map<SymbolId, std::uint64_t> relationGenerations;
         std::unordered_map<SymbolId, PredicateTable> predicates;
         std::vector<ProvenanceNode> provenance;
         std::size_t rounds = 0;
@@ -192,16 +205,16 @@ private:
         std::unordered_map<PatternId, std::vector<std::shared_ptr<ClauseStmt>>> operatorClauses;
         std::vector<Call> autoEntryCalls;
         std::vector<std::shared_ptr<Expr>> autoEntryResults;
-        FactMemory memory;
+        TypeHierarchy hierarchy;
         GlobalEnv globals;
         std::unordered_map<SymbolId, std::shared_ptr<ClassStmt>> classDefinitions;
         std::unordered_set<std::string> persistedClassSchemas;
         struct FactTypeContractSnapshot {
             std::vector<std::string> fields;
-            std::vector<ExprKind> kinds;
             std::vector<std::string> keyFields;
             std::vector<std::vector<std::string>> indexes;
             bool declaredClass = false;
+            bool openShape = false;
         };
         std::unordered_map<std::string, FactTypeContractSnapshot> factTypeContracts;
         std::set<std::filesystem::path> loadedFiles;
@@ -222,7 +235,7 @@ private:
     std::unique_ptr<ModuleTransactionState> moduleTransaction_;
     std::vector<Call> autoEntryCalls_;
     std::vector<std::shared_ptr<Expr>> autoEntryResults_;
-    FactMemory memory_;
+    TypeHierarchy hierarchy_;
     GlobalEnv globals_;
     // Class declarations are retained as AST schema metadata. A constructor
     // call creates a typed map directly.
@@ -231,12 +244,18 @@ private:
     // matching source declaration replaces one so methods are loaded exactly
     // once; subsequent source declarations remain an error.
     std::unordered_set<std::string> persistedClassSchemas_;
+    // `fields` is the declared class shape and is empty for an undeclared fact
+    // type, which is not validated and only fixes its key field (the first field
+    // of its first constructor).
     struct FactTypeContract {
         std::vector<std::string> fields;
-        std::vector<ExprKind> kinds;
         std::vector<std::string> keyFields;
         std::vector<std::vector<std::string>> indexes;
         bool declaredClass = false;
+        // A declared class that extends an undeclared fact: the fields it inherits
+        // from the parent fact are not fixed by any declaration, so a persisted
+        // fact may carry fields beyond the declared ones.
+        bool openShape = false;
     };
     std::unordered_map<std::string, FactTypeContract> factTypeContracts_;
     std::unique_ptr<RocksFactStore> durableStore_;
@@ -277,6 +296,11 @@ private:
     bool valueCallMode_ = false;
     size_t valueCallTrampolineDepth_ = 0;
     size_t methodCallDepth_ = 0;
+    // methodCallDepth_ when the innermost value-call trampoline started. A
+    // `return call(...)` may jump through TailCallSignal only when it executes
+    // in the body of the method that trampoline itself began (depth + 1); a
+    // goal-position call nested deeper must evaluate its return normally.
+    size_t trampolineMethodDepth_ = 0;
     std::vector<std::shared_ptr<Expr>> pipelineResults_;
     std::size_t clauseAttempts_ = 0;
     std::size_t unificationAttempts_ = 0;
@@ -295,7 +319,6 @@ private:
     ParserMetrics parserMetrics_;
     std::size_t factRegistrationMicros_ = 0;
     GoalHook goalHook_;
-    CancellationCheck cancellationCheck_;
     std::istream* inputStream_ = nullptr;
     std::ostream* outputStream_ = nullptr;
     mutable std::size_t dispatchCacheHits_ = 0;
@@ -324,7 +347,13 @@ private:
     bool solveNotGoal(const NotGoal& goal, Env& env, size_t depth);
     bool bodyHasReturnGoal(const std::vector<std::shared_ptr<Goal>>& goals) const;
     bool evaluateGoalTruth(const std::shared_ptr<Goal>& goal, Env& env);
-    std::shared_ptr<Expr> evaluateGoalTruthTuple(const std::vector<std::shared_ptr<Goal>>& goals, Env env);
+    // Runs one statement's store mutations as a single durable transaction, or
+    // inside the caller's when one is already open (a module load). Any
+    // exception rolls the whole statement back.
+    void withStoreTransaction(const std::function<void()>& work);
+    // Truth tuple of a body that already solved: every goal succeeded, so no
+    // goal is evaluated a second time.
+    static std::shared_ptr<Expr> successTruthTuple(const std::vector<std::shared_ptr<Goal>>& goals);
     std::shared_ptr<Expr> executeGoalTruthTuple(const std::vector<std::shared_ptr<Goal>>& goals, Env env, Env& outEnv);
     bool solveMethodCall(const Call& call,
                          const std::shared_ptr<ClauseStmt>& clause,
@@ -337,7 +366,6 @@ private:
     bool solveNativeCall(const Call& call, Env& env);
     bool evalBuiltinTerm(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
     std::vector<const ClassFieldDecl*> classFieldsFor(const ClassStmt& schema) const;
-    std::optional<std::size_t> nearestPrototypeFact(const std::string& type);
     std::shared_ptr<MapExpr> nearestPrototypeValue(const std::string& type);
     bool instantiateClass(const TermExpr& term, const Env& env, std::shared_ptr<Expr>& out);
     bool evalDataValue(const std::shared_ptr<Expr>& expression,
@@ -360,10 +388,9 @@ private:
                                                  const MapExpr& values,
                                                  const Env& env);
     void registerClassContract(const ClassStmt& declaration);
-    bool validateFactWrite(const std::string& type,
-                           const std::shared_ptr<MapExpr>& value,
-                           bool idempotentSeed,
-                           std::optional<std::uint64_t> ignoredFactId = std::nullopt);
+    // Validates a fact against its class or key contract before it is stored.
+    void validateFactWrite(const std::string& type,
+                           const std::shared_ptr<MapExpr>& value);
     std::vector<std::shared_ptr<Expr>> factKey(
         const std::string& type, const std::shared_ptr<MapExpr>& value) const;
     std::vector<StoredFactIndex> factIndexes(
@@ -534,7 +561,6 @@ private:
     std::vector<std::shared_ptr<Expr>> valuesForLambdaSource(const std::shared_ptr<Expr>& source, const Env& env);
 
     bool ensurePredicateLoaded(const std::string& predicate);
-    void loadProgramFile(const std::filesystem::path& file);
     void loadNativeLibrary(const std::filesystem::path& file);
     void closeNativeLibraries();
     void joinThreads();

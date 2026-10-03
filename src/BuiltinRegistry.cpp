@@ -64,28 +64,28 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::CsvToFacts, "csv:toFacts", BuiltinEffect::WritesExternalState},
         {BuiltinId::CsvToText, "csv:toText", BuiltinEffect::Pure},
         {BuiltinId::CsvToFelidaeFacts, "csv:toFelidaeFacts", BuiltinEffect::WritesExternalState},
-        {BuiltinId::FactAll, "Fact:all", BuiltinEffect::Pure},
-        {BuiltinId::FactFind, "Fact:find", BuiltinEffect::Pure},
-        {BuiltinId::FactCount, "Fact:count", BuiltinEffect::Pure},
-        {BuiltinId::FactFirst, "Fact:first", BuiltinEffect::Pure},
-        {BuiltinId::FactTypes, "Fact:types", BuiltinEffect::Pure},
-        {BuiltinId::FactFields, "Fact:fields", BuiltinEffect::Pure},
-        {BuiltinId::FactExists, "Fact:exists", BuiltinEffect::Pure},
-        {BuiltinId::FactSelect, "Fact:select", BuiltinEffect::Pure},
-        {BuiltinId::FactMaterialize, "Fact:materialize", BuiltinEffect::Pure},
-        {BuiltinId::FactRelease, "Fact:release", BuiltinEffect::WritesExternalState},
-        {BuiltinId::FactTimeline, "Fact:timeline", BuiltinEffect::Pure},
+        {BuiltinId::FactAll, "", BuiltinEffect::Pure},
+        {BuiltinId::FactFind, "", BuiltinEffect::Pure},
+        {BuiltinId::FactCount, "", BuiltinEffect::Pure},
+        {BuiltinId::FactFirst, "", BuiltinEffect::Pure},
+        {BuiltinId::FactTypes, "", BuiltinEffect::Pure},
+        {BuiltinId::FactFields, "", BuiltinEffect::Pure},
+        {BuiltinId::FactExists, "", BuiltinEffect::Pure},
+        {BuiltinId::FactSelect, "", BuiltinEffect::Pure},
+        {BuiltinId::FactMaterialize, "", BuiltinEffect::Pure},
+        {BuiltinId::FactRelease, "", BuiltinEffect::WritesExternalState},
+        {BuiltinId::FactTimeline, "", BuiltinEffect::Pure},
         {BuiltinId::DbSync, "db:sync", BuiltinEffect::WritesExternalState},
         {BuiltinId::DbStats, "db:stats", BuiltinEffect::ReadsExternalState},
         {BuiltinId::DbConfig, "db:config", BuiltinEffect::ReadsExternalState},
         {BuiltinId::DbConfigure, "db:configure", BuiltinEffect::WritesExternalState},
         {BuiltinId::FxInterpret, "fx:interpret", BuiltinEffect::ReadsExternalState},
-        {BuiltinId::FactInsert, "Fact:insert", BuiltinEffect::WritesExternalState},
-        {BuiltinId::FactUpdate, "Fact:update", BuiltinEffect::WritesExternalState},
-        {BuiltinId::FactDelete, "Fact:delete", BuiltinEffect::WritesExternalState},
-        {BuiltinId::FactAndWhere, "Fact:andWhere", BuiltinEffect::Pure},
-        {BuiltinId::FactOrWhere, "Fact:orWhere", BuiltinEffect::Pure},
-        {BuiltinId::FactLimit, "Fact:limit", BuiltinEffect::Pure},
+        {BuiltinId::FactInsert, "", BuiltinEffect::WritesExternalState},
+        {BuiltinId::FactUpdate, "", BuiltinEffect::WritesExternalState},
+        {BuiltinId::FactDelete, "", BuiltinEffect::WritesExternalState},
+        {BuiltinId::FactAndWhere, "", BuiltinEffect::Pure},
+        {BuiltinId::FactOrWhere, "", BuiltinEffect::Pure},
+        {BuiltinId::FactLimit, "", BuiltinEffect::Pure},
         {BuiltinId::FactJoin, "join", BuiltinEffect::Pure},
         {BuiltinId::Link, "Link", BuiltinEffect::WritesExternalState},
         {BuiltinId::ArrayWhere, "Array:where", BuiltinEffect::Pure},
@@ -185,6 +185,9 @@ const std::unordered_map<std::string_view, BuiltinId>& builtinsByName() {
         map.max_load_factor(0.7f);
         for (std::size_t i = 1; i < builtinInfoCount(); ++i) {
             const BuiltinInfo* info = kBuiltinInfos + i;
+            // An empty name marks an internal builtin that has no source spelling:
+            // the Fact operations behind Employee.count() and friends.
+            if (info->name[0] == '\0') continue;
             map.emplace(info->name, info->id);
         }
         return map;
@@ -248,7 +251,9 @@ const std::vector<BuiltinInfo>& allBuiltins() {
     static const std::vector<BuiltinInfo> builtins = [] {
         std::vector<BuiltinInfo> list;
         list.reserve(builtinInfoCount() - 1);
-        for (std::size_t i = 1; i < builtinInfoCount(); ++i) list.push_back(kBuiltinInfos[i]);
+        for (std::size_t i = 1; i < builtinInfoCount(); ++i) {
+            if (kBuiltinInfos[i].name[0] != '\0') list.push_back(kBuiltinInfos[i]);
+        }
         return list;
     }();
     return builtins;

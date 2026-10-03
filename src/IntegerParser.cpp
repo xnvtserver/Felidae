@@ -611,8 +611,23 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
         stamp(result, begin, byte_);
         return result;
     }
+    if (match(TokenId::TRY)) {
+        auto tryBody = parseBlockBody();
+        std::vector<CatchClause> catches;
+        do {
+            require(TokenId::CATCH, "Expected 'catch' after try block");
+            const auto variable = consumeQualifiedName(false);
+            require(TokenId::THEN, "Expected 'then' after catch variable");
+            catches.emplace_back(variable.spelling, parseBlockBody());
+        } while (at(TokenId::CATCH));
+        requireBlockEnd("Expected 'end' after try/catch");
+        auto result = std::make_shared<TryGoal>(std::move(tryBody), std::move(catches));
+        stamp(result, begin, byte_);
+        return result;
+    }
     if (match(TokenId::BREAK)) {
         auto result = std::make_shared<BreakGoal>();
+
         stamp(result, begin, byte_);
         return result;
     }
@@ -828,7 +843,7 @@ std::vector<std::shared_ptr<Goal>> IntegerParser::parseBlockBody() {
     std::vector<std::shared_ptr<Goal>> goals;
     while (!atEnd() && !atBlockEnd() && !at(TokenId::ELSE) &&
            !at(TokenId::ELIF) && !at(TokenId::CASE) &&
-           !at(TokenId::DEFAULT)) {
+           !at(TokenId::DEFAULT) && !at(TokenId::CATCH)) {
         const auto before = byte_;
         auto goal = parseGoal();
         if (byte_ == before) {
@@ -838,7 +853,8 @@ std::vector<std::shared_ptr<Goal>> IntegerParser::parseBlockBody() {
             std::dynamic_pointer_cast<IfGoal>(goal) ||
             std::dynamic_pointer_cast<ForGoal>(goal) ||
             std::dynamic_pointer_cast<WhileGoal>(goal) ||
-            std::dynamic_pointer_cast<SwitchGoal>(goal);
+            std::dynamic_pointer_cast<SwitchGoal>(goal) ||
+            std::dynamic_pointer_cast<TryGoal>(goal);
         goals.push_back(std::move(goal));
 
         if (blockStatement) {
@@ -982,7 +998,16 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
         }
         throw IntegerParserError("Expected '=>' after function or rule declaration");
     }
-    if (!hasArrow) consumeStatementTerminator("fact or rule declaration");
+    if (!hasArrow) {
+        // A statement with no `def` and no body is a fact: a class constructor
+        // call, so its name follows the class naming rule.
+        if (!manifestMode_ && !clauseName.isCapitalized) {
+            throw IntegerParserError(
+                "Fact '" + clauseName.spelling +
+                "' must begin with an uppercase letter at " + sourceLocation(begin));
+        }
+        consumeStatementTerminator("fact or rule declaration");
+    }
     // Annotations describe callable operator implementations.  They are
     // methods even when their body has a bare `return` (or no value return),
     // so classification must not depend solely on ReturnGoal fields.
@@ -1730,6 +1755,14 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
             member == "recursive_join" || member == "shortest_path" ||
             member == "len" || member == "push";
         if (!staticType.empty() || runtimeBuiltinMember) {
+            // Facts are built into RocksDB and are queried through their own
+            // class, as in Employee.count(). `Fact` is only the root of the type
+            // lineage; it is neither a library nor a queryable class.
+            if (staticType == "Fact") {
+                throw IntegerParserError(
+                    "'Fact' is not a queryable class; query a class directly, for example "
+                    "Employee.count() at " + sourceLocation(byte_));
+            }
             if (member == "join" || member == "recursive_join" || member == "shortest_path") {
                 for (const auto& argument : arguments) {
                     if (argument.name == "direction" &&
