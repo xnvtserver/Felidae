@@ -313,7 +313,8 @@ void launchService(const std::filesystem::path& executable,
         ? std::filesystem::path(std::wstring(module.data(), moduleLength))
         : executable;
     std::wstring command = quoteWindowsArgument(program.wstring()) +
-        L" --db-service --db " + quoteWindowsArgument(directory.wstring());
+        L" --db-service --database-directory " +
+        quoteWindowsArgument(directory.wstring());
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
@@ -343,7 +344,8 @@ void launchService(const std::filesystem::path& executable,
     if (child < 0) throw std::runtime_error("Cannot fork Felidae database service");
     if (child == 0) {
         setsid();
-        execl(program.c_str(), program.c_str(), "--db-service", "--db",
+        execl(program.c_str(), program.c_str(), "--db-service",
+              "--database-directory",
               directory.c_str(), static_cast<char*>(nullptr));
         _exit(127);
     }

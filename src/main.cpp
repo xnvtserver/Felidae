@@ -2,6 +2,7 @@
 #include "DebugSession.h"
 #include "DatabaseService.h"
 #include "FelidaeRuntime.h"
+#include "ProjectConfiguration.h"
 #include "ReplLineEditor.h"
 #include "Symbol.h"
 #include "TerminalUi.h"
@@ -17,7 +18,6 @@
 #include <iostream>
 #include <iterator>
 #include <optional>
-#include <random>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -32,7 +32,6 @@ struct CliOptions {
     bool repl = false;
     bool debug = false;
     bool metricsJson = false;
-    std::optional<fs::path> databasePath;
     size_t benchmarkRepeat = 1;
     std::optional<fs::path> programFile;
     std::optional<std::string> query;
@@ -79,11 +78,6 @@ static CliOptions parseCli(int argc, char** argv) {
                 throw std::runtime_error("--benchmark-repeat expects a positive integer");
             }
             options.benchmarkRepeat = static_cast<size_t>(parsed);
-            continue;
-        }
-        if (arg == "--db") {
-            if (i + 1 >= argc) throw std::runtime_error("--db expects a database directory");
-            options.databasePath = fs::path(argv[++i]);
             continue;
         }
         if (!arg.empty() && arg.front() == '-') {
@@ -144,10 +138,8 @@ static void printHelp(std::ostream& output) {
               << "  " << FILE_EXTENSION << "\n\n"
               << "Usage:\n"
               << "  felidae\n"
-              << "  felidae --db data/felidae.db\n"
               << "  felidae program.fx\n"
-              << "  felidae --db data/felidae.db program.fx\n"
-              << "  felidae db stop --db data/felidae.db\n"
+              << "  felidae db stop [program.fx|project-directory]\n"
               << "  felidae program.fx '? Query(key: x)'\n"
               << "  felidae --repl\n"
               << "  felidae program.fx --debug\n"
@@ -157,10 +149,9 @@ static void printHelp(std::ostream& output) {
               << "  felidae --help\n"
               << "  felidae --version\n\n"
               << "Commands:\n"
-              << "  (no file)                          Start the interactive REPL\n"
+              << "  (no file)                          Start the REPL using ./init.fx\n"
               << "  program.fx                         Run program and execute main(...) if found\n"
-              << "  --db PATH                          Persist facts and graph data in RocksDB\n"
-              << "  db stop --db PATH                  Stop the local owner for a database\n"
+              << "  db stop [PROJECT]                  Stop the RocksDB owner selected by init.fx\n"
               << "  program.fx '? Query(key: x)'        Run external query mode\n"
               << "  --repl                              Explicitly start the interactive REPL\n"
               << "  program.fx --debug                  Run with live interpreter debugging enabled\n"
@@ -574,23 +565,20 @@ static void runRepl(Interpreter& interpreter, std::istream& input,
     interpreter.setGoalHook({});
 }
 
-class TemporaryDatabaseDirectory {
-public:
-    TemporaryDatabaseDirectory() {
-        std::random_device random;
-        path_ = fs::temp_directory_path() /
-            ("felidae-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
-             "-" + std::to_string(random()));
-        fs::create_directories(path_);
+static ProjectConfiguration projectConfigurationFor(CliOptions& options) {
+    fs::path projectDirectory;
+    if (options.programFile) {
+        const fs::path entryFile = resolveProgramEntryPath(*options.programFile);
+        if (entryFile.extension() != FILE_EXTENSION) {
+            throw std::runtime_error("Felidae source files must use .fx extension");
+        }
+        options.programFile = entryFile;
+        projectDirectory = entryFile.parent_path();
+    } else {
+        projectDirectory = fs::current_path();
     }
-    ~TemporaryDatabaseDirectory() {
-        std::error_code error;
-        fs::remove_all(path_, error);
-    }
-    const fs::path& path() const noexcept { return path_; }
-private:
-    fs::path path_;
-};
+    return loadProjectConfiguration(projectDirectory);
+}
 
 static int executeOptions(CliOptions options,
                           const std::atomic_bool* cancellation,
@@ -613,18 +601,15 @@ static int executeOptions(CliOptions options,
 
         using Clock = std::chrono::steady_clock;
         const auto loadStarted = Clock::now();
-        std::optional<TemporaryDatabaseDirectory> temporaryDatabase;
-        if (!options.databasePath) temporaryDatabase.emplace();
-        const fs::path databasePath = options.databasePath
-            ? fs::absolute(*options.databasePath).lexically_normal()
-            : temporaryDatabase->path();
+        const ProjectConfiguration project = projectConfigurationFor(options);
         Interpreter interpreter;
         interpreter.setIoStreams(input, output);
         if (cancellation) {
             interpreter.setCancellationCheck(
                 [cancellation] { return cancellation->load(); });
         }
-        interpreter.openDatabase(databasePath);
+        interpreter.openDatabase(project.databaseDirectory);
+        interpreter.configureDatabase(project.databaseOptions);
         std::optional<DebugSession> debugSession;
         // Attached before loadProgramRoot below, not after: a program with
         // no main() executes its bare top-level calls during loading itself
@@ -637,16 +622,12 @@ static int executeOptions(CliOptions options,
             debugSession->attach(interpreter);
         }
         if (options.programFile) {
-            fs::path entryFile = resolveProgramEntryPath(*options.programFile);
-            if (entryFile.extension() != FILE_EXTENSION) {
-                throw std::runtime_error("Felidae source files must use .fx extension");
-            }
             // A source file becomes executable only after its imports and every
             // declaration have registered successfully. Running main while the
             // parser was still producing chunks made later declarations invisible
             // and could leave effects behind when a later error rejected the file.
             // Registration remains streaming; publication is the execution boundary.
-            loadProgramRoot(entryFile, interpreter);
+            loadProgramRoot(*options.programFile, interpreter);
         }
         const auto executionStarted = Clock::now();
         double firstQueryMs = 0.0;
@@ -750,11 +731,15 @@ int main(int argc, char** argv) {
         if (argc >= 2 && std::string_view(argv[1]) == "--db-service") {
             std::optional<fs::path> database;
             for (int index = 2; index < argc; ++index) {
-                if (std::string_view(argv[index]) == "--db" && index + 1 < argc) {
+                if (std::string_view(argv[index]) == "--database-directory" &&
+                    index + 1 < argc) {
                     database = fs::path(argv[++index]);
                 }
             }
-            if (!database) throw std::runtime_error("--db-service requires --db PATH");
+            if (!database) {
+                throw std::runtime_error(
+                    "--db-service requires --database-directory PATH");
+            }
             std::chrono::seconds idleTimeout(60);
             if (const char* configured = std::getenv("FELIDAE_DB_IDLE_SECONDS")) {
                 std::size_t consumed = 0;
@@ -789,37 +774,41 @@ int main(int argc, char** argv) {
 
         if (argc >= 3 && std::string_view(argv[1]) == "db" &&
             std::string_view(argv[2]) == "stop") {
-            std::optional<fs::path> database;
-            for (int index = 3; index < argc; ++index) {
-                if (std::string_view(argv[index]) == "--db" && index + 1 < argc) {
-                    database = fs::path(argv[++index]);
-                } else {
-                    throw std::runtime_error("Usage: felidae db stop --db PATH");
-                }
+            if (argc > 4) {
+                throw std::runtime_error(
+                    "Usage: felidae db stop [program.fx|project-directory]");
             }
-            if (!database) throw std::runtime_error("felidae db stop requires --db PATH");
-            return stopDatabaseService(*database) ? 0 : 1;
+            fs::path projectDirectory = fs::current_path();
+            if (argc == 4) {
+                const fs::path requested = fs::absolute(fs::path(argv[3])).lexically_normal();
+                std::error_code error;
+                projectDirectory = fs::is_directory(requested, error)
+                    ? requested
+                    : resolveProgramEntryPath(requested).parent_path();
+            }
+            const auto project = loadProjectConfiguration(projectDirectory);
+            return stopDatabaseService(project.databaseDirectory) ? 0 : 1;
         }
 
         CliOptions options = parseCli(argc, argv);
-        if (options.databasePath && !options.showHelp && !options.showVersion) {
-            if (options.debug || options.repl) {
-                const fs::path database = *options.databasePath;
-                return runInteractiveDatabaseOwner(database, [&] {
-                    return executeOptions(std::move(options), nullptr,
-                                          std::cin, std::cout, std::cerr);
-                });
-            }
-            std::vector<std::string> forwarded;
-            forwarded.reserve(static_cast<std::size_t>(argc - 1));
-            for (int index = 1; index < argc; ++index) forwarded.emplace_back(argv[index]);
-            const auto response = requestDatabaseExecution(
-                fs::absolute(fs::path(argv[0])).lexically_normal(),
-                *options.databasePath, forwarded, std::cout, std::cerr);
-            return response.exitCode;
+        if (options.showHelp || options.showVersion) {
+            return executeOptions(std::move(options), nullptr,
+                                  std::cin, std::cout, std::cerr);
         }
-        return executeOptions(std::move(options), nullptr,
-                              std::cin, std::cout, std::cerr);
+        const ProjectConfiguration project = projectConfigurationFor(options);
+        if (options.debug || options.repl) {
+            return runInteractiveDatabaseOwner(project.databaseDirectory, [&] {
+                return executeOptions(std::move(options), nullptr,
+                                      std::cin, std::cout, std::cerr);
+            });
+        }
+        std::vector<std::string> forwarded;
+        forwarded.reserve(static_cast<std::size_t>(argc - 1));
+        for (int index = 1; index < argc; ++index) forwarded.emplace_back(argv[index]);
+        const auto response = requestDatabaseExecution(
+            fs::absolute(fs::path(argv[0])).lexically_normal(),
+            project.databaseDirectory, forwarded, std::cout, std::cerr);
+        return response.exitCode;
     } catch (const std::exception& error) {
         std::cerr << "error: " << error.what() << '\n';
         return 1;
