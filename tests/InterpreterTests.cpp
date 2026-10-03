@@ -1,3 +1,5 @@
+#include "FelidaeRuntime.h"
+#include "IntegerTokenList.h"
 #include "RocksFactStore.h"
 
 #include <chrono>
@@ -79,13 +81,48 @@ void testSharedDatabaseHandleAndSerializedIds() {
             "First RocksDB session cannot read the second session's write");
 }
 
+void testLineColumnIndex() {
+    // Lines end at \n, \r\n or a lone \r; columns count bytes from the line start.
+    const Felidae::IntegerTokenList list(
+        std::make_shared<Felidae::WordVocabulary>(), std::string("a\r\nb\rc\nd"));
+    const auto check = [&](std::size_t offset, int line, int column) {
+        const auto position = list.lineColumn(offset);
+        require(position.line == line && position.column == column,
+                "IntegerTokenList::lineColumn reports the wrong position");
+    };
+    check(0, 1, 1);
+    check(3, 2, 1);
+    check(5, 3, 1);
+    check(7, 4, 1);
+    check(100, 4, 2);
+}
+
+void testLargeSourceParses() {
+    // 30000 facts need about three million parser iterations. The iteration
+    // budget is per statement, not per file, so a large data file must load;
+    // span lookup must also stay cheap or this test exceeds its timeout.
+    constexpr int kFacts = 30000;
+    std::string source;
+    for (int index = 0; index < kFacts; ++index) {
+        source += "Item(id: \"i" + std::to_string(index) +
+                  "\", n: " + std::to_string(index) + ").\n";
+    }
+    const auto program = Felidae::parseProgramText(source);
+    require(program.statements.size() == static_cast<std::size_t>(kFacts),
+            "A large source did not parse completely");
+    require(program.statements.back()->sourceSpan.startLine == kFacts,
+            "A large source reports the wrong line for its last statement");
+}
+
 } // namespace
 
 int main() {
     try {
         testOrderedRocksFactKeys();
         testSharedDatabaseHandleAndSerializedIds();
-        std::cout << "RocksDB storage unit tests passed\n";
+        testLineColumnIndex();
+        testLargeSourceParses();
+        std::cout << "RocksDB storage and parser unit tests passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "RocksDB storage unit test failed: " << error.what() << '\n';

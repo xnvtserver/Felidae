@@ -1,5 +1,6 @@
 #include "IntegerTokenList.h"
 
+#include <algorithm>
 #include <cctype>
 #include <stdexcept>
 
@@ -101,6 +102,8 @@ void IntegerTokenList::encodeNextStatement() const {
     if (spelling == "def") return TokenId::DEF;
     if (spelling == "this") return TokenId::THIS;
     if (spelling == "super") return TokenId::SUPER;
+    if (spelling == "try") return TokenId::TRY;
+    if (spelling == "catch") return TokenId::CATCH;
     return TokenId::UNKNOWN;
   };
   for (std::size_t offset = 0; offset < statement.size();) {
@@ -180,7 +183,8 @@ void IntegerTokenList::encodeNextStatement() const {
         word == "index" || word == "extends" || word == "elif" || word == "new" ||
         word == "for" || word == "in" || word == "while" || word == "switch" ||
         word == "case" || word == "default" || word == "break" ||
-        word == "continue" || word == "def") {
+        word == "continue" || word == "def" ||
+        word == "try" || word == "catch") {
       push(keyword, first, offset);
       continue;
     }
@@ -189,6 +193,25 @@ void IntegerTokenList::encodeNextStatement() const {
   }
   nextStatementBegin_ = end;
   complete_ = end == source_.size();
+}
+
+IntegerTokenList::LineColumn IntegerTokenList::lineColumn(std::size_t offset) const {
+  if (lineStarts_.empty()) {
+    lineStarts_.push_back(0);
+    for (std::size_t index = 0; index < source_.size(); ++index) {
+      if (source_[index] == '\r') {
+        if (index + 1 < source_.size() && source_[index + 1] == '\n') ++index;
+        lineStarts_.push_back(index + 1);
+      } else if (source_[index] == '\n') {
+        lineStarts_.push_back(index + 1);
+      }
+    }
+  }
+  offset = std::min(offset, source_.size());
+  const auto next = std::upper_bound(lineStarts_.begin(), lineStarts_.end(), offset);
+  const auto line = static_cast<std::size_t>(next - lineStarts_.begin());
+  return LineColumn{static_cast<int>(line),
+                    static_cast<int>(offset - lineStarts_[line - 1] + 1)};
 }
 
 bool IntegerTokenList::has(std::size_t index) const {

@@ -39,6 +39,11 @@ public:
     explicit IntegerParser(const IntegerTokenList& input,
                            std::shared_ptr<OperatorRegistry> operators = {});
 
+    // A project manifest (init.fx) is a list of lowercase configuration calls
+    // such as db.location(...), which have fact shape. Manifest mode lets them
+    // through; everywhere else a fact must begin with an uppercase letter.
+    void setManifestMode(bool enabled) noexcept { manifestMode_ = enabled; }
+
     Program parseProgram();
     bool programComplete();
     std::shared_ptr<Statement> parseNextProgramStatement();
@@ -57,6 +62,8 @@ private:
         bool isCapitalized = false;
     };
     const IntegerTokenList& input_;
+    bool manifestMode_ = false;
+    std::size_t statementIterations_ = 0;
     std::shared_ptr<OperatorRegistry> operators_;
     std::size_t piece_ = 0;
     std::size_t byte_ = 0;
@@ -66,6 +73,7 @@ private:
     IntegerParserMetrics metrics_;
 
     static constexpr std::size_t kMaximumRecursionDepth = 512;
+    // Per top-level statement; the cumulative count is metrics_.iterations.
     static constexpr std::size_t kMaximumIterations = 1'000'000;
 
     class RecursionScope {

@@ -47,6 +47,47 @@ default then
 end
 ```
 
+## Exceptions
+
+`throw(exception: {kind: "name", message: "text"})` raises an exception object.
+`kind` must be a string; `message` is optional. `try ... catch e then ... end`
+runs the `try` body to completion. A native runtime error (for example
+`order_by` over a non-numeric field) or a thrown exception then binds
+`{kind, message}` to `e` and runs the catch body; native errors have kind
+`"runtime"`. Without an error the catch body is skipped and bindings made in
+the `try` body stay visible. A `try` body that merely fails, with no error,
+fails the statement like any other goal; only errors are caught. Store writes
+made before the error are kept. An uncaught exception ends the program and
+prints its message.
+
+```felidae
+def main() =>
+    try
+        sorted := rows.order_by(field: "name").
+    catch e then
+        reason := e.message.
+    end
+    return reason
+end
+```
+
+Several `catch` branches form a cascade: the first handles errors from the `try`
+body, and an error raised inside it goes to the next `catch` (each variable holds
+the exception it received). An error from the last `catch` propagates to the
+enclosing `try` or ends the program. Each catch variable is scoped to its branch.
+
+```felidae
+try
+    risky()
+catch e then
+    repair(e.message)
+catch k then
+    fallback(k.message)
+end
+```
+
+`try` and `catch` are reserved words.
+
 ## Classes and explicit blocks
 
 `class` declarations are direct AST schema declarations. Their inheritance is
@@ -87,6 +128,18 @@ operation authoritative.
 Facts live in RocksDB, which maintains ordered type buckets, indexes,
 provenance, temporal metadata, stable identities, and graph adjacency.
 Queries unify their fields with records selected directly from that store.
+
+A fact is a class constructor call, so its name begins with an uppercase letter, like
+a class name; the parser rejects `person(name: "Ada").` Functions and function calls
+may be lowercase or mixed case.
+
+If `class Person ... end` is declared,
+`Person(...)` is validated for argument names, types, and arity. If no class is
+declared, the constructor is not validated: any field set is accepted, as with
+a lambda, and the constructor declares a class internally. The only contract an
+undeclared type has is its key, the first field of its first constructor, which
+every later fact of that type must supply. Declaring the class later promotes
+the stored facts and checks each one against the declaration.
 
 The direct fluent fact API is evaluated by that same store:
 

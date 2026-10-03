@@ -74,9 +74,6 @@ execute_process(
 if(NOT repl_result EQUAL 0)
   message(FATAL_ERROR "REPL failed (${repl_result}): ${repl_error}\n${repl_output}")
 endif()
-execute_process(
-  COMMAND "${FELIDAE_EXE}" db stop "${TEST_DIRECTORY}"
-  OUTPUT_QUIET ERROR_QUIET)
 if(NOT repl_output MATCHES "\\[error\\]")
   message(FATAL_ERROR "REPL did not diagnose malformed multiline source:\n${repl_output}")
 endif()

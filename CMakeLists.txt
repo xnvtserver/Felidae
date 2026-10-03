@@ -115,7 +115,7 @@ set(FELIDAE_RUNTIME_SOURCES
   src/Interpreter.cpp
   src/ReasoningRuntime.cpp
   src/Env.cpp
-  src/Memory.cpp
+  src/TypeHierarchy.cpp
   src/RocksFactStore.cpp
   src/NativeRuntime.cpp)
 
@@ -130,14 +130,10 @@ endif()
 add_executable(felidae
   src/main.cpp
   src/ProjectConfiguration.cpp
-  src/DatabaseService.cpp
   src/DebugSession.cpp
   src/ReplLineEditor.cpp
   src/TerminalUi.cpp)
 target_link_libraries(felidae PRIVATE felidae_runtime)
-if(WIN32)
-  target_link_libraries(felidae PRIVATE ws2_32)
-endif()
 felidae_common(felidae)
 
 if(FELIDAE_BUILD_TESTS)
@@ -146,6 +142,7 @@ if(FELIDAE_BUILD_TESTS)
   target_link_libraries(felidae_storage_tests PRIVATE felidae_runtime)
   felidae_common(felidae_storage_tests)
   add_test(NAME storage_key_encoding_unit COMMAND felidae_storage_tests)
+  set_tests_properties(storage_key_encoding_unit PROPERTIES TIMEOUT 120)
   set(FELIDAE_FX_TEST_COMMAND
     ${CMAKE_COMMAND}
     -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
@@ -208,7 +205,7 @@ if(FELIDAE_BUILD_TESTS)
   set_tests_properties(namespace_separator_rejected PROPERTIES WILL_FAIL TRUE)
 
   add_test(NAME direct_ast_fact_query
-    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/direct_ast_smoke.fx "? fact(name: x).")
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/direct_ast_smoke.fx "? Animal(name: x).")
   set_tests_properties(direct_ast_fact_query PROPERTIES
     PASS_REGULAR_EXPRESSION "x = \"tiger\"")
 
@@ -217,6 +214,13 @@ if(FELIDAE_BUILD_TESTS)
             "? Candidate(id: x), x == \"b\".")
   set_tests_properties(durable_solver_backtracking PROPERTIES
     PASS_REGULAR_EXPRESSION "x = \"b\"")
+
+  add_test(NAME relational_rule_binds_output
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/relational_rule_binds_output.fx
+            "? pick(x: \"a\", y: v), v == \"b\".")
+  set_tests_properties(relational_rule_binds_output PROPERTIES
+    PASS_REGULAR_EXPRESSION "Solution 1: v = \"b\""
+    FAIL_REGULAR_EXPRESSION "v = v|Solution 2")
 
   add_test(NAME rocks_reasoning_facts
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/rocks_reasoning_facts.fx)
@@ -277,7 +281,7 @@ if(FELIDAE_BUILD_TESTS)
   add_test(NAME mixfix_type_overload
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/v2_examples/mixfix_type_overload.fx)
   set_tests_properties(mixfix_type_overload PROPERTIES
-    PASS_REGULAR_EXPRESSION "number_result: 42.*string_result: string-overload")
+    PASS_REGULAR_EXPRESSION "number_result: 42.*string_result: \"string-overload\"")
 
   add_test(NAME direct_ast_class_end
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/direct_class_end.fx)
@@ -419,14 +423,30 @@ if(FELIDAE_BUILD_TESTS)
   add_test(NAME source_locator
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/source_locator.fx)
   set_tests_properties(source_locator PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tests
+    ENVIRONMENT FELIDAE_TEST_CWD_IS_PROJECT=1
     PASS_REGULAR_EXPRESSION "employee-1")
 
   add_test(NAME source_locator_line_mismatch_rejected
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_source_locator_line.fx)
   set_tests_properties(source_locator_line_mismatch_rejected PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tests
+    ENVIRONMENT FELIDAE_TEST_CWD_IS_PROJECT=1
     WILL_FAIL TRUE)
+
+  add_test(NAME tail_call_goal_position
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/tail_call_goal_position.fx)
+  set_tests_properties(tail_call_goal_position PROPERTIES
+    PASS_REGULAR_EXPRESSION "^100")
+
+  add_test(NAME failed_value_call_runs_once
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/failed_value_call_runs_once.fx)
+  set_tests_properties(failed_value_call_runs_once PROPERTIES
+    PASS_REGULAR_EXPRESSION "EFFECT\nfalse"
+    FAIL_REGULAR_EXPRESSION "EFFECT.*EFFECT")
+
+  add_test(NAME self_containing_field_rejected
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_self_containing_field.fx)
+  set_tests_properties(self_containing_field_rejected PROPERTIES
+    PASS_REGULAR_EXPRESSION "would make an object contain itself")
 
   add_test(NAME builtin_method_override
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/builtin_method_override.fx)
@@ -446,6 +466,131 @@ if(FELIDAE_BUILD_TESTS)
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/dynamic_fact_schema_lock.fx)
   set_tests_properties(dynamic_fact_schema_lock PROPERTIES
     PASS_REGULAR_EXPRESSION "stored: 2.*transient: 30")
+
+  add_test(NAME undeclared_fact_open_shape
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/undeclared_fact_open_shape.fx)
+  set_tests_properties(undeclared_fact_open_shape PROPERTIES
+    PASS_REGULAR_EXPRESSION "count: 3.*only_a: 1")
+
+  add_test(NAME undeclared_fact_missing_key_rejected
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_undeclared_fact_missing_key.fx)
+  set_tests_properties(undeclared_fact_missing_key_rejected PROPERTIES
+    PASS_REGULAR_EXPRESSION "Fact key field 'a' is missing")
+
+  add_test(NAME lowercase_fact_rejected
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_lowercase_fact.fx)
+  set_tests_properties(lowercase_fact_rejected PROPERTIES
+    PASS_REGULAR_EXPRESSION "Fact 'ghost' must begin with an uppercase letter at line 3")
+
+  add_test(NAME lowercase_fact_extend_rejected
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_lowercase_fact_extend.fx)
+  set_tests_properties(lowercase_fact_extend_rejected PROPERTIES
+    PASS_REGULAR_EXPRESSION "Fact 'child' must begin with an uppercase letter")
+
+  add_test(NAME fact_namespace_rejected
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_fact_namespace.fx)
+  set_tests_properties(fact_namespace_rejected PROPERTIES
+    PASS_REGULAR_EXPRESSION "'Fact' is not a queryable class; query a class directly, for example Employee.count\\(\\) at line 11")
+
+  add_test(NAME class_count_query
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/class_count_query.fx)
+  set_tests_properties(class_count_query PROPERTIES
+    PASS_REGULAR_EXPRESSION "^2")
+
+  add_test(NAME thread_sees_facts
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/thread_sees_facts.fx)
+  set_tests_properties(thread_sees_facts PROPERTIES
+    PASS_REGULAR_EXPRESSION "\"2\"")
+
+  add_test(NAME order_by_numeric
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/order_by_numeric.fx)
+  set_tests_properties(order_by_numeric PROPERTIES
+    PASS_REGULAR_EXPRESSION "id: \"b\".*id: \"d\".*id: \"c\".*id: \"a\"")
+
+  add_test(NAME order_by_string_rejected
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_order_by_string.fx)
+  set_tests_properties(order_by_string_rejected PROPERTIES
+    PASS_REGULAR_EXPRESSION "order_by supports only numeric values: field 'v' of row 1")
+
+  add_test(NAME order_by_missing_field_rejected
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_order_by_missing.fx)
+  set_tests_properties(order_by_missing_field_rejected PROPERTIES
+    PASS_REGULAR_EXPRESSION "order_by supports only numeric values: field 'v' of row 1 is missing")
+
+  add_test(NAME try_catch_runtime_error
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_runtime_error.fx)
+  set_tests_properties(try_catch_runtime_error PROPERTIES
+    PASS_REGULAR_EXPRESSION "kind: \"runtime\".*order_by supports only numeric values: field 'v' of row 0 is")
+
+  add_test(NAME try_catch_thrown_exception
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_thrown_exception.fx)
+  set_tests_properties(try_catch_thrown_exception PROPERTIES
+    PASS_REGULAR_EXPRESSION "kind: \"custom\".*message: \"boom\"")
+
+  add_test(NAME try_catch_no_error
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_no_error.fx)
+  set_tests_properties(try_catch_no_error PROPERTIES
+    PASS_REGULAR_EXPRESSION "\"completed\"")
+
+  add_test(NAME try_catch_keeps_writes
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_keeps_writes.fx)
+  set_tests_properties(try_catch_keeps_writes PROPERTIES
+    PASS_REGULAR_EXPRESSION "reason: \"after the write\".*items: 1")
+
+  add_test(NAME throw_uncaught_reports_message
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_throw_uncaught.fx)
+  set_tests_properties(throw_uncaught_reports_message PROPERTIES
+    PASS_REGULAR_EXPRESSION "error: uncaught boom")
+
+  add_test(NAME throw_without_kind_rejected
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_throw_without_kind.fx)
+  set_tests_properties(throw_without_kind_rejected PROPERTIES
+    PASS_REGULAR_EXPRESSION "throw exception must be an object with a string 'kind' field")
+
+  add_test(NAME try_catch_sequential
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_sequential.fx)
+  set_tests_properties(try_catch_sequential PROPERTIES
+    PASS_REGULAR_EXPRESSION "first: \"one\".*second: \"two\"")
+
+  add_test(NAME try_catch_nested
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_nested.fx)
+  set_tests_properties(try_catch_nested PROPERTIES
+    PASS_REGULAR_EXPRESSION "handled: \"inner error\".*outcome: \"outer completed\"")
+
+  add_test(NAME try_catch_error_in_catch
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_error_in_catch.fx)
+  set_tests_properties(try_catch_error_in_catch PROPERTIES
+    PASS_REGULAR_EXPRESSION "kind: \"second\".*message: \"raised while handling\"")
+
+  add_test(NAME try_catch_rethrow
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_rethrow.fx)
+  set_tests_properties(try_catch_rethrow PROPERTIES
+    PASS_REGULAR_EXPRESSION "kind: \"disk\".*message: \"full\"")
+
+  add_test(NAME try_catch_first_error_wins
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_first_error_wins.fx)
+  set_tests_properties(try_catch_first_error_wins PROPERTIES
+    PASS_REGULAR_EXPRESSION "reason: \"first error\".*items: 1")
+
+  add_test(NAME try_catch_by_kind
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_by_kind.fx)
+  set_tests_properties(try_catch_by_kind PROPERTIES
+    PASS_REGULAR_EXPRESSION "a: \"handled not_found\".*b: \"handled invalid\".*c: \"ok\"")
+
+  add_test(NAME try_catch_cascade
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_cascade.fx)
+  set_tests_properties(try_catch_cascade PROPERTIES
+    PASS_REGULAR_EXPRESSION "kind: \"c\".*message: \"b\"")
+
+  add_test(NAME try_catch_cascade_stops
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_cascade_stops.fx)
+  set_tests_properties(try_catch_cascade_stops PROPERTIES
+    PASS_REGULAR_EXPRESSION "handled: \"from try\".*items: 0")
+
+  add_test(NAME try_catch_cascade_last_raises
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_try_catch_cascade_last_raises.fx)
+  set_tests_properties(try_catch_cascade_last_raises PROPERTIES
+    PASS_REGULAR_EXPRESSION "error: last catch failed")
 
   add_test(NAME rocks_graph_properties
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/rocks_graph_properties.fx)
@@ -550,8 +695,6 @@ if(FELIDAE_BUILD_TESTS)
   set(FELIDAE_PERSISTENCE_TEST_DB "${FELIDAE_PERSISTENCE_TEST_PROJECT}/data.db")
   add_test(NAME rocks_persistence_clean
     COMMAND ${CMAKE_COMMAND}
-      -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
-      -DPROJECT_DIRECTORY=${FELIDAE_PERSISTENCE_TEST_PROJECT}
       -DDATABASE_DIRECTORY=${FELIDAE_PERSISTENCE_TEST_DB}
       -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
   set_tests_properties(rocks_persistence_clean PROPERTIES FIXTURES_SETUP persistence_clean)
@@ -575,18 +718,12 @@ if(FELIDAE_BUILD_TESTS)
   set_tests_properties(rocks_persistence_read PROPERTIES
     FIXTURES_REQUIRED persistence_reseeded
     PASS_REGULAR_EXPRESSION "42")
-  add_test(NAME rocks_persistence_stop
-    COMMAND felidae db stop ${FELIDAE_PERSISTENCE_TEST_PROJECT})
-  set_tests_properties(rocks_persistence_stop PROPERTIES
-    FIXTURES_CLEANUP "persistence_clean;persistence_seeded;persistence_reseeded")
 
   set(FELIDAE_SCHEMA_TEST_PROJECT
     "${CMAKE_CURRENT_BINARY_DIR}/test-projects/persistent/schema")
   set(FELIDAE_SCHEMA_TEST_DB "${FELIDAE_SCHEMA_TEST_PROJECT}/data.db")
   add_test(NAME rocks_schema_clean
     COMMAND ${CMAKE_COMMAND}
-      -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
-      -DPROJECT_DIRECTORY=${FELIDAE_SCHEMA_TEST_PROJECT}
       -DDATABASE_DIRECTORY=${FELIDAE_SCHEMA_TEST_DB}
       -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
   set_tests_properties(rocks_schema_clean PROPERTIES FIXTURES_SETUP schema_clean)
@@ -598,23 +735,39 @@ if(FELIDAE_BUILD_TESTS)
     FIXTURES_SETUP schema_seeded
     PASS_REGULAR_EXPRESSION "1")
 
-  add_test(NAME rocks_schema_change_rejected
-    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/schema/invalid_rocks_schema_change.fx)
-  set_tests_properties(rocks_schema_change_rejected PROPERTIES
+  add_test(NAME rocks_schema_open_shape
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/schema/rocks_schema_open_shape.fx)
+  set_tests_properties(rocks_schema_open_shape PROPERTIES
     FIXTURES_REQUIRED schema_seeded
-    WILL_FAIL TRUE)
-  add_test(NAME rocks_schema_stop
-    COMMAND felidae db stop ${FELIDAE_SCHEMA_TEST_PROJECT})
-  set_tests_properties(rocks_schema_stop PROPERTIES
-    FIXTURES_CLEANUP "schema_clean;schema_seeded")
+    PASS_REGULAR_EXPRESSION "3")
+
+  set(FELIDAE_ATOMIC_DELETE_TEST_PROJECT
+    "${CMAKE_CURRENT_BINARY_DIR}/test-projects/persistent/atomic_delete")
+  set(FELIDAE_ATOMIC_DELETE_TEST_DB "${FELIDAE_ATOMIC_DELETE_TEST_PROJECT}/data.db")
+  add_test(NAME atomic_delete_clean
+    COMMAND ${CMAKE_COMMAND}
+      -DDATABASE_DIRECTORY=${FELIDAE_ATOMIC_DELETE_TEST_DB}
+      -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
+  set_tests_properties(atomic_delete_clean PROPERTIES FIXTURES_SETUP atomic_delete_clean)
+
+  add_test(NAME atomic_delete_rejects_referenced_row
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/atomic_delete/atomic_delete_seed_fail.fx)
+  set_tests_properties(atomic_delete_rejects_referenced_row PROPERTIES
+    FIXTURES_REQUIRED atomic_delete_clean
+    FIXTURES_SETUP atomic_delete_seeded
+    PASS_REGULAR_EXPRESSION "Cannot delete referenced fact")
+
+  add_test(NAME atomic_delete_leaves_all_rows
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/atomic_delete/atomic_delete_read.fx)
+  set_tests_properties(atomic_delete_leaves_all_rows PROPERTIES
+    FIXTURES_REQUIRED atomic_delete_seeded
+    PASS_REGULAR_EXPRESSION "^3")
 
   set(FELIDAE_PROMOTION_TEST_PROJECT
     "${CMAKE_CURRENT_BINARY_DIR}/test-projects/persistent/promotion")
   set(FELIDAE_PROMOTION_TEST_DB "${FELIDAE_PROMOTION_TEST_PROJECT}/data.db")
   add_test(NAME schemaless_promotion_clean
     COMMAND ${CMAKE_COMMAND}
-      -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
-      -DPROJECT_DIRECTORY=${FELIDAE_PROMOTION_TEST_PROJECT}
       -DDATABASE_DIRECTORY=${FELIDAE_PROMOTION_TEST_DB}
       -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
   set_tests_properties(schemaless_promotion_clean PROPERTIES
@@ -634,10 +787,6 @@ if(FELIDAE_BUILD_TESTS)
     FIXTURES_SETUP promotion_declared
     PASS_REGULAR_EXPRESSION "count: 1.*doubled: 42")
 
-  add_test(NAME schemaless_promotion_stop
-    COMMAND felidae db stop ${FELIDAE_PROMOTION_TEST_PROJECT})
-  set_tests_properties(schemaless_promotion_stop PROPERTIES
-    FIXTURES_CLEANUP "promotion_clean;promotion_seeded;promotion_declared")
 
   add_test(NAME schemaless_promotion_key_rejected
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/promotion/invalid_schemaless_promotion_key.fx)
@@ -657,8 +806,6 @@ if(FELIDAE_BUILD_TESTS)
   set(FELIDAE_INDEX_TEST_DB "${FELIDAE_INDEX_TEST_PROJECT}/data.db")
   add_test(NAME rocks_index_clean
     COMMAND ${CMAKE_COMMAND}
-      -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
-      -DPROJECT_DIRECTORY=${FELIDAE_INDEX_TEST_PROJECT}
       -DDATABASE_DIRECTORY=${FELIDAE_INDEX_TEST_DB}
       -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
   set_tests_properties(rocks_index_clean PROPERTIES FIXTURES_SETUP index_clean)
@@ -682,8 +829,6 @@ if(FELIDAE_BUILD_TESTS)
   set(FELIDAE_DESIGNATION_TEST_DB "${FELIDAE_DESIGNATION_TEST_PROJECT}/data.db")
   add_test(NAME rocks_designation_clean
     COMMAND ${CMAKE_COMMAND}
-      -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
-      -DPROJECT_DIRECTORY=${FELIDAE_DESIGNATION_TEST_PROJECT}
       -DDATABASE_DIRECTORY=${FELIDAE_DESIGNATION_TEST_DB}
       -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
   set_tests_properties(rocks_designation_clean PROPERTIES
@@ -701,28 +846,18 @@ if(FELIDAE_BUILD_TESTS)
   set_tests_properties(rocks_designation_read PROPERTIES
     FIXTURES_REQUIRED designation_seeded
     PASS_REGULAR_EXPRESSION "1")
-  add_test(NAME rocks_designation_stop
-    COMMAND felidae db stop ${FELIDAE_DESIGNATION_TEST_PROJECT})
-  set_tests_properties(rocks_designation_stop PROPERTIES
-    FIXTURES_CLEANUP "designation_clean;designation_seeded")
 
   add_test(NAME rocks_index_restart_read
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/index/rocks_index_read.fx)
   set_tests_properties(rocks_index_restart_read PROPERTIES
     FIXTURES_REQUIRED index_updated
     PASS_REGULAR_EXPRESSION "active: 1.*inactive: 1")
-  add_test(NAME rocks_index_stop
-    COMMAND felidae db stop ${FELIDAE_INDEX_TEST_PROJECT})
-  set_tests_properties(rocks_index_stop PROPERTIES
-    FIXTURES_CLEANUP "index_clean;index_seeded;index_updated")
 
   set(FELIDAE_INHERITANCE_TEST_PROJECT
     "${CMAKE_CURRENT_BINARY_DIR}/test-projects/persistent/inheritance")
   set(FELIDAE_INHERITANCE_TEST_DB "${FELIDAE_INHERITANCE_TEST_PROJECT}/data.db")
   add_test(NAME rocks_inheritance_clean
     COMMAND ${CMAKE_COMMAND}
-      -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
-      -DPROJECT_DIRECTORY=${FELIDAE_INHERITANCE_TEST_PROJECT}
       -DDATABASE_DIRECTORY=${FELIDAE_INHERITANCE_TEST_DB}
       -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
   set_tests_properties(rocks_inheritance_clean PROPERTIES FIXTURES_SETUP inheritance_clean)
@@ -739,18 +874,12 @@ if(FELIDAE_BUILD_TESTS)
   set_tests_properties(rocks_inheritance_restart_read PROPERTIES
     FIXTURES_REQUIRED inheritance_seeded
     PASS_REGULAR_EXPRESSION "2")
-  add_test(NAME rocks_inheritance_stop
-    COMMAND felidae db stop ${FELIDAE_INHERITANCE_TEST_PROJECT})
-  set_tests_properties(rocks_inheritance_stop PROPERTIES
-    FIXTURES_CLEANUP "inheritance_clean;inheritance_seeded")
 
   set(FELIDAE_CONFIG_TEST_PROJECT
     "${CMAKE_CURRENT_BINARY_DIR}/test-projects/persistent/config")
   set(FELIDAE_CONFIG_TEST_DB "${FELIDAE_CONFIG_TEST_PROJECT}/data.db")
   add_test(NAME rocks_config_clean
     COMMAND ${CMAKE_COMMAND}
-      -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
-      -DPROJECT_DIRECTORY=${FELIDAE_CONFIG_TEST_PROJECT}
       -DDATABASE_DIRECTORY=${FELIDAE_CONFIG_TEST_DB}
       -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
   set_tests_properties(rocks_config_clean PROPERTIES FIXTURES_SETUP config_clean)
@@ -768,10 +897,6 @@ if(FELIDAE_BUILD_TESTS)
     FIXTURES_REQUIRED config_written
     PASS_REGULAR_EXPRESSION "max_background_jobs: 3.*bytes_per_sync: 1048576")
 
-  add_test(NAME rocks_config_stop
-    COMMAND felidae db stop ${FELIDAE_CONFIG_TEST_PROJECT})
-  set_tests_properties(rocks_config_stop PROPERTIES
-    FIXTURES_CLEANUP "config_clean;config_written")
 
   add_test(NAME analytical_query_language_tour
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/v2_examples/felidae_language_tour.fx)

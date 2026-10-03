@@ -58,6 +58,3 @@ if(NOT debug_marker EQUAL -1)
     message(FATAL_ERROR
         "Normal graph execution initialized the debugger:\n${normal_transcript}")
 endif()
-execute_process(
-    COMMAND "${FELIDAE_EXECUTABLE}" db stop "${TEST_DIRECTORY}"
-    OUTPUT_QUIET ERROR_QUIET)

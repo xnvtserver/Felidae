@@ -15,7 +15,7 @@ const SymbolId kMainSymbolId = symbolIdForName("main");
 
 bool hasValueReturn(const std::vector<std::shared_ptr<Goal>>& goals) {
     for (const auto& goal : goals) {
-        if (const auto returned = std::dynamic_pointer_cast<ReturnGoal>(goal)) {
+        if (const auto returned = nodeAs<ReturnGoal>(goal)) {
             if (!returned->fields.empty()) return true;
         }
     }
@@ -25,7 +25,7 @@ bool hasValueReturn(const std::vector<std::shared_ptr<Goal>>& goals) {
 bool isMethodStyleHead(const Call& head) {
     if (head.args.empty()) return false;
     for (const auto& argument : head.args) {
-        const auto type = std::dynamic_pointer_cast<VarExpr>(argument.value);
+        const auto type = nodeAs<VarExpr>(argument.value);
         if (argument.name.empty() || !type ||
             (type->languageTypeId == LanguageTypeId::Unknown &&
              !isFelidaeTypeAnnotationName(type->name))) {
@@ -58,7 +58,8 @@ IntegerParser::RecursionScope::~RecursionScope() {
 }
 
 void IntegerParser::step() {
-    if (++metrics_.iterations > kMaximumIterations) {
+    ++metrics_.iterations;
+    if (++statementIterations_ > kMaximumIterations) {
         throw IntegerParserError("Integer parser iteration budget exceeded");
     }
 }
@@ -182,24 +183,10 @@ bool IntegerParser::atNameRange() {
 }
 
 std::string IntegerParser::sourceLocation(std::size_t offset) const {
-    const auto& source = input_.source();
-    offset = std::min(offset, source.size());
-    std::size_t line = 1;
-    std::size_t column = 1;
-    for (std::size_t index = 0; index < offset; ++index) {
-        if (source[index] == '\r') {
-            if (index + 1 < offset && source[index + 1] == '\n') ++index;
-            ++line;
-            column = 1;
-        } else if (source[index] == '\n') {
-            ++line;
-            column = 1;
-        } else {
-            ++column;
-        }
-    }
-    return "line " + std::to_string(line) + ", column " +
-           std::to_string(column) + " (source byte " +
+    offset = std::min(offset, input_.source().size());
+    const auto position = input_.lineColumn(offset);
+    return "line " + std::to_string(position.line) + ", column " +
+           std::to_string(position.column) + " (source byte " +
            std::to_string(offset) + ")";
 }
 
@@ -611,8 +598,23 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
         stamp(result, begin, byte_);
         return result;
     }
+    if (match(TokenId::TRY)) {
+        auto tryBody = parseBlockBody();
+        std::vector<CatchClause> catches;
+        do {
+            require(TokenId::CATCH, "Expected 'catch' after try block");
+            const auto variable = consumeQualifiedName(false);
+            require(TokenId::THEN, "Expected 'then' after catch variable");
+            catches.emplace_back(variable.spelling, parseBlockBody());
+        } while (at(TokenId::CATCH));
+        requireBlockEnd("Expected 'end' after try/catch");
+        auto result = std::make_shared<TryGoal>(std::move(tryBody), std::move(catches));
+        stamp(result, begin, byte_);
+        return result;
+    }
     if (match(TokenId::BREAK)) {
         auto result = std::make_shared<BreakGoal>();
+
         stamp(result, begin, byte_);
         return result;
     }
@@ -634,7 +636,7 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
             auto conditionExpression = parseBinaryExpression(
                 static_cast<int>(OperatorPrecedence::Control), TokenId::THEN);
             require(TokenId::THEN, "Expected 'then' after if condition");
-            if (const auto comparison = std::dynamic_pointer_cast<OperatorExpression>(conditionExpression);
+            if (const auto comparison = nodeAs<OperatorExpression>(conditionExpression);
                 comparison && comparison->captureCount() == 2 &&
                 isComparisonOperator(comparison->coreOperator)) {
                 return std::make_shared<BinaryGoal>(comparison->capture(0),
@@ -671,7 +673,7 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
     }
     if (match(TokenId::WHERE)) {
         auto expression = parseExpression();
-        const auto comparison = std::dynamic_pointer_cast<OperatorExpression>(expression);
+        const auto comparison = nodeAs<OperatorExpression>(expression);
         if (!comparison || comparison->captureCount() != 2 ||
             !isComparisonOperator(comparison->coreOperator)) {
             throw IntegerParserError("Expected comparison after 'where'");
@@ -753,9 +755,9 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
     piece_ = startPiece;
     auto left = parseExpression();
     if (match(TokenId::ASSIGN)) {
-        const auto access = std::dynamic_pointer_cast<AccessExpr>(left);
+        const auto access = nodeAs<AccessExpr>(left);
         const auto receiver = access
-            ? std::dynamic_pointer_cast<VarExpr>(access->target) : nullptr;
+            ? nodeAs<VarExpr>(access->target) : nullptr;
         if (!access || !receiver || receiver->name != "this" || !insideClassMethod_) {
             throw IntegerParserError(
                 "Mutable field assignment is only valid as 'this.field := value' inside a class method");
@@ -774,7 +776,7 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
             designations.push_back(consumeQualifiedName());
         } while (match(TokenId::COMMA));
     }
-    if (const auto comparison = std::dynamic_pointer_cast<OperatorExpression>(left);
+    if (const auto comparison = nodeAs<OperatorExpression>(left);
         comparison && comparison->captureCount() == 2 &&
         isComparisonOperator(comparison->coreOperator)) {
         const auto definition = coreOperatorDefinition(comparison->coreOperator);
@@ -793,7 +795,7 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
             return result;
         }
     }
-    const auto term = std::dynamic_pointer_cast<TermExpr>(left);
+    const auto term = nodeAs<TermExpr>(left);
     if (!term) throw IntegerParserError(
         "Expected a predicate call or comparison goal at " +
         sourceLocation(begin));
@@ -828,17 +830,18 @@ std::vector<std::shared_ptr<Goal>> IntegerParser::parseBlockBody() {
     std::vector<std::shared_ptr<Goal>> goals;
     while (!atEnd() && !atBlockEnd() && !at(TokenId::ELSE) &&
            !at(TokenId::ELIF) && !at(TokenId::CASE) &&
-           !at(TokenId::DEFAULT)) {
+           !at(TokenId::DEFAULT) && !at(TokenId::CATCH)) {
         const auto before = byte_;
         auto goal = parseGoal();
         if (byte_ == before) {
             throw IntegerParserError("Integer parser made no progress in block body");
         }
         const bool blockStatement =
-            std::dynamic_pointer_cast<IfGoal>(goal) ||
-            std::dynamic_pointer_cast<ForGoal>(goal) ||
-            std::dynamic_pointer_cast<WhileGoal>(goal) ||
-            std::dynamic_pointer_cast<SwitchGoal>(goal);
+            nodeAs<IfGoal>(goal) ||
+            nodeAs<ForGoal>(goal) ||
+            nodeAs<WhileGoal>(goal) ||
+            nodeAs<SwitchGoal>(goal) ||
+            nodeAs<TryGoal>(goal);
         goals.push_back(std::move(goal));
 
         if (blockStatement) {
@@ -982,7 +985,16 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
         }
         throw IntegerParserError("Expected '=>' after function or rule declaration");
     }
-    if (!hasArrow) consumeStatementTerminator("fact or rule declaration");
+    if (!hasArrow) {
+        // A statement with no `def` and no body is a fact: a class constructor
+        // call, so its name follows the class naming rule.
+        if (!manifestMode_ && !clauseName.isCapitalized) {
+            throw IntegerParserError(
+                "Fact '" + clauseName.spelling +
+                "' must begin with an uppercase letter at " + sourceLocation(begin));
+        }
+        consumeStatementTerminator("fact or rule declaration");
+    }
     // Annotations describe callable operator implementations.  They are
     // methods even when their body has a bare `return` (or no value return),
     // so classification must not depend solely on ReturnGoal fields.
@@ -1071,7 +1083,7 @@ std::shared_ptr<ClassStmt> IntegerParser::parseClassStatement(std::size_t begin)
         insideClassMethod_ = true;
         std::shared_ptr<ClauseStmt> method;
         try {
-            method = std::dynamic_pointer_cast<ClauseStmt>(parseStatement());
+            method = nodeAs<ClauseStmt>(parseStatement());
         } catch (...) {
             insideClassMethod_ = previousClassMethod;
             throw;
@@ -1190,6 +1202,9 @@ std::shared_ptr<Statement> IntegerParser::parseNextProgramStatement() {
         throw IntegerParserError("Expected a program statement");
     }
     const auto before = byte_;
+    // The iteration budget guards one statement against a runaway parse. It is
+    // not a limit on file size, so it restarts for every top-level statement.
+    statementIterations_ = 0;
     auto statement = parseStatement();
     ++metrics_.statementCount;
     if (byte_ == before) {
@@ -1646,7 +1661,7 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
     if (match(TokenId::NOT)) return std::make_shared<OperatorExpression>(CoreOperator::LogicalNot, parseUnary());
     if (match(TokenId::MINUS)) {
         auto operand = parseUnary();
-        if (const auto number = std::dynamic_pointer_cast<NumberExpr>(operand)) {
+        if (const auto number = nodeAs<NumberExpr>(operand)) {
             return std::make_shared<NumberExpr>(-number->value);
         }
         return std::make_shared<OperatorExpression>(CoreOperator::UnaryMinus, std::move(operand));
@@ -1677,7 +1692,7 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
         }
         if (!at(TokenId::LPAREN)) {
             if (member == "class") {
-                const auto reference = std::dynamic_pointer_cast<VarExpr>(result);
+                const auto reference = nodeAs<VarExpr>(result);
                 if (!reference) {
                     throw IntegerParserError(".class requires a class name");
                 }
@@ -1685,14 +1700,14 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
                 continue;
             }
             if (member == "function") {
-                const auto reference = std::dynamic_pointer_cast<VarExpr>(result);
+                const auto reference = nodeAs<VarExpr>(result);
                 if (!reference) {
                     throw IntegerParserError(".function requires a function name");
                 }
                 result = std::make_shared<FunctionRefExpr>(reference->name);
                 continue;
             }
-            if (const auto type = std::dynamic_pointer_cast<VarExpr>(result);
+            if (const auto type = nodeAs<VarExpr>(result);
                 type && type->isCapitalized && !member.empty() &&
                 std::isupper(static_cast<unsigned char>(member.front())) != 0) {
                 const std::string dottedType = type->name + "." + member;
@@ -1705,7 +1720,7 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
             continue;
         }
         auto arguments = parseArguments();
-        if (const auto type = std::dynamic_pointer_cast<VarExpr>(result);
+        if (const auto type = nodeAs<VarExpr>(result);
             type && type->isCapitalized && !member.empty() &&
             std::isupper(static_cast<unsigned char>(member.front())) != 0) {
             const std::string dottedType = type->name + "." + member;
@@ -1714,8 +1729,8 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
                 builtinIdForName(dottedType), true);
             continue;
         }
-        const auto type = std::dynamic_pointer_cast<VarExpr>(result);
-        const auto bucket = std::dynamic_pointer_cast<TermExpr>(result);
+        const auto type = nodeAs<VarExpr>(result);
+        const auto bucket = nodeAs<TermExpr>(result);
         const std::string staticType = type && type->isCapitalized
             ? type->name
             : (bucket && bucket->isCapitalized && bucket->args.empty() ? bucket->name : std::string{});
@@ -1730,10 +1745,18 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
             member == "recursive_join" || member == "shortest_path" ||
             member == "len" || member == "push";
         if (!staticType.empty() || runtimeBuiltinMember) {
+            // Facts are built into RocksDB and are queried through their own
+            // class, as in Employee.count(). `Fact` is only the root of the type
+            // lineage; it is neither a library nor a queryable class.
+            if (staticType == "Fact") {
+                throw IntegerParserError(
+                    "'Fact' is not a queryable class; query a class directly, for example "
+                    "Employee.count() at " + sourceLocation(byte_));
+            }
             if (member == "join" || member == "recursive_join" || member == "shortest_path") {
                 for (const auto& argument : arguments) {
                     if (argument.name == "direction" &&
-                        std::dynamic_pointer_cast<VarExpr>(argument.value)) {
+                        nodeAs<VarExpr>(argument.value)) {
                         throw IntegerParserError(
                             "Graph direction requires forward.class, backward.class, or both.class");
                     }
@@ -1750,7 +1773,7 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
                 std::string(kMemberInvokeTerm), std::move(invokeArgs));
             continue;
         }
-        if (const auto receiver = std::dynamic_pointer_cast<VarExpr>(result)) {
+        if (const auto receiver = nodeAs<VarExpr>(result)) {
             const std::string qualified = receiver->name + "." + member;
             const BuiltinId builtin = builtinIdForName(qualified);
             if (builtin != BuiltinId::Unknown) {
@@ -1806,33 +1829,13 @@ std::shared_ptr<Expr> IntegerParser::parseExpressionText() {
 }
 
 SourceSpan IntegerParser::span(std::size_t begin, std::size_t end) const {
+    const auto start = input_.lineColumn(begin);
+    const auto finish = input_.lineColumn(end);
     SourceSpan result;
-    const auto advance = [](SourceSpan& target, const IntegerTokenList::Entry& entry,
-                            std::size_t count) {
-        if (entry.id == TokenId::NEWLINE || entry.id == TokenId::CARRIAGE_RETURN) {
-            ++target.endLine;
-            target.endColumn = 1;
-        } else {
-            target.endColumn += static_cast<int>(count);
-        }
-    };
-    SourceSpan cursor;
-    for (const auto& entry : input_.entries()) {
-        if (entry.begin >= begin) break;
-        const auto count = std::min(entry.end, begin) - entry.begin;
-        advance(cursor, entry, count);
-    }
-    result.startLine = cursor.endLine;
-    result.startColumn = cursor.endColumn;
-    result.endLine = result.startLine;
-    result.endColumn = result.startColumn;
-    for (const auto& entry : input_.entries()) {
-        if (entry.end <= begin) continue;
-        if (entry.begin >= end) break;
-        const auto overlapBegin = std::max(entry.begin, begin);
-        const auto overlapEnd = std::min(entry.end, end);
-        advance(result, entry, overlapEnd - overlapBegin);
-    }
+    result.startLine = start.line;
+    result.startColumn = start.column;
+    result.endLine = finish.line;
+    result.endColumn = finish.column;
     return result;
 }
 

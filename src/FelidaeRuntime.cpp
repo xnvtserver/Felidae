@@ -75,18 +75,20 @@ std::filesystem::path resolveProgramEntryPath(const fs::path& path) {
     return normalized;
 }
 
-Program parseProgramFile(const fs::path& path) {
-    std::error_code ec;
+Program parseProgramFile(const fs::path& path, bool manifest) {
     const auto normalized = resolveProgramEntryPath(path);
-    return parseProgramText(readSourceFile(normalized));
+    return parseProgramText(readSourceFile(normalized), {}, {}, manifest);
 }
 
 Program parseProgramText(std::string text,
                          std::shared_ptr<WordVocabulary> tokenizer,
-                         std::shared_ptr<OperatorRegistry> operators) {
+                         std::shared_ptr<OperatorRegistry> operators,
+                         bool manifest) {
     if (!tokenizer) tokenizer = std::make_shared<WordVocabulary>();
     IntegerTokenList input(std::move(tokenizer), std::move(text));
-    return IntegerParser(input, std::move(operators)).parseProgram();
+    IntegerParser parser(input, std::move(operators));
+    parser.setManifestMode(manifest);
+    return parser.parseProgram();
 }
 
 InteractiveProgramLoad loadInteractiveProgramText(
@@ -191,30 +193,23 @@ void loadProgramRoot(const fs::path& file,
                      Interpreter& interpreter,
                      const std::function<void(const Program&)>& afterChunk) {
     fs::path normalized = resolveProgramEntryPath(file);
+    ParserMetrics parserMetrics;
+    if (!afterChunk) {
+        interpreter.loadProgramFile(normalized, &parserMetrics);
+        interpreter.recordParserMetrics(parserMetrics);
+        return;
+    }
     fs::path baseDir = normalized.parent_path();
     const auto streamStarted = std::chrono::steady_clock::now();
-    ParserMetrics parserMetrics;
     interpreter.beginModuleTransaction();
     try {
-        if (afterChunk) {
-            parseProgramFileChunks(normalized, [&](Program&& program) {
-                for (const auto& imp : program.imports) {
-                    for (const auto& path : imp->paths) interpreter.addImport(baseDir, path);
-                }
-                interpreter.addProgram(program);
-                afterChunk(program);
-            }, 1, interpreter.operatorRegistry(), interpreter.tokenizer());
-        } else {
-            parseProgramFileStatements(normalized, [&](std::shared_ptr<Statement> statement) {
-                if (statement->kind() == StatementKind::Import) {
-                    const auto import = std::static_pointer_cast<ImportStmt>(statement);
-                    for (const auto& path : import->paths) interpreter.addImport(baseDir, path);
-                    return;
-                }
-                interpreter.addStreamedStatement(std::move(statement));
-            }, interpreter.operatorRegistry(), &parserMetrics,
-               interpreter.tokenizer());
-        }
+        parseProgramFileChunks(normalized, [&](Program&& program) {
+            for (const auto& imp : program.imports) {
+                for (const auto& path : imp->paths) interpreter.addImport(baseDir, path);
+            }
+            interpreter.addProgram(program);
+            afterChunk(program);
+        }, 1, interpreter.operatorRegistry(), interpreter.tokenizer());
         interpreter.commitModuleTransaction();
         interpreter.recordStreamedModuleMicros(static_cast<std::size_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
@@ -286,52 +281,60 @@ std::vector<std::shared_ptr<Goal>> parseQueryText(
 }
 
 static void collectVarsExpr(const std::shared_ptr<Expr>& expr, std::vector<SymbolId>& vars) {
-    if (auto v = std::dynamic_pointer_cast<VarExpr>(expr)) {
+    if (auto v = nodeAs<VarExpr>(expr)) {
         if (v->nameId != InternalSymbol::SystemResultId &&
             std::find(vars.begin(), vars.end(), v->nameId) == vars.end()) {
             vars.push_back(v->nameId);
         }
-    } else if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
+    } else if (auto term = nodeAs<TermExpr>(expr)) {
         for (const auto& arg : term->args) collectVarsExpr(arg.value, vars);
-    } else if (auto lambda = std::dynamic_pointer_cast<LambdaExpr>(expr)) {
+    } else if (auto lambda = nodeAs<LambdaExpr>(expr)) {
         collectVarsExpr(lambda->source, vars);
         collectVarsExpr(lambda->body, vars);
         if (lambda->right) collectVarsExpr(lambda->right, vars);
-    } else if (auto array = std::dynamic_pointer_cast<ArrayExpr>(expr)) {
+    } else if (auto array = nodeAs<ArrayExpr>(expr)) {
         for (const auto& item : array->items) collectVarsExpr(item, vars);
-    } else if (auto map = std::dynamic_pointer_cast<MapExpr>(expr)) {
+    } else if (auto map = nodeAs<MapExpr>(expr)) {
         for (const auto& entry : map->entries) collectVarsExpr(entry.value, vars);
-    } else if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
-        auto targetVar = std::dynamic_pointer_cast<VarExpr>(access->target);
+    } else if (auto access = nodeAs<AccessExpr>(expr)) {
+        auto targetVar = nodeAs<VarExpr>(access->target);
         if (access->keyId == InternalSymbol::ResultId && targetVar && targetVar->nameId == InternalSymbol::SystemId) return;
         collectVarsExpr(access->target, vars);
-    } else if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
+    } else if (auto op = nodeAs<OperatorExpression>(expr)) {
         for (size_t i = 0; i < op->captureCount(); ++i) collectVarsExpr(op->capture(i), vars);
     }
 }
 
 static void collectVarsGoal(const std::shared_ptr<Goal>& goal, std::vector<SymbolId>& vars) {
-    if (auto cg = std::dynamic_pointer_cast<CallGoal>(goal)) {
+    if (auto cg = nodeAs<CallGoal>(goal)) {
         for (const auto& arg : cg->call.args) collectVarsExpr(arg.value, vars);
-    } else if (auto ag = std::dynamic_pointer_cast<AssignGoal>(goal)) {
+    } else if (auto ag = nodeAs<AssignGoal>(goal)) {
         if (std::find(vars.begin(), vars.end(), ag->nameId) == vars.end()) {
             vars.push_back(ag->nameId);
         }
         if (ag->expr) collectVarsExpr(ag->expr, vars);
-    } else if (auto bg = std::dynamic_pointer_cast<BinaryGoal>(goal)) {
+    } else if (auto bg = nodeAs<BinaryGoal>(goal)) {
         collectVarsExpr(bg->left, vars);
         collectVarsExpr(bg->right, vars);
-    } else if (auto wg = std::dynamic_pointer_cast<WhereGoal>(goal)) {
+    } else if (auto wg = nodeAs<WhereGoal>(goal)) {
         collectVarsGoal(wg->condition, vars);
-    } else if (auto ifGoal = std::dynamic_pointer_cast<IfGoal>(goal)) {
+    } else if (auto ifGoal = nodeAs<IfGoal>(goal)) {
         collectVarsGoal(ifGoal->condition, vars);
         for (const auto& branchGoal : ifGoal->thenBranch) collectVarsGoal(branchGoal, vars);
         for (const auto& branchGoal : ifGoal->elseBranch) collectVarsGoal(branchGoal, vars);
-    } else if (auto rg = std::dynamic_pointer_cast<ReturnGoal>(goal)) {
+    } else if (auto tg = nodeAs<TryGoal>(goal)) {
+        for (const auto& bodyGoal : tg->tryBody) collectVarsGoal(bodyGoal, vars);
+        for (const auto& clause : tg->catches) {
+            if (std::find(vars.begin(), vars.end(), clause.variableId) == vars.end()) {
+                vars.push_back(clause.variableId);
+            }
+            for (const auto& bodyGoal : clause.body) collectVarsGoal(bodyGoal, vars);
+        }
+    } else if (auto rg = nodeAs<ReturnGoal>(goal)) {
         for (const auto& field : rg->fields) collectVarsExpr(field.value, vars);
-    } else if (auto gg = std::dynamic_pointer_cast<GroupGoal>(goal)) {
+    } else if (auto gg = nodeAs<GroupGoal>(goal)) {
         for (const auto& groupedGoal : gg->goals) collectVarsGoal(groupedGoal, vars);
-    } else if (auto og = std::dynamic_pointer_cast<OrGoal>(goal)) {
+    } else if (auto og = nodeAs<OrGoal>(goal)) {
         for (const auto& branch : og->branches) {
             for (const auto& branchGoal : branch) collectVarsGoal(branchGoal, vars);
         }

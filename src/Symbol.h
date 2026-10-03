@@ -84,18 +84,29 @@ public:
         if (nextGeneratedId_ == std::numeric_limits<SymbolId>::max()) {
             throw std::overflow_error("Felidae generated SymbolId space exhausted");
         }
-        const SymbolId id = nextGeneratedId_++;
-        generatedNames_.emplace(id, "$g" + std::to_string(id - GeneratedIdBase));
-        return id;
+        // Generated ids are minted for every rule expansion, so they are not
+        // recorded anywhere: name() derives the spelling from the id on demand.
+        return nextGeneratedId_++;
+    }
+
+    // `interned` names are never released and so should stay bounded by the
+    // program's vocabulary; `generated` counts ids minted so far and costs no
+    // memory per id.
+    struct Stats {
+        std::size_t interned = 0;
+        std::size_t generated = 0;
+    };
+    Stats stats() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return {names_.size(), static_cast<std::size_t>(nextGeneratedId_ - GeneratedIdBase)};
     }
 
     std::string name(SymbolId id) const {
         if (id == 0) return {};
+        if (id >= GeneratedIdBase) return "$g" + std::to_string(id - GeneratedIdBase);
         std::lock_guard<std::mutex> lock(mutex_);
         const auto reserved = reservedNames_.find(id);
         if (reserved != reservedNames_.end()) return reserved->second;
-        const auto generated = generatedNames_.find(id);
-        if (generated != generatedNames_.end()) return generated->second;
         if (id < 1024) return {};
         const std::size_t index = static_cast<std::size_t>(id - 1024);
         return index < names_.size() ? names_[index] : std::string{};
@@ -110,7 +121,6 @@ private:
     mutable std::mutex mutex_;
     std::unordered_map<std::string, SymbolId> ids_;
     std::unordered_map<SymbolId, std::string> reservedNames_;
-    std::unordered_map<SymbolId, std::string> generatedNames_;
     std::vector<std::string> names_;
     SymbolId nextId_ = 1024;
     SymbolId nextGeneratedId_ = GeneratedIdBase;

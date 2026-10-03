@@ -110,14 +110,6 @@ if(legacy_result EQUAL 0 OR NOT legacy_error MATCHES "Unknown option: --db")
   message(FATAL_ERROR "Legacy --db syntax was not rejected: ${legacy_error}")
 endif()
 
-execute_process(
-  COMMAND "${FELIDAE_EXECUTABLE}" db stop --db
-  RESULT_VARIABLE legacy_stop_result
-  ERROR_VARIABLE legacy_stop_error)
-if(legacy_stop_result EQUAL 0 OR NOT legacy_stop_error MATCHES "Unknown option: --db")
-  message(FATAL_ERROR "Legacy db stop --db syntax was not rejected: ${legacy_stop_error}")
-endif()
-
 # Project lookup is intentionally exact. A parent init.fx must not silently
 # configure a directly executed child program.
 execute_process(
@@ -128,9 +120,8 @@ if(child_result EQUAL 0 OR NOT child_error MATCHES "requires init[.]fx")
   message(FATAL_ERROR "A parent init.fx was incorrectly inherited: ${child_error}")
 endif()
 
-# The service for shared.db is started with nested_a as its working directory.
-# A later relative execution from nested_b must still resolve nested_b/main.fx
-# and its sibling manifest rather than reusing the service process directory.
+# A relative program path must select its own sibling init.fx regardless of
+# which project directory a previous run used.
 execute_process(
   COMMAND "${FELIDAE_EXECUTABLE}" main.fx
   WORKING_DIRECTORY "${TEST_DIRECTORY}/nested_a"
@@ -146,12 +137,5 @@ if(NOT nested_a_result EQUAL 0 OR NOT nested_a_output MATCHES "11")
 endif()
 if(NOT nested_b_result EQUAL 0 OR NOT nested_b_output MATCHES "22")
   message(FATAL_ERROR
-    "Persistent database service resolved a relative path from stale cwd: ${nested_b_output}")
+    "Relative project execution did not use its sibling init.fx: ${nested_b_output}")
 endif()
-
-execute_process(
-  COMMAND "${FELIDAE_EXECUTABLE}" db stop "${TEST_DIRECTORY}/valid"
-  OUTPUT_QUIET ERROR_QUIET)
-execute_process(
-  COMMAND "${FELIDAE_EXECUTABLE}" db stop "${TEST_DIRECTORY}/nested_a"
-  OUTPUT_QUIET ERROR_QUIET)
