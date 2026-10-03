@@ -1,13 +1,12 @@
 FirstRequirement extend OperatorRequirement(value: number)
 SecondRequirement extend OperatorRequirement(value: number)
 
-@overload(
-    operator: invalidFactors,
-    pattern: "{left} invalidFactors {right}",
-    captures: {left: number, right: number},
+@mixfix(
+    pattern: "{left: number} invalidFactors {right: number}",
     factor: first: FirstRequirement,
     factors: [second: SecondRequirement],
-    result: number
+    result: number.class
 )
-invalidFactorDeclaration() =>
+def invalidFactorDeclaration() =>
     return left
+end

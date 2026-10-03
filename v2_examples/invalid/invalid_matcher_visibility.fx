@@ -1,27 +1,27 @@
 OperatorRequirement()
 VisibilityRequirement extend OperatorRequirement(value: number)
 
-@overload(
-    operator: privateVisibilityCheck,
-    pattern: "{left} visibilityCheck {right}",
-    captures: {left: number, right: number},
-    result: number,
-    precedence: relationship,
-    associativity: none,
-    cardinality: one,
-    effects: pure,
-    visibility: private
+@mixfix(
+    pattern: "{left: number} visibilityCheck {right: number}",
+    result: number.class,
+    precedence: "relationship",
+    associativity: "none",
+    cardinality: "one",
+    effects: "pure",
+    visibility: "private"
 )
-privateCheck() =>
+def privateCheck() =>
     return left
+end
 
 @matcher(
-    operator: privateVisibilityCheck,
+    operator: visibilityCheck.function,
     captures: {left: number, right: number},
     produces: [requirement: VisibilityRequirement],
-    visibility: public
+    visibility: "public"
 )
-publicMatcher() =>
+def publicMatcher() =>
     return RequirementMatch(
         requirement: VisibilityRequirement(value: left.literalValue)
     )
+end

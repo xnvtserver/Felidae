@@ -7,9 +7,11 @@ import ("array", "system")
 # see v2_examples/where_guard_chain.fx for the same fix on the same issue.
 def increment(value: number) =>
     return value + 1
+end
 
 def double(value: number) =>
     return value * 2
+end
 
 def eligible(score: number, active: bool) =>
     where score >= 70
@@ -17,6 +19,7 @@ def eligible(score: number, active: bool) =>
     return 1.0
 else
     return 0.0
+end
 
 def main() =>
     point := {x: 3, y: 4}
@@ -37,3 +40,4 @@ def main() =>
         member: record.owner.name,
         pipeline: piped
     )
+end

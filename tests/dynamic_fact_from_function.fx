@@ -1,8 +1,8 @@
 class School
-    name: string
-    district: string
-    students: number
-    active: number
+    name: string.
+    district: string.
+    students: number.
+    active: number.
 end
 
 def make_school(name: string, district: string, students: number) =>
@@ -11,7 +11,7 @@ def make_school(name: string, district: string, students: number) =>
         district: district,
         students: students,
         active: 1.0
-    })
+    }).
 end
 
 def main() =>
@@ -19,11 +19,11 @@ def main() =>
         name: "Function School",
         district: "central",
         students: 240
-    )
-    matches := School.where(name: "Function School")
+    ).
+    matches := School.where(name: "Function School").
     return (
         inserted: inserted,
         count: matches.len(),
         stored: matches.get(position: 0)
-    )
+    ).
 end

@@ -1,14 +1,13 @@
-@overload(
-    operator: malformedPrefix,
-    pattern: "before {value}",
-    type: infix,
-    captures: {value: number},
-    result: number,
-    precedence: prefix,
-    associativity: right,
-    cardinality: one,
-    effects: pure,
-    visibility: private
+@mixfix(
+    pattern: "before {value: number}",
+    type: "infix",
+    result: number.class,
+    precedence: "prefix",
+    associativity: "right",
+    cardinality: "one",
+    effects: "pure",
+    visibility: "private"
 )
-malformed() =>
+def malformed() =>
     return value
+end

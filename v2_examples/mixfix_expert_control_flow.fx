@@ -37,6 +37,7 @@ def creditScore(subject: Applicant, policy: Policy) =>
         return 0.45
     else
         return 0.10
+    end
 end
 
 def incomeScore(subject: Applicant, policy: Policy) =>
@@ -44,6 +45,7 @@ def incomeScore(subject: Applicant, policy: Policy) =>
         return 0.35
     else
         return 0.05
+    end
 end
 
 def verificationScore(subject: Applicant) =>
@@ -51,6 +53,7 @@ def verificationScore(subject: Applicant) =>
         return 0.20
     else
         return 0
+    end
 end
 
 @mixfix(
@@ -116,6 +119,7 @@ def decide(subject: Applicant, policy: Policy) =>
             code: "InsufficientEvidence",
             subject: subject
         )
+    end
 end
 
 Applicant(name: "ava", credit: 780, income: 120000, verified: 1.0)

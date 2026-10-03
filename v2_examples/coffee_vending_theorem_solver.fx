@@ -9,12 +9,11 @@ VendingMachine(name: "", water: 0, beans: 0, tea: 0, ready: 0)
 HotDrinkMachine extend VendingMachine(name: "", water: 0, beans: 0, tea: 0, ready: 0)
 
 def requestUnifies(request: any) =>
-    kind := type(value: request)
-    return (
-        kind == "VendRequest"
-        or kind == "CoffeeRequest"
-        or kind == "TeaRequest"
+    return isA(
+        left: request,
+        right: VendRequest(selection: "", credit: 0)
     )
+end
 
 def proveCoffee(request: any, machine: any) =>
     return (
@@ -25,6 +24,7 @@ def proveCoffee(request: any, machine: any) =>
         and machine.water >= 1.0
         and machine.beans >= 1.0
     )
+end
 
 def proveTea(request: any, machine: any) =>
     return (
@@ -35,8 +35,10 @@ def proveTea(request: any, machine: any) =>
         and machine.water >= 1.0
         and machine.tea >= 1.0
     )
+end
 
 def proveRefund(request: any) => return request.credit > 0.0
+end
 
 # These selectors are explicit, ordered choice points. A failed proof falls
 # through to the next candidate, which is bounded backtracking.
@@ -45,25 +47,33 @@ def chooseRefund(refund_proof: number) =>
         return "refund"
     else
         return "safe_halt"
+    end
+end
 
 def chooseTea(tea_proof: number, refund_proof: number) =>
     if tea_proof == 1.0 then
         return "dispense_tea"
     else
         return chooseRefund(refund_proof: refund_proof)
+    end
+end
 
 def chooseCoffee(coffee_proof: number, tea_proof: number, refund_proof: number) =>
     if coffee_proof == 1.0 then
         return "dispense_coffee"
     else
         return chooseTea(tea_proof: tea_proof, refund_proof: refund_proof)
+    end
+end
 
 @mixfix(pattern: "{evidence: number} entails {conclusion: string}")
-def entail() =>
+def entail(evidence: number, conclusion: string) =>
     if evidence == 1.0 then
         return conclusion
     else
         return "unproved"
+    end
+end
 
 def solve(request: any, machine: any) =>
     coffee_proof := proveCoffee(request: request, machine: machine)
@@ -82,6 +92,7 @@ def solve(request: any, machine: any) =>
         tea_proof: tea_proof,
         refund_proof: refund_proof
     )
+end
 
 def main() =>
     healthy := HotDrinkMachine(
@@ -103,3 +114,4 @@ def main() =>
         normal: solve(request: request, machine: healthy),
         degraded: solve(request: request, machine: depleted)
     )
+end

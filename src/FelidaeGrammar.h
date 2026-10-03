@@ -16,13 +16,8 @@ namespace Felidae {
 // the receiver's runtime fact/class type is known. It is intentionally absent
 // from the public builtin registry.
 inline constexpr std::string_view kMemberInvokeTerm = "Object:invokeMember";
-// The interpreter's single check for "is this term a member-invoke marker"
-// compares this cached SymbolId against TermExpr::nameId (already computed
-// once, at construction) rather than re-comparing term.name against the
-// string above on every expression evaluation - the same reasoning behind
-// every other fixed-id comparison in this codebase, applied to this one
-// sentinel name instead of a registered TokenId/BuiltinId.
-inline const SymbolId kMemberInvokeTermId = symbolIdForName(kMemberInvokeTerm);
+inline constexpr std::string_view kFieldAssignTerm = "Object:assignField";
+inline constexpr std::string_view kSuperTerm = "Object:super";
 
 inline constexpr bool isCustomOperatorCharacter(char value) {
     switch (value) {
@@ -51,6 +46,7 @@ enum class BuiltinId {
     Instanceof,
 
     Count,
+    Range,
     Sum,
     Average,
     Min,
@@ -118,8 +114,13 @@ enum class BuiltinId {
     FactExists,
     FactSelect,
     FactMaterialize,
+    FactRelease,
     FactTimeline,
-    FactReferences,
+    DbSync,
+    DbStats,
+    DbConfig,
+    DbConfigure,
+    FxInterpret,
     FactInsert,
     FactUpdate,
     FactDelete,
@@ -127,23 +128,17 @@ enum class BuiltinId {
     FactOrWhere,
     FactLimit,
     FactJoin,
-    FactProject,
-    FactAggregate,
-    FactSearch,
+    Link,
     ArrayWhere,
     ArrayOrderBy,
 
-    // Fact reasoning is language-native.  These operate directly on typed
-    // fact values; FactMemory remains an implementation detail.
+    // Fact reasoning is language-native. These operate directly on typed
+    // fact values regardless of the persistent store implementation.
     CommonAncestors,
     LowestCommonAncestor,
     HighestCommonAncestor,
     AncestorAnalysis,
     PropagateFact,
-
-    RelationCompare,
-    RelationFind,
-    DependencySatisfied,
 
     JsonObject,
     JsonParse,
@@ -208,8 +203,6 @@ enum class BuiltinId {
 
     ReasoningContrary,
     ReasoningProve,
-    ReasoningGrade,
-    ReasoningDecide,
 
     MlSigmoid,
     MlRelu,
@@ -219,13 +212,15 @@ enum class BuiltinId {
     OverloadAnnotation,
     MatcherAnnotation,
     MixfixAnnotation,
+    OverrideAnnotation,
 
-    Last = MixfixAnnotation
+    Last = OverrideAnnotation
 };
 
 enum class LanguageTypeId {
     Unknown = 0,
     Any,
+    Object,
     Array,
     Bool,
     Boolean,
@@ -245,6 +240,7 @@ enum class LanguageTypeId {
 inline constexpr std::string_view languageTypeName(LanguageTypeId type) {
     switch (type) {
         case LanguageTypeId::Any: return "any";
+        case LanguageTypeId::Object: return "object";
         case LanguageTypeId::Array: return "array";
         case LanguageTypeId::Bool: return "bool";
         case LanguageTypeId::Boolean: return "boolean";
@@ -266,6 +262,7 @@ inline constexpr std::string_view languageTypeName(LanguageTypeId type) {
 
 inline LanguageTypeId languageTypeIdForName(const std::string& name) {
     if (name == "any") return LanguageTypeId::Any;
+    if (name == "obj" || name == "object") return LanguageTypeId::Object;
     if (name == "array") return LanguageTypeId::Array;
     if (name == "bool") return LanguageTypeId::Bool;
     if (name == "boolean") return LanguageTypeId::Boolean;
@@ -298,53 +295,60 @@ inline bool isFelidaeLikelyTypeName(const std::string& name) {
            (!name.empty() && std::isupper(static_cast<unsigned char>(name.front())));
 }
 
-// Spelling for each fixed grammar token, in TokenId order (see
-// FelidaeTokenizerIds.h): kBuiltinTokens[i] is the spelling for ID i + 1.
-// This is the one place that pairing is spelled out; every ID here also
-// has its own named TokenId:: constant, kept in the same order below purely
-// as a readability check when scanning this table, not as stored data (a
-// struct field pairing each spelling with a duplicate of its own enumerator
-// name used to exist here and was never read by any code).
+// Model-generation spelling specification for fixed Felidae syntax. Runtime
+// grammar IDs are generated into FelidaeTokenizerIds.h; this file never
+// owns numeric token identities.
 struct BuiltinTokenDefinition {
     std::string_view spelling;
+    std::string_view idName;
 };
 
 inline constexpr BuiltinTokenDefinition kBuiltinTokens[] = {
-    {"import"}, {"not"}, {"and"}, {"or"}, {"then"}, {"as"},           // IMPORT..AS
-    {"if"}, {"else"}, {"return"}, {"where"}, {"extend"},              // IF..EXTEND
-    {"lambda"}, {"true"}, {"false"}, {"nil"},                         // LAMBDA..NIL
-    {"("}, {")"}, {"{"}, {"}"}, {"["},                                // LPAREN..LBRACKET
-    {"]"}, {","}, {":"}, {"."}, {"|"},                                // RBRACKET..PIPE
-    {"?"}, {"@"}, {":="}, {"::"}, {"=>"},                             // QUESTION..ARROW
-    {"+"}, {"-"}, {"*"}, {"/"}, {"%"},                                // PLUS..PERCENT
-    {"=="}, {"!="}, {"<"}, {"<="}, {">"},                             // EQUAL..GREATER
-    {">="},                                                           // GREATER_EQUAL
+    {"import", "IMPORT"}, {"not", "NOT"}, {"and", "AND"}, {"or", "OR"}, {"then", "THEN"}, {"as", "AS"},
+    {"if", "IF"}, {"else", "ELSE"}, {"return", "RETURN"}, {"where", "WHERE"}, {"extend", "EXTEND"},
+    {"lambda", "LAMBDA"}, {"true", "TRUE"}, {"false", "FALSE"}, {"nil", "NIL"},
+    {"(", "LPAREN"}, {")", "RPAREN"}, {"{", "LBRACE"}, {"}", "RBRACE"}, {"[", "LBRACKET"},
+    {"]", "RBRACKET"}, {",", "COMMA"}, {":", "COLON"}, {".", "DOT"}, {"|", "PIPE"},
+    {"?", "QUESTION"}, {"@", "AT"}, {":=", "ASSIGN"}, {"::", "DOUBLE_COLON"}, {"=>", "ARROW"},
+    {"+", "PLUS"}, {"-", "MINUS"}, {"*", "STAR"}, {"/", "SLASH"}, {"%", "PERCENT"},
+    {"==", "EQUAL"}, {"!=", "NOT_EQUAL"}, {"<", "LESS"}, {"<=", "LESS_EQUAL"}, {">", "GREATER"},
+    {">=", "GREATER_EQUAL"},
     // Literal and trivia delimiters are grammar IDs too.  The integer parser
-    // must not rediscover them by inspecting raw source characters once
-    // they have already been classified into token entries.
-    {"\""}, {"\\"}, {"#"}, {"▁"}, {"\t"},                             // QUOTE..TAB
-    {"\n"}, {"\r"},                                                   // NEWLINE, CARRIAGE_RETURN
-    {"0"}, {"1"}, {"2"}, {"3"},                                       // DIGIT_0..DIGIT_3
-    {"4"}, {"5"}, {"6"}, {"7"},                                       // DIGIT_4..DIGIT_7
-    {"8"}, {"9"},                                                     // DIGIT_8, DIGIT_9
+    // must not rediscover them by inspecting source characters after model
+    // encoding.
+    {"\"", "QUOTE"}, {"\\", "BACKSLASH"}, {"#", "COMMENT"}, {"▁", "SPACE"}, {"\t", "TAB"},
+    {"\n", "NEWLINE"}, {"\r", "CARRIAGE_RETURN"},
+    {"0", "DIGIT_0"}, {"1", "DIGIT_1"}, {"2", "DIGIT_2"}, {"3", "DIGIT_3"},
+    {"4", "DIGIT_4"}, {"5", "DIGIT_5"}, {"6", "DIGIT_6"}, {"7", "DIGIT_7"},
+    {"8", "DIGIT_8"}, {"9", "DIGIT_9"},
 };
 
-// Fixed grammar IDs are assigned sequentially starting at 1 (see
-// FelidaeTokenizerIds.h: TokenId::IMPORT == 1, ..., TokenId::DIGIT_9 ==
-// std::size(kBuiltinTokens)) - id N is always kBuiltinTokens[N - 1]. A
-// parallel "list of builtin IDs" array used to exist purely to stay in sync
-// with a checked-in tokenizer model file's line numbers; now that the
-// tokenizer has no model file at all (src/Tokenizer.h), that array carried
-// no information beyond "these IDs are sequential" and turned every
-// isBuiltinTokenId/builtinTokenSpelling call - both on the parser's hot
-// path - into an O(58) linear scan for what is actually an O(1) range
-// check plus direct index.
+#ifndef FELIDAE_GENERATING_MODEL
+static_assert(std::size(kBuiltinTokens) == std::size(kFelidaeBuiltinTokenIds),
+              "Regenerate FelidaeTokenizerIds.h after changing built-in syntax");
+#endif
+
+inline constexpr const BuiltinTokenDefinition* builtinTokenForSpelling(std::string_view spelling) {
+    for (const auto& token : kBuiltinTokens) {
+        if (token.spelling == spelling) return &token;
+    }
+    return nullptr;
+}
+
+// Integer grammar vocabulary query.  The parser uses this directly when it
+// assembles non-built-in token ranges; no lexer classification is
+// involved.
 inline constexpr bool isBuiltinTokenId(TokenId::Id id) {
-    return id >= 1 && static_cast<std::size_t>(id) <= std::size(kBuiltinTokens);
+    for (const auto builtin : kFelidaeBuiltinTokenIds) {
+        if (id == builtin) return true;
+    }
+    return false;
 }
 
 inline constexpr std::string_view builtinTokenSpelling(TokenId::Id id) {
-    if (isBuiltinTokenId(id)) return kBuiltinTokens[static_cast<std::size_t>(id) - 1].spelling;
+    for (std::size_t index = 0; index < std::size(kBuiltinTokens); ++index) {
+        if (kFelidaeBuiltinTokenIds[index] == id) return kBuiltinTokens[index].spelling;
+    }
     return {};
 }
 
@@ -395,8 +399,10 @@ inline constexpr bool isIdentifierBoundaryId(TokenId::Id id) {
     }
 }
 
+#ifndef FELIDAE_GENERATING_MODEL
 inline constexpr bool isDecimalDigitId(TokenId::Id id) {
     return id >= TokenId::DIGIT_0 && id <= TokenId::DIGIT_9;
 }
+#endif
 
 } // namespace Felidae

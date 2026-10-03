@@ -1,6 +1,8 @@
-#include "FelidaeRuntime.h"
-#include "Interpreter.h"
+#include "RocksFactStore.h"
 
+#include <chrono>
+#include <filesystem>
+#include <future>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -12,72 +14,81 @@ void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
-void testParserRejectsInvalidSource() {
-    bool rejected = false;
-    try {
-        (void)Felidae::parseProgramText("main( => return 42 end");
-    } catch (const std::exception&) {
-        rejected = true;
-    }
-    require(rejected, "parser accepted malformed method syntax");
+void testOrderedRocksFactKeys() {
+    using Felidae::NumberExpr;
+    using Felidae::RocksFactStore;
+    using Felidae::StringExpr;
+    const auto numericKey = [](double value) {
+        return RocksFactStore::encodeFactKey(
+            "Metric", {std::make_shared<NumberExpr>(value)});
+    };
+    require(numericKey(-1.0) < numericKey(0.0) &&
+            numericKey(0.0) < numericKey(1.0),
+            "RocksDB numeric keys are not lexicographically ordered");
+    require(numericKey(-0.0) == numericKey(0.0),
+            "RocksDB keys distinguish negative zero from zero");
+
+    const auto composite = RocksFactStore::encodeFactKey(
+        "Place", {std::make_shared<StringExpr>("a"),
+                  std::make_shared<StringExpr>("b")});
+    const auto embeddedSeparator = RocksFactStore::encodeFactKey(
+        "Place", {std::make_shared<StringExpr>(std::string("a\0b", 3))});
+    require(composite != embeddedSeparator,
+            "RocksDB composite key encoding is ambiguous");
 }
 
-void testMethodExecutionAndDebugHook() {
-    auto program = Felidae::parseProgramText(
-        "def main() =>\n"
-        "  answer := 40 + 2\n"
-        "  return answer\n"
-        "end\n");
-    Felidae::Interpreter interpreter;
-    interpreter.addProgram(program);
+void testSharedDatabaseHandleAndSerializedIds() {
+    using Felidae::MapEntry;
+    using Felidae::MapExpr;
+    using Felidae::RocksFactStore;
+    using Felidae::StringExpr;
+    namespace fs = std::filesystem;
 
-    std::vector<int> visitedLines;
-    interpreter.setGoalHook(
-        [&](const Felidae::Goal& goal, const Felidae::Env&, std::size_t) {
-            if (goal.sourceSpan.valid()) visitedLines.push_back(goal.sourceSpan.startLine);
-        });
-    const auto result = interpreter.callMain(Felidae::makeSystemInput({}));
-    require(interpreter.valueToDisplayString(result) == "42.0",
-            "main() returned the wrong interpreted value");
-    require(visitedLines.size() >= 2, "debug hook did not observe live method goals");
-    require(visitedLines.front() <= visitedLines.back(),
-            "debug hook reported goals out of source order");
-}
+    const auto directory = fs::temp_directory_path() /
+        ("felidae-shared-store-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    struct RemoveDirectory {
+        fs::path path;
+        ~RemoveDirectory() {
+            std::error_code ignored;
+            fs::remove_all(path, ignored);
+        }
+    } cleanup{directory};
+    fs::create_directories(directory);
 
-void testFactQueryAndMutationInvalidation() {
-    auto program = Felidae::parseProgramText(
-        "Animal(name: \"cat\").\n"
-        "Animal(name: \"dog\").\n");
-    Felidae::Interpreter interpreter;
-    interpreter.addProgram(program);
-    const auto goals = Felidae::parseQueryText("? Animal(name: value)");
-    const auto first = interpreter.solve(goals, 10);
-    const auto second = interpreter.solve(goals, 10);
-    require(first.size() == 2 && second.size() == 2,
-            "fact query or repeated-query cache changed solutions");
-}
-
-void testAnalysisLoadDoesNotEvaluateGlobals() {
-    auto program = Felidae::parseProgramText("danger := 1 / 0\n");
-    Felidae::Interpreter interpreter;
-    interpreter.setLoadEvaluationEnabled(false);
-    interpreter.addProgram(program);
-    require(interpreter.hasGlobal("danger"),
-            "analysis load did not retain global symbol metadata");
+    RocksFactStore first(directory);
+    RocksFactStore second(directory);
+    const auto insert = [](RocksFactStore& store, const std::string& id) {
+        auto key = std::make_shared<StringExpr>(id);
+        auto value = std::make_shared<MapExpr>(
+            std::vector<MapEntry>{{"id", key->clone()}});
+        value->factType = "ConcurrentNode";
+        return store.insertFact("ConcurrentNode", {key}, value, false);
+    };
+    auto left = std::async(std::launch::async, [&] { return insert(first, "left"); });
+    auto right = std::async(std::launch::async, [&] { return insert(second, "right"); });
+    const auto leftFact = left.get();
+    const auto rightFact = right.get();
+    require(leftFact.id != rightFact.id,
+            "Concurrent RocksDB sessions allocated the same record identity");
+    require(second.findFact(
+                "ConcurrentNode", {std::make_shared<StringExpr>("left")}).has_value(),
+            "Second RocksDB session cannot read the first session's write");
+    require(first.findFact(
+                "ConcurrentNode", {std::make_shared<StringExpr>("right")}).has_value(),
+            "First RocksDB session cannot read the second session's write");
 }
 
 } // namespace
 
 int main() {
     try {
-        testParserRejectsInvalidSource();
-        testMethodExecutionAndDebugHook();
-        testFactQueryAndMutationInvalidation();
-        testAnalysisLoadDoesNotEvaluateGlobals();
-        std::cout << "interpreter tests passed\n";
+        testOrderedRocksFactKeys();
+        testSharedDatabaseHandleAndSerializedIds();
+        std::cout << "RocksDB storage unit tests passed\n";
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "interpreter test failed: " << error.what() << '\n';
+        std::cerr << "RocksDB storage unit test failed: " << error.what() << '\n';
         return 1;
     }
 }

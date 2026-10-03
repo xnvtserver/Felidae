@@ -12,3 +12,4 @@ def main() =>
         json_text: json.toText(data: updated),
         csv_text: csv.toText(data: rows)
     )
+end

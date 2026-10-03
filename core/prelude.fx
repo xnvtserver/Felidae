@@ -13,3 +13,5 @@
 # lower(value)
 # upper(value)
 # length(value)
+
+StdLib(name: "prelude").

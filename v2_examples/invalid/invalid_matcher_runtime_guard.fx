@@ -1,26 +1,26 @@
 NumericRequirement extend OperatorRequirement(value: number)
 
-unsafeCheck() =>
+def unsafeCheck() =>
     return 1.0
+end
 
-@overload(
-    operator: unsafeContext,
-    pattern: "{left} unsafeContext {right}",
-    captures: {left: number, right: number},
+@mixfix(
+    pattern: "{left: number} unsafeContext {right: number}",
     factor: numericRequirement: NumericRequirement,
-    result: number
+    result: number.class
 )
-unsafeContextNumbers() =>
+def unsafeContextNumbers() =>
     return numericRequirement.value
+end
 
 @matcher(
-    operator: unsafeContext,
-    pattern: "{left} unsafeContext {right}",
+    operator: unsafeContext.function,
     captures: {left: number, right: number},
     produces: [numericRequirement: NumericRequirement]
 )
-matchWithRuntimeCall() =>
+def matchWithRuntimeCall() =>
     where unsafeCheck() == 1.0
     return RequirementMatch(
         numericRequirement: NumericRequirement(value: left)
     )
+end

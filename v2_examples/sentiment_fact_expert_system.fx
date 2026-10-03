@@ -1,6 +1,7 @@
 # Sentiment is modelled as executable knowledge, not as a hidden model. Add
 # or adjust cue and policy facts to evolve the domain expertise.
-import "math"
+
+import "fuzzy".
 
 SentimentConcept(name: "sentiment")
 SentimentCue extend SentimentConcept(token: "", polarity: "", strength: 0, domain: "general")
@@ -50,6 +51,9 @@ def sentimentLabel(score: number, policy: SentimentPolicy) =>
             return "negative"
         else
             return "mixed"
+        end
+    end
+end
 
 def sentimentExplanation(label: string, positives: number, negatives: number, negations: number) =>
     if label == "positive" then
@@ -62,6 +66,10 @@ def sentimentExplanation(label: string, positives: number, negatives: number, ne
                 return "conflicting cue facts and negation require a qualified mixed assessment"
             else
                 return "supporting and opposing cue facts are too close for a crisp label"
+            end
+        end
+    end
+end
 
 def boundedEvidenceDegree(value: number) =>
     if value >= 1 then
@@ -71,6 +79,9 @@ def boundedEvidenceDegree(value: number) =>
             return 0
         else
             return value
+        end
+    end
+end
 
 def analyseSentiment(review: Review, policy: SentimentPolicy) =>
     positives := lambda(PositiveCue, cue => cue.token != "" and str.contains(data: review.text, needle: cue.token))
@@ -84,7 +95,7 @@ def analyseSentiment(review: Review, policy: SentimentPolicy) =>
     negation_score := negation_count * policy.negation_penalty
     score := positive_score - negative_score - negation_score
     label := sentimentLabel(score: score, policy: policy)
-    confidence := math.abs(value: score)
+    confidence := abs(score)
     support_degree := boundedEvidenceDegree(value: positive_score)
     oppose_degree := boundedEvidenceDegree(value: negative_score + negation_score)
     positive_taxonomy := lambda(PositiveCue, cue => cue.token == "excellent")
@@ -92,11 +103,11 @@ def analyseSentiment(review: Review, policy: SentimentPolicy) =>
     positive_root := array.get(data: positive_taxonomy, position: 0)
     negative_root := array.get(data: negative_taxonomy, position: 0)
     taxonomy := commonAncestors(left: positive_root, right: negative_root)
-    evidence := {
-        support: support_degree * 0.90,
-        opposition: oppose_degree * 0.90,
-        balance: support_degree - oppose_degree
-    }
+    evidence := fuzzyEvidence(
+        support: support_degree,
+        opposition: oppose_degree,
+        reliability: 0.90
+    )
     return SentimentAssessment(
         review: review,
         label: label,
@@ -114,9 +125,11 @@ def analyseSentiment(review: Review, policy: SentimentPolicy) =>
             negations: negation_count
         )
     )
+end
 
 def main() =>
     reviews := lambda(Review, review => review.domain == "product")
     policies := lambda(SentimentPolicy, policy => policy.name == "product-review")
     policy := array.get(data: policies, position: 0)
     return lambda(reviews, review => analyseSentiment(review: review, policy: policy))
+end

@@ -14,16 +14,32 @@
 namespace Felidae {
 
 Program parseProgramFile(const std::filesystem::path& path);
-Program parseProgramText(std::string text);
+Program parseProgramText(
+    std::string text,
+    std::shared_ptr<WordVocabulary> tokenizer = {},
+    std::shared_ptr<OperatorRegistry> operators = {});
+enum class InteractiveProgramLoad {
+    Empty,
+    Expression,
+    Incomplete,
+    Loaded
+};
+InteractiveProgramLoad loadInteractiveProgramText(
+    std::string text,
+    const std::filesystem::path& importBase,
+    Interpreter& interpreter);
 void parseProgramFileChunks(
     const std::filesystem::path& path,
     const std::function<void(Program&&)>& consume,
-    std::size_t statementsPerChunk = 1);
+    std::size_t statementsPerChunk = 1,
+    std::shared_ptr<OperatorRegistry> operators = {},
+    std::shared_ptr<WordVocabulary> tokenizer = {});
 void parseProgramFileStatements(
     const std::filesystem::path& path,
     const std::function<void(std::shared_ptr<Statement>)>& consume,
     std::shared_ptr<OperatorRegistry> operators = {},
-    ParserMetrics* metrics = nullptr);
+    ParserMetrics* metrics = nullptr,
+    std::shared_ptr<WordVocabulary> tokenizer = {});
 std::string readSourceFile(const std::filesystem::path& path);
 void readSourceLines(const std::filesystem::path& path,
                      const std::function<void(const std::string&)>& onLine);
@@ -36,16 +52,14 @@ void loadProgramRoot(
 void loadProgramRoot(const std::filesystem::path& file,
                      const Program& program,
                      Interpreter& interpreter);
-std::vector<std::shared_ptr<Goal>> parseQueryText(const std::string& query);
-// `exhaustive` reports whether `solutions` is every answer or the search
-// was cut off at its solution cap with alternatives still untried - pass
-// false (from Interpreter::solve's own out-parameter) rather than let a
-// truncated answer set print silently as if it were complete.
+std::vector<std::shared_ptr<Goal>> parseQueryText(
+    const std::string& query,
+    std::shared_ptr<WordVocabulary> tokenizer = {},
+    std::shared_ptr<OperatorRegistry> operators = {});
 void printSolutions(Interpreter& interpreter,
                     const std::vector<std::shared_ptr<Goal>>& queryGoals,
                     const std::vector<Solution>& solutions,
-                    std::ostream& out,
-                    bool exhaustive = true);
+                    std::ostream& out);
 std::shared_ptr<Expr> makeSystemInput(const std::vector<std::string>& args);
 std::string trim(const std::string& text);
 bool isBareIdentifier(const std::string& text);

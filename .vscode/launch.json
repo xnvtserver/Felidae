@@ -2,40 +2,35 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug Felidae Query (.fx)",
-      "type": "felidae",
-      "request": "launch",
-      "program": "${file}",
-      "stopOnEntry": true
-    },
-    {
-      "name": "Windows: Debug Felidae Interpreter (MSVC)",
+      "name": "Windows: Debug Felidae interpreter",
       "type": "cppvsdbg",
       "request": "launch",
-      "program": "${workspaceFolder}/build/debug/felidae.exe",
+      "program": "${workspaceFolder}/build/debug/Debug/felidae.exe",
       "args": ["${file}"],
       "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "preLaunchTask": "Build Felidae (Debug)"
     },
     {
-      "name": "Linux: Debug Felidae Interpreter (GCC or Clang)",
+      "name": "Linux: Debug Felidae interpreter",
       "type": "cppdbg",
       "request": "launch",
       "program": "${workspaceFolder}/build/debug/felidae",
-      "args": ["${workspaceFolder}/v2_examples/air_conditioner_theorem_solver.fx"],
+      "args": ["${file}"],
       "cwd": "${workspaceFolder}",
       "MIMode": "gdb",
-      "miDebuggerPath": "/usr/bin/gdb",
       "stopAtEntry": false,
-      "externalConsole": false
+      "externalConsole": false,
+      "preLaunchTask": "Build Felidae (Debug)"
     },
     {
-      "name": "macOS: Debug Felidae Interpreter (Clang)",
+      "name": "macOS: Debug Felidae interpreter",
       "type": "lldb",
       "request": "launch",
       "program": "${workspaceFolder}/build/debug/felidae",
-      "args": ["${workspaceFolder}/v2_examples/air_conditioner_theorem_solver.fx"],
-      "cwd": "${workspaceFolder}"
+      "args": ["${file}"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Build Felidae (Debug)"
     }
   ]
 }

@@ -1,14 +1,5 @@
-# Relationships are ordinary facts (see deep_fact_reasoning_analysis.fx) --
-# constructing Relationship(from:, to:, ...) retains it immediately, no
-# relate() verb needed. Filtering "causal" edges out from "decorative" ones,
-# and checking whether source and target share a causal signal, is plain
-# lambda-based field filtering -- the same SQL-like WHERE style every other
-# fact type already uses, not a bespoke comparison engine.
-
-# Declaring one placeholder instance registers "Relationship" as a known
-# fact type -- required for lambda(Relationship, ...) to be recognized as
-# fact-query sugar rather than an unrecognized bare lambda call.
-Relationship(from: nil, to: nil, name: "")
+# Link edges are durable graph data. Their immutable properties distinguish
+# causal evidence from decorative metadata without a relationship class.
 
 Entity(name: "entity", active: 1.0)
 Source extend Entity(name: "source", active: 1.0)
@@ -18,9 +9,11 @@ Decoration extend Entity(name: "decoration", active: 1.0)
 
 def Source.membership(input: Source, against: Entity) =>
     return (active: input.active)
+end
 
 def Target.membership(input: Target, against: Entity) =>
     return (active: input.active)
+end
 
 def main() =>
     sources := lambda(Source, fact => fact.name == "source")
@@ -33,22 +26,24 @@ def main() =>
     signal := array.get(data: signals, position: 0)
     decoration := array.get(data: decorations, position: 0)
 
-    sourceSignalEdge := Relationship(from: source, to: signal, name: "causal", scope: "eligibility")
-    targetSignalEdge := Relationship(from: target, to: signal, name: "causal", scope: "eligibility")
-    sourceDecorativeEdge1 := Relationship(from: source, to: decoration, name: "decorative", slot: 1)
-    sourceDecorativeEdge2 := Relationship(from: source, to: decoration, name: "decorative", slot: 2)
-    sourceDecorativeEdge3 := Relationship(from: source, to: decoration, name: "decorative", slot: 3)
-    targetDecorativeEdge1 := Relationship(from: target, to: decoration, name: "decorative", slot: 4)
-    targetDecorativeEdge2 := Relationship(from: target, to: decoration, name: "decorative", slot: 5)
-    targetDecorativeEdge3 := Relationship(from: target, to: decoration, name: "decorative", slot: 6)
+    sourceSignalEdge := Link(from: source, to: signal, properties: {kind: "causal", scope: "eligibility"})
+    targetSignalEdge := Link(from: target, to: signal, properties: {kind: "causal", scope: "eligibility"})
+    sourceDecorativeEdge1 := Link(from: source, to: decoration, properties: {kind: "decorative", slot: 1})
+    sourceDecorativeEdge2 := Link(from: source, to: decoration, properties: {kind: "decorative", slot: 2})
+    sourceDecorativeEdge3 := Link(from: source, to: decoration, properties: {kind: "decorative", slot: 3})
+    targetDecorativeEdge1 := Link(from: target, to: decoration, properties: {kind: "decorative", slot: 4})
+    targetDecorativeEdge2 := Link(from: target, to: decoration, properties: {kind: "decorative", slot: 5})
+    targetDecorativeEdge3 := Link(from: target, to: decoration, properties: {kind: "decorative", slot: 6})
 
-    # The decorative edges outnumber the causal ones 6 to 2, but a plain
-    # field-equality filter -- no traversal engine -- keeps only what
-    # matters: is source causally linked to the same signal as target?
-    sourceCausalToSignal := lambda(Relationship,
-        r => r.from == source and r.to == signal and r.name == "causal")
-    targetCausalToSignal := lambda(Relationship,
-        r => r.from == target and r.to == signal and r.name == "causal")
+    # The decorative edges outnumber the causal ones 6 to 2. The property
+    # condition selects causal Links; the trailing primary-key predicate
+    # verifies that both nodes point at the same signal.
+    sourceCausalToSignal := Source().where(name: "source")
+        .join(properties: {kind: "causal"}, direction: forward.class)
+        .where(right.name == "signal")
+    targetCausalToSignal := Target().where(name: "target")
+        .join(properties: {kind: "causal"}, direction: forward.class)
+        .where(right.name == "signal")
     connectedViaSignal := count(data: sourceCausalToSignal) > 0 and
                           count(data: targetCausalToSignal) > 0
 
@@ -57,3 +52,4 @@ def main() =>
         target_causal_to_signal: targetCausalToSignal,
         connected_via_signal: connectedViaSignal
     )
+end

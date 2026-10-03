@@ -13,18 +13,23 @@ DegreeReport(subject: "", similarity: 0, membership: 0, confidence: 0, truth_deg
 # examples around. Each clause body goes on its own indented line instead.
 def critical() =>
     return RatingProfile(name: "Critical / Strongly Disagree", peak: 0, fades_in: 0, fades_out: 30)
+end
 
 def subpar() =>
     return RatingProfile(name: "Subpar / Disagree", peak: 30, fades_in: 10, fades_out: 50)
+end
 
 def acceptable() =>
     return RatingProfile(name: "Acceptable / Neutral", peak: 50, fades_in: 30, fades_out: 70)
+end
 
 def strong() =>
     return RatingProfile(name: "Strong / Agree", peak: 75, fades_in: 50, fades_out: 90)
+end
 
 def exceptional() =>
     return RatingProfile(name: "Exceptional / Strongly Agree", peak: 100, fades_in: 75, fades_out: 100)
+end
 
 # `75%` (a bare numeric percent suffix) is not a supported literal — it is
 # not used anywhere else in the codebase and fails to parse ("Expected an
@@ -33,10 +38,10 @@ def exceptional() =>
 def threshold(degree: number) =>
     if degree >= 0.75 then
         return "met"
-    elif degree <= 0.75 then
-        return "in between"
     else
         return "not-met"
+    end
+end
 
 def main() =>
     score := 68
@@ -46,3 +51,4 @@ def main() =>
     report := DegreeReport(subject: "quality", similarity: closenessDegree, membership: membershipDegree, confidence: 0.82, truth_degree: membershipDegree)
     state := threshold(degree: membershipDegree)
     return {rating: profile, report: report, threshold: state}
+end

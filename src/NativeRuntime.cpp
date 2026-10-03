@@ -209,9 +209,6 @@ bool parseNativeModuleManifest(const std::string& json,
     return true;
 }
 
-#if 0 // Obsolete hard-coded native option contract; manifests own this metadata.
-        option("lexical_algorithm", 3, {"path", "wup", "wu_palmer", "Wu-Palmer", "Wu Palmer", "resnik", "jiang_conrath", "Jiang-Conrath", "Jiang Conrath", "lin", "edit", "Leacock-Chodorow", "Leacockâ€“Chodorow", "Leacock Chodorow", "leacock_chodorow", "lch"});
-#endif
 std::vector<std::string> nativeLibraryFileNames(const std::string& moduleName) {
 #if defined(_WIN32)
     return {moduleName + ".dll", "felidae_" + moduleName + ".dll"};

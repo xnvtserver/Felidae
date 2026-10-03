@@ -3,10 +3,8 @@
 #include "Operator.h"
 #include "FelidaeGrammar.h"
 #include <cstdint>
-#include <functional>
 #include <iomanip>
 #include <memory>
-#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -17,7 +15,10 @@ namespace Felidae {
 
 enum class ExprKind {
     String,
+    ClassRef,
+    FunctionRef,
     Number,
+    Bool,
     Nil,
     Var,
     Array,
@@ -27,6 +28,8 @@ enum class ExprKind {
     Term,
     Lambda,
     FactSelection,
+    GraphSelection,
+    Super,
     AstValue
 };
 
@@ -37,10 +40,39 @@ enum class GoalKind {
     MultiAssign,
     Where,
     If,
+    For,
+    While,
+    Switch,
+    Break,
+    Continue,
     Return,
     Not,
     Group,
     Or
+};
+
+// Recursive source type used by both class fields and typed immutable local
+// bindings. Keeping one representation makes list/Pair/optional validation
+// identical at both language boundaries.
+struct TypeRef {
+    std::string name;
+    std::vector<TypeRef> arguments;
+
+    std::string canonical() const {
+        std::ostringstream out;
+        out << name;
+        if (!arguments.empty()) {
+            out << '<';
+            for (std::size_t index = 0; index < arguments.size(); ++index) {
+                if (index) out << ", ";
+                out << arguments[index].canonical();
+            }
+            out << '>';
+        }
+        return out.str();
+    }
+
+    bool isOptional() const { return name == "optional"; }
 };
 
 enum class StatementKind {
@@ -54,7 +86,8 @@ enum class ClauseKind {
     Fact,
     Rule,
     Method,
-    NativeDeclaration
+    NativeDeclaration,
+    EntryCall
 };
 
 struct SourceSpan {
@@ -108,6 +141,32 @@ public:
     }
 };
 
+class ClassRefExpr final : public Expr {
+public:
+    explicit ClassRefExpr(std::string name)
+        : name(std::move(name)), nameId(symbolIdForName(this->name)) {}
+    std::string name;
+    SymbolId nameId = 0;
+    ExprKind kind() const override { return ExprKind::ClassRef; }
+    std::shared_ptr<Expr> clone() const override {
+        return std::make_shared<ClassRefExpr>(name);
+    }
+    std::string debug() const override { return name + ".class"; }
+};
+
+class FunctionRefExpr final : public Expr {
+public:
+    explicit FunctionRefExpr(std::string name)
+        : name(std::move(name)), nameId(symbolIdForName(this->name)) {}
+    std::string name;
+    SymbolId nameId = 0;
+    ExprKind kind() const override { return ExprKind::FunctionRef; }
+    std::shared_ptr<Expr> clone() const override {
+        return std::make_shared<FunctionRefExpr>(name);
+    }
+    std::string debug() const override { return name + ".function"; }
+};
+
 class NumberExpr final : public Expr {
 public:
     explicit NumberExpr(double value) : value(value) {}
@@ -118,26 +177,19 @@ public:
     std::string debug() const override {
         std::ostringstream oss;
         oss << std::setprecision(15) << value;
-        std::string result = oss.str();
-        if (result.find_first_of(".eE") == std::string::npos) result += ".0";
-        return result;
+        return oss.str();
     }
 };
 
-// Felidae truth is numeric: predicates use exactly 0.0 or 1.0 while ordinary
-// and fuzzy numeric results remain unrestricted doubles.
-inline std::shared_ptr<NumberExpr> makeTruthValue(bool value) {
-    return std::make_shared<NumberExpr>(value ? 1.0 : 0.0);
-}
+class BoolExpr final : public Expr {
+public:
+    explicit BoolExpr(bool value) : value(value) {}
+    bool value;
 
-inline std::optional<bool> numericTruth(const std::shared_ptr<Expr>& value) {
-    if (const auto number = std::dynamic_pointer_cast<NumberExpr>(value)) {
-        if (number->value == 0.0) return false;
-        if (number->value == 1.0) return true;
-        return std::nullopt;
-    }
-    return std::nullopt;
-}
+    ExprKind kind() const override { return ExprKind::Bool; }
+    std::shared_ptr<Expr> clone() const override { return std::make_shared<BoolExpr>(value); }
+    std::string debug() const override { return value ? "true" : "false"; }
+};
 
 class NilExpr final : public Expr {
 public:
@@ -218,7 +270,7 @@ public:
     // field so an ordinary map cannot masquerade as a fact at the language
     // boundary.
     std::string factType;
-    // Runtime-only identity for a value materialized from FactMemory.  It is
+    // Runtime-only identity for a value materialized from a fact store. It is
     // deliberately absent from debug(), serialization and structural
     // equality: two facts may have equal visible fields while retaining
     // distinct identities for dependencies and relationships.
@@ -290,37 +342,12 @@ struct FactSelectionFilter {
     std::shared_ptr<Expr> value;
 };
 
-// Shared by every clone of one lazy selection. The opaque retained state
-// keeps the immutable fact root alive, while the final owner releases its
-// generation from FactMemory's lookup registry. This avoids both premature
-// expiry between chained operations and generation-by-generation leaks.
-class FactSnapshotLease final {
-public:
-    FactSnapshotLease(std::uint64_t generation,
-                      std::shared_ptr<const void> retainedState,
-                      std::function<void()> release)
-        : generation(generation), retainedState_(std::move(retainedState)),
-          release_(std::move(release)) {}
-    ~FactSnapshotLease() {
-        if (release_) release_();
-    }
-
-    FactSnapshotLease(const FactSnapshotLease&) = delete;
-    FactSnapshotLease& operator=(const FactSnapshotLease&) = delete;
-
-    std::uint64_t generation = 0;
-
-private:
-    std::shared_ptr<const void> retainedState_;
-    std::function<void()> release_;
-};
-
 // Runtime-only lazy fact query. It deliberately is not a MapExpr: user map
 // operations cannot mutate or counterfeit its snapshot/cursor metadata.
 class FactSelectionExpr final : public Expr {
 public:
     FactSelectionExpr(std::string factType,
-                      std::shared_ptr<FactSnapshotLease> snapshotLease,
+                      std::uint64_t snapshotGeneration,
                       std::string field = {},
                       std::shared_ptr<Expr> equals = nullptr,
                       std::vector<SymbolId> designationIds = {},
@@ -328,8 +355,7 @@ public:
                       std::vector<FactSelectionFilter> filters = {})
         : factType(std::move(factType)),
           factTypeId(this->factType.empty() ? 0 : symbolIdForName(this->factType)),
-          snapshotGeneration(snapshotLease ? snapshotLease->generation : 0),
-          snapshotLease(std::move(snapshotLease)),
+          snapshotGeneration(snapshotGeneration),
           field(std::move(field)),
           fieldId(this->field.empty() ? 0 : symbolIdForName(this->field)),
           equals(std::move(equals)),
@@ -340,7 +366,6 @@ public:
     std::string factType;
     SymbolId factTypeId = 0;
     std::uint64_t snapshotGeneration = 0;
-    std::shared_ptr<FactSnapshotLease> snapshotLease;
     std::string field;
     SymbolId fieldId = 0;
     std::shared_ptr<Expr> equals;
@@ -361,7 +386,7 @@ public:
         }
         return std::make_shared<FactSelectionExpr>(
             factType,
-            snapshotLease,
+            snapshotGeneration,
             field,
             equals ? equals->clone() : nullptr,
             designationIds,
@@ -371,7 +396,7 @@ public:
     std::string debug() const override {
         std::ostringstream out;
         out << "{__type: \"FactSelection\", fact_type: \""
-            << factType << "\", source: \"memory\", snapshot_generation: "
+            << factType << "\", source: \"store\", snapshot_generation: "
             << snapshotGeneration;
         if (!designations.empty()) {
             out << ", designations: [";
@@ -672,16 +697,19 @@ public:
 
 class BinaryGoal final : public Goal {
 public:
-    BinaryGoal(std::shared_ptr<Expr> left, TokenId::Id op, std::shared_ptr<Expr> right)
-        : left(std::move(left)), op(std::move(op)), right(std::move(right)) {}
+    BinaryGoal(std::shared_ptr<Expr> left, TokenId::Id op, std::shared_ptr<Expr> right,
+               bool strictBoolean = false)
+        : left(std::move(left)), op(std::move(op)), right(std::move(right)),
+          strictBoolean(strictBoolean) {}
 
     std::shared_ptr<Expr> left;
     TokenId::Id op;
     std::shared_ptr<Expr> right;
+    bool strictBoolean = false;
 
     GoalKind kind() const override { return GoalKind::Binary; }
     std::shared_ptr<Goal> clone() const override {
-        return std::make_shared<BinaryGoal>(left->clone(), op, right->clone());
+        return std::make_shared<BinaryGoal>(left->clone(), op, right->clone(), strictBoolean);
     }
 
     std::string debug() const override {
@@ -735,15 +763,17 @@ public:
 struct AssignmentTarget {
     std::string name;
     SymbolId nameId = 0;
-    std::string type;
+    TypeRef type;
 
-    AssignmentTarget(std::string name, std::string type = {})
+    explicit AssignmentTarget(std::string name)
+        : name(std::move(name)), nameId(symbolIdForName(this->name)) {}
+    AssignmentTarget(std::string name, TypeRef type)
         : name(std::move(name)), nameId(symbolIdForName(this->name)), type(std::move(type)) {}
-    AssignmentTarget(std::string displayName, SymbolId directId, std::string type = {})
+    AssignmentTarget(std::string displayName, SymbolId directId, TypeRef type = {})
         : name(std::move(displayName)), nameId(directId), type(std::move(type)) {}
 
     std::string debug() const {
-        return type.empty() ? name : name + ": " + type;
+        return type.name.empty() ? name : name + ": " + type.canonical();
     }
 };
 
@@ -824,6 +854,107 @@ public:
         }
         return oss.str();
     }
+};
+
+// Runtime-only projection of one object node into its immediate parent class
+// graph. The underlying object remains shared so `this` retains node identity.
+class SuperExpr final : public Expr {
+public:
+    SuperExpr(std::shared_ptr<MapExpr> object, std::string viewType)
+        : object(std::move(object)), viewType(std::move(viewType)) {}
+
+    std::shared_ptr<MapExpr> object;
+    std::string viewType;
+
+    ExprKind kind() const override { return ExprKind::Super; }
+    std::shared_ptr<Expr> clone() const override {
+        return std::make_shared<SuperExpr>(object, viewType);
+    }
+    std::string debug() const override { return "<super:" + viewType + ">"; }
+};
+
+class ForGoal final : public Goal {
+public:
+    ForGoal(std::string variable, std::shared_ptr<Expr> iterable,
+            std::vector<std::shared_ptr<Goal>> body)
+        : variable(std::move(variable)), variableId(symbolIdForName(this->variable)),
+          iterable(std::move(iterable)), body(std::move(body)) {}
+
+    std::string variable;
+    SymbolId variableId = 0;
+    std::shared_ptr<Expr> iterable;
+    std::vector<std::shared_ptr<Goal>> body;
+
+    GoalKind kind() const override { return GoalKind::For; }
+    std::shared_ptr<Goal> clone() const override {
+        std::vector<std::shared_ptr<Goal>> copied;
+        copied.reserve(body.size());
+        for (const auto& goal : body) copied.push_back(goal->clone());
+        return std::make_shared<ForGoal>(variable, iterable->clone(), std::move(copied));
+    }
+    std::string debug() const override { return "for " + variable + " in " + iterable->debug(); }
+};
+
+class WhileGoal final : public Goal {
+public:
+    WhileGoal(std::shared_ptr<Expr> condition,
+              std::vector<std::shared_ptr<Goal>> body)
+        : condition(std::move(condition)), body(std::move(body)) {}
+
+    std::shared_ptr<Expr> condition;
+    std::vector<std::shared_ptr<Goal>> body;
+
+    GoalKind kind() const override { return GoalKind::While; }
+    std::shared_ptr<Goal> clone() const override {
+        std::vector<std::shared_ptr<Goal>> copied;
+        copied.reserve(body.size());
+        for (const auto& goal : body) copied.push_back(goal->clone());
+        return std::make_shared<WhileGoal>(condition->clone(), std::move(copied));
+    }
+    std::string debug() const override { return "while " + condition->debug(); }
+};
+
+struct SwitchCase {
+    std::shared_ptr<Expr> value;
+    std::vector<std::shared_ptr<Goal>> body;
+};
+
+class SwitchGoal final : public Goal {
+public:
+    SwitchGoal(std::shared_ptr<Expr> value, std::vector<SwitchCase> cases)
+        : value(std::move(value)), cases(std::move(cases)) {}
+
+    std::shared_ptr<Expr> value;
+    std::vector<SwitchCase> cases;
+
+    GoalKind kind() const override { return GoalKind::Switch; }
+    std::shared_ptr<Goal> clone() const override {
+        std::vector<SwitchCase> copied;
+        copied.reserve(cases.size());
+        for (const auto& branch : cases) {
+            SwitchCase next;
+            next.value = branch.value ? branch.value->clone() : nullptr;
+            next.body.reserve(branch.body.size());
+            for (const auto& goal : branch.body) next.body.push_back(goal->clone());
+            copied.push_back(std::move(next));
+        }
+        return std::make_shared<SwitchGoal>(value->clone(), std::move(copied));
+    }
+    std::string debug() const override { return "switch " + value->debug(); }
+};
+
+class BreakGoal final : public Goal {
+public:
+    GoalKind kind() const override { return GoalKind::Break; }
+    std::shared_ptr<Goal> clone() const override { return std::make_shared<BreakGoal>(); }
+    std::string debug() const override { return "break"; }
+};
+
+class ContinueGoal final : public Goal {
+public:
+    GoalKind kind() const override { return GoalKind::Continue; }
+    std::shared_ptr<Goal> clone() const override { return std::make_shared<ContinueGoal>(); }
+    std::string debug() const override { return "continue"; }
 };
 class ReturnGoal final : public Goal {
 public:
@@ -1047,10 +1178,9 @@ public:
 class GlobalBindingStmt final : public Statement {
 public:
     GlobalBindingStmt(std::string name, std::shared_ptr<Expr> expr)
-        : name(std::move(name)), nameId(symbolIdForName(this->name)), expr(std::move(expr)) {}
+        : name(std::move(name)), expr(std::move(expr)) {}
 
     std::string name;
-    SymbolId nameId = 0;
     std::shared_ptr<Expr> expr;
 
     StatementKind kind() const override { return StatementKind::GlobalBinding; }
@@ -1060,13 +1190,76 @@ public:
 };
 
 struct ClassFieldDecl {
+    using TypeRef = Felidae::TypeRef;
+
+    ClassFieldDecl(std::string name,
+                   SymbolId nameId,
+                   TypeRef type,
+                   std::shared_ptr<Expr> defaultValue,
+                   SourceSpan sourceSpan)
+        : name(std::move(name)), nameId(nameId), type(std::move(type)),
+          defaultValue(std::move(defaultValue)), sourceSpan(sourceSpan) {}
+
     std::string name;
     SymbolId nameId = 0;
-    std::string typeName;
+    TypeRef type;
+    std::shared_ptr<Expr> defaultValue;
     SourceSpan sourceSpan;
 };
 
 struct ClassIndexDecl {
+    std::vector<std::string> fields;
+    std::vector<SymbolId> fieldIds;
+    SourceSpan sourceSpan;
+};
+
+enum class GraphTraversalKind : std::uint8_t {
+    Join,
+    RecursiveJoin,
+    ShortestPath
+};
+
+// Runtime-only lazy graph query. The source fact cursor and traversal bounds
+// are immutable; RocksDB/in-memory adjacency is touched only by a terminal
+// array operation or when the value crosses the program output boundary.
+class GraphSelectionExpr final : public Expr {
+public:
+    GraphSelectionExpr(GraphTraversalKind traversal,
+                       std::shared_ptr<FactSelectionExpr> source,
+                       std::string direction,
+                       std::shared_ptr<MapExpr> propertyMatch = {},
+                       std::size_t minDepth = 1,
+                       std::size_t maxDepth = 1,
+                       std::uint64_t targetId = 0)
+        : traversal(traversal), source(std::move(source)),
+          direction(std::move(direction)), propertyMatch(std::move(propertyMatch)),
+          minDepth(minDepth), maxDepth(maxDepth), targetId(targetId) {}
+
+    GraphTraversalKind traversal = GraphTraversalKind::Join;
+    std::shared_ptr<FactSelectionExpr> source;
+    std::string direction;
+    std::shared_ptr<MapExpr> propertyMatch;
+    std::size_t minDepth = 1;
+    std::size_t maxDepth = 1;
+    std::uint64_t targetId = 0;
+
+    ExprKind kind() const override { return ExprKind::GraphSelection; }
+    std::shared_ptr<Expr> clone() const override {
+        return std::make_shared<GraphSelectionExpr>(
+            traversal,
+            source ? std::static_pointer_cast<FactSelectionExpr>(source->clone()) : nullptr,
+            direction,
+            propertyMatch ? std::static_pointer_cast<MapExpr>(propertyMatch->clone()) : nullptr,
+            minDepth, maxDepth, targetId);
+    }
+    std::string debug() const override {
+        const char* operation = traversal == GraphTraversalKind::Join ? "join" :
+            traversal == GraphTraversalKind::RecursiveJoin ? "recursive_join" : "shortest_path";
+        return std::string("<graph:") + operation + ">";
+    }
+};
+
+struct ClassKeyDecl {
     std::vector<std::string> fields;
     std::vector<SymbolId> fieldIds;
     SourceSpan sourceSpan;
@@ -1079,21 +1272,27 @@ public:
     ClassStmt(std::string name, SymbolId nameId,
               std::vector<std::string> parentNames,
               std::vector<ClassFieldDecl> fields,
+              ClassKeyDecl key = {},
               std::vector<ClassIndexDecl> indexes = {},
               std::vector<std::shared_ptr<ClauseStmt>> methods = {})
         : name(std::move(name)), nameId(nameId),
           parentNames(std::move(parentNames)), fields(std::move(fields)),
-          indexes(std::move(indexes)), methods(std::move(methods)) {}
+          key(std::move(key)), indexes(std::move(indexes)), methods(std::move(methods)) {}
 
     std::string name;
     SymbolId nameId = 0;
     std::vector<std::string> parentNames;
     std::vector<ClassFieldDecl> fields;
+    ClassKeyDecl key;
     std::vector<ClassIndexDecl> indexes;
     std::vector<std::shared_ptr<ClauseStmt>> methods;
 
     StatementKind kind() const override { return StatementKind::Class; }
-    std::string debug() const override {
+    std::string debug() const override { return renderDeclaration(true); }
+    std::string schemaFingerprint() const { return renderDeclaration(false); }
+
+private:
+    std::string renderDeclaration(bool includeMethods) const {
         std::ostringstream oss;
         oss << "class " << name;
         if (!parentNames.empty()) {
@@ -1104,16 +1303,30 @@ public:
             }
         }
         oss << '\n';
-        for (const auto& field : fields) oss << "  " << field.name << ": " << field.typeName << '\n';
+        for (const auto& field : fields) {
+            oss << "  " << field.name << ": " << field.type.canonical();
+            if (field.defaultValue) oss << " := " << field.defaultValue->debug();
+            oss << ".\n";
+        }
+        if (!key.fields.empty()) {
+            oss << "  key(";
+            for (std::size_t i = 0; i < key.fields.size(); ++i) {
+                if (i) oss << ", ";
+                oss << key.fields[i];
+            }
+            oss << ").\n";
+        }
         for (const auto& index : indexes) {
             oss << "  index(";
             for (std::size_t i = 0; i < index.fields.size(); ++i) {
                 if (i) oss << ", ";
                 oss << index.fields[i];
             }
-            oss << ")\n";
+            oss << ").\n";
         }
-        for (const auto& method : methods) oss << "  " << method->debug() << '\n';
+        if (includeMethods) {
+            for (const auto& method : methods) oss << "  " << method->debug() << '\n';
+        }
         return oss.str() + "end";
     }
 };
@@ -1151,43 +1364,5 @@ public:
         return oss.str();
     }
 };
-
-// Non-fatal or fatal diagnostic about a span of source, in the same
-// severity/code/message shape the unified felidae tooling modes (src/debugger/
-// AstAnalyzer.h) uses. Shared here so any diagnostic emitter can report
-// warnings without hand-rolling a second diagnostic struct of its own;
-// AstAnalyzer still owns the actual analyses (unused symbols, hidden
-// materialization, etc.) that produce AstDiagnostic values - this is just
-// the shared value type and the two small constructors every emitter
-// otherwise repeats. Not used by the interpreter's own execution path, so
-// building or running felidae itself never pays for this.
-struct AstDiagnostic {
-    std::string severity;
-    std::string message;
-    int line = 1;
-    int column = 1;
-    int endLine = 1;
-    int endColumn = 1;
-    std::string code;
-    std::string file;
-};
-
-inline AstDiagnostic diagnosticFor(const AstNode* node, std::string severity,
-                                   std::string code, std::string message) {
-    SourceSpan span;
-    if (node && node->sourceSpan.valid()) span = node->sourceSpan;
-    return AstDiagnostic{std::move(severity), std::move(message),
-                         span.startLine,      span.startColumn,
-                         span.endLine,        span.endColumn,
-                         std::move(code),     ""};
-}
-
-inline AstDiagnostic diagnosticForSpan(const SourceSpan& span, std::string severity,
-                                       std::string code, std::string message) {
-    return AstDiagnostic{std::move(severity), std::move(message),
-                         span.startLine,      span.startColumn,
-                         span.endLine,        span.endColumn,
-                         std::move(code),     ""};
-}
 
 } // namespace Felidae

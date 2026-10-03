@@ -81,21 +81,6 @@ struct FactMemoryStats {
     std::uint64_t generation = 0;
 };
 
-// Attachments deliberately live beside facts rather than in their serialized
-// MapExpr values.  That keeps structural equality/source export unchanged
-// while aliases of the same logical fact observe the same knowledge.
-struct FactDependency {
-    std::shared_ptr<MapExpr> required;
-};
-
-struct FactRelationship {
-    std::uint64_t sourceId = 0;
-    std::uint64_t targetId = 0;
-    std::shared_ptr<MapExpr> relationship;
-    std::shared_ptr<Expr> degree;
-    std::shared_ptr<Expr> confidence;
-};
-
 class FactMemory {
 public:
     FactMemory();
@@ -116,9 +101,10 @@ public:
                                      SymbolId typeId = 0) const;
     std::uint64_t hierarchyGeneration() const;
     FactMemoryStats stats() const;
-    // A selection captures an immutable logical view. Its shared lease keeps
-    // that generation alive until the final selection clone is destroyed.
-    std::shared_ptr<FactSnapshotLease> captureSnapshot();
+    // A selection captures an immutable logical view.  It remains valid
+    // until explicitly released by the runtime/library owner.
+    std::uint64_t captureSnapshot();
+    bool releaseSnapshot(std::uint64_t snapshotGeneration);
     std::vector<size_t> selectionIndexes(const std::string& type,
                                          const std::string& property = {},
                                          const std::shared_ptr<Expr>& value = nullptr,
@@ -131,18 +117,6 @@ public:
                                         std::uint64_t snapshotGeneration = 0) const;
     std::vector<size_t> temporalLineageIndexesForFact(size_t index,
                                                        std::uint64_t snapshotGeneration = 0) const;
-    bool addDependency(std::uint64_t sourceId, std::shared_ptr<MapExpr> required);
-    bool addRelationship(std::uint64_t sourceId,
-                         std::uint64_t targetId,
-                         std::shared_ptr<MapExpr> relationship,
-                         std::shared_ptr<Expr> degree,
-                         std::shared_ptr<Expr> confidence);
-    std::vector<std::shared_ptr<MapExpr>> missingDependencies(std::uint64_t sourceId) const;
-    bool hasDependencyCycle(std::uint64_t sourceId) const;
-    std::vector<FactRelationship> relationshipsFor(std::uint64_t factId) const;
-    const std::vector<FactRelationship>& outgoingRelationships(std::uint64_t factId) const;
-    const std::vector<FactRelationship>& incomingRelationships(std::uint64_t factId) const;
-
     size_t addFact(std::string type,
                    std::string parentType,
                    std::shared_ptr<MapExpr> value,
@@ -174,7 +148,6 @@ public:
     std::vector<std::pair<std::string, std::string>> hierarchyEdges() const;
     const std::unordered_map<std::string, std::filesystem::path>& parentOrigins() const;
     std::vector<size_t> factIndexesFromOrigin(const std::filesystem::path& origin) const;
-    std::vector<std::filesystem::path> originsForType(const std::string& type) const;
     bool hasOrigin(const std::filesystem::path& origin) const;
     void removeOrigin(const std::filesystem::path& origin);
     // Language-level mutations preserve stable fact identity. Updates append
@@ -241,12 +214,6 @@ private:
         void clear() { pages.clear(); }
     };
 
-    struct AttachmentData {
-        std::unordered_map<std::uint64_t, std::vector<FactDependency>> dependenciesBySource;
-        std::unordered_map<std::uint64_t, std::vector<FactRelationship>> relationshipsBySource;
-        std::unordered_map<std::uint64_t, std::vector<FactRelationship>> relationshipsByTarget;
-    };
-
     struct Data {
         struct ValueArena {
             std::unordered_map<std::size_t,
@@ -275,6 +242,7 @@ private:
                 Empty,
                 String,
                 Number,
+                Bool,
                 Nil,
                 Structured,
                 Mixed
@@ -353,21 +321,11 @@ private:
         // change to one fact type keeps every other relation's columns and
         // indexes shared with existing snapshots.
         std::unordered_map<SymbolId, std::shared_ptr<Relation>> relations;
-        std::shared_ptr<AttachmentData> attachments = std::make_shared<AttachmentData>();
         std::shared_ptr<ValueArena> valueArena = std::make_shared<ValueArena>();
     };
 
-    struct SnapshotRegistry {
-        struct Entry {
-            std::shared_ptr<const Data> data;
-            std::size_t leases = 0;
-        };
-        mutable std::mutex mutex;
-        std::unordered_map<std::uint64_t, Entry> entries;
-    };
-
     std::shared_ptr<Data> data_;
-    std::shared_ptr<SnapshotRegistry> snapshots_;
+    std::unordered_map<std::uint64_t, std::shared_ptr<const Data>> snapshots_;
     std::unordered_map<SymbolId, std::vector<size_t>> compatibleFactCache_;
     std::unordered_map<PropertyQueryKey, std::vector<size_t>, PropertyQueryKeyHash> propertyQueryCache_;
     mutable std::size_t adaptiveEqualityIndexes_ = 0;
@@ -398,7 +356,6 @@ private:
                                          SymbolId expected);
     const Data& dataForSnapshot(std::uint64_t snapshotGeneration) const;
     void ensureUnique();
-    void ensureAttachmentsUnique();
     std::shared_ptr<const Expr> internValue(const std::shared_ptr<Expr>& value);
     std::shared_ptr<MapExpr> materializeFact(const Data& store, std::size_t index) const;
     Data::Relation& writableRelation(SymbolId typeId);
