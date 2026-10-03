@@ -167,7 +167,7 @@ std::vector<Interpreter::TableBinding> Interpreter::evaluateTableGoals(
          goalIndex < goals.size() && !inputs.empty();
          ++goalIndex) {
         const auto& goal = goals[goalIndex];
-        if (auto call = std::dynamic_pointer_cast<CallGoal>(goal)) {
+        if (auto call = nodeAs<CallGoal>(goal)) {
             const SymbolId id = call->call.nameId == 0
                 ? symbolIdForName(call->call.name)
                 : call->call.nameId;
@@ -213,7 +213,7 @@ std::vector<Interpreter::TableBinding> Interpreter::evaluateTableGoals(
             continue;
         }
 
-        if (auto negated = std::dynamic_pointer_cast<NotGoal>(goal)) {
+        if (auto negated = nodeAs<NotGoal>(goal)) {
             const SymbolId id = negated->call.nameId == 0
                 ? symbolIdForName(negated->call.name)
                 : negated->call.nameId;
@@ -239,16 +239,16 @@ std::vector<Interpreter::TableBinding> Interpreter::evaluateTableGoals(
         std::vector<TableBinding> next;
         for (auto& input : inputs) {
             bool accepted = false;
-            if (auto binary = std::dynamic_pointer_cast<BinaryGoal>(goal)) {
+            if (auto binary = nodeAs<BinaryGoal>(goal)) {
                 accepted = solveBinaryGoal(*binary, input.env);
             } else if (auto where =
-                           std::dynamic_pointer_cast<WhereGoal>(goal)) {
+                           nodeAs<WhereGoal>(goal)) {
                 accepted = solveWhereGoal(*where, input.env);
             } else if (auto assign =
-                           std::dynamic_pointer_cast<AssignGoal>(goal)) {
+                           nodeAs<AssignGoal>(goal)) {
                 accepted = solveAssignGoal(*assign, input.env);
             } else if (auto returned =
-                           std::dynamic_pointer_cast<ReturnGoal>(goal)) {
+                           nodeAs<ReturnGoal>(goal)) {
                 accepted = returned->fields.empty();
             }
             if (accepted) next.push_back(std::move(input));
@@ -295,7 +295,7 @@ Interpreter::buildTableEvaluation(
             RuleInfo rule{clause, currentId, {}};
             for (const auto& goal : clause->body) {
                 if (auto call =
-                        std::dynamic_pointer_cast<CallGoal>(goal)) {
+                        nodeAs<CallGoal>(goal)) {
                     const SymbolId target = call->call.nameId == 0
                         ? symbolIdForName(call->call.name)
                         : call->call.nameId;
@@ -303,7 +303,7 @@ Interpreter::buildTableEvaluation(
                     names.emplace(target, call->call.name);
                     pending.push_back(target);
                 } else if (auto negated =
-                               std::dynamic_pointer_cast<NotGoal>(goal)) {
+                               nodeAs<NotGoal>(goal)) {
                     const SymbolId target = negated->call.nameId == 0
                         ? symbolIdForName(negated->call.name)
                         : negated->call.nameId;
@@ -437,7 +437,7 @@ Interpreter::buildTableEvaluation(
                 for (std::size_t goalIndex = 0;
                      goalIndex < rule->clause->body.size();
                      ++goalIndex) {
-                    const auto call = std::dynamic_pointer_cast<CallGoal>(
+                    const auto call = nodeAs<CallGoal>(
                         rule->clause->body[goalIndex]);
                     if (!call) continue;
                     const SymbolId target = call->call.nameId == 0
@@ -574,7 +574,7 @@ namespace {
 std::shared_ptr<Expr> reasoningMapValue(
     const std::shared_ptr<Expr>& value,
     const std::string& key) {
-    const auto map = std::dynamic_pointer_cast<MapExpr>(value);
+    const auto map = nodeAs<MapExpr>(value);
     if (!map) return {};
     const SymbolId keyId = symbolIdForName(key);
     for (const auto& entry : map->entries) {
@@ -756,9 +756,9 @@ bool Interpreter::evalReasoningContrary(
         }
     }
     const auto positive =
-        std::dynamic_pointer_cast<StringExpr>(positiveValue);
+        nodeAs<StringExpr>(positiveValue);
     const auto negative =
-        std::dynamic_pointer_cast<StringExpr>(negativeValue);
+        nodeAs<StringExpr>(negativeValue);
     if (!positive || positive->value.empty() ||
         !negative || negative->value.empty()) {
         throw InterpreterError(
@@ -804,7 +804,7 @@ bool Interpreter::evalReasoningProve(
 
     Call query;
     if (const auto queryTerm =
-            std::dynamic_pointer_cast<TermExpr>(queryArgument->value)) {
+            nodeAs<TermExpr>(queryArgument->value)) {
         if (queryTerm->builtinId != BuiltinId::Unknown) {
             throw InterpreterError(
                 "reasoning.prove expects a relational predicate, not a builtin");
@@ -825,8 +825,8 @@ bool Interpreter::evalReasoningProve(
         if (!evalExprValue(queryArgument->value, env, resolved)) {
             return false;
         }
-        const auto map = std::dynamic_pointer_cast<MapExpr>(resolved);
-        const auto type = std::dynamic_pointer_cast<StringExpr>(
+        const auto map = nodeAs<MapExpr>(resolved);
+        const auto type = nodeAs<StringExpr>(
             reasoningMapValue(
                 resolved,
                 internalSymbolString(InternalSymbolKind::Type)));

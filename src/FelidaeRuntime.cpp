@@ -281,48 +281,48 @@ std::vector<std::shared_ptr<Goal>> parseQueryText(
 }
 
 static void collectVarsExpr(const std::shared_ptr<Expr>& expr, std::vector<SymbolId>& vars) {
-    if (auto v = std::dynamic_pointer_cast<VarExpr>(expr)) {
+    if (auto v = nodeAs<VarExpr>(expr)) {
         if (v->nameId != InternalSymbol::SystemResultId &&
             std::find(vars.begin(), vars.end(), v->nameId) == vars.end()) {
             vars.push_back(v->nameId);
         }
-    } else if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
+    } else if (auto term = nodeAs<TermExpr>(expr)) {
         for (const auto& arg : term->args) collectVarsExpr(arg.value, vars);
-    } else if (auto lambda = std::dynamic_pointer_cast<LambdaExpr>(expr)) {
+    } else if (auto lambda = nodeAs<LambdaExpr>(expr)) {
         collectVarsExpr(lambda->source, vars);
         collectVarsExpr(lambda->body, vars);
         if (lambda->right) collectVarsExpr(lambda->right, vars);
-    } else if (auto array = std::dynamic_pointer_cast<ArrayExpr>(expr)) {
+    } else if (auto array = nodeAs<ArrayExpr>(expr)) {
         for (const auto& item : array->items) collectVarsExpr(item, vars);
-    } else if (auto map = std::dynamic_pointer_cast<MapExpr>(expr)) {
+    } else if (auto map = nodeAs<MapExpr>(expr)) {
         for (const auto& entry : map->entries) collectVarsExpr(entry.value, vars);
-    } else if (auto access = std::dynamic_pointer_cast<AccessExpr>(expr)) {
-        auto targetVar = std::dynamic_pointer_cast<VarExpr>(access->target);
+    } else if (auto access = nodeAs<AccessExpr>(expr)) {
+        auto targetVar = nodeAs<VarExpr>(access->target);
         if (access->keyId == InternalSymbol::ResultId && targetVar && targetVar->nameId == InternalSymbol::SystemId) return;
         collectVarsExpr(access->target, vars);
-    } else if (auto op = std::dynamic_pointer_cast<OperatorExpression>(expr)) {
+    } else if (auto op = nodeAs<OperatorExpression>(expr)) {
         for (size_t i = 0; i < op->captureCount(); ++i) collectVarsExpr(op->capture(i), vars);
     }
 }
 
 static void collectVarsGoal(const std::shared_ptr<Goal>& goal, std::vector<SymbolId>& vars) {
-    if (auto cg = std::dynamic_pointer_cast<CallGoal>(goal)) {
+    if (auto cg = nodeAs<CallGoal>(goal)) {
         for (const auto& arg : cg->call.args) collectVarsExpr(arg.value, vars);
-    } else if (auto ag = std::dynamic_pointer_cast<AssignGoal>(goal)) {
+    } else if (auto ag = nodeAs<AssignGoal>(goal)) {
         if (std::find(vars.begin(), vars.end(), ag->nameId) == vars.end()) {
             vars.push_back(ag->nameId);
         }
         if (ag->expr) collectVarsExpr(ag->expr, vars);
-    } else if (auto bg = std::dynamic_pointer_cast<BinaryGoal>(goal)) {
+    } else if (auto bg = nodeAs<BinaryGoal>(goal)) {
         collectVarsExpr(bg->left, vars);
         collectVarsExpr(bg->right, vars);
-    } else if (auto wg = std::dynamic_pointer_cast<WhereGoal>(goal)) {
+    } else if (auto wg = nodeAs<WhereGoal>(goal)) {
         collectVarsGoal(wg->condition, vars);
-    } else if (auto ifGoal = std::dynamic_pointer_cast<IfGoal>(goal)) {
+    } else if (auto ifGoal = nodeAs<IfGoal>(goal)) {
         collectVarsGoal(ifGoal->condition, vars);
         for (const auto& branchGoal : ifGoal->thenBranch) collectVarsGoal(branchGoal, vars);
         for (const auto& branchGoal : ifGoal->elseBranch) collectVarsGoal(branchGoal, vars);
-    } else if (auto tg = std::dynamic_pointer_cast<TryGoal>(goal)) {
+    } else if (auto tg = nodeAs<TryGoal>(goal)) {
         for (const auto& bodyGoal : tg->tryBody) collectVarsGoal(bodyGoal, vars);
         for (const auto& clause : tg->catches) {
             if (std::find(vars.begin(), vars.end(), clause.variableId) == vars.end()) {
@@ -330,11 +330,11 @@ static void collectVarsGoal(const std::shared_ptr<Goal>& goal, std::vector<Symbo
             }
             for (const auto& bodyGoal : clause.body) collectVarsGoal(bodyGoal, vars);
         }
-    } else if (auto rg = std::dynamic_pointer_cast<ReturnGoal>(goal)) {
+    } else if (auto rg = nodeAs<ReturnGoal>(goal)) {
         for (const auto& field : rg->fields) collectVarsExpr(field.value, vars);
-    } else if (auto gg = std::dynamic_pointer_cast<GroupGoal>(goal)) {
+    } else if (auto gg = nodeAs<GroupGoal>(goal)) {
         for (const auto& groupedGoal : gg->goals) collectVarsGoal(groupedGoal, vars);
-    } else if (auto og = std::dynamic_pointer_cast<OrGoal>(goal)) {
+    } else if (auto og = nodeAs<OrGoal>(goal)) {
         for (const auto& branch : og->branches) {
             for (const auto& branchGoal : branch) collectVarsGoal(branchGoal, vars);
         }

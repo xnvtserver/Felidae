@@ -344,17 +344,17 @@ std::string factPrefix(const std::string& type) {
 }
 
 void appendOrderedScalar(std::string& out, const std::shared_ptr<Expr>& value) {
-    if (const auto text = std::dynamic_pointer_cast<StringExpr>(value)) {
+    if (const auto text = nodeAs<StringExpr>(value)) {
         out.push_back('s');
         appendOrderedString(out, text->value);
         return;
     }
-    if (const auto boolean = std::dynamic_pointer_cast<BoolExpr>(value)) {
+    if (const auto boolean = nodeAs<BoolExpr>(value)) {
         out.push_back('b');
         out.push_back(boolean->value ? 1 : 0);
         return;
     }
-    if (const auto number = std::dynamic_pointer_cast<NumberExpr>(value)) {
+    if (const auto number = nodeAs<NumberExpr>(value)) {
         out.push_back('n');
         std::uint64_t bits = 0;
         const double canonical = number->value == 0.0 ? 0.0 : number->value;
@@ -520,7 +520,7 @@ StoredFact decodeFactValue(const std::string& value) {
     const auto count = readU64(value, offset);
     fact.key.reserve(static_cast<std::size_t>(count));
     for (std::uint64_t index = 0; index < count; ++index) fact.key.push_back(decodeExpr(value, offset));
-    fact.value = std::dynamic_pointer_cast<MapExpr>(decodeExpr(value, offset));
+    fact.value = nodeAs<MapExpr>(decodeExpr(value, offset));
     if (!fact.value) throw std::runtime_error("Corrupt Felidae RocksDB fact");
     fact.parentType = readBlob(value, offset);
     fact.origin = readBlob(value, offset);
@@ -534,7 +534,7 @@ StoredFact decodeFactValue(const std::string& value) {
     for (std::uint64_t index = 0; index < designationCount; ++index) {
         fact.designations.push_back(readBlob(value, offset));
     }
-    fact.temporalMetadata = std::dynamic_pointer_cast<MapExpr>(decodeExpr(value, offset));
+    fact.temporalMetadata = nodeAs<MapExpr>(decodeExpr(value, offset));
     if (offset != value.size()) throw std::runtime_error("Corrupt Felidae RocksDB fact");
     fact.value->factIdentity = fact.id;
     fact.value->factType = fact.type;
@@ -561,7 +561,7 @@ StoredLink decodeLinkValue(const std::string& value) {
     }
     link.source = readU64(value, offset);
     link.target = readU64(value, offset);
-    link.properties = std::dynamic_pointer_cast<MapExpr>(decodeExpr(value, offset));
+    link.properties = nodeAs<MapExpr>(decodeExpr(value, offset));
     if (!link.properties || offset != value.size()) {
         throw std::runtime_error("Corrupt Felidae RocksDB Link");
     }
@@ -586,7 +586,7 @@ StoredClassEdge decodeClassEdgeValue(const std::string& value) {
     edge.sourceType = readBlob(value, offset);
     edge.targetType = readBlob(value, offset);
     edge.direction = readBlob(value, offset);
-    edge.properties = std::dynamic_pointer_cast<MapExpr>(decodeExpr(value, offset));
+    edge.properties = nodeAs<MapExpr>(decodeExpr(value, offset));
     if (!edge.properties || offset != value.size()) {
         throw std::runtime_error("Corrupt Felidae class graph edge");
     }

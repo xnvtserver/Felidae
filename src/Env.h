@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AST.h"
+#include <algorithm>
 #include <cstddef>
 #include <filesystem>
 #include <memory>
@@ -13,12 +14,21 @@ namespace Felidae {
 // Runtime bindings are keyed by collision-free SymbolId rather than repeated
 // heap strings. Source spellings stay on AST nodes; binding lookup converts a
 // spelling once through the shared symbol interner.
+//
+// The bindings are one vector sorted by id. A call copies its caller's
+// environment, and with a node-based hash map that copy cost one allocation per
+// binding; here it is a single allocation. Lookup is a binary search, so large
+// environments (top-level globals) stay fast too.
+//
+// Invalidation rule: any insertion or erasure on an Env invalidates every
+// reference and iterator into it (operator[] inserts when the id is absent).
+// Never hold one across a write to the same Env.
 class Env {
 public:
-    using Map = std::unordered_map<SymbolId, std::shared_ptr<Expr>>;
-    using key_type = Map::key_type;
-    using mapped_type = Map::mapped_type;
-    using value_type = Map::value_type;
+    using key_type = SymbolId;
+    using mapped_type = std::shared_ptr<Expr>;
+    using value_type = std::pair<SymbolId, std::shared_ptr<Expr>>;
+    using Map = std::vector<value_type>;
     using iterator = Map::iterator;
     using const_iterator = Map::const_iterator;
 
@@ -29,43 +39,58 @@ public:
     Env& operator=(Env&&) noexcept = default;
 
     std::size_t count(const std::string& name) const {
-        return values_.count(symbolIdForName(name));
+        return count(symbolIdForName(name));
     }
-    iterator find(const std::string& name) {
-        return values_.find(symbolIdForName(name));
+    std::size_t count(SymbolId id) const { return find(id) != end() ? 1 : 0; }
+    iterator find(const std::string& name) { return find(symbolIdForName(name)); }
+    const_iterator find(const std::string& name) const { return find(symbolIdForName(name)); }
+    iterator find(SymbolId id) {
+        const auto position = lowerBound(id);
+        return position != values_.end() && position->first == id ? position : values_.end();
     }
-    const_iterator find(const std::string& name) const {
-        return values_.find(symbolIdForName(name));
+    const_iterator find(SymbolId id) const {
+        const auto position = lowerBound(id);
+        return position != values_.end() && position->first == id ? position : values_.end();
     }
-    iterator find(SymbolId id) { return values_.find(id); }
-    const_iterator find(SymbolId id) const { return values_.find(id); }
     iterator begin() { return values_.begin(); }
     const_iterator begin() const { return values_.begin(); }
     iterator end() { return values_.end(); }
     const_iterator end() const { return values_.end(); }
     std::shared_ptr<Expr>& operator[](const std::string& name) {
-        return values_[symbolIdForName(name)];
+        return (*this)[symbolIdForName(name)];
     }
     std::shared_ptr<Expr>& operator[](SymbolId id) {
-        return values_[id];
+        auto position = lowerBound(id);
+        if (position == values_.end() || position->first != id) {
+            position = values_.emplace(position, id, nullptr);
+        }
+        return position->second;
     }
-    std::size_t erase(const std::string& name) {
-        return values_.erase(symbolIdForName(name));
-    }
+    std::size_t erase(const std::string& name) { return erase(symbolIdForName(name)); }
     std::size_t erase(SymbolId id) {
-        return values_.erase(id);
+        const auto position = find(id);
+        if (position == values_.end()) return 0;
+        values_.erase(position);
+        return 1;
     }
     void clear() { values_.clear(); }
     void reserve(std::size_t size) { values_.reserve(size); }
     template <typename Iterator>
-    void insert(Iterator begin, Iterator end) {
-        values_.insert(begin, end);
+    void insert(Iterator first, Iterator last) {
+        for (; first != last; ++first) (*this)[first->first] = first->second;
     }
     std::size_t size() const { return values_.size(); }
-    std::size_t bucket_count() const { return values_.bucket_count(); }
 
 private:
-    friend class BindingTrail;
+    iterator lowerBound(SymbolId id) {
+        return std::lower_bound(values_.begin(), values_.end(), id,
+            [](const value_type& entry, SymbolId key) { return entry.first < key; });
+    }
+    const_iterator lowerBound(SymbolId id) const {
+        return std::lower_bound(values_.begin(), values_.end(), id,
+            [](const value_type& entry, SymbolId key) { return entry.first < key; });
+    }
+
     Map values_;
 };
 
@@ -129,46 +154,5 @@ Env cloneEnv(const Env& env);
 std::shared_ptr<Expr> findEnvValue(const Env& env, const std::string& name);
 std::shared_ptr<Expr> findReturnValue(const Env& env);
 bool bindEnvValue(Env& env, const std::string& name, const std::shared_ptr<Expr>& value);
-
-class EnvFramePool;
-
-class EnvFrame {
-public:
-    EnvFrame() = default;
-    EnvFrame(EnvFramePool* pool, Env* env);
-    EnvFrame(const EnvFrame&) = delete;
-    EnvFrame& operator=(const EnvFrame&) = delete;
-    EnvFrame(EnvFrame&& other) noexcept;
-    EnvFrame& operator=(EnvFrame&& other) noexcept;
-    ~EnvFrame();
-
-    Env& get();
-    const Env& get() const;
-    Env* operator->();
-    Env& operator*();
-    explicit operator bool() const;
-    void reset();
-
-private:
-    EnvFramePool* pool_ = nullptr;
-    Env* env_ = nullptr;
-};
-
-class EnvFramePool {
-public:
-    EnvFrame acquire();
-    EnvFrame acquireCopy(const Env& source);
-    EnvFrame acquireMove(Env&& source);
-    void recycle(Env* env);
-    void collectGarbage(std::size_t maxCachedFrames);
-    std::size_t created() const;
-    std::size_t cached() const;
-    std::size_t copies() const;
-
-private:
-    std::vector<std::unique_ptr<Env>> free_;
-    std::size_t created_ = 0;
-    std::size_t copies_ = 0;
-};
 
 } // namespace Felidae

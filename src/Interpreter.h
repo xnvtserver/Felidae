@@ -138,18 +138,17 @@ private:
         std::string error;
         bool started = false;
     };
+    // Built once per method and cached. The local name is carried as an integer
+    // id plus a prebuilt variable node, so a call binds parameters without
+    // allocating or hashing a name.
     struct MethodParamPlan {
         std::string localName;
+        SymbolId localNameId = 0;
+        std::shared_ptr<VarExpr> localVar;
         std::string typeName;
         LanguageTypeId typeId = LanguageTypeId::Unknown;
         bool typedParam = false;
         bool builtinType = false;
-    };
-    struct MethodRuntimeInfo {
-        size_t callCount = 0;
-        bool paramsPrepared = false;
-        bool cacheEligible = false;
-        std::vector<MethodParamPlan> params;
     };
     struct SolveCacheEntry {
         std::vector<Solution> solutions;
@@ -262,7 +261,12 @@ private:
     std::unordered_map<std::string, SolveCacheEntry> solveCache_;
     std::list<std::string> solveCacheRecency_;
     std::size_t solveCacheBytes_ = 0;
-    mutable std::unordered_map<const ClauseStmt*, MethodRuntimeInfo> methodRuntimeCache_;
+    // One plan per clause, built on first use. Callers hold the shared_ptr for
+    // the whole call: a fact write inside the method clears this map (cache
+    // invalidation), and a raw reference would dangle.
+    mutable std::unordered_map<const ClauseStmt*,
+                               std::shared_ptr<const std::vector<MethodParamPlan>>>
+        methodParamPlans_;
     mutable std::unordered_map<std::string, ClauseList*> clauseLookupCache_;
     mutable std::unordered_map<SymbolId, std::vector<std::string>> typeAncestryCache_;
     mutable std::unordered_map<SymbolId,
@@ -284,7 +288,6 @@ private:
     std::set<std::filesystem::path> nativeLibraryPaths_;
     std::unordered_map<std::string, std::shared_ptr<ThreadTask>> threadTasks_;
     mutable std::mutex threadMutex_;
-    EnvFramePool envFramePool_;
     BindingTrail* activeBindingTrail_ = nullptr;
     size_t solveEpoch_ = 0;
     std::uint64_t programGeneration_ = 1;
@@ -522,10 +525,8 @@ private:
     bool goalMayHaveSideEffects(const std::shared_ptr<Goal>& goal) const;
     bool exprMayHaveSideEffects(const std::shared_ptr<Expr>& expr) const;
     bool isMethodClause(const ClauseStmt& clause) const;
-    bool methodMetadataCacheEligible(const ClauseStmt& clause) const;
     MethodParamPlan makeMethodParamPlan(const Arg& param) const;
-    std::vector<MethodParamPlan> buildMethodParamPlan(const ClauseStmt& clause) const;
-    const std::vector<MethodParamPlan>* hotMethodParamPlan(const std::shared_ptr<ClauseStmt>& clause);
+    std::shared_ptr<const std::vector<MethodParamPlan>> methodParamPlan(const ClauseStmt& clause) const;
     struct FactMaterialization {
         std::shared_ptr<MapExpr> value;
         // Interpreter metadata is carried alongside a fact, never as part of
@@ -570,7 +571,6 @@ private:
     std::string startThreadTask(const std::shared_ptr<Expr>& handle);
     std::string threadTaskStatus(const std::shared_ptr<Expr>& handle);
     std::shared_ptr<Expr> threadTaskResult(const std::shared_ptr<Expr>& handle);
-    void collectExecutionGarbage();
     const ClauseStmt* nativeDeclarationFor(const std::string& name) const;
     void validateNativeCallTypes(const Call& call,
                                  const ClauseStmt& declaration,
