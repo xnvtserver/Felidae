@@ -1,11 +1,14 @@
 # Felidae
 
-Felidae is a deterministic functional-logic query and intelligence language.
-`.fx` source is tokenized, parsed to an AST, and evaluated directly; durable
-facts and graph relationships are stored in RocksDB.
+Felidae is a deterministic, graph-oriented query and reasoning DSL. It has
+general programming constructs for writing query functions and Boolean logic,
+but it is not intended to be a general-purpose programming language. `.fx`
+source is tokenized, parsed to an AST, and evaluated directly; RocksDB is the
+authoritative store for durable facts and graph relationships. Fuzzy logic is
+provided by the standard library rather than the interpreter core.
 
 ```text
-source.fx -> tokenizer -> IntegerParser -> Program AST -> Interpreter -> RocksDB
+source.fx -> tokenizer -> IntegerParser -> Program AST -> Interpreter <-> RocksDB -> output
 ```
 
 ## Build and run
@@ -21,12 +24,14 @@ configuration directory:
 
 ```powershell
 .\build.cmd debug --platform x64 --jobs 4
+.\build.cmd debug --platform x64 --jobs 4 --test
 .\build.cmd release --platform arm64
 # Windows executable: build\debug\x64\Debug\felidae.exe
 ```
 
 ```sh
 ./build.sh debug --platform native --jobs 4
+./build.sh debug --platform native --jobs 4 --test
 ./build.sh release --platform arm64
 # Unix executable on an x64 host: build/debug/x64/felidae
 ```
@@ -39,22 +44,9 @@ object files under that configuration/platform directory and rebuilds only
 sources whose inputs changed. Keep the same configuration, platform, and job
 count to maximize reuse.
 
-Direct CMake configuration remains available:
-
-```sh
-cmake -S . -B build/debug -DFELIDAE_BUILD_TESTS=ON
-cmake --build build/debug --target felidae -j2
-build/debug/felidae tests/direct_ast_smoke.fx
-build/debug/felidae v2_examples/mixfix_nested_expression.fx
-build/debug/felidae tests/direct_ast_smoke.fx --debug
-```
-
-Live breakpoints and stepping are enabled only by `--debug`; normal execution
-leaves the goal hook unset.
-
-## Interactive REPL
-
-Every executable project directory must contain `init.fx`:
+Every executable project directory must contain an `init.fx` beside its entry
+program. The manifest selects the RocksDB directory and may apply supported
+runtime database settings:
 
 ```felidae
 import "db".
@@ -62,11 +54,40 @@ db.location("./data/felidae.db").
 db.configure(options: {max_background_jobs: 4}).
 ```
 
-The manifest is resolved only beside the entry program. Relative paths are
-relative to that directory. Felidae rejects missing or empty manifests and
-never creates an implicit temporary database. `--db` is no longer supported.
+Relative database locations resolve from the directory containing `init.fx`.
+Felidae rejects missing, empty, duplicate, or invalid manifests and never
+creates an implicit temporary database. The retired `--db` option is not
+supported.
 
-Run `felidae` without a source file to open the REPL using `./init.fx`. On Windows:
+Direct CMake configuration on Linux or macOS remains available:
+
+```sh
+cmake -S . -B build/debug -DCMAKE_BUILD_TYPE=Debug -DFELIDAE_BUILD_TESTS=ON
+cmake --build build/debug --target felidae --parallel 2
+./build/debug/felidae tests/direct_ast_smoke.fx
+./build/debug/felidae v2_examples/mixfix_nested_expression.fx
+./build/debug/felidae tests/direct_ast_smoke.fx --debug
+```
+
+Live breakpoints and stepping are enabled only by `--debug`; normal execution
+leaves the goal hook unset.
+Use `--metrics-json` for machine-readable runtime counters and
+`--benchmark-repeat N` to measure repeated entry or query execution in one
+interpreter process.
+
+Normal file execution uses the local database service selected by `init.fx`.
+It stops automatically after its idle timeout, or can be stopped explicitly:
+
+```sh
+felidae db stop path/to/project
+# An entry program path is also accepted:
+felidae db stop path/to/project/main.fx
+```
+
+## Interactive REPL
+
+Run `felidae` without a source file to open the REPL using `./init.fx`. On
+Windows:
 
 ```powershell
 .\build\debug\x64\Debug\felidae.exe
@@ -106,9 +127,10 @@ facts, history, debugger settings, or measurements from the current session.
 RocksDB is the authoritative durable fact and graph store. Each fact is an
 independently keyed node. Schemas, indexes, explicit `Link` edges, adjacency,
 provenance, and temporal metadata use fixed internal keyspaces.
-Interpreter memory is reserved for ASTs, immutable temporary values, local
-bindings, debugger frames, cursors, and bounded result batches. The required
-project `init.fx` selects the RocksDB directory before execution starts.
+Interpreter memory is reserved for ASTs, immutable variable bindings,
+temporary values and objects, debugger frames, cursors, and bounded result
+batches. The required project `init.fx` selects the RocksDB directory before
+execution starts.
 
 ## Tokenization
 
