@@ -5,4 +5,3 @@ Dog extend Animal(name: "fido")
 Cat extend Animal(name: "milo")
 
 def main() => return Animal.all()
-end

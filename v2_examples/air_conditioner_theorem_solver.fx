@@ -10,14 +10,12 @@ HvacPlant(name: "", available: 0, sensor_valid: 0)
 HeatPump extend HvacPlant(name: "", available: 0, sensor_valid: 0)
 
 def observationUnifies(observation: any) =>
-    return isA(
-        left: observation,
-        right: ClimateObservation(
-            zone: "",
-            temperature: 0,
-            humidity: 0,
-            occupied: 0
-        )
+    kind := type(value: observation)
+    return (
+        kind == "ClimateObservation"
+        or kind == "HotObservation"
+        or kind == "ColdObservation"
+        or kind == "ComfortableObservation"
     )
 end
 

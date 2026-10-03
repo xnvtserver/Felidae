@@ -7,12 +7,10 @@
 # shared ancestor TYPE.
 
 def lca(left: any, right: any) =>
-    return lowestCommonAncestor(left: left, right: right).
-end
+    return lowestCommonAncestor(left: left, right: right)
 
 def mca(left: any, right: any) =>
-    return highestCommonAncestor(left: left, right: right).
-end
+    return highestCommonAncestor(left: left, right: right)
 
 # Deterministic [0, 1] relatedness degree from the LCA's combined hierarchy
 # distance: 1.0 for identical types (distance 0), decaying smoothly and
@@ -20,9 +18,9 @@ end
 # distance still returns a positive degree). No arbitrary max-depth constant
 # is needed since 1 / (1 + distance) is already bounded to (0, 1].
 def relatedness(left: any, right: any) =>
-    found := lca(left: left, right: right).
-    where found.status == "none".
-    return 0.
+    found := lca(left: left, right: right)
+    where found.status == "none"
+    return 0
 else
     nearest := found.lowest.get(pos: 0).
     totalDistance := nearest.left_distance + nearest.right_distance.

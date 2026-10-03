@@ -38,6 +38,8 @@ end
 def threshold(degree: number) =>
     if degree >= 0.75 then
         return "met"
+    elif degree <= 0.75 then
+        return "in between"
     else
         return "not-met"
     end
