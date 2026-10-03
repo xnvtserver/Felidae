@@ -72,6 +72,7 @@ bool Interpreter::isTableEligibleGoal(
         case GoalKind::If:
         case GoalKind::Group:
         case GoalKind::Or:
+        case GoalKind::Try:
             return false;
     }
     return false;
@@ -114,7 +115,7 @@ bool Interpreter::isTableEligiblePredicate(
 
 bool Interpreter::tableEvaluationValid(
     const TableEvaluation& evaluation) const {
-    if (evaluation.hierarchyGeneration != memory_.hierarchyGeneration()) {
+    if (evaluation.hierarchyGeneration != hierarchy_.hierarchyGeneration()) {
         return false;
     }
     for (const auto& dependency : evaluation.callableGenerations) {
@@ -122,11 +123,6 @@ bool Interpreter::tableEvaluationValid(
         const std::uint64_t generation =
             current == symbolGenerations_.end() ? 0 : current->second;
         if (generation != dependency.second) return false;
-    }
-    for (const auto& dependency : evaluation.relationGenerations) {
-        const std::string type = symbolNameForId(dependency.first);
-        if (memory_.relationGeneration(type, dependency.first) !=
-            dependency.second) return false;
     }
     return true;
 }
@@ -280,7 +276,7 @@ Interpreter::buildTableEvaluation(
     auto evaluation = std::make_shared<TableEvaluation>();
     evaluation->rootId = nameId;
     evaluation->rootName = name;
-    evaluation->hierarchyGeneration = memory_.hierarchyGeneration();
+    evaluation->hierarchyGeneration = hierarchy_.hierarchyGeneration();
 
     std::unordered_map<SymbolId, std::string> names;
     std::vector<RuleInfo> rules;
@@ -379,22 +375,6 @@ Interpreter::buildTableEvaluation(
             for (const auto& bucket : durableFactBuckets(entry.second)) {
                 durableStore_->scanFacts(bucket, 0, appendFact);
             }
-        } else {
-            for (const std::size_t factIndex :
-                 memory_.compatibleFactIndexes(entry.second, entry.first)) {
-                const auto& record = memory_.fact(factIndex);
-                if (!record.active) continue;
-                StoredFact fact;
-                fact.id = record.id;
-                fact.type = record.type;
-                fact.value = memory_.factValue(factIndex);
-                if (fact.value) appendFact(fact);
-                evaluation->relationGenerations[record.typeId] =
-                    memory_.relationGeneration(record.type, record.typeId);
-            }
-            evaluation->relationGenerations.try_emplace(
-                entry.first,
-                memory_.relationGeneration(entry.second, entry.first));
         }
     }
 
@@ -869,7 +849,6 @@ bool Interpreter::evalReasoningProve(
     const bool durableQueryType = durableStore_ &&
         factTypeContracts_.find(query.name) != factTypeContracts_.end();
     if (!findClauses(query.name, query.nameId) && !durableQueryType &&
-        !memory_.hasActiveRelation(query.name, query.nameId) &&
         !contraries_.count(query.nameId)) {
         throw InterpreterError(
             "Unknown reasoning predicate '" + query.name + "'");
@@ -900,8 +879,7 @@ bool Interpreter::evalReasoningProve(
         }
         const bool durableContraryType = durableStore_ &&
             factTypeContracts_.find(negative.name) != factTypeContracts_.end();
-        if (findClauses(negative.name, negative.nameId) || durableContraryType ||
-            memory_.hasActiveRelation(negative.name, negative.nameId)) {
+        if (findClauses(negative.name, negative.nameId) || durableContraryType) {
             if (!tableCallAnswers(
                     negative,
                     env,

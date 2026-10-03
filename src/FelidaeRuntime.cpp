@@ -75,18 +75,20 @@ std::filesystem::path resolveProgramEntryPath(const fs::path& path) {
     return normalized;
 }
 
-Program parseProgramFile(const fs::path& path) {
-    std::error_code ec;
+Program parseProgramFile(const fs::path& path, bool manifest) {
     const auto normalized = resolveProgramEntryPath(path);
-    return parseProgramText(readSourceFile(normalized));
+    return parseProgramText(readSourceFile(normalized), {}, {}, manifest);
 }
 
 Program parseProgramText(std::string text,
                          std::shared_ptr<WordVocabulary> tokenizer,
-                         std::shared_ptr<OperatorRegistry> operators) {
+                         std::shared_ptr<OperatorRegistry> operators,
+                         bool manifest) {
     if (!tokenizer) tokenizer = std::make_shared<WordVocabulary>();
     IntegerTokenList input(std::move(tokenizer), std::move(text));
-    return IntegerParser(input, std::move(operators)).parseProgram();
+    IntegerParser parser(input, std::move(operators));
+    parser.setManifestMode(manifest);
+    return parser.parseProgram();
 }
 
 InteractiveProgramLoad loadInteractiveProgramText(
@@ -191,30 +193,23 @@ void loadProgramRoot(const fs::path& file,
                      Interpreter& interpreter,
                      const std::function<void(const Program&)>& afterChunk) {
     fs::path normalized = resolveProgramEntryPath(file);
+    ParserMetrics parserMetrics;
+    if (!afterChunk) {
+        interpreter.loadProgramFile(normalized, &parserMetrics);
+        interpreter.recordParserMetrics(parserMetrics);
+        return;
+    }
     fs::path baseDir = normalized.parent_path();
     const auto streamStarted = std::chrono::steady_clock::now();
-    ParserMetrics parserMetrics;
     interpreter.beginModuleTransaction();
     try {
-        if (afterChunk) {
-            parseProgramFileChunks(normalized, [&](Program&& program) {
-                for (const auto& imp : program.imports) {
-                    for (const auto& path : imp->paths) interpreter.addImport(baseDir, path);
-                }
-                interpreter.addProgram(program);
-                afterChunk(program);
-            }, 1, interpreter.operatorRegistry(), interpreter.tokenizer());
-        } else {
-            parseProgramFileStatements(normalized, [&](std::shared_ptr<Statement> statement) {
-                if (statement->kind() == StatementKind::Import) {
-                    const auto import = std::static_pointer_cast<ImportStmt>(statement);
-                    for (const auto& path : import->paths) interpreter.addImport(baseDir, path);
-                    return;
-                }
-                interpreter.addStreamedStatement(std::move(statement));
-            }, interpreter.operatorRegistry(), &parserMetrics,
-               interpreter.tokenizer());
-        }
+        parseProgramFileChunks(normalized, [&](Program&& program) {
+            for (const auto& imp : program.imports) {
+                for (const auto& path : imp->paths) interpreter.addImport(baseDir, path);
+            }
+            interpreter.addProgram(program);
+            afterChunk(program);
+        }, 1, interpreter.operatorRegistry(), interpreter.tokenizer());
         interpreter.commitModuleTransaction();
         interpreter.recordStreamedModuleMicros(static_cast<std::size_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
@@ -327,6 +322,14 @@ static void collectVarsGoal(const std::shared_ptr<Goal>& goal, std::vector<Symbo
         collectVarsGoal(ifGoal->condition, vars);
         for (const auto& branchGoal : ifGoal->thenBranch) collectVarsGoal(branchGoal, vars);
         for (const auto& branchGoal : ifGoal->elseBranch) collectVarsGoal(branchGoal, vars);
+    } else if (auto tg = std::dynamic_pointer_cast<TryGoal>(goal)) {
+        for (const auto& bodyGoal : tg->tryBody) collectVarsGoal(bodyGoal, vars);
+        for (const auto& clause : tg->catches) {
+            if (std::find(vars.begin(), vars.end(), clause.variableId) == vars.end()) {
+                vars.push_back(clause.variableId);
+            }
+            for (const auto& bodyGoal : clause.body) collectVarsGoal(bodyGoal, vars);
+        }
     } else if (auto rg = std::dynamic_pointer_cast<ReturnGoal>(goal)) {
         for (const auto& field : rg->fields) collectVarsExpr(field.value, vars);
     } else if (auto gg = std::dynamic_pointer_cast<GroupGoal>(goal)) {

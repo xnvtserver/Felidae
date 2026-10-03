@@ -48,7 +48,8 @@ enum class GoalKind {
     Return,
     Not,
     Group,
-    Or
+    Or,
+    Try
 };
 
 // Recursive source type used by both class fields and typed immutable local
@@ -343,11 +344,11 @@ struct FactSelectionFilter {
 };
 
 // Runtime-only lazy fact query. It deliberately is not a MapExpr: user map
-// operations cannot mutate or counterfeit its snapshot/cursor metadata.
+// operations cannot mutate or counterfeit its query description. Facts are read
+// from RocksDB only when a selection is materialized.
 class FactSelectionExpr final : public Expr {
 public:
     FactSelectionExpr(std::string factType,
-                      std::uint64_t snapshotGeneration,
                       std::string field = {},
                       std::shared_ptr<Expr> equals = nullptr,
                       std::vector<SymbolId> designationIds = {},
@@ -355,7 +356,6 @@ public:
                       std::vector<FactSelectionFilter> filters = {})
         : factType(std::move(factType)),
           factTypeId(this->factType.empty() ? 0 : symbolIdForName(this->factType)),
-          snapshotGeneration(snapshotGeneration),
           field(std::move(field)),
           fieldId(this->field.empty() ? 0 : symbolIdForName(this->field)),
           equals(std::move(equals)),
@@ -365,7 +365,6 @@ public:
 
     std::string factType;
     SymbolId factTypeId = 0;
-    std::uint64_t snapshotGeneration = 0;
     std::string field;
     SymbolId fieldId = 0;
     std::shared_ptr<Expr> equals;
@@ -386,7 +385,6 @@ public:
         }
         return std::make_shared<FactSelectionExpr>(
             factType,
-            snapshotGeneration,
             field,
             equals ? equals->clone() : nullptr,
             designationIds,
@@ -396,8 +394,7 @@ public:
     std::string debug() const override {
         std::ostringstream out;
         out << "{__type: \"FactSelection\", fact_type: \""
-            << factType << "\", source: \"store\", snapshot_generation: "
-            << snapshotGeneration;
+            << factType << "\", source: \"store\"";
         if (!designations.empty()) {
             out << ", designations: [";
             for (size_t i = 0; i < designations.size(); ++i) {
@@ -912,6 +909,55 @@ public:
         return std::make_shared<WhileGoal>(condition->clone(), std::move(copied));
     }
     std::string debug() const override { return "while " + condition->debug(); }
+};
+
+// One `catch name then ...` branch of a TryGoal.
+struct CatchClause {
+    CatchClause(std::string variable, SymbolId variableId,
+                std::vector<std::shared_ptr<Goal>> body)
+        : variable(std::move(variable)), variableId(variableId), body(std::move(body)) {}
+    CatchClause(std::string name, std::vector<std::shared_ptr<Goal>> body)
+        : CatchClause(name, symbolIdForName(name), std::move(body)) {}
+
+    std::string variable;
+    SymbolId variableId = 0;
+    std::vector<std::shared_ptr<Goal>> body;
+};
+
+// try ... catch e then ... catch k then ... end. The try body runs to
+// completion in its own solve. A native error or a thrown exception object
+// binds {kind, message} to the first catch variable and runs that body. If that
+// body raises, the next catch receives the new exception, and so on; an error
+// raised by the last catch propagates out. A body that merely fails (no error)
+// fails the goal like any other conjunction and is not caught.
+class TryGoal final : public Goal {
+public:
+    TryGoal(std::vector<std::shared_ptr<Goal>> tryBody, std::vector<CatchClause> catches)
+        : tryBody(std::move(tryBody)), catches(std::move(catches)) {}
+
+    std::vector<std::shared_ptr<Goal>> tryBody;
+    std::vector<CatchClause> catches;
+
+    GoalKind kind() const override { return GoalKind::Try; }
+    std::shared_ptr<Goal> clone() const override {
+        std::vector<std::shared_ptr<Goal>> copiedTry;
+        copiedTry.reserve(tryBody.size());
+        for (const auto& goal : tryBody) copiedTry.push_back(goal->clone());
+        std::vector<CatchClause> copiedCatches;
+        copiedCatches.reserve(catches.size());
+        for (const auto& clause : catches) {
+            std::vector<std::shared_ptr<Goal>> body;
+            body.reserve(clause.body.size());
+            for (const auto& goal : clause.body) body.push_back(goal->clone());
+            copiedCatches.emplace_back(clause.variable, clause.variableId, std::move(body));
+        }
+        return std::make_shared<TryGoal>(std::move(copiedTry), std::move(copiedCatches));
+    }
+    std::string debug() const override {
+        std::string text = "try";
+        for (const auto& clause : catches) text += " catch " + clause.variable;
+        return text;
+    }
 };
 
 struct SwitchCase {

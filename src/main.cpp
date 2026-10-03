@@ -1,6 +1,5 @@
 #include "Interpreter.h"
 #include "DebugSession.h"
-#include "DatabaseService.h"
 #include "Environment.h"
 #include "FelidaeRuntime.h"
 #include "ProjectConfiguration.h"
@@ -10,7 +9,6 @@
 #include "Version.h"
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <filesystem>
@@ -140,7 +138,6 @@ static void printHelp(std::ostream& output) {
               << "Usage:\n"
               << "  felidae\n"
               << "  felidae program.fx\n"
-              << "  felidae db stop [program.fx|project-directory]\n"
               << "  felidae program.fx '? Query(key: x)'\n"
               << "  felidae --repl\n"
               << "  felidae program.fx --debug\n"
@@ -152,7 +149,6 @@ static void printHelp(std::ostream& output) {
               << "Commands:\n"
               << "  (no file)                          Start the REPL using ./init.fx\n"
               << "  program.fx                         Run program and execute main(...) if found\n"
-              << "  db stop [PROJECT]                  Stop the RocksDB owner selected by init.fx\n"
               << "  program.fx '? Query(key: x)'        Run external query mode\n"
               << "  --repl                              Explicitly start the interactive REPL\n"
               << "  program.fx --debug                  Run with live interpreter debugging enabled\n"
@@ -581,37 +577,11 @@ static ProjectConfiguration projectConfigurationFor(CliOptions& options) {
     return loadProjectConfiguration(projectDirectory);
 }
 
-static std::vector<std::string> databaseServiceArguments(
-    const CliOptions& options) {
-    if (!options.programFile || options.debug || options.repl) {
-        throw std::logic_error(
-            "Only non-interactive program execution may use the database service");
-    }
-
-    // A database service can outlive the client that started it and therefore
-    // retains that client's working directory. Always send the resolved entry
-    // path: a relative path must continue to select its own sibling init.fx
-    // when a later client reaches the same database from another directory.
-    std::vector<std::string> arguments;
-    arguments.push_back(options.programFile->string());
-    if (options.query) arguments.push_back(*options.query);
-    arguments.insert(arguments.end(), options.remainingArgs.begin(),
-                     options.remainingArgs.end());
-    if (options.metricsJson) arguments.emplace_back("--metrics-json");
-    if (options.benchmarkRepeat != 1) {
-        arguments.emplace_back("--benchmark-repeat");
-        arguments.push_back(std::to_string(options.benchmarkRepeat));
-    }
-    return arguments;
-}
-
 static int executeOptions(CliOptions options,
-                          const std::atomic_bool* cancellation,
                           std::istream& input,
                           std::ostream& output,
                           std::ostream& errorOutput,
-                          std::optional<ProjectConfiguration> resolvedProject = std::nullopt,
-                          std::optional<fs::path> ownedDatabase = std::nullopt) {
+                          std::optional<ProjectConfiguration> resolvedProject = std::nullopt) {
     try {
         if (options.showHelp) {
             printHelp(output);
@@ -631,25 +601,8 @@ static int executeOptions(CliOptions options,
         ProjectConfiguration project = resolvedProject
             ? std::move(*resolvedProject)
             : projectConfigurationFor(options);
-        if (ownedDatabase) {
-            const fs::path owner = fs::absolute(*ownedDatabase).lexically_normal();
-            std::error_code equivalentError;
-            const bool equivalent = fs::equivalent(
-                project.databaseDirectory, owner, equivalentError);
-            if ((!equivalentError && !equivalent) ||
-                (equivalentError && project.databaseDirectory != owner)) {
-                throw std::runtime_error(
-                    "init.fx selects RocksDB directory '" +
-                    project.databaseDirectory.string() +
-                    "', but this service owns '" + owner.string() + "'");
-            }
-        }
         Interpreter interpreter;
         interpreter.setIoStreams(input, output);
-        if (cancellation) {
-            interpreter.setCancellationCheck(
-                [cancellation] { return cancellation->load(); });
-        }
         interpreter.openDatabase(project.databaseDirectory);
         interpreter.configureDatabase(project.databaseOptions);
         std::optional<DebugSession> debugSession;
@@ -761,111 +714,21 @@ static int executeOptions(CliOptions options,
     }
 }
 
-static std::vector<char*> mutableArguments(std::vector<std::string>& arguments) {
-    std::vector<char*> pointers;
-    pointers.reserve(arguments.size());
-    for (auto& argument : arguments) pointers.push_back(argument.data());
-    return pointers;
-}
-
 int main(int argc, char** argv) {
     try {
-        if (argc >= 2 && std::string_view(argv[1]) == "--db-service") {
-            std::optional<fs::path> database;
-            for (int index = 2; index < argc; ++index) {
-                if (std::string_view(argv[index]) == "--database-directory" &&
-                    index + 1 < argc) {
-                    if (database) {
-                        throw std::runtime_error(
-                            "--db-service accepts one --database-directory");
-                    }
-                    database = fs::path(argv[++index]);
-                } else {
-                    throw std::runtime_error(
-                        "Unknown database service option: " +
-                        std::string(argv[index]));
-                }
-            }
-            if (!database) {
-                throw std::runtime_error(
-                    "--db-service requires --database-directory PATH");
-            }
-            std::chrono::seconds idleTimeout(60);
-            if (const auto configured =
-                    environmentVariable("FELIDAE_DB_IDLE_SECONDS")) {
-                std::size_t consumed = 0;
-                const auto seconds = std::stoull(*configured, &consumed);
-                if (consumed != configured->size() || seconds > 86400) {
-                    throw std::runtime_error(
-                        "FELIDAE_DB_IDLE_SECONDS must be an integer from 0 to 86400");
-                }
-                idleTimeout = std::chrono::seconds(seconds);
-            }
-            const fs::path ownedDatabase =
-                fs::absolute(*database).lexically_normal();
-            return runDatabaseService(ownedDatabase, idleTimeout,
-                [ownedDatabase](const std::vector<std::string>& forwarded,
-                   const std::atomic_bool& cancellation,
-                   std::ostream& standardOutput,
-                   std::ostream& standardError) {
-                    std::vector<std::string> arguments{"felidae"};
-                    arguments.insert(arguments.end(), forwarded.begin(), forwarded.end());
-                    auto pointers = mutableArguments(arguments);
-                    std::istringstream noInput;
-                    int exitCode = 1;
-                    try {
-                        exitCode = executeOptions(
-                            parseCli(static_cast<int>(pointers.size()), pointers.data()),
-                            &cancellation, noInput,
-                            standardOutput, standardError,
-                            std::nullopt, ownedDatabase);
-                    } catch (const std::exception& error) {
-                        standardError << "error: " << error.what() << '\n';
-                    }
-                    return exitCode;
-                });
-        }
-
-        if (argc >= 3 && std::string_view(argv[1]) == "db" &&
-            std::string_view(argv[2]) == "stop") {
-            if (argc >= 4 && std::string_view(argv[3]) == "--db") {
-                throw std::runtime_error("Unknown option: --db");
-            }
-            if (argc > 4) {
-                throw std::runtime_error(
-                    "Usage: felidae db stop [program.fx|project-directory]");
-            }
-            fs::path projectDirectory = fs::current_path();
-            if (argc == 4) {
-                const fs::path requested = fs::absolute(fs::path(argv[3])).lexically_normal();
-                std::error_code error;
-                projectDirectory = fs::is_directory(requested, error)
-                    ? requested
-                    : resolveProgramEntryPath(requested).parent_path();
-            }
-            const auto project = loadProjectConfiguration(projectDirectory);
-            return stopDatabaseService(project.databaseDirectory) ? 0 : 1;
-        }
-
+        // Every mode runs in this process. init.fx selects the RocksDB
+        // directory and RocksDB's own LOCK file is the single-owner guard;
+        // a second process opening the same directory fails with a
+        // diagnostic from RocksFactStore.
         CliOptions options = parseCli(argc, argv);
         if (options.showHelp || options.showVersion) {
-            return executeOptions(std::move(options), nullptr,
+            return executeOptions(std::move(options),
                                   std::cin, std::cout, std::cerr);
         }
-        const ProjectConfiguration project = projectConfigurationFor(options);
-        if (options.debug || options.repl) {
-            return runInteractiveDatabaseOwner(project.databaseDirectory,
-                [&, options = std::move(options), project]() mutable {
-                return executeOptions(std::move(options), nullptr,
-                                      std::cin, std::cout, std::cerr,
-                                      std::move(project));
-            });
-        }
-        const std::vector<std::string> forwarded = databaseServiceArguments(options);
-        const auto response = requestDatabaseExecution(
-            fs::absolute(fs::path(argv[0])).lexically_normal(),
-            project.databaseDirectory, forwarded, std::cout, std::cerr);
-        return response.exitCode;
+        ProjectConfiguration project = projectConfigurationFor(options);
+        return executeOptions(std::move(options),
+                              std::cin, std::cout, std::cerr,
+                              std::move(project));
     } catch (const std::exception& error) {
         std::cerr << "error: " << error.what() << '\n';
         return 1;

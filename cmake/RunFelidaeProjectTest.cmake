@@ -29,7 +29,9 @@ set(persistent_sources
   rocks_persistence_reseed.fx
   rocks_persistence_read.fx
   rocks_schema_seed.fx
-  invalid_rocks_schema_change.fx
+  rocks_schema_open_shape.fx
+  atomic_delete_seed_fail.fx
+  atomic_delete_read.fx
   schemaless_promotion_seed.fx
   schemaless_promotion_class.fx
   rocks_index_seed.fx
@@ -64,14 +66,19 @@ else()
   set(execution_source "${project_directory}/${source_name}")
 endif()
 
-execute_process(
-  COMMAND "${FELIDAE_EXECUTABLE}" "${execution_source}" ${arguments}
-  RESULT_VARIABLE result)
-
-if(persistent_index EQUAL -1)
+# fx.interpret resolves a relative file: against the working directory, and the
+# database records the source path of the copy run here. Tests that pass such a
+# path opt in with FELIDAE_TEST_CWD_IS_PROJECT; every other test keeps the
+# working directory ctest gave it.
+if(DEFINED ENV{FELIDAE_TEST_CWD_IS_PROJECT})
   execute_process(
-    COMMAND "${FELIDAE_EXECUTABLE}" db stop "${project_directory}"
-    OUTPUT_QUIET ERROR_QUIET)
+    COMMAND "${FELIDAE_EXECUTABLE}" "${execution_source}" ${arguments}
+    WORKING_DIRECTORY "${project_directory}"
+    RESULT_VARIABLE result)
+else()
+  execute_process(
+    COMMAND "${FELIDAE_EXECUTABLE}" "${execution_source}" ${arguments}
+    RESULT_VARIABLE result)
 endif()
 
 if(NOT result EQUAL 0)

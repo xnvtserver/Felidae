@@ -38,7 +38,7 @@ ProjectConfiguration loadProjectConfiguration(const fs::path& projectDirectory) 
             result.manifestFile.string());
     }
 
-    const Program manifest = parseProgramFile(result.manifestFile);
+    const Program manifest = parseProgramFile(result.manifestFile, true);
     if (manifest.statements.empty()) {
         throw std::runtime_error(
             "init.fx is empty; declare import \"db\" and db.location(...)");

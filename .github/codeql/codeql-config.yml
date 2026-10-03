@@ -1,10 +1,11 @@
 name: Felidae CodeQL Configuration
 
+# Analyze the interpreter sources only. Vendored dependencies, build output and
+# the regression test sources are excluded.
 paths:
-  - "src/**"
-  - "include/**"
+  - "src"
 
 paths-ignore:
-  - "third_party/**"
-  - "build/**"
-  - "tests/**"
+  - "third_party"
+  - "build"
+  - "tests"

@@ -1,29 +1,62 @@
 name: Interpreter stabilization
 
+# Pull requests gate main, so a push to main is not built again. Windows and
+# macOS are checked nightly and on every release tag instead of on every PR.
 on:
   pull_request:
-  push:
-    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "LICENCE"
+      - ".github/dependabot.yml"
+      - "intellij-idea-extension"
+      - "vs-code-extension"
+      - "emacs-extension"
+      - "nano-extension"
+      - "sublime-text-extension"
+      - "vim-extension"
+      - "zed-extension"
+      - "notepad-plus-plus-extension"
+      - "tree-sitter-felidae"
+  schedule:
+    - cron: "0 22 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# A newer push to the same pull request replaces its running build. Nightly and
+# manual runs are never cancelled.
+concurrency:
+  group: stabilization-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 4
+
 jobs:
   native:
+    name: native (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest","windows-latest","macos-latest"]') }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/checkout-dependencies
+      - name: Cache compiler output
+        if: runner.os != 'Windows'
+        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          submodules: recursive
+          key: native-${{ matrix.os }}
       - name: Configure (Unix)
         if: runner.os != 'Windows'
         run: >-
           cmake -S . -B build/debug
           -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           -DFELIDAE_BUILD_TESTS=ON
           -DFELIDAE_ENABLE_STRICT_WARNINGS=ON
       - name: Configure (Windows x64)
@@ -31,10 +64,11 @@ jobs:
         run: >-
           cmake -S . -B build/debug -A x64
           -DCMAKE_BUILD_TYPE=Debug
+          -DFELIDAE_DEPENDENCY_JOBS=4
           -DFELIDAE_BUILD_TESTS=ON
           -DFELIDAE_ENABLE_STRICT_WARNINGS=ON
       - name: Build
-        run: cmake --build build/debug --config Debug --parallel 2
+        run: cmake --build build/debug --config Debug
       - name: Test
         run: ctest --test-dir build/debug --build-config Debug --output-on-failure
       - name: Smoke interpreter (Unix)
@@ -50,17 +84,23 @@ jobs:
 
   sanitizers:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/checkout-dependencies
+      - name: Cache compiler output
+        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          submodules: recursive
+          key: sanitizers
       - name: Configure
         run: >-
           cmake -S . -B build/asan
           -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           -DFELIDAE_BUILD_TESTS=ON
           -DFELIDAE_ENABLE_SANITIZERS=ON
       - name: Build
-        run: cmake --build build/asan --parallel 2
+        run: cmake --build build/asan
       - name: Test
         run: ctest --test-dir build/asan --output-on-failure

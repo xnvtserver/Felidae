@@ -8,6 +8,7 @@
 #include "Tokenizer.h"
 #include <rapidcsv.h>
 #include <algorithm>
+#include <new>
 #include <chrono>
 #include <cmath>
 #include <cctype>
@@ -207,11 +208,7 @@ static std::shared_ptr<Expr> findMapValue(const std::shared_ptr<Expr>& expr,
         if (key == "fact_type") {
             return std::make_shared<StringExpr>(selection->factType);
         }
-        if (key == "source") return std::make_shared<StringExpr>("memory");
-        if (key == "snapshot_generation") {
-            return std::make_shared<NumberExpr>(
-                static_cast<double>(selection->snapshotGeneration));
-        }
+        if (key == "source") return std::make_shared<StringExpr>("store");
         if (key == "field" && !selection->field.empty()) {
             return std::make_shared<StringExpr>(selection->field);
         }
@@ -591,6 +588,7 @@ static std::string astNodeKind(const std::shared_ptr<AstNode>& node) {
         std::dynamic_pointer_cast<ForGoal>(node) ||
         std::dynamic_pointer_cast<WhileGoal>(node) ||
         std::dynamic_pointer_cast<SwitchGoal>(node) ||
+        std::dynamic_pointer_cast<TryGoal>(node) ||
         std::dynamic_pointer_cast<BreakGoal>(node) ||
         std::dynamic_pointer_cast<ContinueGoal>(node)) return "stmt";
     if (std::dynamic_pointer_cast<AssignGoal>(node) ||
@@ -633,29 +631,9 @@ static bool resolveRuntimeTypeName(const std::shared_ptr<Expr>& value, std::stri
     return false;
 }
 
-static std::string_view persistedExprKindName(ExprKind kind) {
-    switch (kind) {
-        case ExprKind::String: return "string";
-        case ExprKind::Number: return "number";
-        case ExprKind::Bool: return "bool";
-        case ExprKind::Nil: return "nil";
-        case ExprKind::Array: return "array";
-        case ExprKind::Map: return "map";
-        default:
-            throw InterpreterError(
-                "Only immutable Felidae data values can define a stored schema");
-    }
-}
-
-static std::optional<ExprKind> persistedExprKind(std::string_view name) {
-    if (name == "string") return ExprKind::String;
-    if (name == "number") return ExprKind::Number;
-    if (name == "bool") return ExprKind::Bool;
-    if (name == "nil") return ExprKind::Nil;
-    if (name == "array") return ExprKind::Array;
-    if (name == "map") return ExprKind::Map;
-    return std::nullopt;
-}
+// Persisted schema fingerprints of undeclared (schemaless) fact types start with
+// this prefix; the version suffix is v2 (legacy field list) or v3 (key only).
+static constexpr std::string_view kSchemalessHeader = "schemaless-v";
 
 static bool valueMatchesBuiltinType(const std::shared_ptr<Expr>& value,
                                     LanguageTypeId type) {
@@ -844,8 +822,7 @@ static std::string exprToJson(const std::shared_ptr<Expr>& expr) {
         std::ostringstream out;
         out << "{\"__type\":\"FactSelection\",\"fact_type\":\""
             << jsonEscape(selection->factType)
-            << "\",\"source\":\"memory\",\"snapshot_generation\":"
-            << selection->snapshotGeneration;
+            << "\",\"source\":\"store\"";
         if (!selection->field.empty()) {
             out << ",\"field\":\"" << jsonEscape(selection->field) << "\"";
             if (selection->equals) {
@@ -1048,46 +1025,28 @@ void Interpreter::openDatabase(const std::filesystem::path& directory) {
     if (durableStore_) throw InterpreterError("Interpreter database is already open");
     durableStore_ = std::make_unique<RocksFactStore>(directory);
     // Persistent facts remain in RocksDB. Queries pull bounded batches through
-    // iterators; opening a database must not recreate it as a FactMemory
-    // shadow or make startup proportional to the database size.
+    // iterators; opening a database must not copy the facts into memory or
+    // make startup proportional to the database size.
     durableStore_->scanTypeParents([&](const std::string& child,
                                       const std::string& parent) {
-        memory_.setParent(child, parent, {});
+        hierarchy_.setParent(child, parent);
         return true;
     });
 
     std::unordered_map<std::string, std::shared_ptr<ClassStmt>> storedClasses;
     durableStore_->scanSchemas([&](const std::string& type,
                                    const std::string& fingerprint) {
-        constexpr std::string_view schemalessHeader = "schemaless-v2\n";
-        if (fingerprint.rfind(schemalessHeader, 0) == 0) {
-            std::vector<std::string> lines;
-            std::istringstream input(fingerprint);
-            for (std::string line; std::getline(input, line);) lines.push_back(line);
-            if (lines.size() < 3 || lines.front() != "schemaless-v2" ||
-                lines.back().rfind("key:", 0) != 0) {
+        if (fingerprint.rfind(kSchemalessHeader, 0) == 0) {
+            // Both schemaless-v2 (field and kind lists, no longer enforced)
+            // and schemaless-v3 end with the key line, which is all an
+            // undeclared type contracts.
+            const auto keyLine = fingerprint.rfind("\nkey:");
+            if (keyLine == std::string::npos || fingerprint.size() == keyLine + 5 ||
+                fingerprint.find('\n', keyLine + 1) != std::string::npos) {
                 throw InterpreterError("Corrupt schemaless contract for '" + type + "'");
             }
             FactTypeContract contract;
-            for (std::size_t index = 1; index + 1 < lines.size(); ++index) {
-                const auto separator = lines[index].rfind(':');
-                if (separator == std::string::npos || separator == 0) {
-                    throw InterpreterError("Corrupt schemaless field contract for '" + type + "'");
-                }
-                const auto kind = persistedExprKind(
-                    std::string_view(lines[index]).substr(separator + 1));
-                if (!kind) {
-                    throw InterpreterError("Corrupt schemaless field type for '" + type + "'");
-                }
-                contract.fields.push_back(lines[index].substr(0, separator));
-                contract.kinds.push_back(*kind);
-            }
-            contract.keyFields.push_back(lines.back().substr(4));
-            if (contract.keyFields.front().empty() ||
-                std::find(contract.fields.begin(), contract.fields.end(),
-                          contract.keyFields.front()) == contract.fields.end()) {
-                throw InterpreterError("Corrupt schemaless key contract for '" + type + "'");
-            }
+            contract.keyFields.push_back(fingerprint.substr(keyLine + 5));
             factTypeContracts_[type] = std::move(contract);
             return true;
         }
@@ -1170,15 +1129,15 @@ void Interpreter::beginModuleTransaction() {
     transaction->operatorClauses = operatorClauses_;
     transaction->autoEntryCalls = autoEntryCalls_;
     transaction->autoEntryResults = autoEntryResults_;
-    transaction->memory = memory_;
+    transaction->hierarchy = hierarchy_;
     transaction->globals = globals_;
     transaction->classDefinitions = classDefinitions_;
     transaction->persistedClassSchemas = persistedClassSchemas_;
     for (const auto& [type, contract] : factTypeContracts_) {
         transaction->factTypeContracts.emplace(type,
             ModuleTransactionState::FactTypeContractSnapshot{
-                contract.fields, contract.kinds, contract.keyFields,
-                contract.indexes, contract.declaredClass});
+                contract.fields, contract.keyFields,
+                contract.indexes, contract.declaredClass, contract.openShape});
     }
     transaction->loadedFiles = loadedFiles_;
     transaction->packageDiscoveryAttempts = packageDiscoveryAttempts_;
@@ -1214,15 +1173,15 @@ void Interpreter::rollbackModuleTransaction() {
     operatorClauses_ = transaction.operatorClauses;
     autoEntryCalls_ = transaction.autoEntryCalls;
     autoEntryResults_ = transaction.autoEntryResults;
-    memory_ = transaction.memory;
+    hierarchy_ = transaction.hierarchy;
     globals_ = transaction.globals;
     classDefinitions_ = transaction.classDefinitions;
     persistedClassSchemas_ = transaction.persistedClassSchemas;
     factTypeContracts_.clear();
     for (const auto& [type, contract] : transaction.factTypeContracts) {
         factTypeContracts_.emplace(type, FactTypeContract{
-            contract.fields, contract.kinds, contract.keyFields,
-            contract.indexes, contract.declaredClass});
+            contract.fields, contract.keyFields,
+            contract.indexes, contract.declaredClass, contract.openShape});
     }
     loadedFiles_ = transaction.loadedFiles;
     packageDiscoveryAttempts_ = transaction.packageDiscoveryAttempts;
@@ -1295,7 +1254,7 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
     auto clausesSnapshot = clauses_;
     auto operatorsSnapshot = operators_;
     auto operatorClausesSnapshot = operatorClauses_;
-    auto memorySnapshot = memory_;
+    auto hierarchySnapshot = hierarchy_;
     auto globalsSnapshot = cloneEnv(globals_.values());
     auto loadedFilesSnapshot = loadedFiles_;
     auto packageDiscoveryAttemptsSnapshot = packageDiscoveryAttempts_;
@@ -1303,14 +1262,19 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
     auto nativeLibraryPathsSnapshot = nativeLibraryPaths_;
     auto contrariesSnapshot = contraries_;
     auto functionName = task->functionName;
+    // The child shares the parent's native RocksDB handle (one per directory),
+    // so a thread sees and writes the same facts rather than an empty store.
+    std::optional<std::filesystem::path> databaseDirectory;
+    if (durableStore_) databaseDirectory = durableStore_->directory();
 
     task->worker = std::thread([this,
                                 task,
                                 functionName,
+                                databaseDirectory,
                                 clausesSnapshot = std::move(clausesSnapshot),
                                 operatorsSnapshot = std::move(operatorsSnapshot),
                                 operatorClausesSnapshot = std::move(operatorClausesSnapshot),
-                                memorySnapshot = std::move(memorySnapshot),
+                                hierarchySnapshot = std::move(hierarchySnapshot),
                                 globalsSnapshot = std::move(globalsSnapshot),
                                 loadedFilesSnapshot = std::move(loadedFilesSnapshot),
                                 packageDiscoveryAttemptsSnapshot =
@@ -1320,10 +1284,13 @@ std::string Interpreter::startThreadTask(const std::shared_ptr<Expr>& handle) {
                                 contrariesSnapshot = std::move(contrariesSnapshot)]() mutable {
         try {
             Interpreter child;
+            // Opened first: it restores classes, contracts and the type hierarchy
+            // from the store; the snapshots below then overlay the live state.
+            if (databaseDirectory) child.openDatabase(*databaseDirectory);
             child.clauses_ = std::move(clausesSnapshot);
             child.operators_ = std::move(operatorsSnapshot);
             child.operatorClauses_ = std::move(operatorClausesSnapshot);
-            child.memory_ = std::move(memorySnapshot);
+            child.hierarchy_ = std::move(hierarchySnapshot);
             child.globals_.replaceValues(std::move(globalsSnapshot));
             child.loadedFiles_ = std::move(loadedFilesSnapshot);
             child.packageDiscoveryAttempts_ = std::move(packageDiscoveryAttemptsSnapshot);
@@ -1474,7 +1441,7 @@ void Interpreter::addProgram(const Program& program) {
                         ? durableStore_->schemaFingerprint(declaration->name)
                         : std::optional<std::string>{};
                     const bool promotesSchemaless = storedSchema &&
-                        storedSchema->rfind("schemaless-v2\n", 0) == 0;
+                        storedSchema->rfind(kSchemalessHeader, 0) == 0;
                     const auto existing = classDefinitions_.find(declaration->nameId);
                     if (existing != classDefinitions_.end()) {
                         if (existing->second->name != declaration->name) {
@@ -1549,7 +1516,7 @@ void Interpreter::addProgram(const Program& program) {
                         }
                     }
                     for (const auto& parent : declaration->parentNames) {
-                        memory_.setParent(declaration->name, parent, currentLoadingFile_);
+                        hierarchy_.setParent(declaration->name, parent);
                         if (durableStore_) {
                             durableStore_->registerTypeParent(declaration->name, parent);
                         }
@@ -1638,6 +1605,9 @@ void Interpreter::validateNegationStratification(const Program& program) const {
                 self(self, source, whileLoop->body);
             } else if (auto selection = std::dynamic_pointer_cast<SwitchGoal>(goal)) {
                 for (const auto& branch : selection->cases) self(self, source, branch.body);
+            } else if (auto guarded = std::dynamic_pointer_cast<TryGoal>(goal)) {
+                self(self, source, guarded->tryBody);
+                for (const auto& clause : guarded->catches) self(self, source, clause.body);
             }
         }
     };
@@ -1865,7 +1835,7 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
                 throw InterpreterError("RequirementMatch fields must exactly match @matcher 'produces'");
             }
             for (const auto& produced : parsed.produces) {
-                if (!memory_.isCompatibleType(produced.type, "OperatorRequirement")) {
+                if (!hierarchy_.isCompatibleType(produced.type, "OperatorRequirement")) {
                     throw InterpreterError("@matcher produced type '" + produced.type +
                                            "' must extend OperatorRequirement");
                 }
@@ -1902,7 +1872,7 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
     if (clause->isFact() && globals_.count(clause->head.name) == 0) {
         const auto registrationStarted = std::chrono::steady_clock::now();
         auto materialized = factToMap(*clause);
-        if (!validateFactWrite(clause->head.name, materialized.value, true)) return;
+        validateFactWrite(clause->head.name, materialized.value);
         publishFact(clause->head.name, clause->parentName, materialized.value,
                     currentLoadingFile_,
                     std::move(materialized.parentFactIds), clause->designationIds,
@@ -1912,7 +1882,7 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
             : clause->parentNames;
         for (const auto& parent : declaredParents) {
             if (!parent.empty()) {
-                memory_.setParent(clause->head.name, parent, currentLoadingFile_);
+                hierarchy_.setParent(clause->head.name, parent);
                 if (durableStore_) {
                     durableStore_->registerTypeParent(clause->head.name, parent);
                 }
@@ -2227,9 +2197,6 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
     };
 
     while (!work.empty() && out.size() < maxSolutions) {
-        if (cancellationCheck_ && cancellationCheck_()) {
-            throw InterpreterError("Execution cancelled");
-        }
         WorkFrame frame = std::move(work.back());
         work.pop_back();
         if (frame.depth > kMaxNativeGoalFrameDepth) {
@@ -2237,7 +2204,7 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
         }
         if (frame.durableFactCall) {
             auto selection = std::make_shared<FactSelectionExpr>(
-                frame.durableFactCall->name, 0, "", nullptr,
+                frame.durableFactCall->name, "", nullptr,
                 frame.durableFactCall->designationIds,
                 frame.durableFactCall->designations);
             for (const auto& argument : frame.durableFactCall->args) {
@@ -2381,9 +2348,75 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
                                          0, std::move(branchEnv), frame.depth + 1});
                 continue;
             }
+            case GoalKind::Try: {
+                const auto guarded = std::static_pointer_cast<TryGoal>(goal);
+                // Control-flow signals (break, continue, tail call) are not
+                // std::exception and pass through every handler untouched.
+                // Writes made before an error are kept.
+                const auto exceptionObject = [](const std::exception& error) {
+                    const auto thrown = dynamic_cast<const FelidaeException*>(&error);
+                    return std::make_shared<MapExpr>(std::vector<MapEntry>{
+                        MapEntry{"kind", std::make_shared<StringExpr>(
+                            thrown ? thrown->kind : std::string("runtime"))},
+                        MapEntry{"message", std::make_shared<StringExpr>(error.what())}});
+                };
+                std::vector<Solution> bodySolutions;
+                std::shared_ptr<MapExpr> caught;
+                try {
+                    solveRecursive(guarded->tryBody, copyExecutionEnvironment(frame.env),
+                                   bodySolutions, 1, frame.depth + 1);
+                } catch (const std::bad_alloc&) {
+                    throw;
+                } catch (const std::exception& error) {
+                    caught = exceptionObject(error);
+                }
+                if (!caught) {
+                    // A body that fails without an error fails the goal; only
+                    // errors are caught.
+                    if (!bodySolutions.empty()) continueFrame(std::move(bodySolutions.front().env));
+                    continue;
+                }
+                // Cascade: catch i receives the exception, and an error it raises
+                // goes to catch i + 1. Each body runs in its own solve so its
+                // catch variable is scoped to it (a later try may reuse the
+                // name); an error from the last catch propagates to the
+                // enclosing try or the top level.
+                for (std::size_t index = 0; index < guarded->catches.size(); ++index) {
+                    const auto& clause = guarded->catches[index];
+                    Env catchEnv = copyExecutionEnvironment(frame.env);
+                    if (catchEnv.find(clause.variableId) != catchEnv.end()) {
+                        throw InterpreterError("Immutable catch variable '" + clause.variable +
+                                               "' is already bound in the enclosing scope");
+                    }
+                    catchEnv[clause.variableId] = caught;
+                    std::vector<Solution> catchSolutions;
+                    std::shared_ptr<MapExpr> next;
+                    try {
+                        solveRecursive(clause.body, std::move(catchEnv), catchSolutions, 1,
+                                       frame.depth + 1);
+                    } catch (const std::bad_alloc&) {
+                        throw;
+                    } catch (const std::exception& error) {
+                        if (index + 1 == guarded->catches.size()) throw;
+                        next = exceptionObject(error);
+                    }
+                    if (next) {
+                        caught = std::move(next);
+                        continue;
+                    }
+                    if (!catchSolutions.empty()) {
+                        Env afterCatch = std::move(catchSolutions.front().env);
+                        afterCatch.erase(clause.variableId);
+                        continueFrame(std::move(afterCatch));
+                    }
+                    break;
+                }
+                continue;
+            }
             case GoalKind::For: {
                 const auto loop = std::static_pointer_cast<ForGoal>(goal);
                 std::shared_ptr<Expr> evaluated;
+
                 if (!evalExprValue(loop->iterable, frame.env, evaluated)) {
                     throw InterpreterError("for iterable did not evaluate: " + loop->iterable->debug());
                 }
@@ -2392,7 +2425,6 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
                 bool stopped = false;
                 std::size_t iterations = 0;
                 const auto executeIteration = [&](const std::shared_ptr<Expr>& item) {
-                    if (cancellationCheck_ && cancellationCheck_()) throw InterpreterError("Execution cancelled");
                     if (iterations++ == kMaximumLoopIterations) {
                         throw InterpreterError("for exceeded the 1000000-iteration safety limit");
                     }
@@ -2457,7 +2489,6 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
                 Env continuationEnv = copyExecutionEnvironment(frame.env);
                 bool finished = false;
                 for (std::size_t iteration = 0; iteration < kMaximumLoopIterations; ++iteration) {
-                    if (cancellationCheck_ && cancellationCheck_()) throw InterpreterError("Execution cancelled");
                     std::shared_ptr<Expr> condition;
                     if (!evalExprValue(loop->condition, continuationEnv, condition)) {
                         throw InterpreterError("while condition did not evaluate: " + loop->condition->debug());
@@ -2609,124 +2640,6 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
                 }
             }
         }
-        if (!durableStore_) {
-          // This is the transient fallback used only by direct embedded
-          // Interpreter callers that have not opened a database. The CLI
-          // always opens RocksDB (including for isolated temporary runs), so it
-          // must not plan or scan a parallel in-memory fact path first.
-          // Prefer a grounded relation-local equality index before building a
-          // complete compatible-type candidate vector. The latter is useful for
-          // scans and inheritance, but allocating it first makes a cold exact
-          // lookup pay O(relation size) work even when its index has one row.
-          const std::vector<size_t> *factCandidates = nullptr;
-          std::vector<const std::vector<size_t> *> indexedCandidates;
-          std::vector<size_t> designationCandidates;
-          if (!callGoal->call.designationIds.empty()) {
-            designationCandidates =
-                memory_.designationIndexes(callGoal->call.designationIds);
-          }
-          for (const auto &arg : callGoal->call.args) {
-            if (arg.name.empty())
-              continue;
-            std::shared_ptr<Expr> resolved;
-            if (!evalExprValue(arg.value, frame.env, resolved) ||
-                !isGroundLiteral(resolved))
-              continue;
-            const auto &indexed = memory_.propertyFactIndexes(
-                callGoal->call.name, callGoal->call.nameId, arg.name,
-                arg.nameId, resolved);
-            indexedCandidates.push_back(&indexed);
-            if (!factCandidates || indexed.size() < factCandidates->size())
-              factCandidates = &indexed;
-          }
-          // A grounded multi-property fact call is a conjunction.  Selecting
-          // only the smallest index still leaves candidates that another known
-          // property already disproves.  Intersect the index plans before
-          // unification so those branches never enter the recursive solver.
-          std::vector<size_t> intersectedCandidates;
-          if (factCandidates && indexedCandidates.size() > 1) {
-            intersectedCandidates = *factCandidates;
-            for (const auto *indexed : indexedCandidates) {
-              if (indexed == factCandidates)
-                continue;
-              std::unordered_set<size_t> allowed(indexed->begin(),
-                                                 indexed->end());
-              intersectedCandidates.erase(
-                  std::remove_if(intersectedCandidates.begin(),
-                                 intersectedCandidates.end(),
-                                 [&](size_t factIndex) {
-                                   return !allowed.count(factIndex);
-                                 }),
-                  intersectedCandidates.end());
-              if (intersectedCandidates.empty())
-                break;
-            }
-            factCandidates = &intersectedCandidates;
-          }
-          if (!callGoal->call.designationIds.empty()) {
-            if (!factCandidates) {
-              factCandidates = &designationCandidates;
-            } else {
-              std::unordered_set<size_t> allowed(designationCandidates.begin(),
-                                                 designationCandidates.end());
-              intersectedCandidates.assign(factCandidates->begin(),
-                                           factCandidates->end());
-              intersectedCandidates.erase(
-                  std::remove_if(intersectedCandidates.begin(),
-                                 intersectedCandidates.end(),
-                                 [&](size_t factIndex) {
-                                   return !allowed.count(factIndex);
-                                 }),
-                  intersectedCandidates.end());
-              factCandidates = &intersectedCandidates;
-            }
-          }
-          if (!factCandidates) {
-            factCandidates = &memory_.compatibleFactIndexes(
-                callGoal->call.name, callGoal->call.nameId);
-          }
-          const auto solveFactCandidates =
-              [&](const std::vector<size_t> &candidates, bool allowHistorical) {
-                for (size_t factIndex : candidates) {
-                  const auto &fact = memory_.fact(factIndex);
-                  if ((!allowHistorical && !fact.active) ||
-                      !memory_.isCompatibleType(fact.type, callGoal->call.name))
-                    continue;
-                  if (!callGoal->call.designationIds.empty() &&
-                      !std::all_of(callGoal->call.designationIds.begin(),
-                                   callGoal->call.designationIds.end(),
-                                   [&](SymbolId designation) {
-                                     return std::find(fact.designations.begin(),
-                                                      fact.designations.end(),
-                                                      designation) !=
-                                            fact.designations.end();
-                                   })) {
-                    continue;
-                  }
-                  ++factCandidates_;
-                  Call factHead(callGoal->call.name, {});
-                  factHead.args = memory_.factArguments(factIndex);
-                  for (auto &nextEnv : unifyCallAlternatives(
-                           callGoal->call, factHead, frame.env)) {
-                    continuations.push_back(
-                        WorkFrame{frame.goals, nextGoalIndex,
-                                  std::move(nextEnv), frame.depth + 1});
-                  }
-                }
-              };
-          const auto currentCandidates =
-              memory_.currentFactIndexes(*factCandidates);
-          const size_t factContinuationStart = continuations.size();
-          solveFactCandidates(currentCandidates, false);
-          // History stays cold: only when the current lineage/context cannot
-          // satisfy the call do we inspect relevant past rows. Future records
-          // are deliberately excluded from ordinary reasoning.
-          if (continuations.size() == factContinuationStart) {
-            solveFactCandidates(memory_.relevantPastFactIndexes(
-                                    callGoal->call.name, callGoal->call.nameId),
-                                true);
-          }
-        }
         if (durableStore_) {
           continuations.push_back(WorkFrame{
               frame.goals, nextGoalIndex, copyExecutionEnvironment(frame.env),
@@ -2759,8 +2672,7 @@ bool Interpreter::solveNotGoal(const NotGoal& goal, Env& env, size_t depth) {
     } else {
         const bool durableTypeKnown = durableStore_ &&
             factTypeContracts_.find(goal.call.name) != factTypeContracts_.end();
-        if (!durableTypeKnown &&
-            !memory_.hasActiveRelation(goal.call.name, goal.call.nameId)) {
+        if (!durableTypeKnown) {
             throw InterpreterError("Unknown relational predicate in negation: " + goal.call.name);
         }
     }
@@ -2937,7 +2849,8 @@ bool Interpreter::solveWhereGoal(const WhereGoal& goal, Env& env) {
 
 bool Interpreter::solveReturnGoal(const ReturnGoal& goal, Env& env) {
     if (goal.fields.size() == 1 && goal.fields.front().name.empty()) {
-        if (valueCallTrampolineDepth_ > 0) {
+        if (valueCallTrampolineDepth_ > 0 &&
+            methodCallDepth_ == trampolineMethodDepth_ + 1) {
             if (auto tailCall =
                     std::dynamic_pointer_cast<TermExpr>(goal.fields.front().value)) {
                 // A user-method return can be executed by the iterative value
@@ -3021,6 +2934,14 @@ bool Interpreter::bodyHasReturnGoal(const std::vector<std::shared_ptr<Goal>>& go
                     if (bodyHasReturnGoal(branch.body)) return true;
                 }
                 break;
+            case GoalKind::Try: {
+                const auto guarded = std::static_pointer_cast<TryGoal>(goal);
+                if (bodyHasReturnGoal(guarded->tryBody)) return true;
+                for (const auto& clause : guarded->catches) {
+                    if (bodyHasReturnGoal(clause.body)) return true;
+                }
+                break;
+            }
             case GoalKind::Call:
             case GoalKind::Binary:
             case GoalKind::Assign:
@@ -3051,13 +2972,51 @@ bool Interpreter::evaluateGoalTruth(const std::shared_ptr<Goal>& goal, Env& env)
     return true;
 }
 
-std::shared_ptr<Expr> Interpreter::evaluateGoalTruthTuple(const std::vector<std::shared_ptr<Goal>>& goals, Env env) {
+void Interpreter::withStoreTransaction(const std::function<void()>& work) {
+    if (!durableStore_ || durableStore_->inTransaction()) {
+        work();
+        return;
+    }
+    durableStore_->beginTransaction();
+    try {
+        work();
+        durableStore_->commitTransaction();
+    } catch (...) {
+        durableStore_->rollbackTransaction();
+        throw;
+    }
+}
+
+// True when `target` is reachable from `value` through map entries, array
+// items or term arguments. Class objects are mutable shared references, so an
+// assignment that stores an object inside itself would create a cycle that
+// display, clone and persistence cannot traverse. Existing objects are acyclic
+// because every such assignment is rejected, so this walk terminates.
+static bool containsObject(const std::shared_ptr<Expr>& value, const MapExpr* target) {
+    if (!value) return false;
+    if (const auto map = std::dynamic_pointer_cast<MapExpr>(value)) {
+        if (map.get() == target) return true;
+        for (const auto& entry : map->entries) {
+            if (containsObject(entry.value, target)) return true;
+        }
+    } else if (const auto array = std::dynamic_pointer_cast<ArrayExpr>(value)) {
+        for (const auto& item : array->items) {
+            if (containsObject(item, target)) return true;
+        }
+    } else if (const auto term = std::dynamic_pointer_cast<TermExpr>(value)) {
+        for (const auto& argument : term->args) {
+            if (containsObject(argument.value, target)) return true;
+        }
+    }
+    return false;
+}
+
+std::shared_ptr<Expr> Interpreter::successTruthTuple(const std::vector<std::shared_ptr<Goal>>& goals) {
     std::vector<Arg> values;
     values.reserve(goals.size());
     for (const auto& goal : goals) {
         if (std::dynamic_pointer_cast<ReturnGoal>(goal)) continue;
-        const bool ok = evaluateGoalTruth(goal, env);
-        values.push_back(Arg{"value", std::make_shared<BoolExpr>(ok)});
+        values.push_back(Arg{"value", std::make_shared<BoolExpr>(true)});
     }
     if (values.empty()) {
         values.push_back(Arg{"value", std::make_shared<BoolExpr>(true)});
@@ -3202,7 +3161,7 @@ bool Interpreter::solveMethodCall(const Call& call,
             }
             if (const auto selection = std::dynamic_pointer_cast<FactSelectionExpr>(value)) {
                 if (!selection->factType.empty() &&
-                    memory_.isCompatibleType(selection->factType, paramPlan.typeName)) {
+                    hierarchy_.isCompatibleType(selection->factType, paramPlan.typeName)) {
                     attempt[paramPlan.localName] = value;
                     nextCandidates.push_back(std::move(attempt));
                 }
@@ -3215,7 +3174,7 @@ bool Interpreter::solveMethodCall(const Call& call,
                 auto typeString = std::dynamic_pointer_cast<StringExpr>(typeValue);
                 if (typeString) actualType = typeString->value;
             }
-            if (actualType.empty() || !memory_.isCompatibleType(actualType, paramPlan.typeName)) continue;
+            if (actualType.empty() || !hierarchy_.isCompatibleType(actualType, paramPlan.typeName)) continue;
             if (unifyExpr(std::make_shared<VarExpr>(paramPlan.localName), value, attempt)) {
                 nextCandidates.push_back(std::move(attempt));
             }
@@ -3362,8 +3321,11 @@ bool Interpreter::solveMethodCall(const Call& call,
         Env startingCandidate = candidate;
         solveRecursive(originalClause->body, std::move(candidate), nested, 1, depth + 1);
         if (nested.empty() && valueCallMode_ && originalClause->head.name != "main") {
+            // The body already ran and failed. Its goals are not evaluated a
+            // second time (that repeated every effect before the failure), so
+            // a failed value call is simply false.
             Env failedValueEnv = startingCandidate;
-            failedValueEnv[internalSymbolString(InternalSymbolKind::Return)] = evaluateGoalTruthTuple(originalClause->body, startingCandidate);
+            failedValueEnv[internalSymbolString(InternalSymbolKind::Return)] = std::make_shared<BoolExpr>(false);
             nested.push_back(Solution{std::move(failedValueEnv)});
         }
         for (auto& solution : nested) {
@@ -3372,7 +3334,7 @@ bool Interpreter::solveMethodCall(const Call& call,
                 if (originalClause->head.name == "main") {
                     solution.env[internalSymbolString(InternalSymbolKind::Return)] = std::make_shared<MapExpr>(std::vector<MapEntry>{});
                 } else {
-                    solution.env[internalSymbolString(InternalSymbolKind::Return)] = evaluateGoalTruthTuple(originalClause->body, startingCandidate);
+                    solution.env[internalSymbolString(InternalSymbolKind::Return)] = successTruthTuple(originalClause->body);
                 }
                 returnedIt = solution.env.find(internalSymbolString(InternalSymbolKind::Return));
             }
@@ -3384,7 +3346,7 @@ bool Interpreter::solveMethodCall(const Call& call,
 }
 
 void Interpreter::refreshAncestryCaches() const {
-    const std::uint64_t generation = memory_.hierarchyGeneration();
+    const std::uint64_t generation = hierarchy_.hierarchyGeneration();
     if (ancestryCacheGeneration_ == generation) return;
     typeAncestryCache_.clear();
     typeAncestorDistanceCache_.clear();
@@ -3404,7 +3366,7 @@ const std::vector<std::string>& Interpreter::typeAncestry(const std::string& typ
         const std::string current = pending[index];
         if (!seen.insert(current).second) continue;
         result.push_back(current);
-        for (const auto& parent : memory_.parentsOf(current)) pending.push_back(parent);
+        for (const auto& parent : hierarchy_.parentsOf(current)) pending.push_back(parent);
     }
     // Fact is the implicit base family. It may own source membership methods,
     // but it is deliberately excluded from target comparison dispatch so a
@@ -3428,7 +3390,7 @@ Interpreter::typeAncestorDistances(const std::string& type) const {
         const auto existing = distances.find(current);
         if (existing != distances.end() && existing->second <= distance) continue;
         distances[current] = distance;
-        const auto parents = memory_.parentsOf(current);
+        const auto parents = hierarchy_.parentsOf(current);
         if (parents.empty() && current != "Fact") {
             pending.emplace_back("Fact", distance + 1);
         } else {
@@ -3455,7 +3417,7 @@ double Interpreter::typeHierarchyDepth(const std::string& type) const {
                     "Inheritance cycle detected while comparing fact types");
             }
             double parentDepth = 0.0;
-            for (const auto& parent : memory_.parentsOf(current)) {
+            for (const auto& parent : hierarchy_.parentsOf(current)) {
                 parentDepth = std::max(parentDepth, resolve(parent));
             }
             visiting.erase(current);
@@ -3560,6 +3522,11 @@ bool Interpreter::isMethodTransitivelyPure(
                     if ((branch.value && !inspectExpression(inspectExpression, branch.value)) ||
                         !self(self, branch.body)) return false;
                 }
+            } else if (const auto guarded = std::dynamic_pointer_cast<TryGoal>(goal)) {
+                if (!self(self, guarded->tryBody)) return false;
+                for (const auto& clause : guarded->catches) {
+                    if (!self(self, clause.body)) return false;
+                }
             } else if (const auto group = std::dynamic_pointer_cast<GroupGoal>(goal)) {
                 if (!self(self, group->goals)) return false;
             } else if (const auto alternatives = std::dynamic_pointer_cast<OrGoal>(goal)) {
@@ -3655,9 +3622,9 @@ bool Interpreter::evalAncestorAnalysis(const Call& call,
         for (const auto& other : candidates) {
             if (candidate.type == other.type) continue;
             hasMoreSpecific = hasMoreSpecific ||
-                memory_.isCompatibleType(other.type, candidate.type);
+                hierarchy_.isCompatibleType(other.type, candidate.type);
             hasMoreGeneral = hasMoreGeneral ||
-                memory_.isCompatibleType(candidate.type, other.type);
+                hierarchy_.isCompatibleType(candidate.type, other.type);
         }
         if (!hasMoreSpecific) lowest.push_back(&candidate);
         if (!hasMoreGeneral) highest.push_back(&candidate);
@@ -3713,7 +3680,7 @@ bool Interpreter::evalAncestorAnalysis(const Call& call,
         {"selected", selected},
         {"status", std::make_shared<StringExpr>(status)},
         {"hierarchy_generation", std::make_shared<NumberExpr>(
-            static_cast<double>(memory_.hierarchyGeneration()))}});
+            static_cast<double>(hierarchy_.hierarchyGeneration()))}});
     result->factType = "AncestorAnalysis";
     out = std::move(result);
     return true;
@@ -3752,7 +3719,7 @@ bool Interpreter::evalFactPropagation(const Call& call,
         throw InterpreterError(
             "propagateFact requires typed 'parent' and 'child' facts plus a changes map");
     }
-    if (!memory_.isCompatibleType(childType->value, parentType->value)) {
+    if (!hierarchy_.isCompatibleType(childType->value, parentType->value)) {
         throw InterpreterError("propagateFact parent must be an ancestor of the child fact type");
     }
 
@@ -3861,6 +3828,11 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         if (!valueMatchesFieldType(assignedValue, (*declared)->type)) {
             throw InterpreterError("Class field '" + field->value + "' expects " +
                                    (*declared)->type.canonical());
+        }
+        if (containsObject(assignedValue, receiver.get())) {
+            throw InterpreterError(
+                "Field assignment '" + field->value + "' would make an object contain itself; "
+                "model graph structure with Link edges instead");
         }
         upsertEntry(receiver->entries, field->value, std::move(assignedValue));
         return true;
@@ -4016,60 +3988,19 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
     }
 
     if (call.builtinId == BuiltinId::Throw) {
+        // throw raises: it unwinds to the nearest enclosing try/catch, or to
+        // the top level, where the message is reported as an error.
         if (!valueArg({"exception"}, 0, a)) {
-            throw InterpreterError("throw expects a resolvable typed 'exception'");
+            throw InterpreterError("throw expects an exception object");
         }
-        auto exceptionMap = std::dynamic_pointer_cast<MapExpr>(a);
-        auto exceptionKind = findMapValue(a, "kind");
-        auto kindString = std::dynamic_pointer_cast<StringExpr>(exceptionKind);
-        if (!exceptionMap || !kindString) {
+        const auto exceptionKind = std::dynamic_pointer_cast<StringExpr>(findMapValue(a, "kind"));
+        if (!std::dynamic_pointer_cast<MapExpr>(a) || !exceptionKind) {
             throw InterpreterError(
                 "throw exception must be an object with a string 'kind' field");
         }
-        env["error_reason"] = exceptionKind->clone();
-
-        const Arg* target = namedArg("target");
-        if (target) {
-            std::string targetName;
-            if (auto targetVar = std::dynamic_pointer_cast<VarExpr>(target->value)) {
-                targetName = targetVar->name;
-            } else {
-                throw InterpreterError(
-                    "throw target must be a callable reference such as someFunction::Function");
-            }
-            const auto separator = targetName.find("::");
-            if (separator == std::string::npos ||
-                targetName.find("::", separator + 2) != std::string::npos) {
-                throw InterpreterError(
-                    "throw target must be a callable reference such as someFunction::Function");
-            }
-            targetName.replace(separator, 2, ":");
-
-            Call handler(targetName, {});
-            handler.args.push_back(Arg{"exception", a});
-
-            auto* clauses = findClauses(handler.name, handler.nameId);
-            if (!clauses && ensurePredicateLoaded(handler.name)) {
-                clauses = findClauses(handler.name, handler.nameId);
-            }
-            if (!clauses) {
-                throw InterpreterError("Exception handler not found: " + targetName);
-            }
-            std::vector<Solution> handled;
-            solveRecursive(
-                {std::make_shared<CallGoal>(std::move(handler))},
-                env,
-                handled,
-                1,
-                0);
-            if (handled.empty()) return false;
-            env = std::move(handled.front().env);
-        }
-
-        const Arg* out = namedArg("out");
-        if (!out && call.args.size() > 1 && call.args[1].name.empty()) out = &call.args[1];
-        if (out) return unifyExpr(out->value, a, env);
-        return true;
+        const auto exceptionMessage = std::dynamic_pointer_cast<StringExpr>(findMapValue(a, "message"));
+        throw FelidaeException(exceptionKind->value,
+                               exceptionMessage ? exceptionMessage->value : std::string{});
     }
 
     if (call.builtinId == BuiltinId::Type) {
@@ -4101,7 +4032,7 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
         } else {
             return false;
         }
-        return memory_.isCompatibleType(typeString->value, expected);
+        return hierarchy_.isCompatibleType(typeString->value, expected);
     }
 
     if (mathPredicateBuiltin) {
@@ -4685,44 +4616,43 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
         json << "\"__facts\":[";
         bool firstFact = true;
         std::size_t projectedRows = 0;
-        std::unordered_set<std::size_t> projectedIndexes;
-        for (const auto& requestedType : capabilities.requestedFactTypes) {
-            for (const size_t factIndex :
-                 memory_.selectionIndexes(requestedType)) {
-                if (!projectedIndexes.insert(factIndex).second) continue;
-                if (projectedRows >= capabilities.maximumProjectedRows) {
-                    throw InterpreterError(
-                        "NativeProjectionLimit: native function '" +
-                        nativeFunctionName + "' requested more than " +
-                        std::to_string(capabilities.maximumProjectedRows) +
-                        " fact rows");
-                }
-                const auto value = memory_.factValue(factIndex);
-                if (!value) continue;
-                std::shared_ptr<MapExpr> projected = value;
-                if (!capabilities.requestedFactFields.empty()) {
-                    std::vector<MapEntry> fields;
-                    fields.reserve(
-                        capabilities.requestedFactFields.size() + 1);
-                    for (const auto& entry : value->entries) {
-                        if (entry.key ==
-                                internalSymbolString(
-                                    InternalSymbolKind::Type) ||
-                            std::find(
-                                capabilities.requestedFactFields.begin(),
-                                capabilities.requestedFactFields.end(),
-                                entry.key) !=
-                                capabilities.requestedFactFields.end()) {
-                            fields.push_back(entry);
-                        }
+        std::unordered_set<std::uint64_t> projectedIds;
+        const auto projectFact = [&](const StoredFact& stored) {
+            if (!stored.value || !projectedIds.insert(stored.id).second) return true;
+            if (projectedRows >= capabilities.maximumProjectedRows) {
+                throw InterpreterError(
+                    "NativeProjectionLimit: native function '" +
+                    nativeFunctionName + "' requested more than " +
+                    std::to_string(capabilities.maximumProjectedRows) +
+                    " fact rows");
+            }
+            std::shared_ptr<MapExpr> projected = stored.value;
+            if (!capabilities.requestedFactFields.empty()) {
+                std::vector<MapEntry> fields;
+                fields.reserve(capabilities.requestedFactFields.size() + 1);
+                for (const auto& entry : stored.value->entries) {
+                    if (entry.key == internalSymbolString(InternalSymbolKind::Type) ||
+                        std::find(capabilities.requestedFactFields.begin(),
+                                  capabilities.requestedFactFields.end(),
+                                  entry.key) != capabilities.requestedFactFields.end()) {
+                        fields.push_back(entry);
                     }
-                    projected =
-                        std::make_shared<MapExpr>(std::move(fields));
                 }
-                if (!firstFact) json << ",";
-                firstFact = false;
-                json << exprToJson(projected);
-                ++projectedRows;
+                projected = std::make_shared<MapExpr>(std::move(fields));
+            }
+            if (!firstFact) json << ",";
+            firstFact = false;
+            json << exprToJson(projected);
+            ++projectedRows;
+            return true;
+        };
+        // Facts live only in RocksDB: project each requested type and its
+        // registered descendants straight from the store.
+        if (durableStore_) {
+            for (const auto& requestedType : capabilities.requestedFactTypes) {
+                for (const auto& bucket : durableFactBuckets(requestedType)) {
+                    durableStore_->scanFacts(bucket, 0, projectFact);
+                }
             }
         }
         json << "]";
@@ -4738,11 +4668,11 @@ bool Interpreter::solveNativeCall(const Call& call, Env& env) {
         json << "\"__parents\":{";
         bool firstParent = true;
         std::set<std::string> emittedChildren;
-        for (const auto& relation : memory_.hierarchyEdges()) {
+        for (const auto& relation : hierarchy_.hierarchyEdges()) {
             if (!emittedChildren.insert(relation.first).second) continue;
             if (!firstParent) json << ",";
             firstParent = false;
-            const auto parents = memory_.parentsOf(relation.first);
+            const auto parents = hierarchy_.parentsOf(relation.first);
             json << "\"" << jsonEscape(relation.first) << "\":[";
             for (size_t index = 0; index < parents.size(); ++index) {
                 if (index) json << ",";
@@ -4895,6 +4825,7 @@ void Interpreter::registerClassContract(const ClassStmt& declaration) {
     for (const auto& parentName : declaration.parentNames) {
         const auto parent = factTypeContracts_.find(parentName);
         if (parent == factTypeContracts_.end()) continue;
+        if (!parent->second.declaredClass || parent->second.openShape) contract.openShape = true;
         for (const auto& field : parent->second.fields) {
             if (std::find(contract.fields.begin(), contract.fields.end(), field) ==
                 contract.fields.end()) {
@@ -4964,7 +4895,9 @@ void Interpreter::registerClassContract(const ClassStmt& declaration) {
 
     const auto existing = factTypeContracts_.find(declaration.name);
     if (existing != factTypeContracts_.end()) {
-        if (existing->second.fields != contract.fields) {
+        // An undeclared type has no field list to conflict with; declaring its
+        // class promotes it, and the promotion scan validates every stored fact.
+        if (existing->second.declaredClass && existing->second.fields != contract.fields) {
             throw InterpreterError("Class '" + declaration.name +
                                    "' conflicts with its already persisted fact shape");
         }
@@ -4973,15 +4906,12 @@ void Interpreter::registerClassContract(const ClassStmt& declaration) {
             throw InterpreterError("Class '" + declaration.name +
                                    "' changes its already persisted primary key");
         }
-        contract.kinds = existing->second.kinds;
     }
     factTypeContracts_[declaration.name] = std::move(contract);
 }
 
-bool Interpreter::validateFactWrite(const std::string& type,
-                                    const std::shared_ptr<MapExpr>& value,
-                                    bool idempotentSeed,
-                                    std::optional<std::uint64_t> ignoredFactId) {
+void Interpreter::validateFactWrite(const std::string& type,
+                                    const std::shared_ptr<MapExpr>& value) {
     if (!value) throw InterpreterError("Cannot persist an empty '" + type + "' fact");
     std::vector<const MapEntry*> fields;
     fields.reserve(value->entries.size());
@@ -4992,48 +4922,33 @@ bool Interpreter::validateFactWrite(const std::string& type,
     }
     if (fields.empty()) throw InterpreterError("Fact '" + type + "' requires at least one data field");
 
+    // A constructor with no declared class is not validated: any field set is
+    // accepted and only the key field (the first field of the type's first
+    // constructor) is contracted. Declared classes validate arity and types.
     auto contractIt = factTypeContracts_.find(type);
     if (contractIt == factTypeContracts_.end()) {
         FactTypeContract dynamic;
-        dynamic.fields.reserve(fields.size());
-        dynamic.kinds.reserve(fields.size());
-        for (const auto* field : fields) {
-            dynamic.fields.push_back(field->key);
-            dynamic.kinds.push_back(field->value ? field->value->kind() : ExprKind::Nil);
-        }
         dynamic.keyFields.push_back(fields.front()->key);
         contractIt = factTypeContracts_.emplace(type, std::move(dynamic)).first;
     }
 
     const auto& contract = contractIt->second;
-    if (durableStore_ && !contract.declaredClass) {
-        std::ostringstream schema;
-        schema << "schemaless-v2";
-        for (std::size_t index = 0; index < contract.fields.size(); ++index) {
-            schema << '\n' << contract.fields[index] << ':'
-                   << persistedExprKindName(index < contract.kinds.size()
-                          ? contract.kinds[index] : ExprKind::Nil);
-        }
-        schema << "\nkey";
-        for (const auto& key : contract.keyFields) schema << ':' << key;
-        durableStore_->registerSchema(type, schema.str());
+    if (durableStore_ && !contract.declaredClass &&
+        !durableStore_->schemaFingerprint(type)) {
+        durableStore_->registerSchema(
+            type, std::string(kSchemalessHeader) + "3\nkey:" + contract.keyFields.front());
     }
-    if (fields.size() != contract.fields.size()) {
-        throw InterpreterError("Fact '" + type + "' does not match its locked field shape");
-    }
-    for (std::size_t index = 0; index < contract.fields.size(); ++index) {
-        const auto found = std::find_if(fields.begin(), fields.end(), [&](const MapEntry* field) {
-            return field->key == contract.fields[index];
-        });
-        if (found == fields.end()) {
-            throw InterpreterError("Fact '" + type + "' is missing locked field '" +
-                                   contract.fields[index] + "'");
+    if (contract.declaredClass) {
+        if (!contract.openShape && fields.size() != contract.fields.size()) {
+            throw InterpreterError("Fact '" + type + "' does not match its locked field shape");
         }
-        if (!contract.declaredClass && index < contract.kinds.size()) {
-            const ExprKind actual = (*found)->value ? (*found)->value->kind() : ExprKind::Nil;
-            if (actual != contract.kinds[index]) {
-                throw InterpreterError("Fact '" + type + "' changes the type of locked field '" +
-                                       contract.fields[index] + "'");
+        for (const auto& declared : contract.fields) {
+            const auto found = std::find_if(fields.begin(), fields.end(), [&](const MapEntry* field) {
+                return field->key == declared;
+            });
+            if (found == fields.end()) {
+                throw InterpreterError("Fact '" + type + "' is missing locked field '" +
+                                       declared + "'");
             }
         }
     }
@@ -5053,36 +4968,6 @@ bool Interpreter::validateFactWrite(const std::string& type,
     if (contract.keyFields.empty()) {
         throw InterpreterError("Fact type '" + type + "' has no persistent key");
     }
-
-    const auto sameKey = [&](const std::shared_ptr<MapExpr>& candidate) {
-        if (!candidate) return false;
-        for (const auto& key : contract.keyFields) {
-            const auto expected = findMapValue(value, key);
-            const auto actual = findMapValue(candidate, key);
-            if (!expected || !actual || !exprEqualsLiteral(expected, actual)) return false;
-        }
-        return true;
-    };
-    const auto sameValue = [&](const std::shared_ptr<MapExpr>& candidate) {
-        if (!candidate) return false;
-        for (const auto* field : fields) {
-            const auto actual = findMapValue(candidate, field->key);
-            if (!actual || !exprEqualsLiteral(field->value, actual)) return false;
-        }
-        return true;
-    };
-
-    if (!durableStore_) {
-        for (const auto index : memory_.currentFactIndexes(memory_.selectionIndexes(type))) {
-            const auto& record = memory_.fact(index);
-            if (record.type != type || (ignoredFactId && record.id == *ignoredFactId)) continue;
-            const auto candidate = memory_.factValue(index);
-            if (!sameKey(candidate)) continue;
-            if (idempotentSeed && sameValue(candidate)) return false;
-            throw InterpreterError("Duplicate key for fact type '" + type + "'");
-        }
-    }
-    return true;
 }
 
 std::vector<std::shared_ptr<Expr>> Interpreter::factKey(
@@ -5393,8 +5278,8 @@ std::shared_ptr<MapExpr> Interpreter::createClassGraph(
     durableStore_->scanAllClassEdges(0, [&](const StoredClassEdge& edge) {
         bool visible = scope.empty();
         for (const auto& type : scope) {
-            visible = visible || memory_.isCompatibleType(type, edge.sourceType) ||
-                      memory_.isCompatibleType(type, edge.targetType);
+            visible = visible || hierarchy_.isCompatibleType(type, edge.sourceType) ||
+                      hierarchy_.isCompatibleType(type, edge.targetType);
         }
         if (visible) edges.push_back(classGraphEdgeValue(edge));
         return true;
@@ -5436,8 +5321,8 @@ bool Interpreter::evalClassGraphMember(
         std::vector<std::shared_ptr<Expr>> neighbors;
         std::unordered_set<std::string> seen;
         durableStore_->scanAllClassEdges(0, [&](const StoredClassEdge& edge) {
-            const bool sourceView = memory_.isCompatibleType(type->name, edge.sourceType);
-            const bool targetView = memory_.isCompatibleType(type->name, edge.targetType);
+            const bool sourceView = hierarchy_.isCompatibleType(type->name, edge.sourceType);
+            const bool targetView = hierarchy_.isCompatibleType(type->name, edge.targetType);
             if (sourceView && edge.direction != "backward" && seen.insert(edge.targetType).second) {
                 neighbors.push_back(std::make_shared<ClassRefExpr>(edge.targetType));
             }
@@ -5537,7 +5422,7 @@ std::shared_ptr<ArrayExpr> Interpreter::insertFactsFromRows(const std::string& t
         const auto rowMap = std::dynamic_pointer_cast<MapExpr>(row);
         if (!rowMap) throw InterpreterError("csv.toFacts expects every row to be a map of fields");
         auto fact = prepareInsertedFact(type, *rowMap, Env{});
-        validateFactWrite(type, fact, false);
+        validateFactWrite(type, fact);
         inserted.push_back(publishFact(type, {}, fact, source));
     }
     return std::make_shared<ArrayExpr>(std::move(inserted));
@@ -5577,9 +5462,16 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         return true;
     }
     if (term.isCapitalized && term.args.empty()) {
+        // Facts are built into RocksDB and are queried through their own class,
+        // as in Employee.count(). `Fact` is only the root of the type lineage,
+        // not a library or a class to query.
+        if (term.name == "Fact") {
+            throw InterpreterError(
+                "'Fact' is not a queryable class; query a class directly, for example Employee.count()");
+        }
         ensurePredicateLoaded(term.name);
         out = std::make_shared<FactSelectionExpr>(
-            term.name, durableStore_ ? 0 : memory_.captureSnapshot());
+            term.name);
         return true;
     }
     if (term.name == "Object:new") {
@@ -5742,7 +5634,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
                 if (!visited.insert(type).second) continue;
                 const std::string candidate = type + "." + member->value;
                 if (hasMethod(candidate)) matches.push_back(candidate);
-                for (const auto& parent : memory_.parentsOf(type)) {
+                for (const auto& parent : hierarchy_.parentsOf(type)) {
                     if (!visited.count(parent)) next.push_back(parent);
                 }
             }
@@ -5833,8 +5725,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
             auto selection = factSelection
                 ? std::dynamic_pointer_cast<FactSelectionExpr>(factSelection->clone())
                 : std::make_shared<FactSelectionExpr>(
-                    classReference->name,
-                    durableStore_ ? 0 : memory_.captureSnapshot());
+                    classReference->name);
             std::string field;
             for (const auto& argument : arguments) {
                 if (argument.name == "field") {
@@ -5879,8 +5770,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
             const auto selection = factSelection
                 ? std::static_pointer_cast<Expr>(factSelection)
                 : std::static_pointer_cast<Expr>(std::make_shared<FactSelectionExpr>(
-                    classReference->name,
-                    durableStore_ ? 0 : memory_.captureSnapshot()));
+                    classReference->name));
             const auto rows = materializeFactSelection(selection, 1);
             if (rows->items.empty()) return false;
             out = copyRuntimeValue(rows->items.front());
@@ -5888,7 +5778,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         }
         if (member->value == "save" && object && !object->factType.empty()) {
             if (!arguments.empty()) throw InterpreterError("save() does not accept arguments");
-            validateFactWrite(object->factType, object, false);
+            validateFactWrite(object->factType, object);
             out = publishFact(object->factType, {}, object, currentLoadingFile_);
             return true;
         }
@@ -5896,7 +5786,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
             member->value == "shortest_path") {
             auto selection = factSelection;
             if (classReference) selection = std::make_shared<FactSelectionExpr>(
-                classReference->name, durableStore_ ? 0 : memory_.captureSnapshot());
+                classReference->name);
             if (!selection) throw InterpreterError("Graph traversal requires a fact selection receiver");
             arguments.insert(arguments.begin(), Arg{"selection", selection});
             const std::string name = member->value == "join" ? "Graph:join" :
@@ -6039,7 +5929,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
                 "object: instance, file: string, and a positive integer line");
         }
         if (objectValue->factType.empty() ||
-            !memory_.isCompatibleType(objectValue->factType, classReference->name)) {
+            !hierarchy_.isCompatibleType(objectValue->factType, classReference->name)) {
             throw InterpreterError(
                 "fx.interpret object type '" + objectValue->factType +
                 "' is not compatible with '" + classReference->name + "'");
@@ -6260,23 +6150,27 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
             }
             return current;
         };
-        std::vector<std::shared_ptr<Expr>> items = array->items;
-        std::stable_sort(items.begin(), items.end(),
-            [&](const std::shared_ptr<Expr>& lhs, const std::shared_ptr<Expr>& rhs) {
-                const auto leftValue = valueAtPath(lhs);
-                const auto rightValue = valueAtPath(rhs);
-                double leftNumber = 0.0, rightNumber = 0.0;
-                if (leftValue && rightValue &&
-                    argAsNumber(leftValue, leftNumber) && argAsNumber(rightValue, rightNumber)) {
-                    return leftNumber < rightNumber;
-                }
-                std::string leftText, rightText;
-                if (leftValue && rightValue &&
-                    argAsString(leftValue, leftText) && argAsString(rightValue, rightText)) {
-                    return leftText < rightText;
-                }
-                return false;
-            });
+        // order_by is deterministic and numeric only: the field must hold a
+        // finite number in every row. Anything else (a string, another kind of
+        // value, or a missing field) is an error, never silently reordered.
+        // Validating before sorting also guarantees a strict weak ordering.
+        std::vector<std::pair<double, std::shared_ptr<Expr>>> keyed;
+        keyed.reserve(array->items.size());
+        for (std::size_t index = 0; index < array->items.size(); ++index) {
+            const auto value = valueAtPath(array->items[index]);
+            const auto number = std::dynamic_pointer_cast<NumberExpr>(value);
+            if (!number || !std::isfinite(number->value)) {
+                throw InterpreterError(
+                    "order_by supports only numeric values: field '" + fieldPath + "' of row " +
+                    std::to_string(index) + (value ? " is " + value->debug() : " is missing"));
+            }
+            keyed.emplace_back(number->value, array->items[index]);
+        }
+        std::stable_sort(keyed.begin(), keyed.end(),
+            [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+        std::vector<std::shared_ptr<Expr>> items;
+        items.reserve(keyed.size());
+        for (auto& entry : keyed) items.push_back(std::move(entry.second));
         out = std::make_shared<ArrayExpr>(std::move(items));
         return true;
     }
@@ -6298,7 +6192,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
                 throw InterpreterError("Type.insert expects a type and values map");
             }
             auto inserted = prepareInsertedFact(type->value, *value, env);
-            validateFactWrite(type->value, inserted, false);
+            validateFactWrite(type->value, inserted);
             out = publishFact(type->value, {}, inserted, currentLoadingFile_);
             return true;
         }
@@ -6307,32 +6201,25 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         const auto rows = materializeFactSelection(selection);
         if (term.builtinId == BuiltinId::FactDelete) {
             std::size_t deleted = 0;
-            for (const auto& row : rows->items) {
-                const auto current = std::dynamic_pointer_cast<MapExpr>(row);
-                if (!current || current->factIdentity == 0 || current->factType.empty()) continue;
-                if (durableStore_) {
-                    const auto stored = durableStore_->findFactById(current->factIdentity);
-                    if (stored) {
-                      const bool ownsTransaction =
-                          !durableStore_->inTransaction();
-                      if (ownsTransaction)
-                        durableStore_->beginTransaction();
-                      try {
-                        durableStore_->removeFactIndexes(
-                            stored->type, stored->id,
-                            factIndexes(stored->type, stored->value));
-                        durableStore_->deleteFact(stored->type, stored->key);
-                        if (ownsTransaction)
-                          durableStore_->commitTransaction();
-                      } catch (...) {
-                        if (ownsTransaction)
-                          durableStore_->rollbackTransaction();
-                        throw;
-                      }
+            // One statement is one transaction: a referenced row part-way
+            // through must not leave the rows before it deleted.
+            withStoreTransaction([&] {
+                deleted = 0;
+                for (const auto& row : rows->items) {
+                    const auto current = std::dynamic_pointer_cast<MapExpr>(row);
+                    if (!current || current->factIdentity == 0 || current->factType.empty()) continue;
+                    if (durableStore_) {
+                        const auto stored = durableStore_->findFactById(current->factIdentity);
+                        if (stored) {
+                            durableStore_->removeFactIndexes(
+                                stored->type, stored->id,
+                                factIndexes(stored->type, stored->value));
+                            durableStore_->deleteFact(stored->type, stored->key);
+                        }
                     }
+                    ++deleted;
                 }
-                ++deleted;
-            }
+            });
             if (deleted != 0)
               invalidateCaches();
             out = std::make_shared<NumberExpr>(static_cast<double>(deleted));
@@ -6343,25 +6230,23 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         if (!patch)
           throw InterpreterError("Fact.update expects a values map");
         std::size_t updated = 0;
-        for (const auto &row : rows->items) {
-          const auto current = std::dynamic_pointer_cast<MapExpr>(row);
-          if (!current || current->factIdentity == 0 ||
-              current->factType.empty())
-            continue;
-          auto next = std::static_pointer_cast<MapExpr>(current->clone());
-          for (const auto &field : patch->entries)
-            upsertEntry(next->entries, field.key, cloneExprOrNil(field.value));
-          validateFactWrite(current->factType, next, false,
-                            current->factIdentity);
-          if (durableStore_) {
-            const auto stored =
-                durableStore_->findFactById(current->factIdentity);
-            if (!stored)
-              throw InterpreterError("Fact update target does not exist");
-            const bool ownsTransaction = !durableStore_->inTransaction();
-            if (ownsTransaction)
-              durableStore_->beginTransaction();
-            try {
+        // One statement is one transaction, as for delete.
+        withStoreTransaction([&] {
+          updated = 0;
+          for (const auto &row : rows->items) {
+            const auto current = std::dynamic_pointer_cast<MapExpr>(row);
+            if (!current || current->factIdentity == 0 ||
+                current->factType.empty())
+              continue;
+            auto next = std::static_pointer_cast<MapExpr>(current->clone());
+            for (const auto &field : patch->entries)
+              upsertEntry(next->entries, field.key, cloneExprOrNil(field.value));
+            validateFactWrite(current->factType, next);
+            if (durableStore_) {
+              const auto stored =
+                  durableStore_->findFactById(current->factIdentity);
+              if (!stored)
+                throw InterpreterError("Fact update target does not exist");
               durableStore_->removeFactIndexes(
                   stored->type, stored->id,
                   factIndexes(stored->type, stored->value));
@@ -6375,22 +6260,10 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
               durableStore_->addFactIndexes(
                   current->factType, current->factIdentity,
                   factIndexes(current->factType, next));
-              if (ownsTransaction)
-                durableStore_->commitTransaction();
-            } catch (...) {
-              if (ownsTransaction)
-                durableStore_->rollbackTransaction();
-              throw;
             }
+            ++updated;
           }
-          if (!durableStore_) {
-            if (const auto index =
-                    memory_.factIndexById(current->factIdentity)) {
-              memory_.replaceFact(*index, next);
-            }
-          }
-          ++updated;
-        }
+        });
         if (updated != 0)
           invalidateCaches();
         out = std::make_shared<NumberExpr>(static_cast<double>(updated));
@@ -6520,26 +6393,29 @@ bool Interpreter::evalCallAsValue(const TermExpr& term,
     }
     Env currentEnv = env;
     auto currentReceiver = receiver;
-    ++valueCallTrampolineDepth_;
-    try {
-        while (true) {
-            try {
-                const bool result = evalCallAsValueOnce(current, currentEnv, out, currentReceiver);
-                --valueCallTrampolineDepth_;
-                return result;
-            } catch (TailCallSignal& signal) {
-                current = std::move(signal.term);
-                currentEnv = std::move(signal.env);
-                // A direct tail call is an ordinary function call. It does not
-                // inherit the previous method's receiver; another instance
-                // method must be reached through an explicit `this.method()`
-                // member invocation, which establishes its own receiver.
-                currentReceiver.reset();
-            }
+    struct TrampolineScope {
+        size_t& depth;
+        size_t& methodDepth;
+        size_t savedMethodDepth;
+        ~TrampolineScope() {
+            --depth;
+            methodDepth = savedMethodDepth;
         }
-    } catch (...) {
-        --valueCallTrampolineDepth_;
-        throw;
+    } trampoline{valueCallTrampolineDepth_, trampolineMethodDepth_, trampolineMethodDepth_};
+    ++valueCallTrampolineDepth_;
+    trampolineMethodDepth_ = methodCallDepth_;
+    while (true) {
+        try {
+            return evalCallAsValueOnce(current, currentEnv, out, currentReceiver);
+        } catch (TailCallSignal& signal) {
+            current = std::move(signal.term);
+            currentEnv = std::move(signal.env);
+            // A direct tail call is an ordinary function call. It does not
+            // inherit the previous method's receiver; another instance
+            // method must be reached through an explicit `this.method()`
+            // member invocation, which establishes its own receiver.
+            currentReceiver.reset();
+        }
     }
 }
 
@@ -7397,23 +7273,13 @@ bool Interpreter::evalCallAsValueOnce(
             if (!evalNamed("selection", 0, selection) && !evalNamed("value", 0, selection)) {
                 throw InterpreterError("Fact.release expects a FactSelection");
             }
-            const auto kind = std::dynamic_pointer_cast<StringExpr>(
-                findMapValue(selection, internalSymbolString(InternalSymbolKind::Type)));
-            const auto generation = std::dynamic_pointer_cast<NumberExpr>(
-                findMapValue(selection, "snapshot_generation"));
-            if (!kind || kind->value != "FactSelection" || !generation ||
-                generation->value < 0 || std::floor(generation->value) != generation->value) {
-                throw InterpreterError("Fact.release expects a captured FactSelection");
+            if (!std::dynamic_pointer_cast<FactSelectionExpr>(selection)) {
+                throw InterpreterError("Fact.release expects a FactSelection");
             }
             // RocksDB iterators are opened only while materializing and are
-            // never retained by a FactSelection. A durable selection therefore
-            // has no in-memory snapshot to release.
-            if (durableStore_ && generation->value == 0) {
-                out = std::make_shared<BoolExpr>(true);
-                return true;
-            }
-            out = std::make_shared<BoolExpr>(memory_.releaseSnapshot(
-                static_cast<std::uint64_t>(generation->value)));
+            // never retained by a FactSelection, so there is nothing to
+            // release; the call is kept for programs that still issue it.
+            out = std::make_shared<BoolExpr>(true);
             return true;
         }
         if (op == "timeline") {
@@ -7477,154 +7343,17 @@ bool Interpreter::evalCallAsValueOnce(
                 return true;
             }
 
-            std::uint64_t snapshotGeneration = 0;
-            std::vector<size_t> roots;
-            if (const auto selection = std::dynamic_pointer_cast<FactSelectionExpr>(source)) {
-                snapshotGeneration = selection->snapshotGeneration;
-                const auto candidates = selection->designationIds.empty()
-                    ? memory_.selectionIndexes(selection->factType, selection->field,
-                        selection->equals && isGroundLiteral(selection->equals)
-                            ? selection->equals : nullptr, snapshotGeneration)
-                    : memory_.designationIndexes(selection->designationIds, snapshotGeneration);
-                // A timeline is an explicit history request: begin from every
-                // selected live lineage, including one whose newest version is
-                // future, then expand only within that lineage.
-                for (const size_t index : candidates) {
-                    const auto& record = memory_.snapshotFact(snapshotGeneration, index);
-                    if (!record.active || (!selection->factType.empty() &&
-                        !memory_.isCompatibleType(record.type, selection->factType))) {
-                        continue;
-                    }
-                    if (!selection->designationIds.empty() && !std::all_of(
-                            selection->designationIds.begin(), selection->designationIds.end(),
-                            [&](SymbolId designation) {
-                                return std::find(record.designations.begin(), record.designations.end(), designation) !=
-                                    record.designations.end();
-                            })) {
-                        continue;
-                    }
-                    const auto fact = memory_.factValue(index, snapshotGeneration);
-                    if (!fact) continue;
-                    if (!selection->field.empty()) {
-                        const auto actual = findMapValue(fact, selection->field);
-                        if (!actual || !selection->equals ||
-                            !exprContainsLiteral(actual, selection->equals)) continue;
-                    }
-                    bool matches = true;
-                    for (const auto& filter : selection->filters) {
-                        const auto actual = findMapValue(fact, filter.field);
-                        if (!actual || !filter.value) {
-                            matches = false;
-                            break;
-                        }
-                        if (filter.op == TokenId::EQUAL) {
-                            matches = exprContainsLiteral(actual, filter.value);
-                        } else if (filter.op == TokenId::NOT_EQUAL) {
-                            matches = !exprContainsLiteral(actual, filter.value);
-                        } else {
-                            matches = compareResolved(actual, filter.op, filter.value);
-                        }
-                        if (!matches) break;
-                    }
-                    if (matches) roots.push_back(index);
-                }
-            } else if (const auto fact = std::dynamic_pointer_cast<MapExpr>(source)) {
-                if (fact->factIdentity == 0) {
-                    throw InterpreterError("Fact.timeline expects a fact stored in the active knowledge base");
-                }
-                const auto index = memory_.factIndexById(fact->factIdentity);
-                if (!index) throw InterpreterError("Fact.timeline cannot find the stored fact");
-                roots.push_back(*index);
-            } else {
-                throw InterpreterError("Fact.timeline expects a FactSelection or stored fact");
-            }
-
-            const auto stateName = [](TemporalState state) -> std::string {
-                switch (state) {
-                    case TemporalState::Past: return "past";
-                    case TemporalState::Current: return "current";
-                    case TemporalState::Future: return "future";
-                }
-                return "past";
-            };
-            const auto originName = [](TemporalOrigin origin) -> std::string {
-                switch (origin) {
-                    case TemporalOrigin::Observed: return "observed";
-                    case TemporalOrigin::Scheduled: return "scheduled";
-                    case TemporalOrigin::Derived: return "derived";
-                    case TemporalOrigin::Predicted: return "predicted";
-                    case TemporalOrigin::Required: return "required";
-                }
-                return "observed";
-            };
-
-            std::unordered_set<std::string> seenLineages;
-            std::vector<std::shared_ptr<Expr>> events;
-            for (const size_t root : roots) {
-                const auto& rootRecord = memory_.snapshotFact(snapshotGeneration, root);
-                if (!seenLineages.insert(rootRecord.temporal.lineageKey).second) continue;
-                auto lineage = memory_.temporalLineageIndexesForFact(root, snapshotGeneration);
-                std::sort(lineage.begin(), lineage.end(), [&](size_t left, size_t right) {
-                    const auto& a = memory_.snapshotFact(snapshotGeneration, left).temporal;
-                    const auto& b = memory_.snapshotFact(snapshotGeneration, right).temporal;
-                    if (a.effectiveTime != b.effectiveTime) return a.effectiveTime < b.effectiveTime;
-                    return a.registrationSequence < b.registrationSequence;
-                });
-                for (const size_t index : lineage) {
-                    const auto& record = memory_.snapshotFact(snapshotGeneration, index);
-                    const auto value = memory_.factValue(index, snapshotGeneration);
-                    if (!value) continue;
-                    std::vector<std::shared_ptr<Expr>> microFacts;
-                    microFacts.reserve(value->entries.size());
-                    for (const auto& field : value->entries) {
-                        if (field.keyId == InternalSymbol::TypeId || field.keyId == InternalSymbol::ParentId) continue;
-                        auto micro = std::make_shared<MapExpr>(std::vector<MapEntry>{
-                            MapEntry{"field", std::make_shared<StringExpr>(field.key)},
-                            MapEntry{"value", field.value ? field.value->clone() : std::make_shared<NilExpr>()},
-                            MapEntry{"state", std::make_shared<StringExpr>(stateName(memory_.temporalState(index, 0, snapshotGeneration)))},
-                            MapEntry{"fx:effective_at", std::make_shared<NumberExpr>(static_cast<double>(record.temporal.effectiveTime))}
-                        });
-                        micro->factType = "TemporalMicroFact";
-                        microFacts.push_back(std::move(micro));
-                    }
-                    auto event = std::make_shared<MapExpr>(std::vector<MapEntry>{
-                        MapEntry{"fact", value},
-                        MapEntry{"state", std::make_shared<StringExpr>(stateName(memory_.temporalState(index, 0, snapshotGeneration)))},
-                        MapEntry{"active", std::make_shared<BoolExpr>(record.active)},
-                        MapEntry{"fx:effective_at", std::make_shared<NumberExpr>(static_cast<double>(record.temporal.effectiveTime))},
-                        MapEntry{"fx:registered_at", std::make_shared<NumberExpr>(static_cast<double>(record.temporal.registrationTime))},
-                        MapEntry{"fx:registration_sequence", std::make_shared<NumberExpr>(static_cast<double>(record.temporal.registrationSequence))},
-                        MapEntry{"fx:provenance", std::make_shared<StringExpr>(originName(record.temporal.origin))},
-                        MapEntry{"micro_facts", std::make_shared<ArrayExpr>(std::move(microFacts))}
-                    });
-                    event->factType = "FactTimelineEvent";
-                    events.push_back(std::move(event));
-                }
-            }
-            auto timeline = std::make_shared<MapExpr>(std::vector<MapEntry>{
-                MapEntry{"events", std::make_shared<ArrayExpr>(std::move(events))}
-            });
-            timeline->factType = "FactTimeline";
-            out = std::move(timeline);
-            return true;
+            throw InterpreterError("Fact.timeline requires an open RocksDB store");
         }
         if (op == "types") {
             std::set<std::string> types;
             if (durableStore_) {
                 durableStore_->scanAllFacts(0, [&](const StoredFact& stored) {
-                    if (cancellationCheck_ && cancellationCheck_()) {
-                        throw InterpreterError("Execution cancelled");
-                    }
                     types.insert(stored.type);
                     return true;
                 });
             }
-            if (!durableStore_) {
-                for (const size_t factIndex : memory_.activeFactIndexes()) {
-                    types.insert(memory_.fact(factIndex).type);
-                }
-            }
-            for (const auto& parent : memory_.parents()) {
+            for (const auto& parent : hierarchy_.parents()) {
                 types.insert(parent.first);
                 types.insert(parent.second);
             }
@@ -7641,7 +7370,7 @@ bool Interpreter::evalCallAsValueOnce(
 
         auto matchingFacts = [&](std::size_t limit = 0) {
             auto selection = std::make_shared<FactSelectionExpr>(
-                typeName, durableStore_ ? 0 : memory_.captureSnapshot());
+                typeName);
             return materializeFactSelection(selection, limit)->items;
         };
 
@@ -7651,7 +7380,7 @@ bool Interpreter::evalCallAsValueOnce(
                 const auto map = std::dynamic_pointer_cast<MapExpr>(match);
                 if (!map) throw InterpreterError("Type.where expects a map of fields");
                 auto selection = std::make_shared<FactSelectionExpr>(
-                    typeName, durableStore_ ? 0 : memory_.captureSnapshot());
+                    typeName);
                 for (const auto& field : map->entries) {
                     selection->filters.push_back(FactSelectionFilter{
                         field.key, field.keyId, TokenId::EQUAL,
@@ -7670,7 +7399,6 @@ bool Interpreter::evalCallAsValueOnce(
             }
             out = std::make_shared<FactSelectionExpr>(
                 typeName,
-                durableStore_ ? 0 : memory_.captureSnapshot(),
                 std::move(field),
                 expected ? expected->clone() : nullptr);
             return true;
@@ -7682,7 +7410,7 @@ bool Interpreter::evalCallAsValueOnce(
         }
         if (op == "count") {
             const auto selection = std::make_shared<FactSelectionExpr>(
-                typeName, durableStore_ ? 0 : memory_.captureSnapshot());
+                typeName);
             const std::size_t count = countFactSelection(selection);
             out = std::make_shared<NumberExpr>(static_cast<double>(count));
             return true;
@@ -8372,10 +8100,9 @@ bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& en
         auto globalIt = globals_.find(var->name);
         if (globalIt != globals_.end()) return evalExprValue(globalIt->second, env, out);
         const SymbolId designationId = symbolIdForName(var->name);
-        if ((durableStore_ && durableStore_->hasDesignation(var->name)) ||
-            memory_.hasDesignation(designationId)) {
+        if (durableStore_ && durableStore_->hasDesignation(var->name)) {
             out = std::make_shared<FactSelectionExpr>(
-                "", memory_.captureSnapshot(), "", nullptr,
+                "", "", nullptr,
                 std::vector<SymbolId>{designationId},
                 std::vector<std::string>{var->name});
             return true;
@@ -8418,29 +8145,9 @@ std::vector<const ClassFieldDecl*> Interpreter::classFieldsFor(const ClassStmt& 
     return orderedFields;
 }
 
-std::optional<std::size_t> Interpreter::nearestPrototypeFact(const std::string& type) {
-    std::vector<std::string> pending{type};
-    std::unordered_set<std::string> visited;
-    for (std::size_t cursor = 0; cursor < pending.size(); ++cursor) {
-        const std::string current = pending[cursor];
-        if (!visited.insert(current).second) continue;
-        const auto& candidates = memory_.compatibleFactIndexes(current);
-        const auto exact = std::find_if(candidates.begin(), candidates.end(), [&](std::size_t index) {
-            const auto& fact = memory_.fact(index);
-            return fact.active && fact.type == current;
-        });
-        if (exact != candidates.end()) return *exact;
-        for (const auto& parent : memory_.parentsOf(current)) pending.push_back(parent);
-    }
-    return std::nullopt;
-}
-
 std::shared_ptr<MapExpr> Interpreter::nearestPrototypeValue(
     const std::string& type) {
-    if (!durableStore_) {
-        const auto index = nearestPrototypeFact(type);
-        return index ? memory_.factValue(*index) : nullptr;
-    }
+    if (!durableStore_) return nullptr;
     std::vector<std::string> pending{type};
     std::unordered_set<std::string> visited;
     for (std::size_t cursor = 0; cursor < pending.size(); ++cursor) {
@@ -8452,7 +8159,7 @@ std::shared_ptr<MapExpr> Interpreter::nearestPrototypeValue(
             return false;
         });
         if (prototype) return prototype;
-        for (const auto& parent : memory_.parentsOf(current)) {
+        for (const auto& parent : hierarchy_.parentsOf(current)) {
             pending.push_back(parent);
         }
     }
@@ -8531,7 +8238,7 @@ bool Interpreter::valueMatchesFieldType(
     if (builtin != LanguageTypeId::Unknown) return valueMatchesBuiltinType(value, builtin);
     const auto object = std::dynamic_pointer_cast<MapExpr>(value);
     return object && !object->factType.empty() &&
-           memory_.isCompatibleType(object->factType, type.name);
+           hierarchy_.isCompatibleType(object->factType, type.name);
 }
 
 bool Interpreter::instantiateClass(const TermExpr& term, const Env& env,
@@ -9059,7 +8766,7 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
         for (size_t index = 0; index < pending.size(); ++index) {
             const auto [current, distance] = pending[index];
             if (!visited.insert(current).second) continue;
-            for (const auto& parent : memory_.parentsOf(current)) {
+            for (const auto& parent : hierarchy_.parentsOf(current)) {
                 if (symbolIdForName(parent) == expected.typeId &&
                     parent == expected.type) {
                     return std::max(20, 80 - distance - 1);
@@ -9449,7 +9156,7 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
                 validResult =
                     (actual.factTypeId == selected.overload->resultTypeId &&
                      actual.factType == selected.overload->resultType) ||
-                    memory_.isCompatibleType(
+                    hierarchy_.isCompatibleType(
                         actual.factType, selected.overload->resultType);
             } else {
                 validResult = false;
@@ -9628,13 +9335,9 @@ bool Interpreter::unifyExpr(const std::shared_ptr<Expr>& a,
 
     if (isSameVariable(ra, rb)) return true;
 
-    if (auto va = std::dynamic_pointer_cast<VarExpr>(ra)) {
-        if (isInternalGeneratedSymbolId(va->nameId)) return true;
-    }
-    if (auto vb = std::dynamic_pointer_cast<VarExpr>(rb)) {
-        if (isInternalGeneratedSymbolId(vb->nameId)) return true;
-    }
-
+    // Variables renamed apart by standardizeApart carry generated ids. They are
+    // ordinary logic variables and must bind like any other; treating them as
+    // wildcards dropped every binding a rule made for its caller.
     if (auto va = std::dynamic_pointer_cast<VarExpr>(ra)) {
         std::shared_ptr<Expr> value;
         value = evalExprValue(rb, env, value) ? value : rb->clone();
@@ -9813,6 +9516,8 @@ std::shared_ptr<ClauseStmt> Interpreter::standardizeApart(const std::shared_ptr<
                 }
                 return false;
             }
+            case GoalKind::Try:
+                return true;
             case GoalKind::Break:
             case GoalKind::Continue:
                 return false;
@@ -9887,8 +9592,7 @@ Call Interpreter::renameCall(const Call& call, RenameMap& names) {
     out.nameId = call.nameId;
     out.builtinId = call.builtinId;
     for (const auto& a : call.args) {
-        if ((call.builtinId == BuiltinId::Throw && a.name == "target") ||
-            (call.builtinId == BuiltinId::Instanceof &&
+        if ((call.builtinId == BuiltinId::Instanceof &&
              (a.name == "type" || a.name == "parent" || a.name == "of"))) {
             out.args.push_back(Arg{a.name, a.nameId, a.value->clone()});
             continue;
@@ -9977,6 +9681,23 @@ std::shared_ptr<Goal> Interpreter::renameGoal(const std::shared_ptr<Goal>& goal,
                 cases.push_back(std::move(renamed));
             }
             return std::make_shared<SwitchGoal>(renameExpr(selection->value, names), std::move(cases));
+        }
+        case GoalKind::Try: {
+            const auto guarded = std::static_pointer_cast<TryGoal>(goal);
+            std::vector<std::shared_ptr<Goal>> tryBody;
+            tryBody.reserve(guarded->tryBody.size());
+            for (const auto& nested : guarded->tryBody) tryBody.push_back(renameGoal(nested, names));
+            std::vector<CatchClause> catches;
+            catches.reserve(guarded->catches.size());
+            for (const auto& clause : guarded->catches) {
+                RenameMap catchNames = names;
+                const SymbolId variableId = renamedId(clause.variableId, catchNames);
+                std::vector<std::shared_ptr<Goal>> catchBody;
+                catchBody.reserve(clause.body.size());
+                for (const auto& nested : clause.body) catchBody.push_back(renameGoal(nested, catchNames));
+                catches.emplace_back(symbolNameForId(variableId), variableId, std::move(catchBody));
+            }
+            return std::make_shared<TryGoal>(std::move(tryBody), std::move(catches));
         }
         case GoalKind::Break:
             return std::make_shared<BreakGoal>();
@@ -10204,6 +9925,17 @@ bool Interpreter::goalMayHaveSideEffects(const std::shared_ptr<Goal>& goal) cons
         }
         return false;
     }
+    if (auto guarded = std::dynamic_pointer_cast<TryGoal>(goal)) {
+        for (const auto& nested : guarded->tryBody) {
+            if (goalMayHaveSideEffects(nested)) return true;
+        }
+        for (const auto& clause : guarded->catches) {
+            for (const auto& nested : clause.body) {
+                if (goalMayHaveSideEffects(nested)) return true;
+            }
+        }
+        return false;
+    }
     if (auto selection = std::dynamic_pointer_cast<SwitchGoal>(goal)) {
         if (exprMayHaveSideEffects(selection->value)) return true;
         for (const auto& branch : selection->cases) {
@@ -10335,7 +10067,7 @@ Interpreter::FactMaterialization Interpreter::factToMap(const ClauseStmt& clause
     const bool requirementSchema = std::any_of(
         parentNames.begin(), parentNames.end(), [&](const std::string& parent) {
             return parent == "OperatorRequirement" ||
-                   memory_.isCompatibleType(parent, "OperatorRequirement");
+                   hierarchy_.isCompatibleType(parent, "OperatorRequirement");
         });
     std::set<std::string> childFields;
     for (std::size_t index = 0; index < clause.head.args.size(); ++index) {
@@ -10439,15 +10171,8 @@ std::vector<std::shared_ptr<Expr>> Interpreter::valuesForLambdaSource(const std:
     // local variable in source syntax.
     if (const auto typeName = std::dynamic_pointer_cast<StringExpr>(source)) {
         ensurePredicateLoaded(typeName->value);
-        if (durableStore_) {
-            return materializeFactSelection(std::make_shared<FactSelectionExpr>(
-                typeName->value, 0))->items;
-        }
-        std::vector<std::shared_ptr<Expr>> values;
-        for (size_t factIndex : memory_.currentFactIndexes(memory_.compatibleFactIndexes(typeName->value))) {
-            if (const auto value = memory_.factValue(factIndex)) values.push_back(value);
-        }
-        return values;
+        return materializeFactSelection(std::make_shared<FactSelectionExpr>(
+            typeName->value))->items;
     }
     if (var) {
         auto globalIt = globals_.find(var->name);
@@ -10457,34 +10182,25 @@ std::vector<std::shared_ptr<Expr>> Interpreter::valuesForLambdaSource(const std:
             if (auto array = std::dynamic_pointer_cast<ArrayExpr>(value)) return array->items;
             return {value};
         }
-        const SymbolId designationId = symbolIdForName(var->name);
-        if (memory_.hasDesignation(designationId) || durableStore_) {
-            if (durableStore_) {
-                auto selected = materializeFactSelection(
-                    std::make_shared<FactSelectionExpr>(
-                        "", 0, "", nullptr,
-                        std::vector<SymbolId>{designationId},
-                        std::vector<std::string>{var->name}))->items;
-                if (!selected.empty()) return selected;
-            }
-            std::vector<std::shared_ptr<Expr>> values;
-            for (const size_t factIndex : memory_.currentFactIndexes(memory_.designationIndexes({designationId}))) {
-                if (const auto value = memory_.factValue(factIndex)) values.push_back(value);
-            }
-            return values;
-        }
-    }
-    if (var && var->isCapitalized) {
-        ensurePredicateLoaded(var->name);
         if (durableStore_) {
-            return materializeFactSelection(std::make_shared<FactSelectionExpr>(
-                var->name, 0))->items;
+            const SymbolId designationId = symbolIdForName(var->name);
+            auto selected = materializeFactSelection(
+                std::make_shared<FactSelectionExpr>(
+                    "", "", nullptr,
+                    std::vector<SymbolId>{designationId},
+                    std::vector<std::string>{var->name}))->items;
+            if (!selected.empty()) return selected;
+            if (!var->isCapitalized) return {};
         }
-        std::vector<std::shared_ptr<Expr>> values;
-        for (size_t factIndex : memory_.currentFactIndexes(memory_.compatibleFactIndexes(var->name))) {
-            if (const auto value = memory_.factValue(factIndex)) values.push_back(value);
+        // A bare capitalized name that is neither a global nor a designation
+        // names a fact type. Fact types are queried with Type.all() or
+        // Type.where(...); resolving one through lambda used to yield an
+        // empty result silently.
+        if (var->isCapitalized) {
+            throw InterpreterError(
+                "lambda source '" + var->name + "' names a fact type; use " +
+                var->name + ".all() or " + var->name + ".where(...) as the source");
         }
-        return values;
     }
 
     std::shared_ptr<Expr> value;
@@ -10607,7 +10323,7 @@ std::string Interpreter::solveCacheKey(const std::vector<std::shared_ptr<Goal>>&
     // Immutable program and fact generations make cached answers valid only
     // for the state that produced them; unrelated registrations no longer
     // require clearing every cached query.
-    out << programGeneration_ << '|' << memory_.generation() << '|' << maxSolutions << '|';
+    out << programGeneration_ << '|' << maxSolutions << '|';
     for (const auto& goal : goals) {
         out << goal->debug() << ';';
     }
@@ -10685,7 +10401,6 @@ void Interpreter::endCacheInvalidationBatch() {
 }
 
 void Interpreter::clearCachesNow() {
-    memory_.invalidateCaches();
     solveCache_.clear();
     solveCacheRecency_.clear();
     solveCacheBytes_ = 0;
@@ -10716,7 +10431,8 @@ bool Interpreter::ensurePredicateLoaded(const std::string& predicate) {
     return findClauses(predicate, predicateId) != nullptr;
 }
 
-void Interpreter::loadProgramFile(const std::filesystem::path& file) {
+void Interpreter::loadProgramFile(const std::filesystem::path& file,
+                                  ParserMetrics* metrics) {
     fs::path normalized = fs::absolute(file).lexically_normal();
     if (loadedFiles_.count(normalized)) return;
     const bool ownsTransaction = !moduleTransaction_;
@@ -10736,7 +10452,7 @@ void Interpreter::loadProgramFile(const std::filesystem::path& file) {
                 return;
             }
             addStreamedStatement(std::move(statement));
-        }, operators_, nullptr, tokenizer_);
+        }, operators_, metrics, tokenizer_);
         streamedModuleMicros_ += static_cast<std::size_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - streamStarted).count());
@@ -10793,9 +10509,6 @@ std::shared_ptr<ArrayExpr> Interpreter::materializeGraphSelection(
     if (selection->traversal == GraphTraversalKind::Join) {
         const FactSelectionVisitor visitSource = [&](
                 const std::shared_ptr<MapExpr>& left) {
-            if (cancellationCheck_ && cancellationCheck_()) {
-                throw InterpreterError("Execution cancelled");
-            }
             if (!left || left->factIdentity == 0) return true;
             std::unordered_set<std::uint64_t> visitedEdges;
             const auto append = [&](const StoredLink& edge, bool outgoing) {
@@ -10878,9 +10591,6 @@ std::shared_ptr<ArrayExpr> Interpreter::materializeGraphSelection(
         bool shortestFound = false;
         while (!pending.empty() && !shortestFound &&
                !stopRequested && (limit == 0 || emitted < resultLimit)) {
-            if (cancellationCheck_ && cancellationCheck_()) {
-                throw InterpreterError("Execution cancelled");
-            }
             PathState path = std::move(pending.front());
             pending.pop_front();
             const std::size_t depth = path.edges.size();
@@ -10948,12 +10658,12 @@ std::vector<std::string> Interpreter::durableFactBuckets(
     if (type.empty()) return buckets;
     buckets.push_back(type);
     const auto rememberSubtype = [&](const std::string& candidate) {
-        if (candidate != type && memory_.isCompatibleType(candidate, type) &&
+        if (candidate != type && hierarchy_.isCompatibleType(candidate, type) &&
             std::find(buckets.begin(), buckets.end(), candidate) == buckets.end()) {
             buckets.push_back(candidate);
         }
     };
-    for (const auto& edge : memory_.hierarchyEdges()) rememberSubtype(edge.first);
+    for (const auto& edge : hierarchy_.hierarchyEdges()) rememberSubtype(edge.first);
     for (const auto& [unused, declaration] : classDefinitions_) {
         (void)unused;
         if (declaration) rememberSubtype(declaration->name);
@@ -10973,14 +10683,11 @@ std::shared_ptr<ArrayExpr> Interpreter::materializeFactSelection(
             std::size_t matchedRows = 0;
             bool stopRequested = false;
             const auto appendIfMatching = [&](const StoredFact& stored) {
-                if (cancellationCheck_ && cancellationCheck_()) {
-                    throw InterpreterError("Execution cancelled");
-                }
                 if (!stored.parentType.empty()) {
-                    memory_.setParent(stored.type, stored.parentType, {});
+                    hierarchy_.setParent(stored.type, stored.parentType);
                 }
                 if (!lazy->factType.empty() &&
-                    !memory_.isCompatibleType(stored.type, lazy->factType)) return true;
+                    !hierarchy_.isCompatibleType(stored.type, lazy->factType)) return true;
                 if (!lazy->designationIds.empty()) {
                     for (const auto designation : lazy->designationIds) {
                         const std::string name = symbolNameForId(designation);
@@ -11048,10 +10755,10 @@ std::shared_ptr<ArrayExpr> Interpreter::materializeFactSelection(
                 }
             }
             if (!hasRegisteredSubtype) {
-                for (const auto& [child, unusedParent] : memory_.parents()) {
+                for (const auto& [child, unusedParent] : hierarchy_.parents()) {
                     (void)unusedParent;
                     if (child != lazy->factType &&
-                        memory_.isCompatibleType(child, lazy->factType)) {
+                        hierarchy_.isCompatibleType(child, lazy->factType)) {
                         hasRegisteredSubtype = true;
                         break;
                     }
@@ -11130,115 +10837,9 @@ std::shared_ptr<ArrayExpr> Interpreter::materializeFactSelection(
             }
             return std::make_shared<ArrayExpr>(std::move(rows));
         }
-        const auto indexes = lazy->designationIds.empty()
-            ? memory_.selectionIndexes(
-                lazy->factType,
-                lazy->field,
-                lazy->equals && isGroundLiteral(lazy->equals)
-                    ? lazy->equals : nullptr,
-                lazy->snapshotGeneration)
-            : memory_.designationIndexes(lazy->designationIds, lazy->snapshotGeneration);
-        std::vector<std::shared_ptr<Expr>> rows;
-        rows.reserve(indexes.size());
-        std::size_t matchedRows = 0;
-        const auto appendMatches = [&](const std::vector<size_t>& candidates,
-                                       bool allowHistorical) {
-        for (const auto index : candidates) {
-            const auto& record = memory_.snapshotFact(lazy->snapshotGeneration, index);
-            if ((!allowHistorical && !record.active) || (!lazy->factType.empty() &&
-                !memory_.isCompatibleType(record.type, lazy->factType))) {
-                continue;
-            }
-            if (!lazy->designationIds.empty() && !std::all_of(
-                    lazy->designationIds.begin(), lazy->designationIds.end(),
-                    [&](SymbolId designation) {
-                        return std::find(record.designations.begin(), record.designations.end(), designation) !=
-                            record.designations.end();
-                    })) continue;
-            const auto fact =
-                memory_.factValue(index, lazy->snapshotGeneration);
-            if (!fact) continue;
-            if (!lazy->field.empty()) {
-                const auto actual = findMapValue(fact, lazy->field);
-                if (!actual || !lazy->equals || !exprContainsLiteral(actual, lazy->equals)) continue;
-            }
-            bool matches = true;
-            for (const auto& filter : lazy->filters) {
-                const auto actual = findMapValue(fact, filter.field);
-                if (!actual || !filter.value) {
-                    matches = false;
-                    break;
-                }
-                if (filter.op == TokenId::EQUAL) {
-                    matches = exprContainsLiteral(actual, filter.value);
-                } else if (filter.op == TokenId::NOT_EQUAL) {
-                    matches = !exprContainsLiteral(actual, filter.value);
-                } else {
-                    matches = compareResolved(actual, filter.op, filter.value);
-                }
-                if (!matches) break;
-            }
-            if (!matches) continue;
-            ++factCandidates_;
-            ++matchedRows;
-            if (countOnly) *countOnly = matchedRows;
-            if (visitor) {
-                if (!(*visitor)(fact)) break;
-            } else if (!countOnly) {
-                rows.push_back(fact);
-            }
-            if (limit != 0 && matchedRows >= limit) break;
-        }
-        };
-        appendMatches(memory_.currentFactIndexes(indexes, lazy->snapshotGeneration), false);
-        const bool noCurrentMatches = countOnly ? *countOnly == 0 : rows.empty();
-        if (noCurrentMatches) {
-            appendMatches(memory_.relevantPastFactIndexes(
-                lazy->factType.empty() ? "Fact" : lazy->factType,
-                lazy->factTypeId,
-                lazy->snapshotGeneration), true);
-        }
-        return std::make_shared<ArrayExpr>(std::move(rows));
+        throw InterpreterError("Fact selections require an open RocksDB store");
     }
-    const auto kind = std::dynamic_pointer_cast<StringExpr>(
-        findMapValue(selection, internalSymbolString(InternalSymbolKind::Type)));
-    const auto selectedType = std::dynamic_pointer_cast<StringExpr>(findMapValue(selection, "fact_type"));
-    if (!kind || kind->value != "FactSelection" || !selectedType) {
-        throw InterpreterError("Expected a FactSelection");
-    }
-    std::uint64_t snapshotGeneration = 0;
-    if (const auto snapshot = std::dynamic_pointer_cast<NumberExpr>(
-            findMapValue(selection, "snapshot_generation"))) {
-        if (snapshot->value < 0 || std::floor(snapshot->value) != snapshot->value) {
-            throw InterpreterError("FactSelection has an invalid snapshot generation");
-        }
-        snapshotGeneration = static_cast<std::uint64_t>(snapshot->value);
-    }
-    std::string field;
-    std::shared_ptr<Expr> equals;
-    if (const auto fieldValue = std::dynamic_pointer_cast<StringExpr>(findMapValue(selection, "field"))) {
-        field = fieldValue->value;
-        equals = findMapValue(selection, "equals");
-    }
-    const auto indexes = memory_.selectionIndexes(
-        selectedType->value,
-        field,
-        equals && isGroundLiteral(equals) ? equals : nullptr,
-        snapshotGeneration);
-    std::vector<std::shared_ptr<Expr>> rows;
-    rows.reserve(indexes.size());
-    for (const auto index : indexes) {
-        const auto fact = memory_.factValue(index, snapshotGeneration);
-        if (!fact) continue;
-        if (!field.empty()) {
-            const auto actual = findMapValue(fact, field);
-            if (!actual || !equals || !exprContainsLiteral(actual, equals)) continue;
-        }
-        ++factCandidates_;
-        rows.push_back(fact);
-        if (limit != 0 && rows.size() >= limit) break;
-    }
-    return std::make_shared<ArrayExpr>(std::move(rows));
+    throw InterpreterError("Expected a FactSelection");
 }
 
 std::size_t Interpreter::countFactSelection(
@@ -11345,7 +10946,7 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
         beginCacheInvalidationBatch();
         try {
             for (const auto& row : staged) {
-                validateFactWrite(row.type, row.value, false);
+                validateFactWrite(row.type, row.value);
             }
 
             std::unordered_map<std::string, std::size_t> existingByKey;
@@ -11445,9 +11046,9 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
 }
 
 std::string Interpreter::runtimeMetricsJson() const {
-    const FactMemoryStats factStats = memory_.stats();
     const RocksFactStoreStats storeStats = durableStore_
         ? durableStore_->stats() : RocksFactStoreStats{};
+    const auto symbolStats = symbolInterner().stats();
     std::ostringstream out;
     out << "{"
         << "\"durableStore\":" << (durableStore_ ? "true" : "false") << ","
@@ -11490,20 +11091,16 @@ std::string Interpreter::runtimeMetricsJson() const {
         << "\"tableRounds\":" << tableRounds_ << ","
         << "\"tableDeltaAnswers\":" << tableDeltaAnswers_ << ","
         << "\"provenanceNodes\":" << provenanceNodes_ << ","
-        << "\"factStoreGeneration\":" << factStats.generation << ","
-        << "\"activeFacts\":" << factStats.activeFacts << ","
-        << "\"tombstonedFacts\":" << factStats.tombstonedFacts << ","
-        << "\"factRowVersions\":" << factStats.rowVersions << ","
-        << "\"temporalLineages\":" << factStats.temporalLineages << ","
-        << "\"temporalPastFacts\":" << factStats.temporalPastFacts << ","
-        << "\"temporalFutureFacts\":" << factStats.temporalFutureFacts << ","
-        << "\"factRelations\":" << factStats.relations << ","
-        << "\"relationRows\":" << factStats.relationRows << ","
-        << "\"relationColumnValues\":" << factStats.relationColumnValues << ","
-        << "\"internedValues\":" << factStats.internedValues << ","
-        << "\"adaptiveEqualityIndexes\":" << factStats.adaptiveEqualityIndexes << ","
-        << "\"adaptiveIndexBuildMicros\":" << factStats.adaptiveIndexBuildMicros << ","
-        << "\"liveFactSnapshots\":" << factStats.snapshots
+        // Growth watch for long-lived processes: none of these are bounded by
+        // the database size.
+        << "\"symbolsInterned\":" << symbolStats.interned << ","
+        << "\"symbolsGenerated\":" << symbolStats.generated << ","
+        << "\"solveCacheEntries\":" << solveCache_.size() << ","
+        << "\"clauseLookupCacheEntries\":" << clauseLookupCache_.size() << ","
+        << "\"methodRuntimeCacheEntries\":" << methodRuntimeCache_.size() << ","
+        << "\"clauseRenameRequirements\":" << clauseRenameRequirements_.size() << ","
+        << "\"tableCacheEntries\":" << tableCache_.size() << ","
+        << "\"threadTasks\":" << threadTasks_.size()
         << "}";
     return out.str();
 }

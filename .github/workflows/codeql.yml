@@ -4,14 +4,24 @@ on:
   pull_request:
     branches:
       - main
-
+    paths:
+      - "src/**"
+      - "CMakeLists.txt"
+      - ".github/codeql/**"
+      - ".github/workflows/codeql.yml"
   schedule:
     - cron: "18 15 * * 3"
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   analyze:
     name: CodeQL
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     permissions:
       security-events: write
@@ -20,16 +30,26 @@ jobs:
       contents: read
 
     steps:
+      # Only the small header-only libraries are fetched. RocksDB is analyzed by
+      # its own project and is excluded by the configuration below, so it is not
+      # checked out at all.
       - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          submodules: recursive
+        uses: actions/checkout@v4
+
+      - name: Fetch header-only dependencies
+        run: >-
+          git submodule update --init --depth 1 --
+          third_party/nlohmann_json
+          third_party/rapidcsv
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: c-cpp
           build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:c-cpp"

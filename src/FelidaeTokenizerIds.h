@@ -145,6 +145,8 @@ constexpr Id CONTINUE = -14;
 constexpr Id DEF = -15;
 constexpr Id THIS = -16;
 constexpr Id SUPER = -17;
+constexpr Id TRY = -18;
+constexpr Id CATCH = -19;
 } // namespace TokenId
 
 inline constexpr bool isCapitalizedIdentifierStartId(TokenId::Id id) {

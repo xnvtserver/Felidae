@@ -13,11 +13,14 @@
 
 namespace Felidae {
 
-Program parseProgramFile(const std::filesystem::path& path);
+// `manifest` selects project-manifest parsing (init.fx), where lowercase
+// configuration calls such as db.location(...) are allowed.
+Program parseProgramFile(const std::filesystem::path& path, bool manifest = false);
 Program parseProgramText(
     std::string text,
     std::shared_ptr<WordVocabulary> tokenizer = {},
-    std::shared_ptr<OperatorRegistry> operators = {});
+    std::shared_ptr<OperatorRegistry> operators = {},
+    bool manifest = false);
 enum class InteractiveProgramLoad {
     Empty,
     Expression,
