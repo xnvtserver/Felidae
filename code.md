@@ -13,13 +13,10 @@ source.fx
   -> RocksDB fact and graph store
 ```
 
-`WordVocabulary` (`src/Tokenizer.h`) is a fixed, compile-time vocabulary:
-59 fixed grammar IDs plus one token per possible byte value (315 entries
-total), with no file on disk and no training step. The normal lexer owns
-fixed syntax, comments, numbers, and strings; only identifiers and mixfix
-anchors go through the byte-level tokenizer, one byte per token. See
-`src/Tokenizer.h` for why byte-level tokens, rather than subword merging,
-are the right fit for this interpreter.
+`WordVocabulary` is a fixed, compile-time byte vocabulary. The normal lexer
+owns syntax, comments, numbers, and strings; identifier and mixfix-anchor
+bytes are encoded after the grammar-token range. There is no tokenizer model,
+training step, generated vocabulary, or mutable token assignment.
 
 RocksDB is Felidae's authoritative persistent fact and graph database. The
 interpreter keeps only execution state and bounded query results in memory;

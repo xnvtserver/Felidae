@@ -17,7 +17,7 @@ Employee extend NamedEntity(
 ).
 
 def main() =>
-    employee := Employee.get(pos: 0)
+    employee := Employee.get(pos: 0).
     return (
         id: employee.identity(),
         name: employee.name,

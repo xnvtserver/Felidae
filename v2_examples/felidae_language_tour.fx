@@ -15,9 +15,10 @@ import "csv".
 ImportedSchool(name: "", district: "", students: 0, active: 1.0).
 
 def importExample() =>
-    raw := file.readFile(file: "datasets/examples/schools.csv")
-    imported := csv.toFacts(data: raw, type: "ImportedSchool", source: "build/runtime/language_tour_schools.csv")
-    return count(data: imported)
+    raw := file.readFile(file: "datasets/examples/schools.csv").
+    imported := csv.toFacts(data: raw, type: "ImportedSchool", source: "build/runtime/language_tour_schools.csv").
+    return count(data: imported).
+end
 
 # --- 1. Facts and hierarchy -------------------------------------------------
 # `extend` builds an ancestry: Mammal and Reptile both specialize Animal, so
@@ -38,11 +39,11 @@ Link(from: Teacher(name: "Grace"), to: School(id: 99), properties: {kind: "teach
 
 # --- 2. Guard clauses --------------------------------------------------------
 # `where` narrows a method to the cases it actually handles; the implicit
-# `else` branch runs when the guard does not hold. Truth in Felidae is
-# numeric: 1.0/0.0, never a separate boolean.
+# `else` branch runs when the guard does not hold. Interpreter truth is
+# strictly boolean; numeric fuzzy degrees remain ordinary library values.
 def classifyEnrollment(count: number) =>
-    where count >= 400
-    return "large"
+    where count >= 400.
+    return "large".
 else
     return "standard".
 end
@@ -52,10 +53,10 @@ end
 # `.OrWhere` composes further conditions left to right, and `.limit(records:)`
 # bounds the result without truncating silently on invalid input.
 def queryExamples() =>
-    active_central := School.where(district: "central", active: 1.0)
-    central_or_west := School.where(district: "central").OrWhere(district: "west")
-    large_central := School.where(district: "central").AndWhere(active: 1.0)
-    top_one := School.where(active: 1.0).limit(records: 1)
+    active_central := School.where(district: "central", active: 1.0).
+    central_or_west := School.where(district: "central").OrWhere(district: "west").
+    large_central := School.where(district: "central").AndWhere(active: 1.0).
+    top_one := School.where(active: 1.0).limit(records: 1).
     return (
         active_central_count: count(data: active_central),
         central_or_west_count: count(data: central_or_west),
@@ -69,7 +70,8 @@ end
 # whole fact -- useful once a query is answering a specific question rather
 # than handing back full records.
 def projectionExample() =>
-    return School.select(fields: ["name", "district"], match: {active: 1.0})
+    return School.select(fields: ["name", "district"], match: {active: 1.0}).
+end
 
 # --- 5. Aggregates: count / sum / average / min / max -----------------------
 # Each aggregate accepts the same optional `match:` a query would use.
@@ -98,9 +100,9 @@ end
 # `match:` is mandatory for update and delete -- there is no conditionless
 # mutation, unlike a bare SQL UPDATE with no WHERE.
 def mutationExamples() =>
-    inserted := School.insert(values: {id: 40, name: "Riverside", district: "east", students: 210, active: 1.0})
-    updated := School.where(district: "east").update(values: {students: 230.0})
-    deleted := School.where(name: "Riverside").delete()
+    inserted := School.insert(values: {id: 40, name: "Riverside", district: "east", students: 210, active: 1.0}).
+    updated := School.where(district: "east").update(values: {students: 230.0}).
+    deleted := School.where(name: "Riverside").delete().
     return (
         inserted_name: inserted.name,
         updated_count: updated,
@@ -112,8 +114,8 @@ end
 # commonAncestors reads the `extend` graph declared in section 1. Selecting
 # one candidate as contextually best belongs to the calling application.
 def ancestryExamples() =>
-    cat := Mammal(name: "cat")
-    lizard := Reptile(name: "lizard")
+    cat := Mammal(name: "cat").
+    lizard := Reptile(name: "lizard").
     return (
         common: commonAncestors(left: cat, right: lizard)
     ).
@@ -123,10 +125,13 @@ end
 # @mixfix declares a natural-language-shaped call pattern; it lowers to an
 # ordinary call underneath, so it composes with everything above it.
 @mixfix(pattern: "{value:number} rated above {minimum:number}")
-def ratedAbove() => return value > minimum
+def ratedAbove() =>
+    return value > minimum.
+end
 
 def mixfixExample() =>
-    return 82 rated above 75
+    return 82 rated above 75.
+end
 
 def main() =>
     return (
