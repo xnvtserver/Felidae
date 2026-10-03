@@ -127,7 +127,8 @@ public:
     explicit StringExpr(std::string value) : value(std::move(value)) {}
     std::string value;
 
-    ExprKind kind() const override { return ExprKind::String; }
+    static constexpr ExprKind kKind = ExprKind::String;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override { return std::make_shared<StringExpr>(value); }
     std::string debug() const override {
         std::ostringstream oss;
@@ -148,7 +149,8 @@ public:
         : name(std::move(name)), nameId(symbolIdForName(this->name)) {}
     std::string name;
     SymbolId nameId = 0;
-    ExprKind kind() const override { return ExprKind::ClassRef; }
+    static constexpr ExprKind kKind = ExprKind::ClassRef;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override {
         return std::make_shared<ClassRefExpr>(name);
     }
@@ -161,7 +163,8 @@ public:
         : name(std::move(name)), nameId(symbolIdForName(this->name)) {}
     std::string name;
     SymbolId nameId = 0;
-    ExprKind kind() const override { return ExprKind::FunctionRef; }
+    static constexpr ExprKind kKind = ExprKind::FunctionRef;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override {
         return std::make_shared<FunctionRefExpr>(name);
     }
@@ -173,7 +176,8 @@ public:
     explicit NumberExpr(double value) : value(value) {}
     double value;
 
-    ExprKind kind() const override { return ExprKind::Number; }
+    static constexpr ExprKind kKind = ExprKind::Number;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override { return std::make_shared<NumberExpr>(value); }
     std::string debug() const override {
         std::ostringstream oss;
@@ -187,14 +191,16 @@ public:
     explicit BoolExpr(bool value) : value(value) {}
     bool value;
 
-    ExprKind kind() const override { return ExprKind::Bool; }
+    static constexpr ExprKind kKind = ExprKind::Bool;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override { return std::make_shared<BoolExpr>(value); }
     std::string debug() const override { return value ? "true" : "false"; }
 };
 
 class NilExpr final : public Expr {
 public:
-    ExprKind kind() const override { return ExprKind::Nil; }
+    static constexpr ExprKind kKind = ExprKind::Nil;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override { return std::make_shared<NilExpr>(); }
     std::string debug() const override { return "nil"; }
 };
@@ -214,7 +220,8 @@ public:
     LanguageTypeId languageTypeId = LanguageTypeId::Unknown;
     bool isCapitalized = false;
 
-    ExprKind kind() const override { return ExprKind::Var; }
+    static constexpr ExprKind kKind = ExprKind::Var;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override {
         return std::make_shared<VarExpr>(name, nameId, languageTypeId, isCapitalized);
     }
@@ -228,7 +235,8 @@ public:
 
     std::vector<std::shared_ptr<Expr>> items;
 
-    ExprKind kind() const override { return ExprKind::Array; }
+    static constexpr ExprKind kKind = ExprKind::Array;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override {
         std::vector<std::shared_ptr<Expr>> copied;
         copied.reserve(items.size());
@@ -277,7 +285,8 @@ public:
     // distinct identities for dependencies and relationships.
     std::uint64_t factIdentity = 0;
 
-    ExprKind kind() const override { return ExprKind::Map; }
+    static constexpr ExprKind kKind = ExprKind::Map;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override {
         std::vector<MapEntry> copied;
         copied.reserve(entries.size());
@@ -315,7 +324,8 @@ public:
     std::vector<std::shared_ptr<AstNode>> nodes;
     std::string nodeKind;
 
-    ExprKind kind() const override { return ExprKind::AstValue; }
+    static constexpr ExprKind kKind = ExprKind::AstValue;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override {
         return std::make_shared<AstValueExpr>(valueKind, nodes, nodeKind);
     }
@@ -372,7 +382,8 @@ public:
     std::vector<std::string> designations;
     std::vector<FactSelectionFilter> filters;
 
-    ExprKind kind() const override { return ExprKind::FactSelection; }
+    static constexpr ExprKind kKind = ExprKind::FactSelection;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override {
         std::vector<FactSelectionFilter> copiedFilters;
         copiedFilters.reserve(filters.size());
@@ -422,7 +433,8 @@ public:
     std::string key;
     SymbolId keyId = 0;
 
-    ExprKind kind() const override { return ExprKind::Access; }
+    static constexpr ExprKind kKind = ExprKind::Access;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override {
         return std::make_shared<AccessExpr>(target->clone(), key);
     }
@@ -487,7 +499,8 @@ public:
         return {};
     }
 
-    ExprKind kind() const override { return ExprKind::Operator; }
+    static constexpr ExprKind kKind = ExprKind::Operator;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override {
         std::shared_ptr<OperatorExpression> result;
         if (coreOperator != CoreOperator::Unknown) {
@@ -563,7 +576,8 @@ public:
     std::vector<Arg> args;
     bool isCapitalized = false;
 
-    ExprKind kind() const override { return ExprKind::Term; }
+    static constexpr ExprKind kKind = ExprKind::Term;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override {
         std::vector<Arg> copied;
         copied.reserve(args.size());
@@ -610,7 +624,8 @@ public:
     TokenId::Id op;
     std::shared_ptr<Expr> right;
 
-    ExprKind kind() const override { return ExprKind::Lambda; }
+    static constexpr ExprKind kKind = ExprKind::Lambda;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override {
         return std::make_shared<LambdaExpr>(
             source->clone(), variable, variableId, body->clone(), op,
@@ -675,7 +690,8 @@ public:
     explicit CallGoal(Call call) : call(std::move(call)) {}
     Call call;
 
-    GoalKind kind() const override { return GoalKind::Call; }
+    static constexpr GoalKind kKind = GoalKind::Call;
+    GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override {
         Call copy;
         copy.name = call.name;
@@ -704,7 +720,8 @@ public:
     std::shared_ptr<Expr> right;
     bool strictBoolean = false;
 
-    GoalKind kind() const override { return GoalKind::Binary; }
+    static constexpr GoalKind kKind = GoalKind::Binary;
+    GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override {
         return std::make_shared<BinaryGoal>(left->clone(), op, right->clone(), strictBoolean);
     }
@@ -723,7 +740,8 @@ public:
     explicit NotGoal(Call call) : call(std::move(call)) {}
     Call call;
 
-    GoalKind kind() const override { return GoalKind::Not; }
+    static constexpr GoalKind kKind = GoalKind::Not;
+    GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override {
         Call copy;
         copy.name = call.name;
@@ -746,7 +764,8 @@ public:
     SymbolId nameId = 0;
     std::shared_ptr<Expr> expr;
 
-    GoalKind kind() const override { return GoalKind::Assign; }
+    static constexpr GoalKind kKind = GoalKind::Assign;
+    GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override {
         if (!expr) return std::make_shared<AssignGoal>(name, nameId, std::shared_ptr<Expr>{});
         return std::make_shared<AssignGoal>(name, nameId, expr->clone());
@@ -782,7 +801,8 @@ public:
     std::vector<AssignmentTarget> targets;
     std::shared_ptr<Expr> expr;
 
-    GoalKind kind() const override { return GoalKind::MultiAssign; }
+    static constexpr GoalKind kKind = GoalKind::MultiAssign;
+    GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override {
         return std::make_shared<MultiAssignGoal>(targets, expr->clone());
     }
@@ -805,7 +825,8 @@ public:
 
     std::shared_ptr<Goal> condition;
 
-    GoalKind kind() const override { return GoalKind::Where; }
+    static constexpr GoalKind kKind = GoalKind::Where;
+    GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override {
         return std::make_shared<WhereGoal>(condition->clone());
     }
@@ -824,7 +845,8 @@ public:
     std::vector<std::shared_ptr<Goal>> thenBranch;
     std::vector<std::shared_ptr<Goal>> elseBranch;
 
-    GoalKind kind() const override { return GoalKind::If; }
+    static constexpr GoalKind kKind = GoalKind::If;
+    GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override {
         std::vector<std::shared_ptr<Goal>> copiedThen;
         copiedThen.reserve(thenBranch.size());
@@ -863,7 +885,8 @@ public:
     std::shared_ptr<MapExpr> object;
     std::string viewType;
 
-    ExprKind kind() const override { return ExprKind::Super; }
+    static constexpr ExprKind kKind = ExprKind::Super;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override {
         return std::make_shared<SuperExpr>(object, viewType);
     }
@@ -882,7 +905,8 @@ public:
     std::shared_ptr<Expr> iterable;
     std::vector<std::shared_ptr<Goal>> body;
 
-    GoalKind kind() const override { return GoalKind::For; }
+    static constexpr GoalKind kKind = GoalKind::For;
+    GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override {
         std::vector<std::shared_ptr<Goal>> copied;
         copied.reserve(body.size());
@@ -901,7 +925,8 @@ public:
     std::shared_ptr<Expr> condition;
     std::vector<std::shared_ptr<Goal>> body;
 
-    GoalKind kind() const override { return GoalKind::While; }
+    static constexpr GoalKind kKind = GoalKind::While;
+    GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override {
         std::vector<std::shared_ptr<Goal>> copied;
         copied.reserve(body.size());
@@ -938,7 +963,8 @@ public:
     std::vector<std::shared_ptr<Goal>> tryBody;
     std::vector<CatchClause> catches;
 
-    GoalKind kind() const override { return GoalKind::Try; }
+    static constexpr GoalKind kKind = GoalKind::Try;
+    GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override {
         std::vector<std::shared_ptr<Goal>> copiedTry;
         copiedTry.reserve(tryBody.size());
@@ -973,7 +999,8 @@ public:
     std::shared_ptr<Expr> value;
     std::vector<SwitchCase> cases;
 
-    GoalKind kind() const override { return GoalKind::Switch; }
+    static constexpr GoalKind kKind = GoalKind::Switch;
+    GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override {
         std::vector<SwitchCase> copied;
         copied.reserve(cases.size());
@@ -991,14 +1018,16 @@ public:
 
 class BreakGoal final : public Goal {
 public:
-    GoalKind kind() const override { return GoalKind::Break; }
+    static constexpr GoalKind kKind = GoalKind::Break;
+    GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override { return std::make_shared<BreakGoal>(); }
     std::string debug() const override { return "break"; }
 };
 
 class ContinueGoal final : public Goal {
 public:
-    GoalKind kind() const override { return GoalKind::Continue; }
+    static constexpr GoalKind kKind = GoalKind::Continue;
+    GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override { return std::make_shared<ContinueGoal>(); }
     std::string debug() const override { return "continue"; }
 };
@@ -1008,7 +1037,8 @@ public:
 
     std::vector<Arg> fields;
 
-    GoalKind kind() const override { return GoalKind::Return; }
+    static constexpr GoalKind kKind = GoalKind::Return;
+    GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override {
         std::vector<Arg> copied;
         copied.reserve(fields.size());
@@ -1035,7 +1065,8 @@ public:
 
     std::vector<std::shared_ptr<Goal>> goals;
 
-    GoalKind kind() const override { return GoalKind::Group; }
+    static constexpr GoalKind kKind = GoalKind::Group;
+    GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override {
         std::vector<std::shared_ptr<Goal>> copied;
         copied.reserve(goals.size());
@@ -1062,7 +1093,8 @@ public:
 
     std::vector<std::vector<std::shared_ptr<Goal>>> branches;
 
-    GoalKind kind() const override { return GoalKind::Or; }
+    static constexpr GoalKind kKind = GoalKind::Or;
+    GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override {
         std::vector<std::vector<std::shared_ptr<Goal>>> copied;
         copied.reserve(branches.size());
@@ -1100,7 +1132,8 @@ public:
     explicit ImportStmt(std::vector<std::string> paths) : paths(std::move(paths)) {}
     std::vector<std::string> paths;
 
-    StatementKind kind() const override { return StatementKind::Import; }
+    static constexpr StatementKind kKind = StatementKind::Import;
+    StatementKind kind() const override { return kKind; }
     std::string debug() const override {
         std::ostringstream oss;
         oss << "import ";
@@ -1171,7 +1204,8 @@ public:
     // declaration. Built-in annotations and user annotations share this AST.
     std::vector<Call> annotations;
 
-    StatementKind kind() const override { return StatementKind::Clause; }
+    static constexpr StatementKind kKind = StatementKind::Clause;
+    StatementKind kind() const override { return kKind; }
     bool isFact() const { return clauseKind == ClauseKind::Fact; }
 
     std::string debug() const override {
@@ -1229,7 +1263,8 @@ public:
     std::string name;
     std::shared_ptr<Expr> expr;
 
-    StatementKind kind() const override { return StatementKind::GlobalBinding; }
+    static constexpr StatementKind kKind = StatementKind::GlobalBinding;
+    StatementKind kind() const override { return kKind; }
     std::string debug() const override {
         return name + " := " + expr->debug() + ".";
     }
@@ -1289,7 +1324,8 @@ public:
     std::size_t maxDepth = 1;
     std::uint64_t targetId = 0;
 
-    ExprKind kind() const override { return ExprKind::GraphSelection; }
+    static constexpr ExprKind kKind = ExprKind::GraphSelection;
+    ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override {
         return std::make_shared<GraphSelectionExpr>(
             traversal,
@@ -1333,7 +1369,8 @@ public:
     std::vector<ClassIndexDecl> indexes;
     std::vector<std::shared_ptr<ClauseStmt>> methods;
 
-    StatementKind kind() const override { return StatementKind::Class; }
+    static constexpr StatementKind kKind = StatementKind::Class;
+    StatementKind kind() const override { return kKind; }
     std::string debug() const override { return renderDeclaration(true); }
     std::string schemaFingerprint() const { return renderDeclaration(false); }
 
@@ -1410,5 +1447,17 @@ public:
         return oss.str();
     }
 };
+
+// Checked downcast by integer kind: the replacement for dynamic_pointer_cast on
+// AST nodes. Every concrete node class is final and owns exactly one kKind, so
+// comparing one integer and then static-casting is equivalent to the RTTI cast.
+// RTTI compares type-name strings, and profiling showed that (strcmp,
+// __dynamic_cast, __do_dyncast) was 35-40% of interpretation time.
+// Returns null when `node` is null or of a different kind, like dynamic_pointer_cast.
+template <typename Node, typename Base>
+inline std::shared_ptr<Node> nodeAs(const std::shared_ptr<Base>& node) noexcept {
+    if (!node || node->kind() != Node::kKind) return nullptr;
+    return std::static_pointer_cast<Node>(node);
+}
 
 } // namespace Felidae

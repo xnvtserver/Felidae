@@ -85,7 +85,7 @@ ProjectConfiguration loadProjectConfiguration(const fs::path& projectDirectory) 
                 throw std::runtime_error(
                     "db.location accepts a positional path or path: value");
             }
-            const auto location = std::dynamic_pointer_cast<StringExpr>(argument.value);
+            const auto location = nodeAs<StringExpr>(argument.value);
             if (!location || location->value.empty()) {
                 throw std::runtime_error(
                     "db.location in init.fx requires a non-empty string path");
@@ -104,14 +104,14 @@ ProjectConfiguration loadProjectConfiguration(const fs::path& projectDirectory) 
                 throw std::runtime_error(
                     "db.configure accepts a positional map or options: map");
             }
-            const auto options = std::dynamic_pointer_cast<MapExpr>(argument.value);
+            const auto options = nodeAs<MapExpr>(argument.value);
             if (!options || !options->factType.empty()) {
                 throw std::runtime_error(
                     "db.configure in init.fx requires a plain map");
             }
             constexpr double maximumExactInteger = 9007199254740991.0;
             for (const auto& entry : options->entries) {
-                const auto number = std::dynamic_pointer_cast<NumberExpr>(entry.value);
+                const auto number = nodeAs<NumberExpr>(entry.value);
                 if (entry.key.empty() || !number || !std::isfinite(number->value) ||
                     number->value < 0 || number->value > maximumExactInteger ||
                     std::floor(number->value) != number->value ||

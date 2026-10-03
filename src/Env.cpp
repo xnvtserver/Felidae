@@ -3,20 +3,11 @@
 
 namespace Felidae {
 
-namespace {
-
-constexpr std::size_t kMaxPooledEnvBuckets = 4096;
-
-}
-
 void BindingTrail::assign(Env& env, SymbolId id, std::shared_ptr<Expr> value) {
-    const auto found = env.values_.find(id);
-    entries_.push_back(Entry{
-        &env,
-        id,
-        found != env.values_.end(),
-        found == env.values_.end() ? nullptr : found->second});
-    env.values_[id] = std::move(value);
+    const auto found = env.find(id);
+    const bool existed = found != env.end();
+    entries_.push_back(Entry{&env, id, existed, existed ? found->second : nullptr});
+    env[id] = std::move(value);
 }
 
 void BindingTrail::rollback(Checkpoint checkpoint) {
@@ -24,8 +15,8 @@ void BindingTrail::rollback(Checkpoint checkpoint) {
         Entry entry = std::move(entries_.back());
         entries_.pop_back();
         if (!entry.env) continue;
-        if (entry.existed) entry.env->values_[entry.id] = std::move(entry.previous);
-        else entry.env->values_.erase(entry.id);
+        if (entry.existed) (*entry.env)[entry.id] = std::move(entry.previous);
+        else entry.env->erase(entry.id);
     }
 }
 
@@ -42,7 +33,8 @@ std::shared_ptr<Expr> findEnvValue(const Env& env, const std::string& name) {
 }
 
 std::shared_ptr<Expr> findReturnValue(const Env& env) {
-    return findEnvValue(env, internalSymbolString(InternalSymbolKind::Return));
+    const auto found = env.find(InternalSymbol::ReturnId);
+    return found == env.end() ? nullptr : found->second;
 }
 
 bool bindEnvValue(Env& env, const std::string& name, const std::shared_ptr<Expr>& value) {
@@ -127,110 +119,6 @@ void GlobalEnv::replaceValues(Env values) {
 
 const GlobalEnv::Map& GlobalEnv::values() const {
     return values_;
-}
-
-EnvFrame::EnvFrame(EnvFramePool* pool, Env* env) : pool_(pool), env_(env) {}
-
-EnvFrame::EnvFrame(EnvFrame&& other) noexcept : pool_(other.pool_), env_(other.env_) {
-    other.pool_ = nullptr;
-    other.env_ = nullptr;
-}
-
-EnvFrame& EnvFrame::operator=(EnvFrame&& other) noexcept {
-    if (this != &other) {
-        reset();
-        pool_ = other.pool_;
-        env_ = other.env_;
-        other.pool_ = nullptr;
-        other.env_ = nullptr;
-    }
-    return *this;
-}
-
-EnvFrame::~EnvFrame() {
-    reset();
-}
-
-Env& EnvFrame::get() {
-    return *env_;
-}
-
-const Env& EnvFrame::get() const {
-    return *env_;
-}
-
-Env* EnvFrame::operator->() {
-    return env_;
-}
-
-Env& EnvFrame::operator*() {
-    return *env_;
-}
-
-EnvFrame::operator bool() const {
-    return env_ != nullptr;
-}
-
-void EnvFrame::reset() {
-    if (pool_ && env_) {
-        pool_->recycle(env_);
-    }
-    pool_ = nullptr;
-    env_ = nullptr;
-}
-
-EnvFrame EnvFramePool::acquire() {
-    if (free_.empty()) {
-        ++created_;
-        return EnvFrame(this, new Env());
-    }
-    std::unique_ptr<Env> env = std::move(free_.back());
-    free_.pop_back();
-    return EnvFrame(this, env.release());
-}
-
-EnvFrame EnvFramePool::acquireCopy(const Env& source) {
-    ++copies_;
-    EnvFrame frame = acquire();
-    Env& env = frame.get();
-    env.clear();
-    env.reserve(source.size());
-    env.insert(source.begin(), source.end());
-    return frame;
-}
-
-EnvFrame EnvFramePool::acquireMove(Env&& source) {
-    EnvFrame frame = acquire();
-    frame.get() = std::move(source);
-    return frame;
-}
-
-void EnvFramePool::recycle(Env* env) {
-    if (!env) return;
-    env->clear();
-    if (env->bucket_count() > kMaxPooledEnvBuckets) {
-        delete env;
-        return;
-    }
-    free_.push_back(std::unique_ptr<Env>(env));
-}
-
-void EnvFramePool::collectGarbage(std::size_t maxCachedFrames) {
-    while (free_.size() > maxCachedFrames) {
-        free_.pop_back();
-    }
-}
-
-std::size_t EnvFramePool::created() const {
-    return created_;
-}
-
-std::size_t EnvFramePool::cached() const {
-    return free_.size();
-}
-
-std::size_t EnvFramePool::copies() const {
-    return copies_;
 }
 
 } // namespace Felidae

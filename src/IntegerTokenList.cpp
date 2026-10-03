@@ -1,5 +1,6 @@
 #include "IntegerTokenList.h"
 
+#include <algorithm>
 #include <cctype>
 #include <stdexcept>
 
@@ -192,6 +193,25 @@ void IntegerTokenList::encodeNextStatement() const {
   }
   nextStatementBegin_ = end;
   complete_ = end == source_.size();
+}
+
+IntegerTokenList::LineColumn IntegerTokenList::lineColumn(std::size_t offset) const {
+  if (lineStarts_.empty()) {
+    lineStarts_.push_back(0);
+    for (std::size_t index = 0; index < source_.size(); ++index) {
+      if (source_[index] == '\r') {
+        if (index + 1 < source_.size() && source_[index + 1] == '\n') ++index;
+        lineStarts_.push_back(index + 1);
+      } else if (source_[index] == '\n') {
+        lineStarts_.push_back(index + 1);
+      }
+    }
+  }
+  offset = std::min(offset, source_.size());
+  const auto next = std::upper_bound(lineStarts_.begin(), lineStarts_.end(), offset);
+  const auto line = static_cast<std::size_t>(next - lineStarts_.begin());
+  return LineColumn{static_cast<int>(line),
+                    static_cast<int>(offset - lineStarts_[line - 1] + 1)};
 }
 
 bool IntegerTokenList::has(std::size_t index) const {

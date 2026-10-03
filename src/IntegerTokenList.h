@@ -30,6 +30,15 @@ public:
   IntegerTokenList(std::shared_ptr<WordVocabulary> tokenizer, std::string source);
 
   const std::string &source() const noexcept { return source_; }
+  // 1-based line and column of a byte offset (clamped to the source size). A
+  // line ends at \n, \r\n or a lone \r. The line starts are indexed once, so
+  // each lookup is O(log lines); spans are stamped on every AST node, and
+  // rescanning the source for each one made large files quadratic to parse.
+  struct LineColumn {
+    int line = 1;
+    int column = 1;
+  };
+  LineColumn lineColumn(std::size_t offset) const;
   bool has(std::size_t index) const;
   const Entry &entry(std::size_t index) const;
   std::size_t loadedSize() const noexcept { return entries_.size(); }
@@ -46,6 +55,7 @@ private:
   mutable std::size_t nextStatementBegin_ = 0;
   mutable std::size_t encodeCount_ = 0;
   mutable bool complete_ = false;
+  mutable std::vector<std::size_t> lineStarts_;
 };
 
 } // namespace Felidae

@@ -48,14 +48,14 @@ inline ParsedOperatorAnnotation decodeOperatorAnnotation(const Call& annotation)
     };
     const auto text = [&](std::string_view name, bool required = false) -> std::string {
         auto value = argument(name);
-        if (auto literal = std::dynamic_pointer_cast<StringExpr>(value)) return literal->value;
+        if (auto literal = nodeAs<StringExpr>(value)) return literal->value;
         if (name == "operator") {
-            if (auto function = std::dynamic_pointer_cast<FunctionRefExpr>(value)) {
+            if (auto function = nodeAs<FunctionRefExpr>(value)) {
                 return function->name;
             }
         }
         if (name == "result") {
-            if (auto type = std::dynamic_pointer_cast<ClassRefExpr>(value)) return type->name;
+            if (auto type = nodeAs<ClassRefExpr>(value)) return type->name;
         }
         if (value) {
             throw std::runtime_error(
@@ -77,7 +77,7 @@ inline ParsedOperatorAnnotation decodeOperatorAnnotation(const Call& annotation)
                     "' requires named type bindings");
             }
             for (const auto& entry : map->entries) {
-                auto type = std::dynamic_pointer_cast<VarExpr>(entry.value);
+                auto type = nodeAs<VarExpr>(entry.value);
                 if (!type || !isFelidaeTypeAnnotationName(type->name)) {
                     throw std::runtime_error(
                         "@" + annotation.name + " binding '" + entry.key + "' requires a type");
@@ -96,14 +96,14 @@ inline ParsedOperatorAnnotation decodeOperatorAnnotation(const Call& annotation)
                     languageTypeIdForName(type->name)});
             }
         };
-        if (auto map = std::dynamic_pointer_cast<MapExpr>(value)) {
+        if (auto map = nodeAs<MapExpr>(value)) {
             append(map);
             return result;
         }
         if (allowArray) {
-            if (auto array = std::dynamic_pointer_cast<ArrayExpr>(value)) {
+            if (auto array = nodeAs<ArrayExpr>(value)) {
                 for (const auto& item : array->items) {
-                    auto map = std::dynamic_pointer_cast<MapExpr>(item);
+                    auto map = nodeAs<MapExpr>(item);
                     if (!map || map->entries.size() != 1) {
                         throw std::runtime_error(
                             "@" + annotation.name + " '" + std::string(name) +

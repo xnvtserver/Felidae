@@ -142,6 +142,7 @@ if(FELIDAE_BUILD_TESTS)
   target_link_libraries(felidae_storage_tests PRIVATE felidae_runtime)
   felidae_common(felidae_storage_tests)
   add_test(NAME storage_key_encoding_unit COMMAND felidae_storage_tests)
+  set_tests_properties(storage_key_encoding_unit PROPERTIES TIMEOUT 120)
   set(FELIDAE_FX_TEST_COMMAND
     ${CMAKE_COMMAND}
     -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
