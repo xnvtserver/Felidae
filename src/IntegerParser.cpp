@@ -1176,13 +1176,26 @@ std::shared_ptr<ClassStmt> IntegerParser::parseClassStatement(std::size_t begin)
 
 Program IntegerParser::parseProgram() {
     Program program;
-    while (!atEnd()) {
-        const auto before = byte_;
-        program.addStatement(parseStatement());
-        ++metrics_.statementCount;
-        if (byte_ == before) throw IntegerParserError("Integer parser made no progress in program");
-    }
+    while (!programComplete())
+        program.addStatement(parseNextProgramStatement());
     return program;
+}
+
+bool IntegerParser::programComplete() {
+    return atEnd();
+}
+
+std::shared_ptr<Statement> IntegerParser::parseNextProgramStatement() {
+    if (programComplete()) {
+        throw IntegerParserError("Expected a program statement");
+    }
+    const auto before = byte_;
+    auto statement = parseStatement();
+    ++metrics_.statementCount;
+    if (byte_ == before) {
+        throw IntegerParserError("Integer parser made no progress in program");
+    }
+    return statement;
 }
 
 std::vector<std::shared_ptr<Goal>> IntegerParser::parseQuery() {

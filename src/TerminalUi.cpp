@@ -1,11 +1,12 @@
 #include "TerminalUi.h"
 
+#include "Environment.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <cstdlib>
 #include <iostream>
 #include <iterator>
 #include <mutex>
@@ -47,7 +48,7 @@ bool isInteractiveTerminal(std::ostream& output) {
 }
 
 bool enableTerminalControl() {
-    if (const char* term = std::getenv("TERM"); term && std::string_view(term) == "dumb") {
+    if (const auto term = environmentVariable("TERM"); term && *term == "dumb") {
         return false;
     }
 #ifdef _WIN32
@@ -62,7 +63,7 @@ bool enableTerminalControl() {
 }
 
 bool terminalColorAllowed() {
-    return std::getenv("NO_COLOR") == nullptr;
+    return !environmentVariable("NO_COLOR").has_value();
 }
 
 bool isKeyword(TokenId::Id id) {

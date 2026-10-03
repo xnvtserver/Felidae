@@ -40,6 +40,8 @@ public:
                            std::shared_ptr<OperatorRegistry> operators = {});
 
     Program parseProgram();
+    bool programComplete();
+    std::shared_ptr<Statement> parseNextProgramStatement();
     std::vector<std::shared_ptr<Goal>> parseQuery();
     std::shared_ptr<Expr> parseExpressionText();
     bool emptyInput();

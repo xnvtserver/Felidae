@@ -21,15 +21,31 @@ get_filename_component(source_directory "${source}" DIRECTORY)
 get_filename_component(source_name "${source}" NAME)
 get_filename_component(project_kind "${source_directory}" NAME)
 
-# These fixture directories deliberately share their manifest database across
-# seed/read processes. Every other .fx regression is an independent Felidae
-# project, even when its source lives in the common tests/ directory.
-set(persistent_projects
-  persistence schema promotion index designation inheritance config)
-list(FIND persistent_projects "${project_kind}" persistent_index)
+# Only the ordered fixture members below share durable state. Other programs
+# in the same source directory are independent regressions and may run in
+# parallel without observing or deleting the fixture database.
+set(persistent_sources
+  rocks_persistence_seed.fx
+  rocks_persistence_reseed.fx
+  rocks_persistence_read.fx
+  rocks_schema_seed.fx
+  invalid_rocks_schema_change.fx
+  schemaless_promotion_seed.fx
+  schemaless_promotion_class.fx
+  rocks_index_seed.fx
+  rocks_index_update.fx
+  rocks_index_read.fx
+  rocks_designation_seed.fx
+  rocks_designation_read.fx
+  rocks_inheritance_seed.fx
+  rocks_inheritance_read.fx
+  rocks_config_set.fx
+  rocks_config_read.fx)
+list(FIND persistent_sources "${source_name}" persistent_index)
 
 if(persistent_index EQUAL -1)
-  string(SHA256 project_hash "${source}")
+  string(JOIN "|" argument_key ${arguments})
+  string(SHA256 project_hash "${source}|${argument_key}")
   set(project_directory "${FELIDAE_TEST_ROOT}/${project_hash}")
   file(REMOVE_RECURSE "${project_directory}")
   file(MAKE_DIRECTORY "${project_directory}")
@@ -39,8 +55,13 @@ if(persistent_index EQUAL -1)
     "db.location(\"./data.db\").\n")
   set(execution_source "${project_directory}/${source_name}")
 else()
-  set(project_directory "${source_directory}")
-  set(execution_source "${source}")
+  set(project_directory "${FELIDAE_TEST_ROOT}/persistent/${project_kind}")
+  file(MAKE_DIRECTORY "${project_directory}")
+  file(COPY "${source_directory}/" DESTINATION "${project_directory}")
+  file(WRITE "${project_directory}/init.fx"
+    "import \"db\".\n"
+    "db.location(\"./data.db\").\n")
+  set(execution_source "${project_directory}/${source_name}")
 endif()
 
 execute_process(

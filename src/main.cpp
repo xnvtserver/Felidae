@@ -1,6 +1,7 @@
 #include "Interpreter.h"
 #include "DebugSession.h"
 #include "DatabaseService.h"
+#include "Environment.h"
 #include "FelidaeRuntime.h"
 #include "ProjectConfiguration.h"
 #include "ReplLineEditor.h"
@@ -12,13 +13,13 @@
 #include <atomic>
 #include <chrono>
 #include <cctype>
-#include <cstdlib>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -580,11 +581,37 @@ static ProjectConfiguration projectConfigurationFor(CliOptions& options) {
     return loadProjectConfiguration(projectDirectory);
 }
 
+static std::vector<std::string> databaseServiceArguments(
+    const CliOptions& options) {
+    if (!options.programFile || options.debug || options.repl) {
+        throw std::logic_error(
+            "Only non-interactive program execution may use the database service");
+    }
+
+    // A database service can outlive the client that started it and therefore
+    // retains that client's working directory. Always send the resolved entry
+    // path: a relative path must continue to select its own sibling init.fx
+    // when a later client reaches the same database from another directory.
+    std::vector<std::string> arguments;
+    arguments.push_back(options.programFile->string());
+    if (options.query) arguments.push_back(*options.query);
+    arguments.insert(arguments.end(), options.remainingArgs.begin(),
+                     options.remainingArgs.end());
+    if (options.metricsJson) arguments.emplace_back("--metrics-json");
+    if (options.benchmarkRepeat != 1) {
+        arguments.emplace_back("--benchmark-repeat");
+        arguments.push_back(std::to_string(options.benchmarkRepeat));
+    }
+    return arguments;
+}
+
 static int executeOptions(CliOptions options,
                           const std::atomic_bool* cancellation,
                           std::istream& input,
                           std::ostream& output,
-                          std::ostream& errorOutput) {
+                          std::ostream& errorOutput,
+                          std::optional<ProjectConfiguration> resolvedProject = std::nullopt,
+                          std::optional<fs::path> ownedDatabase = std::nullopt) {
     try {
         if (options.showHelp) {
             printHelp(output);
@@ -601,7 +628,22 @@ static int executeOptions(CliOptions options,
 
         using Clock = std::chrono::steady_clock;
         const auto loadStarted = Clock::now();
-        const ProjectConfiguration project = projectConfigurationFor(options);
+        ProjectConfiguration project = resolvedProject
+            ? std::move(*resolvedProject)
+            : projectConfigurationFor(options);
+        if (ownedDatabase) {
+            const fs::path owner = fs::absolute(*ownedDatabase).lexically_normal();
+            std::error_code equivalentError;
+            const bool equivalent = fs::equivalent(
+                project.databaseDirectory, owner, equivalentError);
+            if ((!equivalentError && !equivalent) ||
+                (equivalentError && project.databaseDirectory != owner)) {
+                throw std::runtime_error(
+                    "init.fx selects RocksDB directory '" +
+                    project.databaseDirectory.string() +
+                    "', but this service owns '" + owner.string() + "'");
+            }
+        }
         Interpreter interpreter;
         interpreter.setIoStreams(input, output);
         if (cancellation) {
@@ -733,7 +775,15 @@ int main(int argc, char** argv) {
             for (int index = 2; index < argc; ++index) {
                 if (std::string_view(argv[index]) == "--database-directory" &&
                     index + 1 < argc) {
+                    if (database) {
+                        throw std::runtime_error(
+                            "--db-service accepts one --database-directory");
+                    }
                     database = fs::path(argv[++index]);
+                } else {
+                    throw std::runtime_error(
+                        "Unknown database service option: " +
+                        std::string(argv[index]));
                 }
             }
             if (!database) {
@@ -741,17 +791,20 @@ int main(int argc, char** argv) {
                     "--db-service requires --database-directory PATH");
             }
             std::chrono::seconds idleTimeout(60);
-            if (const char* configured = std::getenv("FELIDAE_DB_IDLE_SECONDS")) {
+            if (const auto configured =
+                    environmentVariable("FELIDAE_DB_IDLE_SECONDS")) {
                 std::size_t consumed = 0;
-                const auto seconds = std::stoull(configured, &consumed);
-                if (consumed != std::string(configured).size() || seconds > 86400) {
+                const auto seconds = std::stoull(*configured, &consumed);
+                if (consumed != configured->size() || seconds > 86400) {
                     throw std::runtime_error(
                         "FELIDAE_DB_IDLE_SECONDS must be an integer from 0 to 86400");
                 }
                 idleTimeout = std::chrono::seconds(seconds);
             }
-            return runDatabaseService(*database, idleTimeout,
-                [](const std::vector<std::string>& forwarded,
+            const fs::path ownedDatabase =
+                fs::absolute(*database).lexically_normal();
+            return runDatabaseService(ownedDatabase, idleTimeout,
+                [ownedDatabase](const std::vector<std::string>& forwarded,
                    const std::atomic_bool& cancellation,
                    std::ostream& standardOutput,
                    std::ostream& standardError) {
@@ -764,7 +817,8 @@ int main(int argc, char** argv) {
                         exitCode = executeOptions(
                             parseCli(static_cast<int>(pointers.size()), pointers.data()),
                             &cancellation, noInput,
-                            standardOutput, standardError);
+                            standardOutput, standardError,
+                            std::nullopt, ownedDatabase);
                     } catch (const std::exception& error) {
                         standardError << "error: " << error.what() << '\n';
                     }
@@ -774,6 +828,9 @@ int main(int argc, char** argv) {
 
         if (argc >= 3 && std::string_view(argv[1]) == "db" &&
             std::string_view(argv[2]) == "stop") {
+            if (argc >= 4 && std::string_view(argv[3]) == "--db") {
+                throw std::runtime_error("Unknown option: --db");
+            }
             if (argc > 4) {
                 throw std::runtime_error(
                     "Usage: felidae db stop [program.fx|project-directory]");
@@ -797,14 +854,14 @@ int main(int argc, char** argv) {
         }
         const ProjectConfiguration project = projectConfigurationFor(options);
         if (options.debug || options.repl) {
-            return runInteractiveDatabaseOwner(project.databaseDirectory, [&] {
+            return runInteractiveDatabaseOwner(project.databaseDirectory,
+                [&, options = std::move(options), project]() mutable {
                 return executeOptions(std::move(options), nullptr,
-                                      std::cin, std::cout, std::cerr);
+                                      std::cin, std::cout, std::cerr,
+                                      std::move(project));
             });
         }
-        std::vector<std::string> forwarded;
-        forwarded.reserve(static_cast<std::size_t>(argc - 1));
-        for (int index = 1; index < argc; ++index) forwarded.emplace_back(argv[index]);
+        const std::vector<std::string> forwarded = databaseServiceArguments(options);
         const auto response = requestDatabaseExecution(
             fs::absolute(fs::path(argv[0])).lexically_normal(),
             project.databaseDirectory, forwarded, std::cout, std::cerr);
