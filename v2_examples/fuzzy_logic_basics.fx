@@ -57,12 +57,11 @@ end
 # A rule can combine two membership degrees deterministically instead of
 # branching: "comfortable" only where warm and NOT humid overlap.
 def comfortLevel(warm: number, humid: number) =>
-    warmProfile := {peak: 30, fades_in: 15, fades_out: 40}.
-    dryProfile := {peak: 0, fades_in: 0, fades_out: 60}.
-    warmDegree := membership(score: warm, profile: warmProfile).
-    dryDegree := membership(score: humid, profile: dryProfile).
-    return fuzzyAnd(a: warmDegree, b: dryDegree).
-end
+    warmProfile := {peak: 30, fades_in: 15, fades_out: 40}
+    dryProfile := {peak: 0, fades_in: 0, fades_out: 60}
+    warmDegree := membership(score: warm, profile: warmProfile)
+    dryDegree := membership(score: humid, profile: dryProfile)
+    return fuzzyAnd(a: warmDegree, b: dryDegree)
 
 def main() =>
     return {

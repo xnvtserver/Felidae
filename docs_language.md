@@ -128,6 +128,9 @@ on both endpoints, for example `where(left.department_id == right.id)`.
 
 `db.sync(path:)` atomically reloads a fact-only `.fx` source file while
 preserving unchanged logical identities. It is exposed by `core/db.fx`.
+Facts imported from CSV or a fact-only `.fx` file retain source ownership.
+Conditional insert, update, and delete operations persist that source
+automatically with staged atomic replacement; there is no public sync call.
 
 Persistent class methods retain a fail-closed RocksDB source locator.
 `fx.interpret` requires class, function, object receiver, file, and original
@@ -181,10 +184,16 @@ end
 
 ## Tokenization
 
-The deterministic word-vocabulary model is `models/felidae-bpe/model.txt`
-(not byte-pair encoding despite the directory name - see `src/Tokenizer.h`).
-The normal lexer owns its fixed first 59 syntax IDs, comments, strings,
-numbers, punctuation, operators, and reserved words (including `class`,
-`extends`, `this`, `index`, and `end`). The remaining line-oriented text dictionary
-stores identifiers and mixfix anchors only; missing identifiers receive
-parse-local IDs in lexical order without training or model-file mutation.
+Identifiers and mixfix anchors are tokenized by `WordVocabulary`
+(`src/Tokenizer.h`), a fixed, compile-time, byte-level vocabulary - one
+token per byte, offset past the 59 fixed grammar IDs, no file on disk and
+no training step. The normal lexer owns its fixed first 59 syntax IDs,
+comments, strings, numbers, punctuation, operators, and reserved words
+(including `class`, `extends`, `index`, and `end`).
+
+## Reloading source
+
+Run `felidae program.fx --serve` to watch the root module and its loaded
+imports. A changed source tree is parsed into a fresh AST interpreter and
+swapped in only after successful registration; the previous program remains
+available when a save has syntax or semantic errors.
