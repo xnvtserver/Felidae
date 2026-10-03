@@ -47,7 +47,6 @@ cmake --build build/debug --target felidae -j2
 build/debug/felidae tests/direct_ast_smoke.fx
 build/debug/felidae v2_examples/mixfix_nested_expression.fx
 build/debug/felidae tests/direct_ast_smoke.fx --debug
-build/debug/felidae --db build/example.db tests/rocks_graph_traversal.fx
 ```
 
 Live breakpoints and stepping are enabled only by `--debug`; normal execution
@@ -55,7 +54,19 @@ leaves the goal hook unset.
 
 ## Interactive REPL
 
-Run `felidae` without a source file to open the REPL. On Windows:
+Every executable project directory must contain `init.fx`:
+
+```felidae
+import "db".
+db.location("./data/felidae.db").
+db.configure(options: {max_background_jobs: 4}).
+```
+
+The manifest is resolved only beside the entry program. Relative paths are
+relative to that directory. Felidae rejects missing or empty manifests and
+never creates an implicit temporary database. `--db` is no longer supported.
+
+Run `felidae` without a source file to open the REPL using `./init.fx`. On Windows:
 
 ```powershell
 .\build\debug\x64\Debug\felidae.exe
@@ -96,8 +107,8 @@ RocksDB is the authoritative durable fact and graph store. Each fact is an
 independently keyed node. Schemas, indexes, explicit `Link` edges, adjacency,
 provenance, and temporal metadata use fixed internal keyspaces.
 Interpreter memory is reserved for ASTs, immutable temporary values, local
-bindings, debugger frames, cursors, and bounded result batches. Without
-`--db`, Felidae creates an isolated temporary database for the execution.
+bindings, debugger frames, cursors, and bounded result batches. The required
+project `init.fx` selects the RocksDB directory before execution starts.
 
 ## Tokenization
 

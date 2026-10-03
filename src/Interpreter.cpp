@@ -1138,6 +1138,18 @@ void Interpreter::openDatabase(const std::filesystem::path& directory) {
     }
 }
 
+void Interpreter::configureDatabase(
+    const std::map<std::string, std::uint64_t>& options) {
+    if (!durableStore_) {
+        throw InterpreterError("Database configuration requires an open RocksDB store");
+    }
+    try {
+        (void)durableStore_->configure(options);
+    } catch (const std::exception& error) {
+        throw InterpreterError(error.what());
+    }
+}
+
 void Interpreter::closeNativeLibraries() {
     for (auto& library : nativeLibraries_) closeSharedLibrary(library.handle);
     nativeLibraries_.clear();
@@ -1926,6 +1938,10 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
 }
 
 void Interpreter::addImport(const std::filesystem::path& baseDir, const std::string& pattern) {
+    // `db` is a native project capability declared by init.fx, not a source
+    // module. Accepting the import keeps dependency intent explicit without
+    // resolving a redundant core/db.fx shim.
+    if (pattern == "db") return;
     auto files = expandImportPattern(baseDir, pattern);
     for (const auto& file : files) loadProgramFile(file);
 }

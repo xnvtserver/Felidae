@@ -41,6 +41,8 @@ public:
     Interpreter();
     ~Interpreter();
     void openDatabase(const std::filesystem::path& directory);
+    void configureDatabase(
+        const std::map<std::string, std::uint64_t>& options);
     // Console builtins use streams owned by the caller. This keeps database
     // service sessions isolated; the default terminal streams remain the
     // fallback for embedded callers that do not configure them.

@@ -1,0 +1,58 @@
+if(NOT DEFINED FELIDAE_EXECUTABLE OR NOT DEFINED FELIDAE_TEST_ROOT)
+  message(FATAL_ERROR "RunFelidaeProjectTest requires FELIDAE_EXECUTABLE and FELIDAE_TEST_ROOT")
+endif()
+
+set(source "")
+set(arguments)
+math(EXPR last_argument "${CMAKE_ARGC} - 1")
+foreach(index RANGE 0 ${last_argument})
+  if(source STREQUAL "" AND CMAKE_ARGV${index} MATCHES "[.]fx$")
+    set(source "${CMAKE_ARGV${index}}")
+  elseif(NOT source STREQUAL "")
+    list(APPEND arguments "${CMAKE_ARGV${index}}")
+  endif()
+endforeach()
+if(source STREQUAL "")
+  message(FATAL_ERROR "RunFelidaeProjectTest did not receive a Felidae source file")
+endif()
+
+get_filename_component(source "${source}" ABSOLUTE)
+get_filename_component(source_directory "${source}" DIRECTORY)
+get_filename_component(source_name "${source}" NAME)
+get_filename_component(project_kind "${source_directory}" NAME)
+
+# These fixture directories deliberately share their manifest database across
+# seed/read processes. Every other .fx regression is an independent Felidae
+# project, even when its source lives in the common tests/ directory.
+set(persistent_projects
+  persistence schema promotion index designation inheritance config)
+list(FIND persistent_projects "${project_kind}" persistent_index)
+
+if(persistent_index EQUAL -1)
+  string(SHA256 project_hash "${source}")
+  set(project_directory "${FELIDAE_TEST_ROOT}/${project_hash}")
+  file(REMOVE_RECURSE "${project_directory}")
+  file(MAKE_DIRECTORY "${project_directory}")
+  file(COPY "${source_directory}/" DESTINATION "${project_directory}")
+  file(WRITE "${project_directory}/init.fx"
+    "import \"db\".\n"
+    "db.location(\"./data.db\").\n")
+  set(execution_source "${project_directory}/${source_name}")
+else()
+  set(project_directory "${source_directory}")
+  set(execution_source "${source}")
+endif()
+
+execute_process(
+  COMMAND "${FELIDAE_EXECUTABLE}" "${execution_source}" ${arguments}
+  RESULT_VARIABLE result)
+
+if(persistent_index EQUAL -1)
+  execute_process(
+    COMMAND "${FELIDAE_EXECUTABLE}" db stop "${project_directory}"
+    OUTPUT_QUIET ERROR_QUIET)
+endif()
+
+if(NOT result EQUAL 0)
+  message(FATAL_ERROR "Felidae regression exited with code ${result}")
+endif()

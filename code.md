@@ -21,7 +21,10 @@ training step, generated vocabulary, or mutable token assignment.
 RocksDB is Felidae's authoritative persistent fact and graph database. The
 interpreter keeps only execution state and bounded query results in memory;
 typed bucket scans, indexes, stable node identities, and adjacency are read
-from the store.
+from the store. Before constructing an executable runtime, the frontend parses
+the entry program's sibling `init.fx`, requires `db.location(...)`, and opens
+that RocksDB directory. It never silently substitutes an in-memory or
+temporary fact store.
 
 Mixfix is deterministic parser and AST-interpreter behavior. Literal anchors
 are tokenized from their source spelling and matched by the registered

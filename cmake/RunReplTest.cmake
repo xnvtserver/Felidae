@@ -2,7 +2,11 @@ if(NOT DEFINED FELIDAE_EXE OR NOT DEFINED TEST_DIRECTORY)
   message(FATAL_ERROR "FELIDAE_EXE and TEST_DIRECTORY are required")
 endif()
 
+file(REMOVE_RECURSE "${TEST_DIRECTORY}")
 file(MAKE_DIRECTORY "${TEST_DIRECTORY}")
+file(WRITE "${TEST_DIRECTORY}/init.fx"
+  "import \"db\".\n"
+  "db.location(\"./data.db\").\n")
 set(input_file "${TEST_DIRECTORY}/repl-session.txt")
 file(WRITE "${input_file}"
   "def broken( =>\n"
@@ -61,6 +65,7 @@ file(WRITE "${input_file}"
 
 execute_process(
   COMMAND "${FELIDAE_EXE}"
+  WORKING_DIRECTORY "${TEST_DIRECTORY}"
   INPUT_FILE "${input_file}"
   OUTPUT_VARIABLE repl_output
   ERROR_VARIABLE repl_error
@@ -69,6 +74,9 @@ execute_process(
 if(NOT repl_result EQUAL 0)
   message(FATAL_ERROR "REPL failed (${repl_result}): ${repl_error}\n${repl_output}")
 endif()
+execute_process(
+  COMMAND "${FELIDAE_EXE}" db stop "${TEST_DIRECTORY}"
+  OUTPUT_QUIET ERROR_QUIET)
 if(NOT repl_output MATCHES "\\[error\\]")
   message(FATAL_ERROR "REPL did not diagnose malformed multiline source:\n${repl_output}")
 endif()

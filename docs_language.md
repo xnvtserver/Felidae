@@ -128,7 +128,22 @@ on both endpoints, for example `where(left.department_id == right.id)`.
 
 `db.sync(path:)` atomically reloads a fact-only `.fx` source file while
 preserving unchanged logical identities. Database operations are built into
-the interpreter and require no library import.
+the interpreter, so application source files require no library import. The
+project manifest still declares `import "db".` explicitly as its storage
+capability.
+
+Every entry program requires an `init.fx` in the same directory. It imports
+the builtin database capability, selects the RocksDB directory, and optionally
+applies supported RocksDB settings before program loading:
+
+```felidae
+import "db".
+db.location("./data/felidae.db").
+db.configure(options: {max_background_jobs: 4, bytes_per_sync: 1048576}).
+```
+
+Relative locations resolve from `init.fx`. Missing, empty, duplicate, or
+invalid manifests stop execution; there is no temporary database fallback.
 
 Persistent class methods retain a fail-closed RocksDB source locator.
 `fx.interpret` requires class, function, object receiver, file, and original
