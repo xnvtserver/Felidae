@@ -152,8 +152,11 @@ void parseProgramFileStatements(
     if (!tokenizer) tokenizer = std::make_shared<WordVocabulary>();
     IntegerTokenList input(std::move(tokenizer), readSourceFile(normalized));
     IntegerParser parser(input, std::move(operators));
-    Program program = parser.parseProgram();
-    for (auto& statement : program.statements) consume(std::move(statement));
+    // Publish each completed statement before parsing the next one. Import
+    // consumers can thereby register public mixfix syntax in the shared
+    // operator registry before the following statement is assembled.
+    while (!parser.programComplete())
+        consume(parser.parseNextProgramStatement());
     if (metrics) {
         metrics->tokensLexed += input.entries().size();
         metrics->iterations += parser.metrics().iterations;

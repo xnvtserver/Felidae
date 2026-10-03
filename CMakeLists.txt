@@ -545,9 +545,15 @@ if(FELIDAE_BUILD_TESTS)
       -DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/graph-debug-test
       -P ${CMAKE_SOURCE_DIR}/cmake/RunGraphDebugTest.cmake)
 
-  set(FELIDAE_PERSISTENCE_TEST_DB "${CMAKE_CURRENT_BINARY_DIR}/test-data/persistence.db")
+  set(FELIDAE_PERSISTENCE_TEST_PROJECT
+    "${CMAKE_CURRENT_BINARY_DIR}/test-projects/persistent/persistence")
+  set(FELIDAE_PERSISTENCE_TEST_DB "${FELIDAE_PERSISTENCE_TEST_PROJECT}/data.db")
   add_test(NAME rocks_persistence_clean
-    COMMAND ${CMAKE_COMMAND} -E remove_directory ${FELIDAE_PERSISTENCE_TEST_DB})
+    COMMAND ${CMAKE_COMMAND}
+      -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
+      -DPROJECT_DIRECTORY=${FELIDAE_PERSISTENCE_TEST_PROJECT}
+      -DDATABASE_DIRECTORY=${FELIDAE_PERSISTENCE_TEST_DB}
+      -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
   set_tests_properties(rocks_persistence_clean PROPERTIES FIXTURES_SETUP persistence_clean)
 
   add_test(NAME rocks_persistence_seed
@@ -570,13 +576,19 @@ if(FELIDAE_BUILD_TESTS)
     FIXTURES_REQUIRED persistence_reseeded
     PASS_REGULAR_EXPRESSION "42")
   add_test(NAME rocks_persistence_stop
-    COMMAND felidae db stop ${CMAKE_SOURCE_DIR}/tests/persistence)
+    COMMAND felidae db stop ${FELIDAE_PERSISTENCE_TEST_PROJECT})
   set_tests_properties(rocks_persistence_stop PROPERTIES
     FIXTURES_CLEANUP "persistence_clean;persistence_seeded;persistence_reseeded")
 
-  set(FELIDAE_SCHEMA_TEST_DB "${CMAKE_CURRENT_BINARY_DIR}/test-data/schema.db")
+  set(FELIDAE_SCHEMA_TEST_PROJECT
+    "${CMAKE_CURRENT_BINARY_DIR}/test-projects/persistent/schema")
+  set(FELIDAE_SCHEMA_TEST_DB "${FELIDAE_SCHEMA_TEST_PROJECT}/data.db")
   add_test(NAME rocks_schema_clean
-    COMMAND ${CMAKE_COMMAND} -E remove_directory ${FELIDAE_SCHEMA_TEST_DB})
+    COMMAND ${CMAKE_COMMAND}
+      -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
+      -DPROJECT_DIRECTORY=${FELIDAE_SCHEMA_TEST_PROJECT}
+      -DDATABASE_DIRECTORY=${FELIDAE_SCHEMA_TEST_DB}
+      -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
   set_tests_properties(rocks_schema_clean PROPERTIES FIXTURES_SETUP schema_clean)
 
   add_test(NAME rocks_schema_seed
@@ -592,13 +604,19 @@ if(FELIDAE_BUILD_TESTS)
     FIXTURES_REQUIRED schema_seeded
     WILL_FAIL TRUE)
   add_test(NAME rocks_schema_stop
-    COMMAND felidae db stop ${CMAKE_SOURCE_DIR}/tests/schema)
+    COMMAND felidae db stop ${FELIDAE_SCHEMA_TEST_PROJECT})
   set_tests_properties(rocks_schema_stop PROPERTIES
     FIXTURES_CLEANUP "schema_clean;schema_seeded")
 
-  set(FELIDAE_PROMOTION_TEST_DB "${CMAKE_CURRENT_BINARY_DIR}/test-data/promotion.db")
+  set(FELIDAE_PROMOTION_TEST_PROJECT
+    "${CMAKE_CURRENT_BINARY_DIR}/test-projects/persistent/promotion")
+  set(FELIDAE_PROMOTION_TEST_DB "${FELIDAE_PROMOTION_TEST_PROJECT}/data.db")
   add_test(NAME schemaless_promotion_clean
-    COMMAND ${CMAKE_COMMAND} -E remove_directory ${FELIDAE_PROMOTION_TEST_DB})
+    COMMAND ${CMAKE_COMMAND}
+      -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
+      -DPROJECT_DIRECTORY=${FELIDAE_PROMOTION_TEST_PROJECT}
+      -DDATABASE_DIRECTORY=${FELIDAE_PROMOTION_TEST_DB}
+      -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
   set_tests_properties(schemaless_promotion_clean PROPERTIES
     FIXTURES_SETUP promotion_clean)
 
@@ -617,7 +635,7 @@ if(FELIDAE_BUILD_TESTS)
     PASS_REGULAR_EXPRESSION "count: 1.*doubled: 42")
 
   add_test(NAME schemaless_promotion_stop
-    COMMAND felidae db stop ${CMAKE_SOURCE_DIR}/tests/promotion)
+    COMMAND felidae db stop ${FELIDAE_PROMOTION_TEST_PROJECT})
   set_tests_properties(schemaless_promotion_stop PROPERTIES
     FIXTURES_CLEANUP "promotion_clean;promotion_seeded;promotion_declared")
 
@@ -634,9 +652,15 @@ if(FELIDAE_BUILD_TESTS)
   set_tests_properties(schemaless_promotion_same_module PROPERTIES
     PASS_REGULAR_EXPRESSION "count: 1.*doubled: 20")
 
-  set(FELIDAE_INDEX_TEST_DB "${CMAKE_CURRENT_BINARY_DIR}/test-data/index.db")
+  set(FELIDAE_INDEX_TEST_PROJECT
+    "${CMAKE_CURRENT_BINARY_DIR}/test-projects/persistent/index")
+  set(FELIDAE_INDEX_TEST_DB "${FELIDAE_INDEX_TEST_PROJECT}/data.db")
   add_test(NAME rocks_index_clean
-    COMMAND ${CMAKE_COMMAND} -E remove_directory ${FELIDAE_INDEX_TEST_DB})
+    COMMAND ${CMAKE_COMMAND}
+      -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
+      -DPROJECT_DIRECTORY=${FELIDAE_INDEX_TEST_PROJECT}
+      -DDATABASE_DIRECTORY=${FELIDAE_INDEX_TEST_DB}
+      -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
   set_tests_properties(rocks_index_clean PROPERTIES FIXTURES_SETUP index_clean)
 
   add_test(NAME rocks_index_seed
@@ -653,9 +677,15 @@ if(FELIDAE_BUILD_TESTS)
     FIXTURES_SETUP index_updated
     PASS_REGULAR_EXPRESSION "changed: 1.*active: 1")
 
-  set(FELIDAE_DESIGNATION_TEST_DB "${CMAKE_CURRENT_BINARY_DIR}/test-data/designation.db")
+  set(FELIDAE_DESIGNATION_TEST_PROJECT
+    "${CMAKE_CURRENT_BINARY_DIR}/test-projects/persistent/designation")
+  set(FELIDAE_DESIGNATION_TEST_DB "${FELIDAE_DESIGNATION_TEST_PROJECT}/data.db")
   add_test(NAME rocks_designation_clean
-    COMMAND ${CMAKE_COMMAND} -E remove_directory ${FELIDAE_DESIGNATION_TEST_DB})
+    COMMAND ${CMAKE_COMMAND}
+      -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
+      -DPROJECT_DIRECTORY=${FELIDAE_DESIGNATION_TEST_PROJECT}
+      -DDATABASE_DIRECTORY=${FELIDAE_DESIGNATION_TEST_DB}
+      -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
   set_tests_properties(rocks_designation_clean PROPERTIES
     FIXTURES_SETUP designation_clean)
 
@@ -672,7 +702,7 @@ if(FELIDAE_BUILD_TESTS)
     FIXTURES_REQUIRED designation_seeded
     PASS_REGULAR_EXPRESSION "1")
   add_test(NAME rocks_designation_stop
-    COMMAND felidae db stop ${CMAKE_SOURCE_DIR}/tests/designation)
+    COMMAND felidae db stop ${FELIDAE_DESIGNATION_TEST_PROJECT})
   set_tests_properties(rocks_designation_stop PROPERTIES
     FIXTURES_CLEANUP "designation_clean;designation_seeded")
 
@@ -682,13 +712,19 @@ if(FELIDAE_BUILD_TESTS)
     FIXTURES_REQUIRED index_updated
     PASS_REGULAR_EXPRESSION "active: 1.*inactive: 1")
   add_test(NAME rocks_index_stop
-    COMMAND felidae db stop ${CMAKE_SOURCE_DIR}/tests/index)
+    COMMAND felidae db stop ${FELIDAE_INDEX_TEST_PROJECT})
   set_tests_properties(rocks_index_stop PROPERTIES
     FIXTURES_CLEANUP "index_clean;index_seeded;index_updated")
 
-  set(FELIDAE_INHERITANCE_TEST_DB "${CMAKE_CURRENT_BINARY_DIR}/test-data/inheritance.db")
+  set(FELIDAE_INHERITANCE_TEST_PROJECT
+    "${CMAKE_CURRENT_BINARY_DIR}/test-projects/persistent/inheritance")
+  set(FELIDAE_INHERITANCE_TEST_DB "${FELIDAE_INHERITANCE_TEST_PROJECT}/data.db")
   add_test(NAME rocks_inheritance_clean
-    COMMAND ${CMAKE_COMMAND} -E remove_directory ${FELIDAE_INHERITANCE_TEST_DB})
+    COMMAND ${CMAKE_COMMAND}
+      -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
+      -DPROJECT_DIRECTORY=${FELIDAE_INHERITANCE_TEST_PROJECT}
+      -DDATABASE_DIRECTORY=${FELIDAE_INHERITANCE_TEST_DB}
+      -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
   set_tests_properties(rocks_inheritance_clean PROPERTIES FIXTURES_SETUP inheritance_clean)
 
   add_test(NAME rocks_inheritance_seed
@@ -704,13 +740,19 @@ if(FELIDAE_BUILD_TESTS)
     FIXTURES_REQUIRED inheritance_seeded
     PASS_REGULAR_EXPRESSION "2")
   add_test(NAME rocks_inheritance_stop
-    COMMAND felidae db stop ${CMAKE_SOURCE_DIR}/tests/inheritance)
+    COMMAND felidae db stop ${FELIDAE_INHERITANCE_TEST_PROJECT})
   set_tests_properties(rocks_inheritance_stop PROPERTIES
     FIXTURES_CLEANUP "inheritance_clean;inheritance_seeded")
 
-  set(FELIDAE_CONFIG_TEST_DB "${CMAKE_CURRENT_BINARY_DIR}/test-data/config.db")
+  set(FELIDAE_CONFIG_TEST_PROJECT
+    "${CMAKE_CURRENT_BINARY_DIR}/test-projects/persistent/config")
+  set(FELIDAE_CONFIG_TEST_DB "${FELIDAE_CONFIG_TEST_PROJECT}/data.db")
   add_test(NAME rocks_config_clean
-    COMMAND ${CMAKE_COMMAND} -E remove_directory ${FELIDAE_CONFIG_TEST_DB})
+    COMMAND ${CMAKE_COMMAND}
+      -DFELIDAE_EXECUTABLE=$<TARGET_FILE:felidae>
+      -DPROJECT_DIRECTORY=${FELIDAE_CONFIG_TEST_PROJECT}
+      -DDATABASE_DIRECTORY=${FELIDAE_CONFIG_TEST_DB}
+      -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
   set_tests_properties(rocks_config_clean PROPERTIES FIXTURES_SETUP config_clean)
 
   add_test(NAME rocks_config_set
@@ -727,7 +769,7 @@ if(FELIDAE_BUILD_TESTS)
     PASS_REGULAR_EXPRESSION "max_background_jobs: 3.*bytes_per_sync: 1048576")
 
   add_test(NAME rocks_config_stop
-    COMMAND felidae db stop ${CMAKE_SOURCE_DIR}/tests/config)
+    COMMAND felidae db stop ${FELIDAE_CONFIG_TEST_PROJECT})
   set_tests_properties(rocks_config_stop PROPERTIES
     FIXTURES_CLEANUP "config_clean;config_written")
 
