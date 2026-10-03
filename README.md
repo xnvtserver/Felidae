@@ -99,18 +99,12 @@ Interpreter memory is reserved for ASTs, immutable temporary values, local
 bindings, debugger frames, cursors, and bounded result batches. Without
 `--db`, Felidae creates an isolated temporary database for the execution.
 
-## Token model
+## Tokenization
 
-`models/felidae-bpe/model.txt` is the checked-in, deterministic word-vocabulary
-identifier dictionary (not byte-pair encoding - see `src/Tokenizer.h` for why
-the directory kept its old name). Its physical line number is the token ID.
-The lexer owns the first 59 fixed syntax IDs plus reserved control, class, and
-receiver words such as `class`, `extends`, `this`, `index`, and `end`, as well
-as comments, strings, punctuation, and numbers;
-the vocabulary only looks up whole identifier and mixfix-anchor words in the
-text table. Unknown words are assigned deterministic, parse-local IDs in
-lexical order; runtime execution never rewrites the checked-in model and has
-no training step.
+Felidae uses a deterministic, training-free byte vocabulary compiled into the
+interpreter. The lexer handles syntax, reserved words, comments, strings,
+punctuation, and numbers; identifier and mixfix-anchor bytes are encoded after
+the fixed grammar-token range. No model file is loaded or generated at runtime.
 
 See [code.md](code.md) for the execution architecture and
 [docs_language.md](docs_language.md) for language semantics.

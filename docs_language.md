@@ -127,10 +127,8 @@ explicit depth bounds. The trailing `where(...)` can compare primary-key fields
 on both endpoints, for example `where(left.department_id == right.id)`.
 
 `db.sync(path:)` atomically reloads a fact-only `.fx` source file while
-preserving unchanged logical identities. It is exposed by `core/db.fx`.
-Facts imported from CSV or a fact-only `.fx` file retain source ownership.
-Conditional insert, update, and delete operations persist that source
-automatically with staged atomic replacement; there is no public sync call.
+preserving unchanged logical identities. Database operations are built into
+the interpreter and require no library import.
 
 Persistent class methods retain a fail-closed RocksDB source locator.
 `fx.interpret` requires class, function, object receiver, file, and original
@@ -184,16 +182,7 @@ end
 
 ## Tokenization
 
-Identifiers and mixfix anchors are tokenized by `WordVocabulary`
-(`src/Tokenizer.h`), a fixed, compile-time, byte-level vocabulary - one
-token per byte, offset past the 59 fixed grammar IDs, no file on disk and
-no training step. The normal lexer owns its fixed first 59 syntax IDs,
-comments, strings, numbers, punctuation, operators, and reserved words
-(including `class`, `extends`, `index`, and `end`).
-
-## Reloading source
-
-Run `felidae program.fx --serve` to watch the root module and its loaded
-imports. A changed source tree is parsed into a fresh AST interpreter and
-swapped in only after successful registration; the previous program remains
-available when a save has syntax or semantic errors.
+Tokenization is deterministic and training-free. The lexer owns fixed syntax,
+comments, strings, numbers, punctuation, operators, and reserved words. Each
+identifier or mixfix-anchor byte maps into a fixed range after the grammar
+tokens, so the interpreter requires no model file or generated vocabulary.

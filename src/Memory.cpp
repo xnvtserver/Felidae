@@ -17,13 +17,11 @@
 
 namespace Felidae {
 
-FactMemory::FactMemory()
-    : data_(std::make_shared<Data>()),
-      snapshots_(std::make_shared<SnapshotRegistry>()) {}
+FactMemory::FactMemory() : data_(std::make_shared<Data>()) {}
 
 FactMemory::FactMemory(const FactMemory& other)
     : data_(other.data_),
-      snapshots_(std::make_shared<SnapshotRegistry>()),
+      snapshots_{},
       compatibleFactCache_{},
       propertyQueryCache_{},
       adaptiveEqualityIndexes_(0),
@@ -32,7 +30,7 @@ FactMemory::FactMemory(const FactMemory& other)
 FactMemory& FactMemory::operator=(const FactMemory& other) {
     if (this != &other) {
         data_ = other.data_;
-        snapshots_ = std::make_shared<SnapshotRegistry>();
+        snapshots_.clear();
         invalidateCaches();
         adaptiveEqualityIndexes_ = 0;
         adaptiveIndexBuildMicros_ = 0;
@@ -321,10 +319,7 @@ std::uint64_t FactMemory::hierarchyGeneration() const {
 FactMemoryStats FactMemory::stats() const {
     FactMemoryStats result;
     result.relations = data_->relations.size();
-    {
-        std::lock_guard lock(snapshots_->mutex);
-        result.snapshots = snapshots_->entries.size();
-    }
+    result.snapshots = snapshots_.size();
     result.generation = data_->generation;
     result.adaptiveEqualityIndexes = adaptiveEqualityIndexes_;
     result.adaptiveIndexBuildMicros = adaptiveIndexBuildMicros_;
@@ -351,35 +346,26 @@ FactMemoryStats FactMemory::stats() const {
     return result;
 }
 
-std::shared_ptr<FactSnapshotLease> FactMemory::captureSnapshot() {
+std::uint64_t FactMemory::captureSnapshot() {
     const std::uint64_t snapshot = data_->generation;
-    {
-        std::lock_guard lock(snapshots_->mutex);
-        auto& entry = snapshots_->entries[snapshot];
-        entry.data = data_;
-        ++entry.leases;
-    }
-    const std::weak_ptr<SnapshotRegistry> registry = snapshots_;
-    return std::make_shared<FactSnapshotLease>(
-        snapshot, data_, [registry, snapshot] {
-            const auto retained = registry.lock();
-            if (!retained) return;
-            std::lock_guard lock(retained->mutex);
-            const auto found = retained->entries.find(snapshot);
-            if (found == retained->entries.end()) return;
-            if (found->second.leases > 1) --found->second.leases;
-            else retained->entries.erase(found);
-        });
+    snapshots_[snapshot] = data_;
+    return snapshot;
+}
+
+bool FactMemory::releaseSnapshot(std::uint64_t snapshotGeneration) {
+    if (snapshotGeneration == 0) return false;
+    const bool released = snapshots_.erase(snapshotGeneration) != 0;
+    if (released) compactInactiveIfSafe();
+    return released;
 }
 
 const FactMemory::Data& FactMemory::dataForSnapshot(std::uint64_t snapshotGeneration) const {
     if (snapshotGeneration == 0 || snapshotGeneration == data_->generation) return *data_;
-    std::lock_guard lock(snapshots_->mutex);
-    const auto found = snapshots_->entries.find(snapshotGeneration);
-    if (found == snapshots_->entries.end()) {
+    const auto found = snapshots_.find(snapshotGeneration);
+    if (found == snapshots_.end()) {
         throw std::runtime_error("FactSelection snapshot expired; materialize or recreate the selection");
     }
-    return *found->second.data;
+    return *found->second;
 }
 
 bool FactMemory::parseTemporalValue(const std::shared_ptr<Expr>& value, std::int64_t& out) {
@@ -583,6 +569,9 @@ bool FactMemory::structurallyEqual(const std::shared_ptr<Expr>& left,
     }
     if (const auto l = std::dynamic_pointer_cast<NumberExpr>(left)) {
         return l->value == std::static_pointer_cast<NumberExpr>(right)->value;
+    }
+    if (const auto l = std::dynamic_pointer_cast<BoolExpr>(left)) {
+        return l->value == std::static_pointer_cast<BoolExpr>(right)->value;
     }
     if (std::dynamic_pointer_cast<NilExpr>(left)) return true;
     if (const auto l = std::dynamic_pointer_cast<ArrayExpr>(left)) {
@@ -1059,20 +1048,6 @@ std::vector<size_t> FactMemory::factIndexesFromOrigin(const std::filesystem::pat
     return *found->second;
 }
 
-std::vector<std::filesystem::path> FactMemory::originsForType(
-    const std::string& type) const {
-    const SymbolId typeId = symbolIdForName(type);
-    std::set<std::filesystem::path> unique;
-    const auto relation = data_->relations.find(typeId);
-    if (relation == data_->relations.end() || !relation->second) return {};
-    for (const auto index : relation->second->rows) {
-        const auto& fact = data_->facts.at(index);
-        if (fact.typeId == typeId && fact.type == type && !fact.origin.empty())
-            unique.insert(fact.origin);
-    }
-    return {unique.begin(), unique.end()};
-}
-
 bool FactMemory::hasOrigin(const std::filesystem::path& origin) const {
     return data_->factsByOrigin.count(origin) > 0;
 }
@@ -1333,6 +1308,9 @@ bool FactMemory::literalIndexKey(const std::shared_ptr<Expr>& value, std::string
             out = text.str();
             return true;
         }
+        case ExprKind::Bool:
+            out = static_cast<const BoolExpr&>(*value).value ? "b:1" : "b:0";
+            return true;
         case ExprKind::Nil:
             out = "z:";
             return true;
@@ -1366,6 +1344,11 @@ bool FactMemory::literalIndexHash(
             std::uint64_t bits = 0;
             std::memcpy(&bits, &number, sizeof(bits));
             mix(&bits, sizeof(bits), 2);
+            return true;
+        }
+        case ExprKind::Bool: {
+            const bool boolean = static_cast<const BoolExpr&>(*value).value;
+            mix(&boolean, sizeof(boolean), 3);
             return true;
         }
         case ExprKind::Nil:
@@ -1502,6 +1485,7 @@ void FactMemory::indexFact(
                 switch (stored->kind()) {
                     case ExprKind::String: return Data::Relation::ColumnKind::String;
                     case ExprKind::Number: return Data::Relation::ColumnKind::Number;
+                    case ExprKind::Bool: return Data::Relation::ColumnKind::Bool;
                     case ExprKind::Nil: return Data::Relation::ColumnKind::Nil;
                     default: return Data::Relation::ColumnKind::Structured;
                 }
@@ -1550,10 +1534,7 @@ void FactMemory::compactInactiveIfSafe() {
     // Selections refer to vector positions in their captured Data.  Never
     // compact while a snapshot is retained; db.release makes that lifetime
     // explicit for callers that keep long-lived selections.
-    {
-        std::lock_guard lock(snapshots_->mutex);
-        if (!snapshots_->entries.empty()) return;
-    }
+    if (!snapshots_.empty()) return;
     std::size_t tombstones = 0;
     for (std::size_t index = 0; index < data_->facts.size(); ++index) {
         if (!data_->facts.at(index).active) ++tombstones;

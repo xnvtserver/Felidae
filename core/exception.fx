@@ -6,10 +6,13 @@
 # and invoke an ordinary handler method when recovery is appropriate.
 
 def Exception(kind: string, message: string, source: string) => ()
+end
 def Result(ok: bool, value: any, error: any) => ()
+end
 
 def exception.ok(value: any) =>
-    return {__type: "Result", ok: 1.0, value: value, error: nil}
+    return {__type: "Result", ok: 1.0, value: value, error: nil}.
+end
 
 def exception.failure(kind: string, message: string, source: string) =>
     return {
