@@ -9411,8 +9411,8 @@ Interpreter::ClauseList* Interpreter::findClauses(const std::string& name, Symbo
     // "No clauses under this name" is itself a stable answer - invalidated
     // the same way a real hit is, by addClause erasing this exact name's
     // entry the moment a clause is actually added under it (see addClause).
-    // Every builtin call whose Call/TermExpr name (e.g. "Fact:select",
-    // "Fact:andWhere") no user program ever defines a clause for used to
+    // Every builtin call whose Call/TermExpr name no user program ever
+    // defines a clause for used to
     // fall through this miss on every single invocation forever - measured
     // as the dominant share of dispatchCacheMisses_ (e.g. ~91% miss rate
     // running v2_examples/csv_fact_database.fx --benchmark-repeat 50).
@@ -9633,12 +9633,11 @@ std::shared_ptr<ArrayExpr> Interpreter::materializeFactSelection(
         }
         std::vector<std::shared_ptr<Expr>> rows;
         rows.reserve(maximumRows ? std::min(indexes.size(), *maximumRows) : indexes.size());
-        const auto appendMatches = [&](const std::vector<size_t>& candidates,
-                                       bool allowHistorical) {
+        const auto appendMatches = [&](const std::vector<size_t>& candidates) {
         for (const auto index : candidates) {
             if (maximumRows && rows.size() >= *maximumRows) break;
             const auto& record = memory_.snapshotFact(lazy->snapshotGeneration, index);
-            if ((!allowHistorical && !record.active) || (!lazy->factType.empty() &&
+            if (!record.active || (!lazy->factType.empty() &&
                 !memory_.isCompatibleType(record.type, lazy->factType))) {
                 continue;
             }
@@ -9677,55 +9676,11 @@ std::shared_ptr<ArrayExpr> Interpreter::materializeFactSelection(
         }
         };
         if (!maximumRows || *maximumRows != 0) {
-            appendMatches(memory_.currentFactIndexes(indexes, lazy->snapshotGeneration), false);
-        }
-        if (rows.empty() && (!maximumRows || *maximumRows != 0)) {
-            appendMatches(memory_.relevantPastFactIndexes(
-                lazy->factType.empty() ? "Fact" : lazy->factType,
-                lazy->factTypeId,
-                lazy->snapshotGeneration), true);
+            appendMatches(memory_.currentFactIndexes(indexes, lazy->snapshotGeneration));
         }
         return std::make_shared<ArrayExpr>(std::move(rows));
     }
-    const auto kind = std::dynamic_pointer_cast<StringExpr>(
-        findMapValue(selection, internalSymbolString(InternalSymbolKind::Type)));
-    const auto selectedType = std::dynamic_pointer_cast<StringExpr>(findMapValue(selection, "fact_type"));
-    if (!kind || kind->value != "FactSelection" || !selectedType) {
-        throw InterpreterError("Expected a FactSelection");
-    }
-    std::uint64_t snapshotGeneration = 0;
-    if (const auto snapshot = std::dynamic_pointer_cast<NumberExpr>(
-            findMapValue(selection, "snapshot_generation"))) {
-        if (snapshot->value < 0 || std::floor(snapshot->value) != snapshot->value) {
-            throw InterpreterError("FactSelection has an invalid snapshot generation");
-        }
-        snapshotGeneration = static_cast<std::uint64_t>(snapshot->value);
-    }
-    std::string field;
-    std::shared_ptr<Expr> equals;
-    if (const auto fieldValue = std::dynamic_pointer_cast<StringExpr>(findMapValue(selection, "field"))) {
-        field = fieldValue->value;
-        equals = findMapValue(selection, "equals");
-    }
-    const auto indexes = memory_.selectionIndexes(
-        selectedType->value,
-        field,
-        equals && isGroundLiteral(equals) ? equals : nullptr,
-        snapshotGeneration);
-    std::vector<std::shared_ptr<Expr>> rows;
-    rows.reserve(maximumRows ? std::min(indexes.size(), *maximumRows) : indexes.size());
-    for (const auto index : indexes) {
-        if (maximumRows && rows.size() >= *maximumRows) break;
-        const auto fact = memory_.factValue(index, snapshotGeneration);
-        if (!fact) continue;
-        if (!field.empty()) {
-            const auto actual = findMapValue(fact, field);
-            if (!actual || !equals || !exprContainsLiteral(actual, equals)) continue;
-        }
-        ++factCandidates_;
-        rows.push_back(fact);
-    }
-    return std::make_shared<ArrayExpr>(std::move(rows));
+    throw InterpreterError("Expected a lazy Type query selection");
 }
 
 std::string Interpreter::runtimeMetricsJson() const {

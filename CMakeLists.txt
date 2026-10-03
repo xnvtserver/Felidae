@@ -115,16 +115,6 @@ if(FELIDAE_BUILD_TESTS)
   set_tests_properties(invalid_duplicate_argument PROPERTIES
     WILL_FAIL TRUE)
 
-  add_test(NAME reasoning_prove_exhaustive
-    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/reasoning_prove_exhaustive.fx)
-  set_tests_properties(reasoning_prove_exhaustive PROPERTIES
-    PASS_REGULAR_EXPRESSION "truth_status: \"proved\".*exhaustive: 1")
-
-  add_test(NAME reasoning_grade_profiles
-    COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/reasoning_grade_profiles.fx)
-  set_tests_properties(reasoning_grade_profiles PROPERTIES
-    PASS_REGULAR_EXPRESSION "default_support: 0.4.*minimum_support: 0.5")
-
   add_test(NAME direct_ast_fact_selection
     COMMAND felidae ${CMAKE_SOURCE_DIR}/tests/direct_fact_selection.fx)
   set_tests_properties(direct_ast_fact_selection PROPERTIES

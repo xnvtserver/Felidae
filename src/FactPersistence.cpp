@@ -293,6 +293,11 @@ void Interpreter::persistFactSource(
     if (source.empty() || (source.extension() != ".csv" && source.extension() != ".fx")) {
         throw InterpreterError("fact persistence requires a .csv or .fx source");
     }
+    // Validation, serialization, and replacement are one transaction with
+    // respect to other Felidae processes. Taking the existing lock only at
+    // replacement time allowed the source to change after validation.
+    std::lock_guard lock(persistenceMutex);
+    FactFileLock fileLock(source);
     if (source.extension() == ".fx" && fs::exists(source)) {
         bool factsOnly = true;
         parseProgramFileStatements(source, [&](std::shared_ptr<Statement> statement) {
@@ -350,8 +355,6 @@ void Interpreter::persistFactSource(
         content = output.str();
     }
 
-    std::lock_guard lock(persistenceMutex);
-    FactFileLock fileLock(source);
     atomicWrite(source, content);
 }
 

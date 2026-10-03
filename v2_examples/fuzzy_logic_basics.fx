@@ -1,9 +1,7 @@
 # Deterministic fuzzy logic: syntax reference and worked example.
 #
 # `core/fuzzy.fx` adds callable fuzzy-logic primitives on top of the
-# existing degree/confidence conventions (FactRelationship.degree/confidence
-# in Memory.h, ReasoningProfile's conjunction=minimum / disjunction=maximum
-# / negation=one_minus policy in ReasoningRuntime.cpp). Every primitive is a
+# existing degree/confidence conventions. Every primitive is a
 # fixed formula over its inputs — clamp, min, max, linear interpolation —
 # so the same inputs always produce exactly the same degree. Nothing here
 # samples, learns, or depends on run order.

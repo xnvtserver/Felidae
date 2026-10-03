@@ -63,29 +63,27 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::CsvToFacts, "csv:toFacts", BuiltinEffect::WritesExternalState},
         {BuiltinId::CsvToText, "csv:toText", BuiltinEffect::Pure},
         {BuiltinId::CsvToFelidaeFacts, "csv:toFelidaeFacts", BuiltinEffect::WritesExternalState},
-        {BuiltinId::FactAll, "Fact:all", BuiltinEffect::Pure},
-        {BuiltinId::FactFind, "Fact:find", BuiltinEffect::Pure},
-        {BuiltinId::FactCount, "Fact:count", BuiltinEffect::Pure},
-        {BuiltinId::FactFirst, "Fact:first", BuiltinEffect::Pure},
-        {BuiltinId::FactTypes, "Fact:types", BuiltinEffect::Pure},
-        {BuiltinId::FactFields, "Fact:fields", BuiltinEffect::Pure},
-        {BuiltinId::FactExists, "Fact:exists", BuiltinEffect::Pure},
-        {BuiltinId::FactSelect, "Fact:where", BuiltinEffect::Pure},
-        {BuiltinId::FactMaterialize, "Fact:materialize", BuiltinEffect::Pure},
-        {BuiltinId::FactTimeline, "Fact:timeline", BuiltinEffect::Pure},
-        // Reference evaluation is explicit and can replace the attachment's
-        // private canonical result, so it must never be query-cached.
-        {BuiltinId::FactReferences, "Fact:references", BuiltinEffect::WritesExternalState},
-        {BuiltinId::FactInsert, "Fact:insert", BuiltinEffect::WritesExternalState},
-        {BuiltinId::FactUpdate, "Fact:update", BuiltinEffect::WritesExternalState},
-        {BuiltinId::FactDelete, "Fact:delete", BuiltinEffect::WritesExternalState},
-        {BuiltinId::FactAndWhere, "Fact:andWhere", BuiltinEffect::Pure},
-        {BuiltinId::FactOrWhere, "Fact:orWhere", BuiltinEffect::Pure},
-        {BuiltinId::FactLimit, "Fact:limit", BuiltinEffect::Pure},
-        {BuiltinId::FactJoin, "Fact:join", BuiltinEffect::Pure},
-        {BuiltinId::FactProject, "Fact:select", BuiltinEffect::Pure},
-        {BuiltinId::FactAggregate, "Fact:aggregate", BuiltinEffect::Pure},
-        {BuiltinId::FactSearch, "Fact:search", BuiltinEffect::Pure},
+        {BuiltinId::FactAll, "all", BuiltinEffect::Pure, BuiltinReceiver::FactType},
+        {BuiltinId::FactFind, "", BuiltinEffect::Pure},
+        {BuiltinId::FactCount, "count", BuiltinEffect::Pure, BuiltinReceiver::FactType},
+        {BuiltinId::FactFirst, "get", BuiltinEffect::Pure, BuiltinReceiver::FactType},
+        {BuiltinId::FactTypes, "", BuiltinEffect::Pure},
+        {BuiltinId::FactFields, "", BuiltinEffect::Pure},
+        {BuiltinId::FactExists, "", BuiltinEffect::Pure},
+        {BuiltinId::FactSelect, "where", BuiltinEffect::Pure, BuiltinReceiver::FactType},
+        {BuiltinId::FactMaterialize, "", BuiltinEffect::Pure},
+        {BuiltinId::FactTimeline, "", BuiltinEffect::Pure},
+        {BuiltinId::FactReferences, "", BuiltinEffect::WritesExternalState},
+        {BuiltinId::FactInsert, "insert", BuiltinEffect::WritesExternalState, BuiltinReceiver::FactType},
+        {BuiltinId::FactUpdate, "update", BuiltinEffect::WritesExternalState, BuiltinReceiver::FactSelection},
+        {BuiltinId::FactDelete, "delete", BuiltinEffect::WritesExternalState, BuiltinReceiver::FactSelection},
+        {BuiltinId::FactAndWhere, "AndWhere", BuiltinEffect::Pure, BuiltinReceiver::FactSelection},
+        {BuiltinId::FactOrWhere, "OrWhere", BuiltinEffect::Pure, BuiltinReceiver::FactSelection},
+        {BuiltinId::FactLimit, "limit", BuiltinEffect::Pure, BuiltinReceiver::FactSelection},
+        {BuiltinId::FactJoin, "join", BuiltinEffect::Pure, BuiltinReceiver::FactType},
+        {BuiltinId::FactProject, "select", BuiltinEffect::Pure, BuiltinReceiver::FactType},
+        {BuiltinId::FactAggregate, "", BuiltinEffect::Pure},
+        {BuiltinId::FactSearch, "search", BuiltinEffect::Pure, BuiltinReceiver::FactType},
         {BuiltinId::ArrayWhere, "Array:where", BuiltinEffect::Pure},
         {BuiltinId::ArrayOrderBy, "Array:orderBy", BuiltinEffect::Pure},
         {BuiltinId::CommonAncestors, "commonAncestors", BuiltinEffect::Pure},
@@ -93,9 +91,9 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::HighestCommonAncestor, "highestCommonAncestor", BuiltinEffect::Pure},
         {BuiltinId::AncestorAnalysis, "ancestorAnalysis", BuiltinEffect::Pure},
         {BuiltinId::PropagateFact, "propagateFact", BuiltinEffect::Pure},
-        {BuiltinId::RelationCompare, "Relation:compare", BuiltinEffect::Pure},
-        {BuiltinId::RelationFind, "Relation:find", BuiltinEffect::Pure},
-        {BuiltinId::DependencySatisfied, "Dependency:satisfied", BuiltinEffect::Pure},
+        {BuiltinId::RelationCompare, "", BuiltinEffect::Pure},
+        {BuiltinId::RelationFind, "", BuiltinEffect::Pure},
+        {BuiltinId::DependencySatisfied, "", BuiltinEffect::Pure},
         {BuiltinId::JsonObject, "json:object", BuiltinEffect::Pure},
         {BuiltinId::JsonParse, "json:parse", BuiltinEffect::Pure},
         {BuiltinId::JsonGet, "json:get", BuiltinEffect::Pure},
@@ -153,10 +151,10 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::ProbabilityUniformCdf, "probability:uniformCdf", BuiltinEffect::Pure},
         {BuiltinId::ProbabilitySample, "probability:sample", BuiltinEffect::Volatile},
         {BuiltinId::ProbabilityWeightedChoice, "probability:weightedChoice", BuiltinEffect::Volatile},
-        {BuiltinId::ReasoningContrary, "Reasoning:contrary", BuiltinEffect::WritesExternalState},
-        {BuiltinId::ReasoningProve, "Reasoning:prove", BuiltinEffect::ReadsExternalState},
-        {BuiltinId::ReasoningGrade, "Reasoning:grade", BuiltinEffect::Pure},
-        {BuiltinId::ReasoningDecide, "Reasoning:decide", BuiltinEffect::ReadsExternalState},
+        {BuiltinId::ReasoningContrary, "", BuiltinEffect::WritesExternalState},
+        {BuiltinId::ReasoningProve, "", BuiltinEffect::ReadsExternalState},
+        {BuiltinId::ReasoningGrade, "", BuiltinEffect::Pure},
+        {BuiltinId::ReasoningDecide, "", BuiltinEffect::ReadsExternalState},
         {BuiltinId::MlSigmoid, "ml:sigmoid", BuiltinEffect::Pure},
         {BuiltinId::MlRelu, "ml:relu", BuiltinEffect::Pure},
         {BuiltinId::MlDot, "ml:dot", BuiltinEffect::Pure},
@@ -187,6 +185,7 @@ const std::unordered_map<std::string_view, BuiltinId>& builtinsByName() {
         map.max_load_factor(0.7f);
         for (std::size_t i = 1; i < builtinInfoCount(); ++i) {
             const BuiltinInfo* info = kBuiltinInfos + i;
+            if (info->receiver != BuiltinReceiver::Global || info->name[0] == '\0') continue;
             map.emplace(info->name, info->id);
         }
         return map;
@@ -213,6 +212,14 @@ BuiltinId builtinIdForName(std::string_view name) {
 
 BuiltinId builtinIdForName(const char* name) {
     return name ? builtinIdForName(std::string_view(name)) : BuiltinId::Unknown;
+}
+
+BuiltinId builtinIdForMember(BuiltinReceiver receiver, std::string_view member) {
+    for (std::size_t i = 1; i < builtinInfoCount(); ++i) {
+        const BuiltinInfo& info = kBuiltinInfos[i];
+        if (info.receiver == receiver && member == info.name) return info.id;
+    }
+    return BuiltinId::Unknown;
 }
 
 bool isBuiltinFunctionName(const std::string& name) {
@@ -243,7 +250,9 @@ const std::vector<BuiltinInfo>& allBuiltins() {
     static const std::vector<BuiltinInfo> builtins = [] {
         std::vector<BuiltinInfo> list;
         list.reserve(builtinInfoCount() - 1);
-        for (std::size_t i = 1; i < builtinInfoCount(); ++i) list.push_back(kBuiltinInfos[i]);
+        for (std::size_t i = 1; i < builtinInfoCount(); ++i) {
+            if (kBuiltinInfos[i].name[0] != '\0') list.push_back(kBuiltinInfos[i]);
+        }
         return list;
     }();
     return builtins;

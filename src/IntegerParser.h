@@ -35,6 +35,9 @@ public:
                            std::shared_ptr<OperatorRegistry> operators = {});
 
     Program parseProgram();
+    // Parses one top-level statement without materializing the remainder of
+    // the token stream. Returns null only at end of input.
+    std::shared_ptr<Statement> parseNextStatement();
     std::vector<std::shared_ptr<Goal>> parseQuery();
     std::shared_ptr<Expr> parseExpressionText();
     bool startsQuery();
@@ -83,6 +86,10 @@ private:
     };
 
     void step();
+    bool hasPiece(std::size_t index) const { return input_.has(index); }
+    const IntegerTokenList::Entry& piece(std::size_t index) const {
+        return input_.entry(index);
+    }
     void skipTrivia();
     void alignPiece();
     bool at(TokenId::Id id);
@@ -102,10 +109,21 @@ private:
                                                     int minimumPrecedence,
                                                     TokenId::Id stop = TokenId::UNKNOWN,
                                                     const std::vector<PatternLexeme>* stopAnchor = nullptr);
-    std::shared_ptr<Expr> parseUnary();
-    std::shared_ptr<Expr> tryParseLeadingPattern();
+    // `stop`/`stopAnchor` here are the same enclosing boundary
+    // parseBinaryExpression/continueBinaryExpression were given (e.g. an
+    // if-condition's TokenId::THEN) - threaded through so a mixfix capture
+    // parsed from inside parseUnary halts at that boundary too, instead of
+    // only ever honoring TokenId::UNKNOWN and greedily consuming a
+    // lower-or-equal-precedence operator (like the pipeline `then`) that was
+    // actually meant to close the *enclosing* construct.
+    std::shared_ptr<Expr> parseUnary(TokenId::Id stop = TokenId::UNKNOWN,
+                                     const std::vector<PatternLexeme>* stopAnchor = nullptr);
+    std::shared_ptr<Expr> tryParseLeadingPattern(TokenId::Id stop = TokenId::UNKNOWN,
+                                                 const std::vector<PatternLexeme>* stopAnchor = nullptr);
     std::shared_ptr<Expr> tryParseTrailingPattern(std::shared_ptr<Expr> left,
-                                                  int minimumPrecedence);
+                                                  int minimumPrecedence,
+                                                  TokenId::Id stop = TokenId::UNKNOWN,
+                                                  const std::vector<PatternLexeme>* stopAnchor = nullptr);
     bool atPatternLexeme(const PatternLexeme& lexeme);
     bool atPatternAnchor(const std::vector<PatternLexeme>& anchor);
     bool matchPatternLexeme(const PatternLexeme& lexeme);

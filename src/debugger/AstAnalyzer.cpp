@@ -68,15 +68,6 @@ void collectExprUses(const std::shared_ptr<Expr> &expr,
     addVarUse(var->name, vars);
   } else if (auto term = std::dynamic_pointer_cast<TermExpr>(expr)) {
     calls.insert(term->name);
-    if (term->name == "Reasoning:contrary") {
-      for (const auto &arg : term->args) {
-        if (arg.name != "positive" && arg.name != "negative")
-          continue;
-        if (auto predicate = std::dynamic_pointer_cast<StringExpr>(arg.value)) {
-          calls.insert(predicate->value);
-        }
-      }
-    }
     if (term->name == "thread:createThread") {
       for (const auto &arg : term->args) {
         if (arg.name != "function" && arg.name != "name")

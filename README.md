@@ -1,11 +1,11 @@
 # Felidae
 
 Felidae is a deterministic functional-logic language with an in-process fact
-database. `.fx` source is tokenized, parsed to an AST, and evaluated directly
-by the restored interpreter.
+database. `.fx` source is tokenized into integer IDs, assembled into executable
+interpreter nodes, and evaluated directly.
 
 ```text
-source.fx -> byte-level tokenizer -> IntegerParser -> Program AST -> Interpreter
+source.fx -> integer tokenizer -> IntegerParser -> executable nodes -> Interpreter
 ```
 
 There is no compiler-to-IR conversion, binary program format, VM, SentencePiece

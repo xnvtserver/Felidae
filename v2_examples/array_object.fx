@@ -5,5 +5,8 @@ def main() =>
     empty := []
     withAda := empty.push(value: "Ada")
     people := withAda.push(value: "Grace")
-    return (first: people.get(position: 0), count: people.len())
+    people.push(value: "Linus")
+    people.push(value: "Guido")
+    people.push(value: "Tim")
+    return (first: people.get(position: 0), count: people.len(),peoples: people.all())
 end

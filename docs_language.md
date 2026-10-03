@@ -9,7 +9,7 @@ Facts, rules, methods, globals, imports, and annotations are source-level AST
 statements. Use `.` for ordinary declaration boundaries.
 
 ```felidae
-Person(name: "Ada", active: true).
+Person(name: "Ada", active: 1.0).
 
 Greeting(name: string) =>
     return (message: "hello", name: name)

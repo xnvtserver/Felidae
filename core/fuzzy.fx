@@ -5,8 +5,7 @@
 # interpolation) — never a learned weight, a trained model, or a sampled
 # value — so the same inputs always produce exactly the same degree. This
 # formalizes, as callable functions, the conjunction=minimum /
-# disjunction=maximum / negation=one_minus policy that ReasoningProfile
-# already fixes internally for Reasoning.grade (see ReasoningRuntime.cpp),
+# disjunction=maximum / negation=one_minus policy used by fact analysis,
 # and builds on core/numeric.fx's clamp/lerp/diff (themselves ported from the
 # removed VM's NumericOperation set) instead of reimplementing them.
 #
