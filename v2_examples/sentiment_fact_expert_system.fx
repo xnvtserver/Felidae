@@ -1,5 +1,6 @@
 # Sentiment is modelled as executable knowledge, not as a hidden model. Add
 # or adjust cue and policy facts to evolve the domain expertise.
+import "math"
 
 SentimentConcept(name: "sentiment")
 SentimentCue extend SentimentConcept(token: "", polarity: "", strength: 0, domain: "general")
@@ -83,7 +84,7 @@ def analyseSentiment(review: Review, policy: SentimentPolicy) =>
     negation_score := negation_count * policy.negation_penalty
     score := positive_score - negative_score - negation_score
     label := sentimentLabel(score: score, policy: policy)
-    confidence := abs(score)
+    confidence := math.abs(value: score)
     support_degree := boundedEvidenceDegree(value: positive_score)
     oppose_degree := boundedEvidenceDegree(value: negative_score + negation_score)
     positive_taxonomy := lambda(PositiveCue, cue => cue.token == "excellent")
@@ -91,20 +92,11 @@ def analyseSentiment(review: Review, policy: SentimentPolicy) =>
     positive_root := array.get(data: positive_taxonomy, position: 0)
     negative_root := array.get(data: negative_taxonomy, position: 0)
     taxonomy := commonAncestors(left: positive_root, right: negative_root)
-    evidence := Reasoning.grade(evidence: [
-        Evidence(
-            source: "positive-cue-facts",
-            degree: support_degree,
-            reliability: 0.90,
-            polarity: "support"
-        ),
-        Evidence(
-            source: "negative-cue-facts",
-            degree: oppose_degree,
-            reliability: 0.90,
-            polarity: "oppose"
-        )
-    ])
+    evidence := {
+        support: support_degree * 0.90,
+        opposition: oppose_degree * 0.90,
+        balance: support_degree - oppose_degree
+    }
     return SentimentAssessment(
         review: review,
         label: label,

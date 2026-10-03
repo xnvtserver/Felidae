@@ -4,6 +4,7 @@
 #include "Tokenizer.h"
 
 #include <cstddef>
+#include <deque>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -46,8 +47,11 @@ public:
   bool has(std::size_t index) const;
   const Entry &entry(std::size_t index) const;
   std::size_t loadedSize() const noexcept { return entries_.size(); }
-  // Tool/test materialization boundary. Production parsing uses has/entry.
-  const std::vector<Entry> &entries() const;
+  std::size_t tokenCount() const noexcept { return tokenCount_; }
+  // Once a top-level statement is committed, its tokens cannot participate
+  // in parser backtracking. Release them while keeping global token indexes
+  // stable for the parser's current cursor.
+  void discardBefore(std::size_t index) const;
   std::size_t encodeCount() const noexcept { return encodeCount_; }
   const WordVocabulary &tokenizer() const noexcept { return *tokenizer_; }
 
@@ -55,7 +59,9 @@ private:
   void encodeNextStatement() const;
   std::string source_;
   std::shared_ptr<WordVocabulary> tokenizer_;
-  mutable std::vector<Entry> entries_;
+  mutable std::deque<Entry> entries_;
+  mutable std::size_t firstEntryIndex_ = 0;
+  mutable std::size_t tokenCount_ = 0;
   mutable std::size_t nextStatementBegin_ = 0;
   mutable std::size_t encodeCount_ = 0;
   mutable bool complete_ = false;

@@ -40,6 +40,8 @@ TokenId::Id fixedGrammarTokenId(std::string_view spelling) {
 
 namespace {
 
+constexpr std::size_t kMaximumTokenChunkBytes = 64 * 1024;
+
 std::size_t statementEnd(std::string_view source, std::size_t begin) {
   bool quoted = false;
   bool escaped = false;
@@ -47,8 +49,10 @@ std::size_t statementEnd(std::string_view source, std::size_t begin) {
   for (std::size_t index = begin; index < source.size(); ++index) {
     const char byte = source[index];
     if (comment) {
-      if (byte == '\n' || byte == '\r')
+      if (byte == '\n' || byte == '\r') {
         comment = false;
+        if (index + 1 - begin >= kMaximumTokenChunkBytes) return index + 1;
+      }
       continue;
     }
     if (quoted) {
@@ -68,6 +72,11 @@ std::size_t statementEnd(std::string_view source, std::size_t begin) {
       comment = true;
       continue;
     }
+    // Dot termination is optional. Bound the lexer cache at a safe newline
+    // when a source uses newline/end framing, without pretending that the
+    // newline itself necessarily ends the parser's current statement.
+    if ((byte == '\n' || byte == '\r') &&
+        index + 1 - begin >= kMaximumTokenChunkBytes) return index + 1;
     if (byte != '.')
       continue;
     // Decimal points and adjacent member access are grammar punctuation, not
@@ -112,6 +121,7 @@ void IntegerTokenList::encodeNextStatement() const {
   ++encodeCount_;
   const auto push = [&](TokenId::Id id, std::size_t first, std::size_t last) {
     entries_.push_back(Entry{id, begin + first, begin + last});
+    ++tokenCount_;
   };
   const auto fixedId = fixedGrammarTokenId;
   for (std::size_t offset = 0; offset < statement.size();) {
@@ -199,22 +209,26 @@ void IntegerTokenList::encodeNextStatement() const {
 }
 
 bool IntegerTokenList::has(std::size_t index) const {
-  while (index >= entries_.size() && !complete_)
+  if (index < firstEntryIndex_)
+    throw std::out_of_range("discarded word vocabulary token index");
+  while (index - firstEntryIndex_ >= entries_.size() && !complete_)
     encodeNextStatement();
-  return index < entries_.size();
+  return index - firstEntryIndex_ < entries_.size();
 }
 
 const IntegerTokenList::Entry &
 IntegerTokenList::entry(std::size_t index) const {
   if (!has(index))
     throw std::out_of_range("word vocabulary token index is out of range");
-  return entries_[index];
+  return entries_[index - firstEntryIndex_];
 }
 
-const std::vector<IntegerTokenList::Entry> &IntegerTokenList::entries() const {
-  while (!complete_)
-    encodeNextStatement();
-  return entries_;
+void IntegerTokenList::discardBefore(std::size_t index) const {
+  if (index <= firstEntryIndex_) return;
+  const auto count = std::min(index - firstEntryIndex_, entries_.size());
+  for (std::size_t removed = 0; removed < count; ++removed)
+    entries_.pop_front();
+  firstEntryIndex_ += count;
 }
 
 } // namespace Felidae

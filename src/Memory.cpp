@@ -1442,12 +1442,14 @@ void FactMemory::rebuildIndexes(
         lineageRows->push_back(index);
     }
     data_->childrenByParent.clear();
+    data_->parentsByChild.clear();
     for (const auto& entry : data_->parentOf) {
         const SymbolId childId = symbolIdForName(entry.first);
         const SymbolId parentId = symbolIdForName(entry.second);
         rememberTypeName(childId, entry.first);
         rememberTypeName(parentId, entry.second);
         data_->childrenByParent[parentId].push_back(childId);
+        data_->parentsByChild[childId].push_back(parentId);
     }
     for (const auto& entry : data_->additionalParentsOf) {
         const SymbolId childId = symbolIdForName(entry.first);

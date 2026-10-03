@@ -96,10 +96,10 @@ void parseProgramFileStatements(
     auto tokenizer = std::make_shared<WordVocabulary>();
     IntegerTokenList input(std::move(tokenizer), readSourceFile(normalized));
     IntegerParser parser(input, std::move(operators));
-    Program program = parser.parseProgram();
-    for (auto& statement : program.statements) consume(std::move(statement));
+    while (auto statement = parser.parseNextStatement())
+        consume(std::move(statement));
     if (metrics) {
-        metrics->tokensLexed += input.entries().size();
+        metrics->tokensLexed += parser.metrics().tokenCount;
         metrics->iterations += parser.metrics().iterations;
         metrics->peakRecursionDepth = std::max(metrics->peakRecursionDepth,
                                                 parser.metrics().peakRecursionDepth);

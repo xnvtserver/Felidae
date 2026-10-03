@@ -8,8 +8,8 @@
 
 namespace Felidae {
 
-// AstDiagnostic, diagnosticFor(), and diagnosticForSpan() now live in AST.h
-// so the compiler can share them without linking this analyzer.
+// AstDiagnostic, diagnosticFor(), and diagnosticForSpan() live in AST.h so
+// the integer parser and interpreter tooling share one diagnostic contract.
 
 // One declared parameter of a method/fact head, e.g. the `name: string` in
 // `Greeting(name: string) =>`. `type` is the annotation when the head writes

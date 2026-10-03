@@ -5,6 +5,12 @@ import "math"
 # of calling a same-named declared procedure (see
 # v2_examples/where_guard_chain.fx and operator_expression_inventory.fx for
 # the same fix on the same issue).
+#
+# `idx`, not `index`: "index" is a reserved word everywhere in Felidae, not
+# just inside a `class ... end` body - it introduces that block's own
+# `index(field, ...)` declaration, so the tokenizer maps it to that keyword
+# unconditionally and it can never be used as an ordinary parameter or
+# variable name.
 searchData := [
     0, 1, 2, 3, 4, 5, 6, 7,
     8, 9, 10, 11, 12, 13, 14, 15,
@@ -16,26 +22,26 @@ searchData := [
     56, 57, 58, 59, 60, 61, 62, 63
 ]
 
-def linearSearchFrom(data: array, target: number, index: number, size: number) =>
-    where index >= size
+def linearSearchFrom(data: array, target: number, idx: number, size: number) =>
+    where idx >= size
     return -1
 else
     return linearSearchAt(
         data: data,
         target: target,
-        index: index,
+        idx: idx,
         size: size
     )
 
-def linearSearchAt(data: array, target: number, index: number, size: number) =>
-    current := array:get(data: data, position: index)
+def linearSearchAt(data: array, target: number, idx: number, size: number) =>
+    current := array:get(data: data, position: idx)
     where current == target
-    return index
+    return idx
 else
     return linearSearchFrom(
         data: data,
         target: target,
-        index: index + 1,
+        idx: idx + 1,
         size: size
     )
 
@@ -43,7 +49,7 @@ def linearSearch(data: array, target: number) =>
     return linearSearchFrom(
         data: data,
         target: target,
-        index: 0,
+        idx: 0,
         size: count(data: data)
     )
 
