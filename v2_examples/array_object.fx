@@ -1,12 +1,5 @@
-# Receiver calls reuse the existing array operations.
-# push returns a new array, so each step needs its own binding - `:=` never
-# reassigns an existing name in Felidae.
+# Receiver calls reuse the immutable list operations.
 def main() =>
-    empty := []
-    withAda := empty.push(value: "Ada")
-    people := withAda.push(value: "Grace")
-    people.push(value: "Linus")
-    people.push(value: "Guido")
-    people.push(value: "Tim")
-    return (first: people.get(position: 0), count: people.len(),peoples: people.all())
+    people: list<string> := ["Ada", "Grace"]
+    return (first: people.get(position: 0), count: people.len())
 end

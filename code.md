@@ -1,7 +1,6 @@
 # Felidae architecture
 
-Felidae executes source directly. There is no compiler, IR, binary artifact,
-VM, or statistical mixfix model in the supported path.
+Felidae tokenizes source into a `Program` AST and executes it directly.
 
 ```text
 source.fx
@@ -11,28 +10,27 @@ source.fx
   -> Program AST / SymbolId interning
   -> Interpreter::addProgram
   -> solve / callMain / callAutoEntry
+  -> RocksDB fact and graph store
 ```
 
-`WordVocabulary` (`src/Tokenizer.h`) is a fixed, compile-time vocabulary:
-59 fixed grammar IDs plus one token per possible byte value (315 entries
-total), with no file on disk and no training step. The normal lexer owns
-fixed syntax, comments, numbers, and strings; only identifiers and mixfix
-anchors go through the byte-level tokenizer, one byte per token. See
-`src/Tokenizer.h` for why byte-level tokens, rather than subword merging,
-are the right fit for this interpreter.
+`WordVocabulary` is a fixed, compile-time byte vocabulary. The normal lexer
+owns syntax, comments, numbers, and strings; identifier and mixfix-anchor
+bytes are encoded after the grammar-token range. There is no tokenizer model,
+training step, generated vocabulary, or mutable token assignment.
 
-`FactMemory` is Felidae's in-process fact database. It uses immutable,
-copy-on-write relation roots and bounded snapshots; the interpreter reuses its
-indexes, paging, provenance, rollback, and source reload behavior.
+RocksDB is Felidae's authoritative persistent fact and graph database. The
+interpreter keeps only execution state and bounded query results in memory;
+typed bucket scans, indexes, stable node identities, and adjacency are read
+from the store. Before constructing an executable runtime, the frontend parses
+the entry program's sibling `init.fx`, requires `db.location(...)`, and opens
+that RocksDB directory. It never silently substitutes an in-memory or
+temporary fact store.
 
 Mixfix is deterministic parser and AST-interpreter behavior. Literal anchors
 are tokenized from their source spelling and matched by the registered
-operator registry; no SSM participates.
+operator registry.
 
-Run `felidae program.fx`, or `felidae program.fx --serve` to replace the live
-interpreter after a successful source reload.
+Run `felidae program.fx` for normal source-to-AST execution.
 
-The same executable owns live debugging (`--debug`), AST checks
-(`--check-json`), metadata, and LSP (`--lsp`). These modes share the
-authoritative tokenizer, parser, source loader, and operator registry; no
-separate tooling parser or visualization runtime exists.
+The same executable owns live execution debugging (`--debug`). Debug hooks are
+not installed for an ordinary run.

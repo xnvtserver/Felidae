@@ -1,3 +1,3 @@
-def main( =>
+main( =>
     return 42
 end

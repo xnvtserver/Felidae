@@ -17,7 +17,7 @@ updates:
   #     prefix: "deps"
   #     include: "scope"
 
-  # Git submodules such as SentencePiece / Abseil / Protobuf
+  # Active source dependencies tracked as Git submodules.
   - package-ecosystem: "gitsubmodule"
     directory: "/"
     schedule:

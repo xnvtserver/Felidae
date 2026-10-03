@@ -3,5 +3,6 @@ import (
     "operator_modules/conflict_b.fx"
 )
 
-main() =>
+def main() =>
     return 8 conflictMerge 3
+end

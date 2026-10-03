@@ -15,6 +15,7 @@ def eligible(score: number, active: number) =>
     return adjusted
 else
     return (0.0)
+end
 
 def main() =>
     return (
@@ -22,3 +23,4 @@ def main() =>
         lowScore: eligible(score: 40, active: 1.0),
         inactive: eligible(score: 90, active: 0.0)
     )
+end

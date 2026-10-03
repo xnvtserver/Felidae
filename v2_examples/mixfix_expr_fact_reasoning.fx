@@ -12,6 +12,7 @@ def explain(subject: expr, evidence: Evidence, context: Context, condition: expr
         context: context,
         condition: condition
     )
+end
 
 @mixfix(
     pattern: "reason {subject: expr} using {evidence: Evidence} within {context: Context} when {condition: expr}"
@@ -23,16 +24,19 @@ def reasonFactValue() =>
         context: context,
         condition: condition
     )
+end
 
 @mixfix(
     pattern: "review {subject: expr} against {evidence: Evidence} within {context: Context} when {condition: expr}"
 )
 def reviewFactValue() =>
     return reason subject using evidence within context when condition
+end
 
 def main() =>
     tiger := Animal(name: "tiger")
     evidence := Evidence(kind: "observed")
     context := Context(domain: "animal-behaviour")
-    result := review tiger against evidence within context when (tiger.legs == 4 and 1.0)
+    result := review tiger against evidence within context when (tiger.legs == 4 and true)
     return result
+end

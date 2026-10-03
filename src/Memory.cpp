@@ -17,13 +17,11 @@
 
 namespace Felidae {
 
-FactMemory::FactMemory()
-    : data_(std::make_shared<Data>()),
-      snapshots_(std::make_shared<SnapshotRegistry>()) {}
+FactMemory::FactMemory() : data_(std::make_shared<Data>()) {}
 
 FactMemory::FactMemory(const FactMemory& other)
     : data_(other.data_),
-      snapshots_(std::make_shared<SnapshotRegistry>()),
+      snapshots_{},
       compatibleFactCache_{},
       propertyQueryCache_{},
       adaptiveEqualityIndexes_(0),
@@ -32,7 +30,7 @@ FactMemory::FactMemory(const FactMemory& other)
 FactMemory& FactMemory::operator=(const FactMemory& other) {
     if (this != &other) {
         data_ = other.data_;
-        snapshots_ = std::make_shared<SnapshotRegistry>();
+        snapshots_.clear();
         invalidateCaches();
         adaptiveEqualityIndexes_ = 0;
         adaptiveIndexBuildMicros_ = 0;
@@ -321,10 +319,7 @@ std::uint64_t FactMemory::hierarchyGeneration() const {
 FactMemoryStats FactMemory::stats() const {
     FactMemoryStats result;
     result.relations = data_->relations.size();
-    {
-        std::lock_guard lock(snapshots_->mutex);
-        result.snapshots = snapshots_->entries.size();
-    }
+    result.snapshots = snapshots_.size();
     result.generation = data_->generation;
     result.adaptiveEqualityIndexes = adaptiveEqualityIndexes_;
     result.adaptiveIndexBuildMicros = adaptiveIndexBuildMicros_;
@@ -351,35 +346,26 @@ FactMemoryStats FactMemory::stats() const {
     return result;
 }
 
-std::shared_ptr<FactSnapshotLease> FactMemory::captureSnapshot() {
+std::uint64_t FactMemory::captureSnapshot() {
     const std::uint64_t snapshot = data_->generation;
-    {
-        std::lock_guard lock(snapshots_->mutex);
-        auto& entry = snapshots_->entries[snapshot];
-        entry.data = data_;
-        ++entry.leases;
-    }
-    const std::weak_ptr<SnapshotRegistry> registry = snapshots_;
-    return std::make_shared<FactSnapshotLease>(
-        snapshot, data_, [registry, snapshot] {
-            const auto retained = registry.lock();
-            if (!retained) return;
-            std::lock_guard lock(retained->mutex);
-            const auto found = retained->entries.find(snapshot);
-            if (found == retained->entries.end()) return;
-            if (found->second.leases > 1) --found->second.leases;
-            else retained->entries.erase(found);
-        });
+    snapshots_[snapshot] = data_;
+    return snapshot;
+}
+
+bool FactMemory::releaseSnapshot(std::uint64_t snapshotGeneration) {
+    if (snapshotGeneration == 0) return false;
+    const bool released = snapshots_.erase(snapshotGeneration) != 0;
+    if (released) compactInactiveIfSafe();
+    return released;
 }
 
 const FactMemory::Data& FactMemory::dataForSnapshot(std::uint64_t snapshotGeneration) const {
     if (snapshotGeneration == 0 || snapshotGeneration == data_->generation) return *data_;
-    std::lock_guard lock(snapshots_->mutex);
-    const auto found = snapshots_->entries.find(snapshotGeneration);
-    if (found == snapshots_->entries.end()) {
+    const auto found = snapshots_.find(snapshotGeneration);
+    if (found == snapshots_.end()) {
         throw std::runtime_error("FactSelection snapshot expired; materialize or recreate the selection");
     }
-    return *found->second.data;
+    return *found->second;
 }
 
 bool FactMemory::parseTemporalValue(const std::shared_ptr<Expr>& value, std::int64_t& out) {
@@ -584,6 +570,9 @@ bool FactMemory::structurallyEqual(const std::shared_ptr<Expr>& left,
     if (const auto l = std::dynamic_pointer_cast<NumberExpr>(left)) {
         return l->value == std::static_pointer_cast<NumberExpr>(right)->value;
     }
+    if (const auto l = std::dynamic_pointer_cast<BoolExpr>(left)) {
+        return l->value == std::static_pointer_cast<BoolExpr>(right)->value;
+    }
     if (std::dynamic_pointer_cast<NilExpr>(left)) return true;
     if (const auto l = std::dynamic_pointer_cast<ArrayExpr>(left)) {
         const auto r = std::static_pointer_cast<ArrayExpr>(right);
@@ -706,153 +695,6 @@ std::vector<size_t> FactMemory::temporalLineageIndexesForFact(
     const auto found = store.temporalLineageIndexes.find(store.facts.at(index).temporal.lineageKey);
     if (found == store.temporalLineageIndexes.end() || !found->second) return {};
     return *found->second;
-}
-
-bool FactMemory::addDependency(std::uint64_t sourceId, std::shared_ptr<MapExpr> required) {
-    if (sourceId == 0 || !required) return false;
-    ensureUnique();
-    ensureAttachmentsUnique();
-    auto& dependencies = data_->attachments->dependenciesBySource[sourceId];
-    for (const auto& dependency : dependencies) {
-        if (structurallyEqual(dependency.required, required)) return true;
-    }
-    dependencies.push_back(FactDependency{std::move(required)});
-    ++data_->generation;
-    return true;
-}
-
-bool FactMemory::addRelationship(std::uint64_t sourceId,
-                                 std::uint64_t targetId,
-                                 std::shared_ptr<MapExpr> relationship,
-                                 std::shared_ptr<Expr> degree,
-                                 std::shared_ptr<Expr> confidence) {
-    if (sourceId == 0 || targetId == 0 || !relationship) return false;
-    ensureUnique();
-    ensureAttachmentsUnique();
-    auto& outgoing = data_->attachments->relationshipsBySource[sourceId];
-    for (const auto& existing : outgoing) {
-        if (existing.targetId == targetId &&
-            structurallyEqual(existing.relationship, relationship) &&
-            structurallyEqual(existing.degree, degree) &&
-            structurallyEqual(existing.confidence, confidence)) {
-            return true;
-        }
-    }
-    FactRelationship record{sourceId, targetId, std::move(relationship), std::move(degree), std::move(confidence)};
-    outgoing.push_back(record);
-    data_->attachments->relationshipsByTarget[targetId].push_back(record);
-    ++data_->generation;
-    return true;
-}
-
-std::vector<std::shared_ptr<MapExpr>> FactMemory::missingDependencies(std::uint64_t sourceId) const {
-    std::vector<std::shared_ptr<MapExpr>> missing;
-    const auto found = data_->attachments->dependenciesBySource.find(sourceId);
-    if (found == data_->attachments->dependenciesBySource.end()) return missing;
-    for (const auto& dependency : found->second) {
-        bool satisfied = false;
-        std::string requiredType;
-        for (const auto& entry : dependency.required->entries) {
-            if (entry.key == internalSymbolString(InternalSymbolKind::Type)) {
-                if (const auto type = std::dynamic_pointer_cast<StringExpr>(entry.value)) {
-                    requiredType = type->value;
-                }
-            }
-        }
-        std::vector<size_t> candidates;
-        bool hasLiteralPredicate = false;
-        for (const auto& entry : dependency.required->entries) {
-            if (entry.key == internalSymbolString(InternalSymbolKind::Type)) continue;
-            if (entry.key == internalSymbolString(InternalSymbolKind::Parent)) continue;
-            std::string ignored;
-            if (!literalIndexKey(entry.value, ignored)) continue;
-            if (requiredType.empty()) continue;
-            const auto indexed = selectionIndexes(requiredType, entry.key, entry.value);
-            if (!hasLiteralPredicate || indexed.size() < candidates.size()) candidates = indexed;
-            hasLiteralPredicate = true;
-        }
-        if (!hasLiteralPredicate) {
-            candidates = requiredType.empty() ? activeFactIndexes() : selectionIndexes(requiredType);
-        }
-        for (size_t candidate : candidates) {
-            const auto& fact = data_->facts.at(candidate);
-            const auto materialized =
-                fact.active ? materializeFact(*data_, candidate) : nullptr;
-            if (materialized &&
-                factSatisfiesPattern(*materialized, *dependency.required)) {
-                satisfied = true;
-                break;
-            }
-        }
-        if (!satisfied) {
-            missing.push_back(std::static_pointer_cast<MapExpr>(dependency.required->clone()));
-        }
-    }
-    return missing;
-}
-
-bool FactMemory::hasDependencyCycle(std::uint64_t sourceId) const {
-    std::unordered_map<std::uint64_t, const FactRecord*> byId;
-    byId.reserve(data_->facts.size());
-    for (std::size_t index = 0; index < data_->facts.size(); ++index) {
-        const auto& fact = data_->facts.at(index);
-        if (fact.active) byId.emplace(fact.id, &fact);
-    }
-    std::unordered_set<std::uint64_t> visiting;
-    std::unordered_set<std::uint64_t> visited;
-    std::function<bool(std::uint64_t)> visit = [&](std::uint64_t current) {
-        if (!visiting.insert(current).second) return true;
-        if (visited.count(current)) {
-            visiting.erase(current);
-            return false;
-        }
-        const auto dependencies = data_->attachments->dependenciesBySource.find(current);
-        if (dependencies != data_->attachments->dependenciesBySource.end()) {
-            for (const auto& dependency : dependencies->second) {
-                for (const auto& candidate : byId) {
-                    const auto row = data_->factIndexById.find(candidate.first);
-                    const auto materialized =
-                        row ? materializeFact(*data_, *row) : nullptr;
-                    if (materialized &&
-                        factSatisfiesPattern(*materialized, *dependency.required) &&
-                        visit(candidate.first)) {
-                        return true;
-                    }
-                }
-            }
-        }
-        visiting.erase(current);
-        visited.insert(current);
-        return false;
-    };
-    return visit(sourceId);
-}
-
-std::vector<FactRelationship> FactMemory::relationshipsFor(std::uint64_t factId) const {
-    std::vector<FactRelationship> result;
-    const auto outgoing = data_->attachments->relationshipsBySource.find(factId);
-    if (outgoing != data_->attachments->relationshipsBySource.end()) {
-        result.insert(result.end(), outgoing->second.begin(), outgoing->second.end());
-    }
-    const auto incoming = data_->attachments->relationshipsByTarget.find(factId);
-    if (incoming != data_->attachments->relationshipsByTarget.end()) {
-        result.insert(result.end(), incoming->second.begin(), incoming->second.end());
-    }
-    return result;
-}
-
-const std::vector<FactRelationship>& FactMemory::outgoingRelationships(
-    std::uint64_t factId) const {
-    static const std::vector<FactRelationship> empty;
-    const auto it = data_->attachments->relationshipsBySource.find(factId);
-    return it == data_->attachments->relationshipsBySource.end() ? empty : it->second;
-}
-
-const std::vector<FactRelationship>& FactMemory::incomingRelationships(
-    std::uint64_t factId) const {
-    static const std::vector<FactRelationship> empty;
-    const auto it = data_->attachments->relationshipsByTarget.find(factId);
-    return it == data_->attachments->relationshipsByTarget.end() ? empty : it->second;
 }
 
 std::vector<size_t> FactMemory::selectionIndexes(const std::string& type,
@@ -1206,20 +1048,6 @@ std::vector<size_t> FactMemory::factIndexesFromOrigin(const std::filesystem::pat
     return *found->second;
 }
 
-std::vector<std::filesystem::path> FactMemory::originsForType(
-    const std::string& type) const {
-    const SymbolId typeId = symbolIdForName(type);
-    std::set<std::filesystem::path> unique;
-    const auto relation = data_->relations.find(typeId);
-    if (relation == data_->relations.end() || !relation->second) return {};
-    for (const auto index : relation->second->rows) {
-        const auto& fact = data_->facts.at(index);
-        if (fact.typeId == typeId && fact.type == type && !fact.origin.empty())
-            unique.insert(fact.origin);
-    }
-    return {unique.begin(), unique.end()};
-}
-
 bool FactMemory::hasOrigin(const std::filesystem::path& origin) const {
     return data_->factsByOrigin.count(origin) > 0;
 }
@@ -1482,6 +1310,9 @@ bool FactMemory::literalIndexKey(const std::shared_ptr<Expr>& value, std::string
             out = text.str();
             return true;
         }
+        case ExprKind::Bool:
+            out = static_cast<const BoolExpr&>(*value).value ? "b:1" : "b:0";
+            return true;
         case ExprKind::Nil:
             out = "z:";
             return true;
@@ -1515,6 +1346,11 @@ bool FactMemory::literalIndexHash(
             std::uint64_t bits = 0;
             std::memcpy(&bits, &number, sizeof(bits));
             mix(&bits, sizeof(bits), 2);
+            return true;
+        }
+        case ExprKind::Bool: {
+            const bool boolean = static_cast<const BoolExpr&>(*value).value;
+            mix(&boolean, sizeof(boolean), 3);
             return true;
         }
         case ExprKind::Nil:
@@ -1651,6 +1487,7 @@ void FactMemory::indexFact(
                 switch (stored->kind()) {
                     case ExprKind::String: return Data::Relation::ColumnKind::String;
                     case ExprKind::Number: return Data::Relation::ColumnKind::Number;
+                    case ExprKind::Bool: return Data::Relation::ColumnKind::Bool;
                     case ExprKind::Nil: return Data::Relation::ColumnKind::Nil;
                     default: return Data::Relation::ColumnKind::Structured;
                 }
@@ -1699,10 +1536,7 @@ void FactMemory::compactInactiveIfSafe() {
     // Selections refer to vector positions in their captured Data.  Never
     // compact while a snapshot is retained; db.release makes that lifetime
     // explicit for callers that keep long-lived selections.
-    {
-        std::lock_guard lock(snapshots_->mutex);
-        if (!snapshots_->entries.empty()) return;
-    }
+    if (!snapshots_.empty()) return;
     std::size_t tombstones = 0;
     for (std::size_t index = 0; index < data_->facts.size(); ++index) {
         if (!data_->facts.at(index).active) ++tombstones;
@@ -1778,14 +1612,6 @@ void FactMemory::invalidateCachesForType(const std::string& type, SymbolId typeI
 
 void FactMemory::ensureUnique() {
     if (data_.use_count() != 1) data_ = std::make_shared<Data>(*data_);
-}
-
-void FactMemory::ensureAttachmentsUnique() {
-    if (!data_->attachments) {
-        data_->attachments = std::make_shared<AttachmentData>();
-    } else if (data_->attachments.use_count() != 1) {
-        data_->attachments = std::make_shared<AttachmentData>(*data_->attachments);
-    }
 }
 
 FactMemory::Data::Relation& FactMemory::writableRelation(SymbolId typeId) {

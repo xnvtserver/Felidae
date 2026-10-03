@@ -69,7 +69,7 @@ struct DebugSession::Impl {
                     const std::string name = symbolNameForId(binding.first);
                     if (!name.empty()) {
                         std::cout << name << " = "
-                                  << interpreter->valueToDisplayString(binding.second) << std::endl;
+                                  << interpreter->valueToDebugString(binding.second) << std::endl;
                     }
                 }
                 std::cout << "FELIDAE_DEBUG_LOCALS_END" << std::endl;
@@ -81,7 +81,7 @@ struct DebugSession::Impl {
                 const auto found = env.find(name);
                 std::cout << "FELIDAE_DEBUG_VALUE " << name << " = "
                           << (found != env.end()
-                                  ? interpreter->valueToDisplayString(found->second)
+                                  ? interpreter->valueToDebugString(found->second)
                                   : "<unbound>")
                           << std::endl;
                 continue;
@@ -108,7 +108,12 @@ struct DebugSession::Impl {
 };
 
 DebugSession::DebugSession() : impl_(std::make_unique<Impl>()) {}
-DebugSession::~DebugSession() = default;
+DebugSession::~DebugSession() {
+    if (impl_ && impl_->interpreter && !impl_->terminated) {
+        impl_->terminated = true;
+        std::cout << "FELIDAE_DEBUG_TERMINATED" << std::endl;
+    }
+}
 
 void DebugSession::attach(Interpreter& interpreter) {
     impl_->interpreter = &interpreter;

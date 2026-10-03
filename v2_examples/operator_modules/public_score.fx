@@ -1,9 +1,8 @@
-@overload(
-    operator: scoreWith,
-    pattern: "{left} scoreWith {right}",
-    captures: {left: number, right: number},
-    result: string,
-    visibility: public
+@mixfix(
+    pattern: "{left: number} scoreWith {right: number}",
+    result: string.class,
+    visibility: "public"
 )
-publicScore() =>
+def publicScore() =>
     return "public"
+end

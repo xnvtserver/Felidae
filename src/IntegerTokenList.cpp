@@ -2,45 +2,9 @@
 
 #include <cctype>
 #include <stdexcept>
-#include <unordered_map>
 
 namespace Felidae {
 namespace {
-
-// Built once, on first use: a hash lookup instead of a linear chain of
-// string_view comparisons (up to 59 of them) against every word and
-// punctuation candidate encodeNextStatement scans - which used to run for
-// every single identifier too, since a non-keyword only falls through to
-// tokenization after failing every comparison in the chain.
-const std::unordered_map<std::string_view, TokenId::Id>& fixedIdTable() {
-    static const std::unordered_map<std::string_view, TokenId::Id> table = [] {
-        std::unordered_map<std::string_view, TokenId::Id> map;
-        map.reserve(std::size(kBuiltinTokens) + 6);
-        for (std::size_t index = 0; index < std::size(kBuiltinTokens); ++index) {
-            map.emplace(kBuiltinTokens[index].spelling, static_cast<TokenId::Id>(index + 1));
-        }
-        map.emplace("class", TokenId::CLASS);
-        map.emplace("end", TokenId::END);
-        map.emplace("index", TokenId::INDEX);
-        map.emplace("extends", TokenId::EXTENDS);
-        map.emplace("elif", TokenId::ELIF);
-        map.emplace("def", TokenId::DEF);
-        return map;
-    }();
-    return table;
-}
-
-} // namespace
-
-TokenId::Id fixedGrammarTokenId(std::string_view spelling) {
-    const auto& table = fixedIdTable();
-    const auto found = table.find(spelling);
-    return found == table.end() ? TokenId::UNKNOWN : found->second;
-}
-
-namespace {
-
-constexpr std::size_t kMaximumTokenChunkBytes = 64 * 1024;
 
 std::size_t statementEnd(std::string_view source, std::size_t begin) {
   bool quoted = false;
@@ -49,10 +13,8 @@ std::size_t statementEnd(std::string_view source, std::size_t begin) {
   for (std::size_t index = begin; index < source.size(); ++index) {
     const char byte = source[index];
     if (comment) {
-      if (byte == '\n' || byte == '\r') {
+      if (byte == '\n' || byte == '\r')
         comment = false;
-        if (index + 1 - begin >= kMaximumTokenChunkBytes) return index + 1;
-      }
       continue;
     }
     if (quoted) {
@@ -72,11 +34,6 @@ std::size_t statementEnd(std::string_view source, std::size_t begin) {
       comment = true;
       continue;
     }
-    // Dot termination is optional. Bound the lexer cache at a safe newline
-    // when a source uses newline/end framing, without pretending that the
-    // newline itself necessarily ends the parser's current statement.
-    if ((byte == '\n' || byte == '\r') &&
-        index + 1 - begin >= kMaximumTokenChunkBytes) return index + 1;
     if (byte != '.')
       continue;
     // Decimal points and adjacent member access are grammar punctuation, not
@@ -121,9 +78,31 @@ void IntegerTokenList::encodeNextStatement() const {
   ++encodeCount_;
   const auto push = [&](TokenId::Id id, std::size_t first, std::size_t last) {
     entries_.push_back(Entry{id, begin + first, begin + last});
-    ++tokenCount_;
   };
-  const auto fixedId = fixedGrammarTokenId;
+  const auto fixedId = [](std::string_view spelling) -> TokenId::Id {
+    for (std::size_t index = 0; index < std::size(kBuiltinTokens); ++index) {
+      if (kBuiltinTokens[index].spelling == spelling)
+        return kFelidaeBuiltinTokenIds[index];
+    }
+    if (spelling == "class") return TokenId::CLASS;
+    if (spelling == "end") return TokenId::END;
+    if (spelling == "index") return TokenId::INDEX;
+    if (spelling == "extends") return TokenId::EXTENDS;
+    if (spelling == "elif") return TokenId::ELIF;
+    if (spelling == "new") return TokenId::NEW;
+    if (spelling == "for") return TokenId::FOR;
+    if (spelling == "in") return TokenId::IN;
+    if (spelling == "while") return TokenId::WHILE;
+    if (spelling == "switch") return TokenId::SWITCH;
+    if (spelling == "case") return TokenId::CASE;
+    if (spelling == "default") return TokenId::DEFAULT;
+    if (spelling == "break") return TokenId::BREAK;
+    if (spelling == "continue") return TokenId::CONTINUE;
+    if (spelling == "def") return TokenId::DEF;
+    if (spelling == "this") return TokenId::THIS;
+    if (spelling == "super") return TokenId::SUPER;
+    return TokenId::UNKNOWN;
+  };
   for (std::size_t offset = 0; offset < statement.size();) {
     const unsigned char byte = static_cast<unsigned char>(statement[offset]);
     if (statement[offset] == '#') {
@@ -197,7 +176,11 @@ void IntegerTokenList::encodeNextStatement() const {
     }
     const std::string_view word = statement.substr(first, offset - first);
     const TokenId::Id keyword = fixedId(word);
-    if (keyword != TokenId::UNKNOWN) {
+    if (keyword != TokenId::UNKNOWN || word == "class" || word == "end" ||
+        word == "index" || word == "extends" || word == "elif" || word == "new" ||
+        word == "for" || word == "in" || word == "while" || word == "switch" ||
+        word == "case" || word == "default" || word == "break" ||
+        word == "continue" || word == "def") {
       push(keyword, first, offset);
       continue;
     }
@@ -209,26 +192,22 @@ void IntegerTokenList::encodeNextStatement() const {
 }
 
 bool IntegerTokenList::has(std::size_t index) const {
-  if (index < firstEntryIndex_)
-    throw std::out_of_range("discarded word vocabulary token index");
-  while (index - firstEntryIndex_ >= entries_.size() && !complete_)
+  while (index >= entries_.size() && !complete_)
     encodeNextStatement();
-  return index - firstEntryIndex_ < entries_.size();
+  return index < entries_.size();
 }
 
 const IntegerTokenList::Entry &
 IntegerTokenList::entry(std::size_t index) const {
   if (!has(index))
     throw std::out_of_range("word vocabulary token index is out of range");
-  return entries_[index - firstEntryIndex_];
+  return entries_[index];
 }
 
-void IntegerTokenList::discardBefore(std::size_t index) const {
-  if (index <= firstEntryIndex_) return;
-  const auto count = std::min(index - firstEntryIndex_, entries_.size());
-  for (std::size_t removed = 0; removed < count; ++removed)
-    entries_.pop_front();
-  firstEntryIndex_ += count;
+const std::vector<IntegerTokenList::Entry> &IntegerTokenList::entries() const {
+  while (!complete_)
+    encodeNextStatement();
+  return entries_;
 }
 
 } // namespace Felidae

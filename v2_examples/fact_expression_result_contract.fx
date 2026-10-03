@@ -30,6 +30,11 @@ def evaluateFactExpression() =>
                         Classification(fact: subject, category: "companion"),
                         Evidence(subject: subject, field: "legs", value: subject.legs)
                     ]
+                end
+            end
+        end
+    end
+end
 
 def main() =>
     cat := Cat(name: "sony", legs: 4)
@@ -45,3 +50,4 @@ def main() =>
         derived: derived,
         evidence: evidence
     )
+end

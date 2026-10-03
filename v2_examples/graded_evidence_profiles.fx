@@ -27,6 +27,7 @@ def profile(name: string, peak: number, fadesIn: number, fadesOut: number) =>
         fades_in: fadesIn,
         fades_out: fadesOut
     )
+end
 
 def makeReport(score: number) =>
     critical := profile(name: "Critical / Strongly Disagree", peak: 0, fadesIn: 0, fadesOut: 30)
@@ -48,6 +49,8 @@ def makeReport(score: number) =>
             fades_out: 90
         )
     }
+end
 
 def main() =>
     return makeReport(score: 68)
+end

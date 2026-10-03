@@ -10,13 +10,16 @@ HvacPlant(name: "", available: 0, sensor_valid: 0)
 HeatPump extend HvacPlant(name: "", available: 0, sensor_valid: 0)
 
 def observationUnifies(observation: any) =>
-    kind := type(value: observation)
-    return (
-        kind == "ClimateObservation"
-        or kind == "HotObservation"
-        or kind == "ColdObservation"
-        or kind == "ComfortableObservation"
+    return isA(
+        left: observation,
+        right: ClimateObservation(
+            zone: "",
+            temperature: 0,
+            humidity: 0,
+            occupied: 0
+        )
     )
+end
 
 def proveCooling(observation: any, plant: any) =>
     return (
@@ -26,6 +29,7 @@ def proveCooling(observation: any, plant: any) =>
         and plant.available == 1.0
         and plant.sensor_valid == 1.0
     )
+end
 
 def proveHeating(observation: any, plant: any) =>
     return (
@@ -35,6 +39,7 @@ def proveHeating(observation: any, plant: any) =>
         and plant.available == 1.0
         and plant.sensor_valid == 1.0
     )
+end
 
 def proveVentilation(observation: any, plant: any) =>
     return (
@@ -43,24 +48,30 @@ def proveVentilation(observation: any, plant: any) =>
         and plant.available == 1.0
         and plant.sensor_valid == 1.0
     )
+end
 
 def proveIdle(observation: any, plant: any) =>
     return (
         observationUnifies(observation: observation) == 1.0
         and plant.sensor_valid == 1.0
     )
+end
 
 def chooseIdle(idle_proof: number) =>
     if idle_proof == 1.0 then
         return "idle"
     else
         return "fault_lockout"
+    end
+end
 
 def chooseVentilation(ventilation_proof: number, idle_proof: number) =>
     if ventilation_proof == 1.0 then
         return "ventilate"
     else
         return chooseIdle(idle_proof: idle_proof)
+    end
+end
 
 def chooseHeating(heating_proof: number, ventilation_proof: number, idle_proof: number) =>
     if heating_proof == 1.0 then
@@ -70,6 +81,8 @@ def chooseHeating(heating_proof: number, ventilation_proof: number, idle_proof: 
             ventilation_proof: ventilation_proof,
             idle_proof: idle_proof
         )
+    end
+end
 
 def chooseCooling(cooling_proof: number, heating_proof: number, ventilation_proof: number, idle_proof: number) =>
     if cooling_proof == 1.0 then
@@ -80,13 +93,17 @@ def chooseCooling(cooling_proof: number, heating_proof: number, ventilation_proo
             ventilation_proof: ventilation_proof,
             idle_proof: idle_proof
         )
+    end
+end
 
 @mixfix(pattern: "{evidence: number} warrants {action: string}")
-def warrant() =>
+def warrant(evidence: number, action: string) =>
     if evidence == 1.0 then
         return action
     else
         return "unproved"
+    end
+end
 
 def solve(observation: any, plant: any) =>
     cooling_proof := proveCooling(observation: observation, plant: plant)
@@ -108,6 +125,7 @@ def solve(observation: any, plant: any) =>
         ventilation_proof: ventilation_proof,
         idle_proof: idle_proof
     )
+end
 
 def main() =>
     plant := HeatPump(name: "north-wing", available: 1.0, sensor_valid: 1.0)
@@ -119,3 +137,4 @@ def main() =>
         empty_humid: solve(observation: humid_empty, plant: plant),
         invalid_sensor: solve(observation: hot, plant: faulty)
     )
+end

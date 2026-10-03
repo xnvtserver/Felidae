@@ -14,23 +14,15 @@ enum class BuiltinEffect {
     Volatile
 };
 
-enum class BuiltinReceiver {
-    Global,
-    FactType,
-    FactSelection
-};
-
 struct BuiltinInfo {
     BuiltinId id;
     const char* name;
     BuiltinEffect effect;
-    BuiltinReceiver receiver = BuiltinReceiver::Global;
 };
 
 BuiltinId builtinIdForName(const std::string& name);
 BuiltinId builtinIdForName(std::string_view name);
 BuiltinId builtinIdForName(const char* name);
-BuiltinId builtinIdForMember(BuiltinReceiver receiver, std::string_view member);
 bool isBuiltinFunctionName(const std::string& name);
 const char* builtinName(BuiltinId id);
 BuiltinEffect builtinEffect(BuiltinId id);

@@ -1,6 +1,8 @@
 @mixfix(pattern: "{left: string} requires {right: mixfix}")
-requiresNested() =>
+def requiresNested() =>
     return left
+end
 
-main() =>
+def main() =>
     return "felidae" requires "a plain string"
+end

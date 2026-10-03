@@ -5,12 +5,6 @@ import "math"
 # of calling a same-named declared procedure (see
 # v2_examples/where_guard_chain.fx and operator_expression_inventory.fx for
 # the same fix on the same issue).
-#
-# `idx`, not `index`: "index" is a reserved word everywhere in Felidae, not
-# just inside a `class ... end` body - it introduces that block's own
-# `index(field, ...)` declaration, so the tokenizer maps it to that keyword
-# unconditionally and it can never be used as an ordinary parameter or
-# variable name.
 searchData := [
     0, 1, 2, 3, 4, 5, 6, 7,
     8, 9, 10, 11, 12, 13, 14, 15,
@@ -22,36 +16,39 @@ searchData := [
     56, 57, 58, 59, 60, 61, 62, 63
 ]
 
-def linearSearchFrom(data: array, target: number, idx: number, size: number) =>
-    where idx >= size
+def linearSearchFrom(data: array, target: number, index: number, size: number) =>
+    where index >= size
     return -1
 else
     return linearSearchAt(
         data: data,
         target: target,
-        idx: idx,
+        index: index,
         size: size
     )
+end
 
-def linearSearchAt(data: array, target: number, idx: number, size: number) =>
-    current := array:get(data: data, position: idx)
+def linearSearchAt(data: array, target: number, index: number, size: number) =>
+    current := data.get(position: index)
     where current == target
-    return idx
+    return index
 else
     return linearSearchFrom(
         data: data,
         target: target,
-        idx: idx + 1,
+        index: index + 1,
         size: size
     )
+end
 
 def linearSearch(data: array, target: number) =>
     return linearSearchFrom(
         data: data,
         target: target,
-        idx: 0,
+        index: 0,
         size: count(data: data)
     )
+end
 
 def binarySearchBetween(data: array, target: number, low: number, high: number) =>
     where low > high
@@ -63,10 +60,11 @@ else
         low: low,
         high: high
     )
+end
 
 def binarySearchAt(data: array, target: number, low: number, high: number) =>
     middle := math.floor(value: (low + high) / 2)
-    current := array:get(data: data, position: middle)
+    current := data.get(position: middle)
     where current == target
     return middle
 else
@@ -87,6 +85,8 @@ else
             low: low,
             high: middle - 1
         )
+    end
+end
 
 def binarySearch(data: array, target: number) =>
     return binarySearchBetween(
@@ -95,18 +95,22 @@ def binarySearch(data: array, target: number) =>
         low: 0,
         high: count(data: data) - 1
     )
+end
 
 def linearSearchLast() =>
     return linearSearch(data: searchData, target: 63)
+end
 
 def binarySearchLast() =>
     return binarySearch(data: searchData, target: 63)
+end
 
 def searchMissing() =>
     return (
         linear: linearSearch(data: searchData, target: 100),
         binary: binarySearch(data: searchData, target: 100)
     )
+end
 
 def main() =>
     return (
@@ -114,3 +118,4 @@ def main() =>
         binary_last: binarySearchLast(),
         missing: searchMissing()
     )
+end

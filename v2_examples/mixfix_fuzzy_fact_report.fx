@@ -1,7 +1,8 @@
 # Direct-interpreter expert-system baseline. The declarations model hierarchy and
 # time/priority provenance; the returned values remain numeric Degrees/facts,
 # never implicit booleans.
-import "fuzzy"
+
+import "fuzzy".
 
 Evidence(name: "", subject: "", fx.observed_at: 0, priority: 0)
 Assessment extend Evidence(name: "", subject: "", fx.observed_at: 0, priority: 0, degree: 0)
@@ -10,11 +11,13 @@ RatingProfile extend Assessment(
     degree: 0, peak: 0, fades_in: 0, fades_out: 100)
 
 @mixfix(pattern: "{score: number} assessed by {profile: RatingProfile}")
-def assess() =>
-    return membership(score: score, profile: profile)
+def assess(score: number, profile: RatingProfile) =>
+    return membership(score, profile)
+end
 
 def degreeFor(profile: RatingProfile) =>
     return membership(68, profile)
+end
 
 def main() =>
     critical := RatingProfile(name: "Critical", subject: "Strongly Disagree", fx.observed_at: 20260817, priority: 0, degree: 0, peak: 0, fades_in: 0, fades_out: 30)
@@ -23,9 +26,13 @@ def main() =>
     strong := RatingProfile(name: "Strong", subject: "Agree", fx.observed_at: 20260817, priority: 75, degree: 0, peak: 75, fades_in: 50, fades_out: 90)
     exceptional := RatingProfile(name: "Exceptional", subject: "Strongly Agree", fx.observed_at: 20260817, priority: 100, degree: 0, peak: 100, fades_in: 75, fades_out: 100)
     mixfix_degree := 68 assessed by strong
-    profile_degrees := lambda(RatingProfile, profile => degreeFor(profile: profile))
+    profile_degrees := lambda(
+        [critical, subpar, acceptable, strong, exceptional],
+        profile => degreeFor(profile: profile)
+    )
     return (
         mixfix_degree: mixfix_degree,
         profile_degrees: profile_degrees,
         observed_at: 20260817,
         strongest_profile: exceptional)
+end

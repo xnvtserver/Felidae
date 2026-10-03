@@ -19,9 +19,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Configure
+      - name: Configure (Unix)
+        if: runner.os != 'Windows'
         run: >-
           cmake -S . -B build/debug
+          -DCMAKE_BUILD_TYPE=Debug
+          -DFELIDAE_BUILD_TESTS=ON
+          -DFELIDAE_ENABLE_STRICT_WARNINGS=ON
+      - name: Configure (Windows x64)
+        if: runner.os == 'Windows'
+        run: >-
+          cmake -S . -B build/debug -A x64
           -DCMAKE_BUILD_TYPE=Debug
           -DFELIDAE_BUILD_TESTS=ON
           -DFELIDAE_ENABLE_STRICT_WARNINGS=ON
@@ -29,16 +37,16 @@ jobs:
         run: cmake --build build/debug --config Debug --parallel 2
       - name: Test
         run: ctest --test-dir build/debug --build-config Debug --output-on-failure
-      - name: Smoke unified tooling (Unix)
+      - name: Smoke interpreter (Unix)
         if: runner.os != 'Windows'
         run: |
           build/debug/felidae --version
-          build/debug/felidae tests/direct_ast_smoke.fx --check-json
-      - name: Smoke unified tooling (Windows)
+          build/debug/felidae tests/direct_ast_smoke.fx
+      - name: Smoke interpreter (Windows)
         if: runner.os == 'Windows'
         run: |
           build/debug/Debug/felidae.exe --version
-          build/debug/Debug/felidae.exe tests/direct_ast_smoke.fx --check-json
+          build/debug/Debug/felidae.exe tests/direct_ast_smoke.fx
 
   sanitizers:
     runs-on: ubuntu-latest

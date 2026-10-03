@@ -16,9 +16,6 @@ WordVocabulary::encodeWithOffsets(std::string_view text) const {
 }
 
 std::vector<int> WordVocabulary::encode(std::string_view text) const {
-  // Reuses encodeWithOffsets rather than repeating its loop, so there is one
-  // place that defines how a byte becomes a token ID, not two that have to
-  // be kept in sync by hand.
   const auto encoded = encodeWithOffsets(text);
   std::vector<int> result;
   result.reserve(encoded.size());
@@ -32,7 +29,8 @@ std::string WordVocabulary::decode(std::span<const int> tokens) const {
   for (const int id : tokens) {
     const int byte = id - kFirstByteToken;
     if (byte < 0 || byte > 255) {
-      throw std::runtime_error("word vocabulary decode received an invalid token ID");
+      throw std::runtime_error(
+          "word vocabulary decode received an invalid token ID");
     }
     result.push_back(static_cast<char>(byte));
   }

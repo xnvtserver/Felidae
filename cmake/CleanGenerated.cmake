@@ -22,7 +22,11 @@ set(FELIDAE_GENERATED_PATHS
     ZERO_CHECK.dir
     _deps
     build
+    build-debug
+    build-clang
     dist
+    logs
+    ml
     out
     CMakeCache.txt
     cmake_install.cmake
@@ -47,6 +51,32 @@ foreach(relative_path IN LISTS FELIDAE_GENERATED_PATHS)
                 message(FATAL_ERROR "Failed to remove ${target}")
             endif()
         endif()
+    endif()
+endforeach()
+
+# Old build scripts occasionally left native artifacts directly at the
+# repository root. Restrict this sweep to root-level files so checked-in
+# native-module fixtures and dependency contents are never touched.
+file(GLOB FELIDAE_ROOT_BINARIES LIST_DIRECTORIES FALSE
+    "${FELIDAE_ROOT}/*.exe"
+    "${FELIDAE_ROOT}/*.dll"
+    "${FELIDAE_ROOT}/*.so"
+    "${FELIDAE_ROOT}/*.dylib"
+    "${FELIDAE_ROOT}/*.lib"
+    "${FELIDAE_ROOT}/*.a"
+    "${FELIDAE_ROOT}/*.obj"
+    "${FELIDAE_ROOT}/*.o"
+    "${FELIDAE_ROOT}/*.bin")
+foreach(target IN LISTS FELIDAE_ROOT_BINARIES)
+    cmake_path(IS_PREFIX FELIDAE_ROOT "${target}" NORMALIZE inside_repository)
+    if(NOT inside_repository)
+        message(FATAL_ERROR "Refusing unsafe binary cleanup target: ${target}")
+    endif()
+    if(FELIDAE_CLEAN_DRY_RUN)
+        message(STATUS "Would remove ${target}")
+    else()
+        message(STATUS "Removing ${target}")
+        file(REMOVE "${target}")
     endif()
 endforeach()
 

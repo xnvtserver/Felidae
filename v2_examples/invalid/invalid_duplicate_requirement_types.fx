@@ -1,11 +1,10 @@
 BoundaryRequirement extend OperatorRequirement(value: number)
 
-@overload(
-    operator: invalidBoundary,
-    pattern: "{left} invalidBoundary {right}",
-    captures: {left: number, right: number},
+@mixfix(
+    pattern: "{left: number} invalidBoundary {right: number}",
     factors: [lower: BoundaryRequirement, upper: BoundaryRequirement],
-    result: number
+    result: number.class
 )
-invalidBoundaries() =>
+def invalidBoundaries() =>
     return left
+end
