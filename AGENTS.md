@@ -66,3 +66,16 @@
   remove, revert, or replace them during compatibility fixes or cleanup. Move
   fixes forward from the Dependabot-selected versions, and ask the user before
   changing a dependency pin or deleting dependency/submodule remnants.
+- Atoms exist only at the interpreter level, as the lowercase identifiers that
+  mixfix patterns and operator words are built from. An atom is never accepted
+  as a standard data value like a string, number, or float: it cannot be stored
+  in a fact, bound to a variable, passed as an argument, returned, or persisted
+  to RocksDB. Text must be quoted, and class and function references use
+  `Name.class` and `name.function`. Do not add an atom value type, an atom
+  literal, or an atom field type; atoms are designed for mixfix operations.
+- Integer-only fast paths (token-id scans, hashing, id comparison) may be written
+  as header-only C-style kernels: `static inline` functions over integers and raw
+  arrays in the C subset, kept `extern "C"`-compatible, in `src/IntKernels.h`.
+  Memory management, containers, and data manipulation stay in C++. Do not add
+  C source files or a C build language without a profile that shows a specific
+  kernel gains from it.
