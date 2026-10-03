@@ -1,8 +1,8 @@
 class Node
-    key(id)
-    id: optional<string>
-end
+    key(id).
+    id: optional<string>.
+end.
 
 def main() =>
-    return true
+    return true.
 end

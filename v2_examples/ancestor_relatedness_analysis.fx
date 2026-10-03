@@ -46,15 +46,15 @@ def relationshipReport(left: any, right: any) =>
         close_relative: isCloseRelative(left: left, right: right, threshold: 0.3),
         distant_relative: isDistantRelative(left: left, right: right, threshold: 0.3),
         weight_similarity: similarity(a: left.weight_kg, b: right.weight_kg)
-    }
+    }.
 end
 
 def main() =>
-    rex := Dog(name: "Rex", weight_kg: 30)
-    fido := Dog(name: "Fido", weight_kg: 28)
-    wolfie := Wolf(name: "Wolfie", weight_kg: 40)
-    tom := Cat(name: "Tom", weight_kg: 5)
-    aquila := Eagle(name: "Aquila", weight_kg: 6)
+    rex := Dog(name: "Rex", weight_kg: 30).
+    fido := Dog(name: "Fido", weight_kg: 28).
+    wolfie := Wolf(name: "Wolfie", weight_kg: 40).
+    tom := Cat(name: "Tom", weight_kg: 5).
+    aquila := Eagle(name: "Aquila", weight_kg: 6).
 
     return {
         # Same species: distance 0, degree 1 - always "close" regardless of
@@ -73,5 +73,5 @@ def main() =>
         # which is exactly why they are kept as separate, independent
         # degrees rather than folded into one score.
         unrelated_but_similar_weight: relationshipReport(left: tom, right: aquila)
-    }
+    }.
 end

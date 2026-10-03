@@ -1,6 +1,6 @@
 @mixfix(pattern: "{left: number} combine {right: number}")
 def combineNumbers() =>
-    return left + right
+    return left + right.
 end
 
 @overload(
@@ -9,12 +9,12 @@ end
     result: string.class
 )
 def combineStrings(left: string, right: string) =>
-    return "string-overload"
+    return "string-overload".
 end
 
 def main() =>
     return (
         number_result: 40 combine 2,
         string_result: "left" combine "right"
-    )
+    ).
 end

@@ -383,11 +383,52 @@ static void runRepl(Interpreter& interpreter, std::istream& input,
             }
         });
     };
+    const auto executeInteractiveExpression = [&](const std::string& command) {
+        if (command[0] == '?') {
+            auto before = interpreter.runtimeCounters();
+            const auto started = std::chrono::steady_clock::now();
+            auto activity = debugEnabled
+                ? std::shared_ptr<TerminalUi::Activity>{}
+                : ui.activity("solving query");
+            auto queryGoals = parseQueryText(
+                command, interpreter.tokenizer(), interpreter.operatorRegistry());
+            auto solutions = interpreter.solve(queryGoals, 1000);
+            activity.reset();
+            finishMeasurement("query", started, std::move(before));
+            ui.queryHeading();
+            printSolutions(interpreter, queryGoals, solutions, output);
+            printAutomaticMetrics();
+            return;
+        }
+        if (isBareIdentifier(command) && interpreter.hasGlobal(command)) {
+            auto before = interpreter.runtimeCounters();
+            const auto started = std::chrono::steady_clock::now();
+            auto activity = debugEnabled
+                ? std::shared_ptr<TerminalUi::Activity>{}
+                : ui.activity("evaluating global");
+            const auto value = interpreter.evaluateGlobal(command);
+            activity.reset();
+            finishMeasurement("global", started, std::move(before));
+            ui.result(interpreter.valueToDisplayString(value));
+            printAutomaticMetrics();
+            return;
+        }
+        auto before = interpreter.runtimeCounters();
+        const auto started = std::chrono::steady_clock::now();
+        auto activity = debugEnabled
+            ? std::shared_ptr<TerminalUi::Activity>{}
+            : ui.activity("evaluating expression");
+        auto value = interpreter.evaluateExpressionText(command);
+        activity.reset();
+        finishMeasurement("expression", started, std::move(before));
+        ui.result(interpreter.valueToDisplayString(value));
+        printAutomaticMetrics();
+    };
     while (true) {
         if (!lineEditor.readLine(readingSource, line)) {
             if (readingSource) {
                 output << '\n';
-                ui.warning("unfinished declaration discarded");
+                ui.warning("unfinished input discarded");
             }
             output << "\n";
             break;
@@ -397,11 +438,11 @@ static void runRepl(Interpreter& interpreter, std::istream& input,
             if (command == ":cancel") {
                 source.clear();
                 readingSource = false;
-                ui.warning("unfinished declaration discarded");
+                ui.warning("unfinished input discarded");
                 continue;
             }
             if (command == ":show") {
-                ui.heading("Unfinished declaration");
+                ui.heading("Unfinished input");
                 ui.codeBlock(source);
                 continue;
             }
@@ -411,20 +452,22 @@ static void runRepl(Interpreter& interpreter, std::istream& input,
             const auto started = std::chrono::steady_clock::now();
             auto activity = debugEnabled
                 ? std::shared_ptr<TerminalUi::Activity>{}
-                : ui.activity("parsing declaration");
+                : ui.activity("parsing input");
             try {
                 const auto load = loadInteractiveProgramText(
                     source, fs::current_path(), interpreter);
                 if (load == InteractiveProgramLoad::Incomplete) continue;
-                if (load == InteractiveProgramLoad::Expression ||
-                    load == InteractiveProgramLoad::Empty) {
-                    throw std::runtime_error(
-                        "unfinished input no longer begins with a declaration");
+                if (load == InteractiveProgramLoad::Expression) {
+                    activity.reset();
+                    executeInteractiveExpression(trim(source));
+                } else if (load == InteractiveProgramLoad::Empty) {
+                    activity.reset();
+                } else {
+                    activity.reset();
+                    finishMeasurement("declaration", started, std::move(before));
+                    ui.success("declaration installed");
+                    printAutomaticMetrics();
                 }
-                activity.reset();
-                finishMeasurement("declaration", started, std::move(before));
-                ui.success("declaration installed");
-                printAutomaticMetrics();
             } catch (const std::exception& e) {
                 activity.reset();
                 ui.codeBlock(source);
@@ -522,46 +565,7 @@ static void runRepl(Interpreter& interpreter, std::istream& input,
         }
 
         try {
-            if (command[0] == '?') {
-                auto before = interpreter.runtimeCounters();
-                const auto started = std::chrono::steady_clock::now();
-                auto activity = debugEnabled
-                    ? std::shared_ptr<TerminalUi::Activity>{}
-                    : ui.activity("solving query");
-                auto queryGoals = parseQueryText(
-                    command, interpreter.tokenizer(), interpreter.operatorRegistry());
-                auto solutions = interpreter.solve(queryGoals, 1000);
-                activity.reset();
-                finishMeasurement("query", started, std::move(before));
-                ui.queryHeading();
-                printSolutions(interpreter, queryGoals, solutions, output);
-                printAutomaticMetrics();
-                continue;
-            }
-            if (isBareIdentifier(command) && interpreter.hasGlobal(command)) {
-                auto before = interpreter.runtimeCounters();
-                const auto started = std::chrono::steady_clock::now();
-                auto activity = debugEnabled
-                    ? std::shared_ptr<TerminalUi::Activity>{}
-                    : ui.activity("evaluating global");
-                const auto value = interpreter.evaluateGlobal(command);
-                activity.reset();
-                finishMeasurement("global", started, std::move(before));
-                ui.result(interpreter.valueToDisplayString(
-                    value));
-                printAutomaticMetrics();
-                continue;
-            }
-            auto before = interpreter.runtimeCounters();
-            const auto started = std::chrono::steady_clock::now();
-            auto activity = debugEnabled
-                ? std::shared_ptr<TerminalUi::Activity>{}
-                : ui.activity("evaluating expression");
-            auto value = interpreter.evaluateExpressionText(command);
-            activity.reset();
-            finishMeasurement("expression", started, std::move(before));
-            ui.result(interpreter.valueToDisplayString(value));
-            printAutomaticMetrics();
+            executeInteractiveExpression(command);
         } catch (const std::exception& e) {
             ui.codeBlock(command);
             ui.error(formatReplDiagnostic(e.what(), command));

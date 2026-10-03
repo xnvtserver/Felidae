@@ -79,6 +79,7 @@ private:
     void alignPiece();
     bool at(TokenId::Id id);
     bool match(TokenId::Id id);
+    bool atAdjacentDot();
     bool atBlockEnd();
     bool matchBlockEnd();
     void requireBlockEnd(const char* message);
@@ -104,6 +105,7 @@ private:
     QualifiedName consumeQualifiedName(bool allowDottedName = true);
     Call parseCall();
     std::shared_ptr<Goal> parseGoal();
+    std::vector<std::shared_ptr<Goal>> parseBlockBody();
     std::vector<std::shared_ptr<Goal>> parseGoalList(TokenId::Id terminator);
     std::shared_ptr<Statement> parseStatement();
     std::shared_ptr<ClassStmt> parseClassStatement(std::size_t begin);
@@ -114,11 +116,8 @@ private:
     std::string consumeString();
     double consumeNumber();
     bool atNameRange();
-    bool looksLikeClauseHead();
-    bool sourceContainsLineBreak(std::size_t begin, std::size_t end) const;
-    bool lineBreakBeforeNextSignificantPiece() const;
-    std::size_t sourceLineIndent(std::size_t offset) const;
-    void consumeStatementTerminator(std::size_t statementBegin);
+    void consumeStatementTerminator(const char* construct);
+    std::string sourceLocation(std::size_t offset) const;
     SourceSpan span(std::size_t begin, std::size_t end) const;
     void stamp(const std::shared_ptr<AstNode>& node, std::size_t begin, std::size_t end) const;
 };

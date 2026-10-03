@@ -11,7 +11,7 @@ def Result(ok: bool, value: any, error: any) => ()
 end
 
 def exception.ok(value: any) =>
-    return {__type: "Result", ok: 1.0, value: value, error: nil}
+    return {__type: "Result", ok: 1.0, value: value, error: nil}.
 end
 
 def exception.failure(kind: string, message: string, source: string) =>
@@ -25,13 +25,13 @@ def exception.failure(kind: string, message: string, source: string) =>
             message: message,
             source: source
         }
-    }
+    }.
 end
 
 def exception.from(value: any, error: any) =>
     if error == nil then
-        return exception.ok(value: value)
+        return exception.ok(value: value).
     else
-        return {__type: "Result", ok: 0.0, value: value, error: error}
+        return {__type: "Result", ok: 0.0, value: value, error: error}.
     end
 end

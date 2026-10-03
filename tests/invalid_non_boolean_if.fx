@@ -1,6 +1,6 @@
 def main() =>
     if 0.8 then
-        return true
+        return true.
     end
-    return false
+    return false.
 end

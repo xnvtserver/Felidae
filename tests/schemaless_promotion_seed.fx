@@ -1,5 +1,5 @@
-Device(id: "device-1", reading: 21)
+Device(id: "device-1", reading: 21).
 
 def main() =>
-    return Device.count()
+    return Device.count().
 end

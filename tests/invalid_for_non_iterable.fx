@@ -1,5 +1,5 @@
 def main() =>
     for value in true then
-        return value
+        return value.
     end
 end

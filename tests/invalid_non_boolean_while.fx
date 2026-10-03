@@ -1,5 +1,5 @@
 def main() =>
     while 0.8 then
-        break
+        break.
     end
 end

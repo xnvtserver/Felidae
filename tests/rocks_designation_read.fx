@@ -1,3 +1,3 @@
 def main() =>
-    return preferred.count()
+    return preferred.count().
 end
