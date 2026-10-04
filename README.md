@@ -75,14 +75,9 @@ Use `--metrics-json` for machine-readable runtime counters and
 `--benchmark-repeat N` to measure repeated entry or query execution in one
 interpreter process.
 
-Normal file execution uses the local database service selected by `init.fx`.
-It stops automatically after its idle timeout, or can be stopped explicitly:
-
-```sh
-felidae db stop path/to/project
-# An entry program path is also accepted:
-felidae db stop path/to/project/main.fx
-```
+Every execution process opens the RocksDB directory selected by `init.fx`
+directly. RocksDB's lock file permits one process to own that database at a
+time; another process attempting to open the same directory fails explicitly.
 
 ## Interactive REPL
 
