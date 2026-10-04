@@ -289,7 +289,7 @@ A minimal `init.fx` looks like:
 
 ```felidae
 import "db".
-db.location("./data/felidae.db").
+db.location("./data/felidae").
 ```
 
 You can then create `.fx` files containing your facts, queries, classes, relationships, and reasoning logic.
@@ -393,7 +393,3 @@ Website: [xnovity.com/felidae](https://www.xnovity.com/felidae)
 
 Built as an open-source project by **Xnovity Softwares Pvt. Ltd.**
 ```
-
-This version deliberately removes things that currently make the README feel like internal engineering documentation: RocksDB version specifics, AST pipeline details, ByteT5/tokenizer internals, database locking semantics, benchmark flags, cache/SST metrics, debugger internals, cross-compilation rules, source fingerprints, parser implementation details, and similar material. Those belong in `code.md`, `docs_language.md`, `CONTRIBUTING.md`, or dedicated documentation. The current repo already has those destinations. :chatgpt-content-reference{index="3"}
-
-The new media image is also a much better opening than an architecture diagram because it communicates the project concept immediately while the README progressively explains the language. :chatgpt-content-reference{index="4"}

@@ -194,7 +194,7 @@ applies supported RocksDB settings before program loading:
 
 ```felidae
 import "db".
-db.location("./data/felidae.db").
+db.location("./data/felidae_db").
 db.configure(options: {max_background_jobs: 4, bytes_per_sync: 1048576}).
 ```
 
