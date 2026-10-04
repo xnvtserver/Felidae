@@ -392,4 +392,3 @@ A deterministic, graph-oriented query and reasoning DSL.
 Website: [xnovity.com/felidae](https://www.xnovity.com/felidae)
 
 Built as an open-source project by **Xnovity Softwares Pvt. Ltd.**
-```
