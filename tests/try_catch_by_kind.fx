@@ -6,14 +6,14 @@ def classify(kind: string) =>
         elif kind == "bad" then
             throw(exception: {kind: "invalid", message: "bad input"}).
         end
-        verdict := "ok".
+        def verdict := "ok".
     catch e then
         if e.kind == "not_found" then
-            verdict := "handled not_found".
+            def verdict := "handled not_found".
         elif e.kind == "invalid" then
-            verdict := "handled invalid".
+            def verdict := "handled invalid".
         else
-            verdict := "unknown".
+            def verdict := "unknown".
         end
     end
     return verdict.

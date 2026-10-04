@@ -1,16 +1,16 @@
 class Observation
     key(id).
-    id: string.
+    def id: string.
 end
 
-Observation(id: "observation-1").
+def Observation(id: "observation-1").
 
 def eligible(id: x) =>
-    Observation(id: x).
+    def Observation(id: x).
 end
 
 def main() =>
-    proof := reasoning.prove(query: eligible(id: "observation-1")).
+    def proof := reasoning.prove(query: eligible(id: "observation-1")).
     return (
         truth: proof.truth_status,
         support: proof.support_count,

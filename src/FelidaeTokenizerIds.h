@@ -147,31 +147,7 @@ constexpr Id THIS = -16;
 constexpr Id SUPER = -17;
 constexpr Id TRY = -18;
 constexpr Id CATCH = -19;
+constexpr Id VAR = -20;
+constexpr Id ATOM_QUOTE = -21;
 } // namespace TokenId
-
-inline constexpr bool isCapitalizedIdentifierStartId(TokenId::Id id) {
-    switch (id) {
-        case 124: return true;
-        case 125: return true;
-        case 126: return true;
-        case 127: return true;
-        case 128: return true;
-        case 129: return true;
-        case 130: return true;
-        case 131: return true;
-        case 132: return true;
-        case 139: return true;
-        case 140: return true;
-        case 141: return true;
-        case 142: return true;
-        case 143: return true;
-        case 144: return true;
-        case 145: return true;
-        case 146: return true;
-        case 147: return true;
-        case 148: return true;
-        case 149: return true;
-        default: return false;
-    }
-}
 } // namespace Felidae

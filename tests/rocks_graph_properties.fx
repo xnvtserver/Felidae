@@ -1,18 +1,18 @@
 class Department
     key(id).
-    id: string.
-    name: string.
+    def id: string.
+    def name: string.
 end
 
 class Employee
     key(id).
-    id: string.
-    name: string.
-    department_id: string.
+    def id: string.
+    def name: string.
+    def department_id: string.
 end
 
-Department(id: "department-1", name: "Research").
-Employee(id: "employee-1", name: "Ada", department_id: "department-1").
+def Department(id: "department-1", name: "Research").
+def Employee(id: "employee-1", name: "Ada", department_id: "department-1").
 Link(
     from: Employee(id: "employee-1"),
     to: Department(id: "department-1"),
@@ -20,15 +20,15 @@ Link(
 ).
 
 def main() =>
-    rows := Employee().join(
+    def rows := Employee().join(
         properties: {kind: "works_in", confidence: 0.9},
         direction: forward.class
     ).
-    strong := Employee().join(direction: forward.class)
+    def strong := Employee().join(direction: forward.class)
         .where(properties.confidence >= 0.9).
-    primary_key_match := Employee().join(direction: forward.class)
+    def primary_key_match := Employee().join(direction: forward.class)
         .where(left.department_id == right.id).
-    first := rows.get(position: 0).
+    def first := rows.get(position: 0).
     return (
         count: rows.len(),
         strong: strong.len(),

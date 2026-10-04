@@ -1,15 +1,15 @@
 class AggregateReading
     key(id).
     index(region, active).
-    id: string.
-    region: string.
-    active: bool.
-    value: number.
+    def id: string.
+    def region: string.
+    def active: bool.
+    def value: number.
 end
 
-AggregateReading(id: "a", region: "north", active: true, value: 10).
-AggregateReading(id: "b", region: "north", active: true, value: 20).
-AggregateReading(id: "c", region: "south", active: false, value: 90).
+def AggregateReading(id: "a", region: "north", active: true, value: 10).
+def AggregateReading(id: "b", region: "north", active: true, value: 20).
+def AggregateReading(id: "c", region: "south", active: false, value: 90).
 
 def main() =>
     return (

@@ -1,5 +1,5 @@
 class Entity
-    id: string.
+    def id: string.
 
     def identity() =>
         return this.id.
@@ -7,17 +7,17 @@ class Entity
 end
 
 class NamedEntity extends Entity
-    name: string.
+    def name: string.
 end
 
-Employee extend NamedEntity(
+def Employee extend NamedEntity(
     id: "employee-1",
     name: "Ada",
     role: "analyst"
 ).
 
 def main() =>
-    employee := Employee.get(pos: 0).
+    def employee := Employee.get(pos: 0).
     return (
         id: employee.identity(),
         name: employee.name,

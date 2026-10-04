@@ -1,25 +1,25 @@
 class Node
     key(id).
-    id: string.
+    def id: string.
 end
 
 class Seen
     key(id).
-    id: string.
+    def id: string.
 end
 
-Node(id: "a").
-Node(id: "b").
-Node(id: "c").
+def Node(id: "a").
+def Node(id: "b").
+def Node(id: "c").
 Link(from: Node(id: "a"), to: Node(id: "b"), properties: {kind: "edge"}).
 Link(from: Node(id: "a"), to: Node(id: "c"), properties: {kind: "edge"}).
 
 def main() =>
-    rows := Node.where(id: "a").join(
+    def rows := Node.where(id: "a").join(
         properties: {kind: "edge"},
         direction: forward.class
     ).
-    edge_count := rows.count().
+    def edge_count := rows.count().
     for row in rows then
         Seen.insert(values: {id: row.right.id}).
     end

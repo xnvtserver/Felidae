@@ -1,25 +1,25 @@
 class Employee
     key(id).
-    id: string.
+    def id: string.
 end
 
 class Department
     key(id).
-    id: string.
+    def id: string.
 end
 
-Employee(id: "employee-1").
-Department(id: "department-1").
+def Employee(id: "employee-1").
+def Department(id: "department-1").
 
 def main() =>
-    employee := Employee.where(id: "employee-1").get(position: 0).
-    department := Department.where(id: "department-1").get(position: 0).
-    created := Link(
+    def employee := Employee.where(id: "employee-1").get(position: 0).
+    def department := Department.where(id: "department-1").get(position: 0).
+    def created := Link(
         from: employee,
         to: department,
         properties: {since: 2024, confidence: 0.9}
     ).
-    rows := Employee().join(properties: {since: 2024}, direction: forward.class).
+    def rows := Employee().join(properties: {since: 2024}, direction: forward.class).
     return (
         created_to: created.to.id,
         count: rows.len(),

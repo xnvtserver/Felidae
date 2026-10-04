@@ -1,17 +1,17 @@
 class Leaf
-    value: number.
+    def value: number.
 end
 
 class Branch
-    leaf: obj.
+    def leaf: obj.
 end
 
 class Root
-    branch: obj.
+    def branch: obj.
 end
 
 def main() =>
-    a := Root(branch: Branch(leaf: Leaf(value: 42))).
-    k := a.branch.leaf.value.
+    def a := Root(branch: Branch(leaf: Leaf(value: 42))).
+    def k := a.branch.leaf.value.
     return k.
 end

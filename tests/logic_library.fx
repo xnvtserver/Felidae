@@ -1,10 +1,10 @@
 import "logic".
 
 def main() =>
-    rule := logicalImplication(antecedent: "rain", consequent: "wet").
-    converse := logicalConverse(rule: rule).
-    contrapositive := logicalContrapositive(rule: rule).
-    contradiction := logicalContradiction(positive: "wet", negative: "dry").
+    def rule := logicalImplication(antecedent: "rain", consequent: "wet").
+    def converse := logicalConverse(rule: rule).
+    def contrapositive := logicalContrapositive(rule: rule).
+    def contradiction := logicalContradiction(positive: "wet", negative: "dry").
     return (
         antecedent: converse.antecedent,
         consequent: converse.consequent,

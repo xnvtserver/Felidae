@@ -88,9 +88,9 @@ Windows:
 .\build\debug\x64\Debug\felidae.exe
 ```
 
-Expressions and `?` queries execute immediately. Starting a line with `def` or
-`class` automatically enters multiline input; the declaration is installed
-when its normal Felidae `end` is reached. Nested control-flow blocks are
+Expressions and `?` queries execute immediately. Function declarations using
+`def name(...) =>` and `class` declarations enter multiline input until their
+required `end`; `def` bindings and persistent fact seeds end with `.`. Nested control-flow blocks are
 tracked. A failed declaration is rolled back. Type `:help` for the full command
 list. Passing a program file together with `--repl` is intentionally rejected;
 a file always uses normal program execution. Interactive terminals use colored
@@ -106,12 +106,12 @@ for a no-file REPL session and add no metrics, animation, formatting, or debug
 hook work to normal `.fx` file execution.
 
 The interactive editor highlights Felidae keywords, literals, strings,
-comments, operators, and class names using the production lexer. Backspace and
+comments, and operators using the production lexer. Backspace and
 Delete remove one character, Left/Right/Home/End move the cursor, and Up/Down
 navigate session history. The highlighter owns an isolated vocabulary so
 partially typed or erased words cannot affect interpreter token identities.
-Functions, classes, annotations, imports, `:=` globals, expressions, queries,
-and dot-terminated facts/rules use the same parser and interpreter as `.fx`
+Functions, classes, annotations, imports, `def` bindings, expressions, queries,
+and dot-terminated persistent facts use the same parser and interpreter as `.fx`
 files. The activity indicator is deliberately limited to one, two, or three
 small `#` blocks and appears only for perceptibly slow interactive work.
 Use `:clear` to clear and redraw the terminal without discarding definitions,

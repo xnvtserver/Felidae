@@ -168,7 +168,7 @@ static void printReplHelp(TerminalUi& ui) {
     ui.command("expression", "Evaluate an expression");
     ui.command("? Predicate(field: x)", "Run a logical query");
     ui.command("Fact(field: value).", "Install a persistent top-level fact");
-    ui.command("name := expression", "Install an immutable global binding");
+    ui.command("def name := expression.", "Install an immutable global binding");
     ui.command("import \"library\"", "Load a normal Felidae import");
     ui.command("def name(...) =>", "Start a multiline function");
     ui.command("class Name", "Start a multiline class declaration");
@@ -636,11 +636,11 @@ static int executeOptions(CliOptions options,
             const auto executionMicros = std::chrono::duration_cast<std::chrono::microseconds>(
                 finished - executionStarted).count();
             errorOutput << "FELIDAE_METRICS {"
-                      << "\"loadMs\":" << (static_cast<double>(loadMicros) / 1000.0) << ","
-                      << "\"executionMs\":" << (static_cast<double>(executionMicros) / 1000.0) << ","
-                      << "\"queryRuns\":" << measuredQueryRuns << ","
-                      << "\"firstQueryMs\":" << firstQueryMs << ","
-                      << "\"repeatedQueryAverageMs\":" << repeatedQueryAverageMs << ","
+                      << "\"loadMs\":" << (static_cast<double>(loadMicros) / 1000.0) <<std::endl << ","
+                      << "\"executionMs\":" << (static_cast<double>(executionMicros) / 1000.0) <<std::endl << ","
+                      << "\"queryRuns\":" << measuredQueryRuns << std::endl << ","
+                      << "\"firstQueryMs\":" << firstQueryMs << std::endl << ","
+                      << "\"repeatedQueryAverageMs\":" << repeatedQueryAverageMs << std::endl << ","
                       << "\"runtime\":" << interpreter.runtimeMetricsJson()
                       << "}\n";
         };

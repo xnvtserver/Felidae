@@ -13,8 +13,8 @@
 
 namespace Felidae {
 
-// `manifest` selects project-manifest parsing (init.fx), where lowercase
-// configuration calls such as db.location(...) are allowed.
+// `manifest` selects project-manifest parsing (init.fx), whose plain calls are
+// configuration entry calls rather than persistent facts.
 Program parseProgramFile(const std::filesystem::path& path, bool manifest = false);
 Program parseProgramText(
     std::string text,

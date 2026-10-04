@@ -38,10 +38,12 @@ constexpr char kClassIncomingPrefix = 'V';
 constexpr char kProvenancePrefix = 'P';
 constexpr char kTemporalPrefix = 'T';
 constexpr char kMetadataPrefix = 'M';
-// V8 adds a per-record designation index so named fact selections survive a
-// restart without rebuilding an in-memory fact catalog. Earlier stores must
-// be explicitly reimported.
-constexpr std::uint32_t kStoreFormatVersion = 8;
+// V8 adds a per-record designation index. V9 adds atom record/index tags, but
+// does not rewrite any V8 encoding: a V8 store can therefore be upgraded by
+// advancing this metadata before its first atom write. Runtime SymbolIds are
+// never stored in either format.
+constexpr std::uint32_t kOldestCompatibleStoreFormatVersion = 8;
+constexpr std::uint32_t kStoreFormatVersion = 9;
 constexpr std::string_view kConfigurationPrefix = "Mconfig/";
 
 std::mutex databaseRegistryMutex;
@@ -105,10 +107,23 @@ std::shared_ptr<RocksFactStoreSharedState> openSharedDatabase(
     } else {
         requireStatus(status, "Read Felidae store version");
         std::size_t offset = 0;
-        if (readU64(version, offset) != kStoreFormatVersion ||
-            offset != version.size()) {
+        const auto storedVersion = readU64(version, offset);
+        if (offset != version.size()) {
             throw std::runtime_error(
-                "Unsupported Felidae RocksDB format version");
+                "Corrupt Felidae RocksDB format version metadata");
+        }
+        if (storedVersion == kOldestCompatibleStoreFormatVersion) {
+            std::string encoded;
+            appendU64(encoded, kStoreFormatVersion);
+            rocksdb::WriteOptions write;
+            write.sync = true;
+            requireStatus(state->database->Put(write, formatKey, encoded),
+                          "Upgrade Felidae store format");
+        } else if (storedVersion != kStoreFormatVersion) {
+            throw std::runtime_error(
+                "Unsupported Felidae RocksDB format version " +
+                std::to_string(storedVersion) + "; expected " +
+                std::to_string(kStoreFormatVersion));
         }
     }
 
@@ -201,6 +216,10 @@ void encodeExpr(std::string& out, const std::shared_ptr<Expr>& value) {
             out.push_back('s');
             appendBlob(out, static_cast<const StringExpr&>(*value).value);
             return;
+        case ExprKind::Atom:
+            out.push_back('y');
+            appendBlob(out, static_cast<const AtomExpr&>(*value).spelling);
+            return;
         case ExprKind::Array: {
             out.push_back('a');
             const auto& array = static_cast<const ArrayExpr&>(*value);
@@ -249,6 +268,7 @@ std::shared_ptr<Expr> decodeExpr(const std::string& source, std::size_t& offset)
             return std::make_shared<NumberExpr>(number);
         }
         case 's': return std::make_shared<StringExpr>(readBlob(source, offset));
+        case 'y': return std::make_shared<AtomExpr>(readBlob(source, offset));
         case 'a': {
             const auto count = readU64(source, offset);
             std::vector<std::shared_ptr<Expr>> items;
@@ -299,6 +319,9 @@ bool dataValuesEqual(const std::shared_ptr<Expr>& left,
         case ExprKind::String:
             return static_cast<const StringExpr&>(*left).value ==
                    static_cast<const StringExpr&>(*right).value;
+        case ExprKind::Atom:
+            return static_cast<const AtomExpr&>(*left).spelling ==
+                   static_cast<const AtomExpr&>(*right).spelling;
         case ExprKind::Array: {
             const auto& lhs = static_cast<const ArrayExpr&>(*left).items;
             const auto& rhs = static_cast<const ArrayExpr&>(*right).items;
@@ -344,6 +367,11 @@ std::string factPrefix(const std::string& type) {
 }
 
 void appendOrderedScalar(std::string& out, const std::shared_ptr<Expr>& value) {
+    if (const auto atom = nodeAs<AtomExpr>(value)) {
+        out.push_back('a');
+        appendOrderedString(out, atom->spelling);
+        return;
+    }
     if (const auto text = nodeAs<StringExpr>(value)) {
         out.push_back('s');
         appendOrderedString(out, text->value);

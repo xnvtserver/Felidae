@@ -11,6 +11,7 @@ constexpr BuiltinInfo kBuiltinInfos[] = {
         {BuiltinId::Unknown, "", BuiltinEffect::Volatile},
         {BuiltinId::Throw, "throw", BuiltinEffect::WritesExternalState},
         {BuiltinId::Type, "type", BuiltinEffect::Pure},
+        {BuiltinId::IsAtom, "is_atom", BuiltinEffect::Pure},
         {BuiltinId::Instanceof, "instanceof", BuiltinEffect::Pure},
         {BuiltinId::Count, "count", BuiltinEffect::Pure},
         {BuiltinId::Range, "range", BuiltinEffect::Pure},

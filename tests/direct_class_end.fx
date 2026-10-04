@@ -1,13 +1,13 @@
 class Person
-    name: string.
+    def name: string.
     index(name).
 end
 
 class Student extends Person
-    grade: number.
+    def grade: number.
 end
 
-Student(name: "Ada", grade: 10).
+def Student(name: "Ada", grade: 10).
 
 def increment(value: number) =>
     return value + 1.

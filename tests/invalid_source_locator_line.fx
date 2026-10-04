@@ -1,6 +1,6 @@
 class Employee
     key(id).
-    id: string.
+    def id: string.
     def get_data() =>
         return this.id.
     end

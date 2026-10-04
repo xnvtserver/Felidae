@@ -2,17 +2,17 @@
 # insert never happens.
 class Item
     key(id).
-    id: string.
+    def id: string.
 end
 
 def main() =>
     try
-        first := Item.insert(values: {id: "before"}).
+        def first := Item.insert(values: {id: "before"}).
         throw(exception: {kind: "stop", message: "first error"}).
-        second := Item.insert(values: {id: "after"}).
+        def second := Item.insert(values: {id: "after"}).
         throw(exception: {kind: "stop", message: "second error"}).
     catch e then
-        reason := e.message.
+        def reason := e.message.
     end
     return (reason: reason, items: Item.count()).
 end

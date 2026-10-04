@@ -264,6 +264,20 @@ std::string IntegerParser::consumeString() {
     throw IntegerParserIncomplete("Unterminated string literal");
 }
 
+std::string IntegerParser::consumeAtom() {
+    require(TokenId::ATOM_QUOTE, "Expected an atom literal");
+    const std::size_t begin = byte_;
+    while (piece_ < input_.entries().size()) {
+        if (input_.entries()[piece_].id == TokenId::ATOM_QUOTE) {
+            const std::size_t end = input_.entries()[piece_].begin;
+            byte_ = input_.entries()[piece_++].end;
+            return input_.source().substr(begin, end - begin);
+        }
+        byte_ = input_.entries()[piece_++].end;
+    }
+    throw IntegerParserIncomplete("Unterminated atom literal");
+}
+
 double IntegerParser::consumeNumber() {
     skipTrivia();
     double value = 0.0;
@@ -346,8 +360,7 @@ std::vector<Arg> IntegerParser::parseArguments(bool allowAnnotationBindings) {
                         require(TokenId::COLON, "Expected ':' after annotation binding name");
                         const auto type = consumeQualifiedName();
                         auto typeExpr = std::make_shared<VarExpr>(
-                            type.spelling, type.nameId, languageTypeIdForName(type.spelling),
-                            type.isCapitalized);
+                            type.spelling, type.nameId, languageTypeIdForName(type.spelling));
                         bindings.push_back(std::make_shared<MapExpr>(std::vector<MapEntry>{
                             MapEntry{binding.spelling, binding.nameId, std::move(typeExpr)}}));
                     } while (match(TokenId::COMMA));
@@ -361,8 +374,7 @@ std::vector<Arg> IntegerParser::parseArguments(bool allowAnnotationBindings) {
                 if (match(TokenId::COLON)) {
                     const auto type = consumeQualifiedName();
                     auto typeExpr = std::make_shared<VarExpr>(
-                        type.spelling, type.nameId, languageTypeIdForName(type.spelling),
-                        type.isCapitalized);
+                        type.spelling, type.nameId, languageTypeIdForName(type.spelling));
                     value = std::make_shared<MapExpr>(std::vector<MapEntry>{
                         MapEntry{binding.spelling, binding.nameId, std::move(typeExpr)}});
                 } else {
@@ -384,11 +396,7 @@ IntegerParser::QualifiedName IntegerParser::consumeQualifiedName(
     bool allowDottedName) {
     skipTrivia();
     const auto firstPiece = piece_;
-    const bool capitalized =
-        piece_ < input_.entries().size() &&
-        std::isupper(static_cast<unsigned char>(input_.source().at(
-            input_.entries()[piece_].begin))) != 0;
-    QualifiedName name{consumeNameRange(), 0, BuiltinId::Unknown, capitalized};
+    QualifiedName name{consumeNameRange(), 0, BuiltinId::Unknown};
     while (allowDottedName && atAdjacentDot()) {
         const auto beforeByte = byte_;
         const auto beforePiece = piece_;
@@ -446,13 +454,18 @@ TypeRef IntegerParser::parseTypeReference() {
     }
     TypeRef type{name.spelling, {}};
     if (match(TokenId::LESS)) {
-        do { type.arguments.push_back(parseTypeReference()); } while (match(TokenId::COMMA));
+        type.arguments.push_back(parseTypeReference());
+        if (type.name == "optional") {
+            while (match(TokenId::PIPE)) type.arguments.push_back(parseTypeReference());
+        } else {
+            while (match(TokenId::COMMA)) type.arguments.push_back(parseTypeReference());
+        }
         require(TokenId::GREATER, "Expected '>' after generic type arguments");
     }
-    if (type.name == "optional" || type.name == "list") {
-        if (type.arguments.size() != 1) {
-            throw IntegerParserError(type.name + " requires exactly one type argument");
-        }
+    if (type.name == "optional") {
+        if (type.arguments.empty()) throw IntegerParserError("optional requires at least one type argument");
+    } else if (type.name == "list") {
+        if (type.arguments.size() != 1) throw IntegerParserError("list requires exactly one type argument");
     } else if (type.name == "Pair") {
         if (type.arguments.size() != 2) {
             throw IntegerParserError("Pair requires exactly two type arguments");
@@ -541,12 +554,66 @@ void IntegerParser::prepareOperatorAnnotation(const Call& annotation) {
 std::shared_ptr<Goal> IntegerParser::parseGoal() {
     skipTrivia();
     const std::size_t begin = byte_;
+    if (match(TokenId::VAR)) {
+        throw IntegerParserError("'var' was removed; declare immutable bindings with 'def'");
+    }
+    if (match(TokenId::DEF)) {
+        const auto variable = consumeQualifiedName(false);
+        if (at(TokenId::LPAREN)) {
+            parsingFactPattern_ = true;
+            std::vector<Arg> arguments;
+            try {
+                arguments = parseArguments();
+            } catch (...) {
+                parsingFactPattern_ = false;
+                throw;
+            }
+            parsingFactPattern_ = false;
+            for (const auto& argument : arguments) {
+                if (const auto output = nodeAs<VarExpr>(argument.value)) {
+                    localBindings_.insert(output->nameId);
+                }
+            }
+            Call call(variable.spelling, variable.nameId, std::move(arguments), variable.builtinId);
+            call.patternBindings = true;
+            auto result = std::make_shared<CallGoal>(std::move(call));
+            stamp(result, begin, byte_);
+            return result;
+        }
+        std::optional<TypeRef> declaredType;
+        if (match(TokenId::COLON)) declaredType = parseTypeReference();
+        std::shared_ptr<Expr> value;
+        if (match(TokenId::ASSIGN)) {
+            if (at(TokenId::DOT)) throw IntegerParserError("Expected a value after ':='");
+            value = parseExpression();
+        } else if (declaredType &&
+                   (declaredType->name == "optional" || declaredType->name == "any")) {
+            value = std::make_shared<NilExpr>();
+        } else {
+            throw IntegerParserError(
+                "Ambiguous 'def " + variable.spelling +
+                "'; use ':=' for a binding or '(...)' for a fact pattern");
+        }
+        std::shared_ptr<Goal> result;
+        if (declaredType) {
+            result = std::make_shared<MultiAssignGoal>(
+                std::vector<AssignmentTarget>{
+                    AssignmentTarget{variable.spelling, std::move(*declaredType)}},
+                std::move(value));
+        } else {
+            result = std::make_shared<AssignGoal>(variable.spelling, std::move(value));
+        }
+        localBindings_.insert(variable.nameId);
+        stamp(result, begin, byte_);
+        return result;
+    }
     if (match(TokenId::FOR)) {
         const auto variable = consumeQualifiedName(false);
         require(TokenId::IN, "Expected 'in' after for-loop variable");
         auto iterable = parseBinaryExpression(
             static_cast<int>(OperatorPrecedence::Control), TokenId::THEN);
         require(TokenId::THEN, "Expected 'then' after for-loop iterable");
+        localBindings_.insert(variable.nameId);
         auto body = parseBlockBody();
         requireBlockEnd("Expected 'end' after for loop");
         auto result = std::make_shared<ForGoal>(variable.spelling, std::move(iterable), std::move(body));
@@ -605,6 +672,7 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
             require(TokenId::CATCH, "Expected 'catch' after try block");
             const auto variable = consumeQualifiedName(false);
             require(TokenId::THEN, "Expected 'then' after catch variable");
+            localBindings_.insert(variable.nameId);
             catches.emplace_back(variable.spelling, parseBlockBody());
         } while (at(TokenId::CATCH));
         requireBlockEnd("Expected 'end' after try/catch");
@@ -737,18 +805,10 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
     if (atNameRange()) {
         const auto name = consumeNameRange();
         if (match(TokenId::ASSIGN)) {
-            auto result = std::make_shared<AssignGoal>(name, parseExpression());
-            stamp(result, begin, byte_);
-            return result;
+            throw IntegerParserError("Bindings must begin with 'def'; use 'def " + name + " := ...'");
         }
         if (match(TokenId::COLON)) {
-            auto type = parseTypeReference();
-            require(TokenId::ASSIGN, "Expected ':=' after typed local binding");
-            auto result = std::make_shared<MultiAssignGoal>(
-                std::vector<AssignmentTarget>{AssignmentTarget{name, std::move(type)}},
-                parseExpression());
-            stamp(result, begin, byte_);
-            return result;
+            throw IntegerParserError("Typed bindings must begin with 'def'; use 'def " + name + ": Type := ...'");
         }
     }
     byte_ = start;
@@ -800,6 +860,7 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
         "Expected a predicate call or comparison goal at " +
         sourceLocation(begin));
     Call call(term->name, term->nameId, term->args, term->builtinId);
+    call.patternBindings = insideQuery_;
     for (auto& designation : designations) {
         call.designations.push_back(std::move(designation.spelling));
         call.designationIds.push_back(designation.nameId);
@@ -873,6 +934,9 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
     }
     for (const auto& annotation : annotations) prepareOperatorAnnotation(annotation);
     const bool hasDefKeyword = match(TokenId::DEF);
+    if (match(TokenId::VAR)) {
+        throw IntegerParserError("'var' was removed; declare immutable bindings with 'def'");
+    }
     if (annotations.empty() && match(TokenId::CLASS)) {
         if (hasDefKeyword) {
             throw IntegerParserError("Class declarations must not begin with 'def'");
@@ -907,15 +971,44 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
     const auto checkpointPiece = piece_;
     if (atNameRange()) {
         const auto name = consumeNameRange();
+        TypeRef declaredType;
+        if (hasDefKeyword && match(TokenId::COLON)) declaredType = parseTypeReference();
         if (match(TokenId::ASSIGN)) {
-            if (hasDefKeyword) {
-                throw IntegerParserError("Global bindings must not begin with 'def'");
+            if (!hasDefKeyword) {
+                throw IntegerParserError("Bindings must begin with 'def'; use 'def " + name + " := ...'");
             }
             if (!annotations.empty()) throw IntegerParserError("Annotations can only be applied to method declarations");
-            auto result = std::make_shared<GlobalBindingStmt>(name, parseExpression());
+            if (at(TokenId::DOT)) throw IntegerParserError("Expected a value after ':='");
+            auto result = std::make_shared<GlobalBindingStmt>(name, parseExpression(), std::move(declaredType));
+            globalBindings_.insert(symbolIdForName(name));
             consumeStatementTerminator("global binding");
             stamp(result, begin, byte_);
             return result;
+        }
+        if (hasDefKeyword && !declaredType.name.empty() &&
+            (declaredType.name == "optional" || declaredType.name == "any")) {
+            consumeStatementTerminator("optional global binding");
+            auto result = std::make_shared<GlobalBindingStmt>(
+                name, std::make_shared<NilExpr>(), std::move(declaredType));
+            globalBindings_.insert(symbolIdForName(name));
+            stamp(result, begin, byte_);
+            return result;
+        }
+        if (hasDefKeyword && !declaredType.name.empty()) {
+            throw IntegerParserError("Typed binding '" + name + "' requires ':=' unless its type is optional or any");
+        }
+        if (hasDefKeyword && at(TokenId::DOT)) {
+            const auto dotByte = byte_;
+            const auto dotPiece = piece_;
+            match(TokenId::DOT);
+            const bool continuesQualifiedName = atNameRange();
+            byte_ = dotByte;
+            piece_ = dotPiece;
+            if (!continuesQualifiedName) {
+                throw IntegerParserError(
+                    "Ambiguous 'def " + name +
+                    "'; use ':=' for a binding or '(...)' for a fact");
+            }
         }
     }
     byte_ = checkpoint;
@@ -932,7 +1025,16 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
         throw IntegerParserError("Expected '(' after clause name '" + clauseName.spelling +
                                  "' at source byte " + std::to_string(byte_));
     }
-    Call head(clauseName.spelling, clauseName.nameId, parseArguments(), clauseName.builtinId);
+    parsingDeclarationHead_ = true;
+    std::vector<Arg> headArguments;
+    try {
+        headArguments = parseArguments();
+    } catch (...) {
+        parsingDeclarationHead_ = false;
+        throw;
+    }
+    parsingDeclarationHead_ = false;
+    Call head(clauseName.spelling, clauseName.nameId, std::move(headArguments), clauseName.builtinId);
     if (match(TokenId::AS)) {
         do {
             const auto designation = consumeQualifiedName();
@@ -947,6 +1049,22 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
     if (hasArrow) {
         if (!hasDefKeyword) {
             throw IntegerParserError("Function and rule declarations must begin with 'def'");
+        }
+        const auto outerBindings = localBindings_;
+        localBindings_.clear();
+        for (const auto& parameter : head.args) {
+            if (!parameter.name.empty()) localBindings_.insert(parameter.nameId);
+            else if (const auto variable = nodeAs<VarExpr>(parameter.value))
+                localBindings_.insert(variable->nameId);
+        }
+        for (const auto& annotation : annotations) {
+            if (annotation.builtinId != BuiltinId::OverloadAnnotation &&
+                annotation.builtinId != BuiltinId::MixfixAnnotation &&
+                annotation.builtinId != BuiltinId::MatcherAnnotation) continue;
+            const auto parsed = decodeOperatorAnnotation(annotation);
+            for (const auto& binding : parsed.captures) localBindings_.insert(binding.nameId);
+            for (const auto& binding : parsed.factors) localBindings_.insert(binding.nameId);
+            for (const auto& binding : parsed.produces) localBindings_.insert(binding.nameId);
         }
         if (match(TokenId::LPAREN)) {
             require(TokenId::RPAREN, "Expected ')' after empty declaration");
@@ -970,6 +1088,7 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
             }
             lastClauseUsedBlockEnd_ = matchBlockEnd();
         }
+        localBindings_ = outerBindings;
         if (emptyDeclaration) lastClauseUsedBlockEnd_ = matchBlockEnd();
         if (!lastClauseUsedBlockEnd_) {
             if (atEnd()) {
@@ -978,27 +1097,15 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
             }
             throw IntegerParserError("Expected 'end' after function or rule declaration");
         }
-    } else if (hasDefKeyword) {
-        if (atEnd()) {
-            throw IntegerParserIncomplete(
-                "Expected '=>' after function or rule declaration");
-        }
-        throw IntegerParserError("Expected '=>' after function or rule declaration");
     }
     if (!hasArrow) {
-        // A statement with no `def` and no body is a fact: a class constructor
-        // call, so its name follows the class naming rule.
-        if (!manifestMode_ && !clauseName.isCapitalized) {
-            throw IntegerParserError(
-                "Fact '" + clauseName.spelling +
-                "' must begin with an uppercase letter at " + sourceLocation(begin));
-        }
         consumeStatementTerminator("fact or rule declaration");
     }
     // Annotations describe callable operator implementations.  They are
     // methods even when their body has a bare `return` (or no value return),
     // so classification must not depend solely on ReturnGoal fields.
-    const ClauseKind kind = emptyDeclaration ? ClauseKind::NativeDeclaration :
+    const ClauseKind kind = !hasArrow ? (hasDefKeyword ? ClauseKind::Fact : ClauseKind::EntryCall) :
+        emptyDeclaration ? ClauseKind::NativeDeclaration :
         (head.nameId == kMainSymbolId || !annotations.empty() || isMethodStyleHead(head) || hasValueReturn(body) || !fallbackBranches.empty() ? ClauseKind::Method :
          body.empty() ? ClauseKind::Fact : ClauseKind::Rule);
     auto result = std::make_shared<ClauseStmt>(std::move(head), std::move(parentNames), std::move(body),
@@ -1015,17 +1122,10 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
 }
 
 std::shared_ptr<ClassStmt> IntegerParser::parseClassStatement(std::size_t begin) {
-    // Class-name segments have their own capitalization validation below;
-    // do not let the generic qualified-call parser consume them first.
     auto className = consumeQualifiedName(false);
-    if (!className.isCapitalized)
-        throw IntegerParserError("Class names must begin with an uppercase letter");
     while (atAdjacentDot()) {
         match(TokenId::DOT);
         const auto related = consumeQualifiedName(false);
-        if (!related.isCapitalized) {
-            throw IntegerParserError("Every segment of a dotted class name must begin with an uppercase letter");
-        }
         className.spelling += "." + related.spelling;
     }
     className.nameId = symbolIdForName(className.spelling);
@@ -1035,13 +1135,9 @@ std::shared_ptr<ClassStmt> IntegerParser::parseClassStatement(std::size_t begin)
     }
     const auto consumeDottedType = [&]() {
         auto type = consumeQualifiedName(false);
-        if (!type.isCapitalized) throw IntegerParserError("Type names must begin with an uppercase letter");
         while (atAdjacentDot()) {
             match(TokenId::DOT);
             const auto segment = consumeQualifiedName(false);
-            if (!segment.isCapitalized) {
-                throw IntegerParserError("Every segment of a dotted type name must begin with an uppercase letter");
-            }
             type.spelling += "." + segment.spelling;
         }
         type.nameId = symbolIdForName(type.spelling);
@@ -1099,9 +1195,24 @@ std::shared_ptr<ClassStmt> IntegerParser::parseClassStatement(std::size_t begin)
     while (!atEnd() && !atBlockEnd()) {
         const auto fieldBegin = byte_;
         const auto fieldPiece = piece_;
-        if (at(TokenId::AT) || at(TokenId::DEF)) {
+        if (at(TokenId::AT)) {
             methods.push_back(parseClassMethod());
             continue;
+        }
+        bool hasFieldDef = false;
+        if (at(TokenId::DEF)) {
+            const auto lookaheadByte = byte_;
+            const auto lookaheadPiece = piece_;
+            match(TokenId::DEF);
+            (void)consumeQualifiedName(false);
+            hasFieldDef = at(TokenId::COLON);
+            byte_ = lookaheadByte;
+            piece_ = lookaheadPiece;
+            if (!hasFieldDef) {
+                methods.push_back(parseClassMethod());
+                continue;
+            }
+            match(TokenId::DEF);
         }
         if (match(TokenId::INDEX)) {
             require(TokenId::LPAREN, "Expected '(' after class index");
@@ -1147,6 +1258,11 @@ std::shared_ptr<ClassStmt> IntegerParser::parseClassStatement(std::size_t begin)
             piece_ = fieldPiece;
             methods.push_back(parseClassMethod());
             continue;
+        }
+        if (!hasFieldDef) {
+            throw IntegerParserError(
+                "Class field '" + field.spelling +
+                "' must begin with 'def'");
         }
         require(TokenId::COLON, "Expected ':' after class field name");
         TypeRef type;
@@ -1215,7 +1331,15 @@ std::shared_ptr<Statement> IntegerParser::parseNextProgramStatement() {
 
 std::vector<std::shared_ptr<Goal>> IntegerParser::parseQuery() {
     match(TokenId::QUESTION);
-    auto goals = parseGoalList(TokenId::DOT);
+    insideQuery_ = true;
+    std::vector<std::shared_ptr<Goal>> goals;
+    try {
+        goals = parseGoalList(TokenId::DOT);
+    } catch (...) {
+        insideQuery_ = false;
+        throw;
+    }
+    insideQuery_ = false;
     if (match(TokenId::DOT) && !atEnd()) {
         throw IntegerParserError("Unexpected source after query terminator");
     }
@@ -1232,7 +1356,7 @@ bool IntegerParser::emptyInput() {
 }
 
 bool IntegerParser::startsProgramStatement() {
-    if (at(TokenId::DEF) || at(TokenId::CLASS) || at(TokenId::AT) ||
+    if (at(TokenId::DEF) || at(TokenId::CLASS) || at(TokenId::VAR) || at(TokenId::AT) ||
         at(TokenId::IMPORT)) {
         return true;
     }
@@ -1302,6 +1426,11 @@ std::shared_ptr<Expr> IntegerParser::parsePrimary() {
         stamp(result, begin, byte_);
         return result;
     }
+    if (at(TokenId::ATOM_QUOTE)) {
+        auto result = std::make_shared<AtomExpr>(consumeAtom());
+        stamp(result, begin, byte_);
+        return result;
+    }
     if (piece_ < input_.entries().size() && isDecimalDigitId(input_.entries()[piece_].id)) {
         auto result = std::make_shared<NumberExpr>(consumeNumber());
         stamp(result, begin, byte_);
@@ -1330,16 +1459,11 @@ std::shared_ptr<Expr> IntegerParser::parsePrimary() {
         return result;
     }
     if (match(TokenId::NEW)) {
-        // `new School.Student(...)` is a dotted type, not a qualified method
-        // call, so validate each type segment explicitly below.
+        // `new school.student(...)` is a dotted type in explicit type context.
         auto type = consumeQualifiedName(false);
-        if (!type.isCapitalized) throw IntegerParserError("new expects a capitalized fact or class name");
         while (atAdjacentDot()) {
             match(TokenId::DOT);
             const auto related = consumeQualifiedName(false);
-            if (!related.isCapitalized) {
-                throw IntegerParserError("Every segment of a dotted type name must begin with an uppercase letter");
-            }
             type.spelling += "." + related.spelling;
         }
         auto arguments = parseArguments();
@@ -1374,13 +1498,19 @@ std::shared_ptr<Expr> IntegerParser::parsePrimary() {
         const auto name = consumeQualifiedName(false);
         if (at(TokenId::LPAREN)) {
             auto result = std::make_shared<TermExpr>(name.spelling, name.nameId, parseArguments(),
-                                                     name.builtinId, name.isCapitalized);
+                                                     name.builtinId);
             stamp(result, begin, byte_);
             return result;
         }
-        auto result = std::make_shared<VarExpr>(name.spelling, name.nameId,
-                                                languageTypeIdForName(name.spelling),
-                                                name.isCapitalized);
+        std::shared_ptr<Expr> result;
+        if (parsingDeclarationHead_ || parsingFactPattern_ || insideQuery_ ||
+            localBindings_.count(name.nameId) != 0 ||
+            globalBindings_.count(name.nameId) != 0 || atAdjacentDot()) {
+            result = std::make_shared<VarExpr>(name.spelling, name.nameId,
+                                               languageTypeIdForName(name.spelling));
+        } else {
+            result = std::make_shared<AtomExpr>(name.spelling);
+        }
         stamp(result, begin, byte_);
         return result;
     }
@@ -1692,11 +1822,19 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
         }
         if (!at(TokenId::LPAREN)) {
             if (member == "class") {
-                const auto reference = nodeAs<VarExpr>(result);
-                if (!reference) {
+                const auto qualifiedName = [&](const auto& self, const std::shared_ptr<Expr>& value) -> std::string {
+                    if (const auto reference = nodeAs<VarExpr>(value)) return reference->name;
+                    if (const auto access = nodeAs<AccessExpr>(value)) {
+                        const auto prefix = self(self, access->target);
+                        return prefix.empty() ? std::string{} : prefix + "." + access->key;
+                    }
+                    return {};
+                };
+                const auto qualified = qualifiedName(qualifiedName, result);
+                if (qualified.empty()) {
                     throw IntegerParserError(".class requires a class name");
                 }
-                result = std::make_shared<ClassRefExpr>(reference->name);
+                result = std::make_shared<ClassRefExpr>(qualified);
                 continue;
             }
             if (member == "function") {
@@ -1707,33 +1845,10 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
                 result = std::make_shared<FunctionRefExpr>(reference->name);
                 continue;
             }
-            if (const auto type = nodeAs<VarExpr>(result);
-                type && type->isCapitalized && !member.empty() &&
-                std::isupper(static_cast<unsigned char>(member.front())) != 0) {
-                const std::string dottedType = type->name + "." + member;
-                result = std::make_shared<VarExpr>(
-                    dottedType, symbolIdForName(dottedType),
-                    LanguageTypeId::Unknown, true);
-                continue;
-            }
             result = std::make_shared<AccessExpr>(std::move(result), member);
             continue;
         }
         auto arguments = parseArguments();
-        if (const auto type = nodeAs<VarExpr>(result);
-            type && type->isCapitalized && !member.empty() &&
-            std::isupper(static_cast<unsigned char>(member.front())) != 0) {
-            const std::string dottedType = type->name + "." + member;
-            result = std::make_shared<TermExpr>(
-                dottedType, symbolIdForName(dottedType), std::move(arguments),
-                builtinIdForName(dottedType), true);
-            continue;
-        }
-        const auto type = nodeAs<VarExpr>(result);
-        const auto bucket = nodeAs<TermExpr>(result);
-        const std::string staticType = type && type->isCapitalized
-            ? type->name
-            : (bucket && bucket->isCapitalized && bucket->args.empty() ? bucket->name : std::string{});
         const bool runtimeBuiltinMember =
             member == "all" || member == "count" || member == "get" ||
             member == "first" || member == "sum" || member == "average" ||
@@ -1744,15 +1859,10 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
             member == "order_by" || member == "join" ||
             member == "recursive_join" || member == "shortest_path" ||
             member == "len" || member == "push";
-        if (!staticType.empty() || runtimeBuiltinMember) {
+        if (runtimeBuiltinMember) {
             // Facts are built into RocksDB and are queried through their own
             // class, as in Employee.count(). `Fact` is only the root of the type
             // lineage; it is neither a library nor a queryable class.
-            if (staticType == "Fact") {
-                throw IntegerParserError(
-                    "'Fact' is not a queryable class; query a class directly, for example "
-                    "Employee.count() at " + sourceLocation(byte_));
-            }
             if (member == "join" || member == "recursive_join" || member == "shortest_path") {
                 for (const auto& argument : arguments) {
                     if (argument.name == "direction" &&
@@ -1764,9 +1874,7 @@ std::shared_ptr<Expr> IntegerParser::parseUnary() {
             }
             std::vector<Arg> invokeArgs;
             invokeArgs.reserve(arguments.size() + 2);
-            invokeArgs.emplace_back("receiver", !staticType.empty()
-                ? std::shared_ptr<Expr>(std::make_shared<ClassRefExpr>(staticType))
-                : std::move(result));
+            invokeArgs.emplace_back("receiver", std::move(result));
             invokeArgs.emplace_back("member", std::make_shared<StringExpr>(member));
             for (auto& argument : arguments) invokeArgs.push_back(std::move(argument));
             result = std::make_shared<TermExpr>(

@@ -2,8 +2,8 @@
 # must still exist.
 class Department
     key(id).
-    id: string.
-    kind: string.
+    def id: string.
+    def kind: string.
 end
 
 def main() =>

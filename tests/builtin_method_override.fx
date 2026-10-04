@@ -1,6 +1,6 @@
 class Employee
     key(id).
-    id: string.
+    def id: string.
     @override
     def count() =>
         return 77.
@@ -13,7 +13,7 @@ end
 
 class Department
     key(id).
-    id: string.
+    def id: string.
     def count() =>
         return 88.
     end

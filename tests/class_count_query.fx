@@ -1,11 +1,11 @@
 # A class is queried directly.
 class Employee
     key(id).
-    id: string.
+    def id: string.
 end
 
-Employee(id: "e1").
-Employee(id: "e2").
+def Employee(id: "e1").
+def Employee(id: "e2").
 
 def main() =>
     return Employee.count().

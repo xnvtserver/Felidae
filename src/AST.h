@@ -15,6 +15,7 @@ namespace Felidae {
 
 enum class ExprKind {
     String,
+    Atom,
     ClassRef,
     FunctionRef,
     Number,
@@ -65,7 +66,7 @@ struct TypeRef {
         if (!arguments.empty()) {
             out << '<';
             for (std::size_t index = 0; index < arguments.size(); ++index) {
-                if (index) out << ", ";
+                if (index) out << (name == "optional" ? " | " : ", ");
                 out << arguments[index].canonical();
             }
             out << '>';
@@ -143,6 +144,24 @@ public:
     }
 };
 
+// First-class symbolic data. The spelling is the durable identity; symbolId
+// is process-local acceleration rebuilt whenever an atom is parsed or decoded.
+class AtomExpr final : public Expr {
+public:
+    explicit AtomExpr(std::string spelling)
+        : spelling(std::move(spelling)), symbolId(symbolIdForName(this->spelling)) {}
+
+    std::string spelling;
+    SymbolId symbolId = 0;
+
+    static constexpr ExprKind kKind = ExprKind::Atom;
+    ExprKind kind() const override { return kKind; }
+    std::shared_ptr<Expr> clone() const override {
+        return std::make_shared<AtomExpr>(spelling);
+    }
+    std::string debug() const override { return spelling; }
+};
+
 class ClassRefExpr final : public Expr {
 public:
     explicit ClassRefExpr(std::string name)
@@ -211,19 +230,16 @@ public:
         : name(std::move(name)), nameId(symbolIdForName(this->name)),
           languageTypeId(languageTypeId) {}
     VarExpr(std::string displayName, SymbolId directId,
-            LanguageTypeId languageTypeId = LanguageTypeId::Unknown,
-            bool capitalized = false)
-        : name(std::move(displayName)), nameId(directId), languageTypeId(languageTypeId),
-          isCapitalized(capitalized) {}
+            LanguageTypeId languageTypeId = LanguageTypeId::Unknown)
+        : name(std::move(displayName)), nameId(directId), languageTypeId(languageTypeId) {}
     std::string name;
     SymbolId nameId = 0;
     LanguageTypeId languageTypeId = LanguageTypeId::Unknown;
-    bool isCapitalized = false;
 
     static constexpr ExprKind kKind = ExprKind::Var;
     ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override {
-        return std::make_shared<VarExpr>(name, nameId, languageTypeId, isCapitalized);
+        return std::make_shared<VarExpr>(name, nameId, languageTypeId);
     }
     std::string debug() const override { return name; }
 };
@@ -561,28 +577,24 @@ struct Arg {
 
 class TermExpr final : public Expr {
 public:
-    TermExpr(std::string name, std::vector<Arg> args, BuiltinId builtinId = BuiltinId::Unknown,
-             bool capitalized = false)
+    TermExpr(std::string name, std::vector<Arg> args, BuiltinId builtinId = BuiltinId::Unknown)
         : name(std::move(name)), nameId(symbolIdForName(this->name)),
-          builtinId(builtinId), args(std::move(args)), isCapitalized(capitalized) {}
+          builtinId(builtinId), args(std::move(args)) {}
     TermExpr(std::string displayName, SymbolId directId, std::vector<Arg> args,
-             BuiltinId builtinId = BuiltinId::Unknown, bool capitalized = false)
-        : name(std::move(displayName)), nameId(directId), builtinId(builtinId), args(std::move(args)),
-          isCapitalized(capitalized) {}
+             BuiltinId builtinId = BuiltinId::Unknown)
+        : name(std::move(displayName)), nameId(directId), builtinId(builtinId), args(std::move(args)) {}
 
     std::string name;
     SymbolId nameId = 0;
     BuiltinId builtinId = BuiltinId::Unknown;
     std::vector<Arg> args;
-    bool isCapitalized = false;
-
     static constexpr ExprKind kKind = ExprKind::Term;
     ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override {
         std::vector<Arg> copied;
         copied.reserve(args.size());
         for (const auto& arg : args) copied.emplace_back(arg.name, arg.nameId, arg.value->clone());
-        return std::make_shared<TermExpr>(name, nameId, std::move(copied), builtinId, isCapitalized);
+        return std::make_shared<TermExpr>(name, nameId, std::move(copied), builtinId);
     }
 
     std::string debug() const override {
@@ -647,6 +659,9 @@ public:
     SymbolId nameId = 0;
     BuiltinId builtinId = BuiltinId::Unknown;
     std::vector<Arg> args;
+    // Only explicit fact-pattern/query contexts may introduce bindings from
+    // unresolved identifiers. Ordinary calls interpret them as data atoms.
+    bool patternBindings = false;
     // Query-only semantic designations select existing fact rows. They never
     // become serialized fields, types, or inheritance relationships.
     std::vector<std::string> designations;
@@ -697,6 +712,7 @@ public:
         copy.name = call.name;
         copy.nameId = call.nameId;
         copy.builtinId = call.builtinId;
+        copy.patternBindings = call.patternBindings;
         copy.designations = call.designations;
         copy.designationIds = call.designationIds;
         for (const auto& a : call.args) {
@@ -1213,6 +1229,7 @@ public:
         for (const auto& annotation : annotations) {
             oss << "@" << annotation.debug() << "\n";
         }
+        if (clauseKind != ClauseKind::EntryCall) oss << "def ";
         oss << head.name;
         if (!parentNames.empty()) {
             oss << " extend ";
@@ -1257,16 +1274,22 @@ public:
 
 class GlobalBindingStmt final : public Statement {
 public:
-    GlobalBindingStmt(std::string name, std::shared_ptr<Expr> expr)
-        : name(std::move(name)), expr(std::move(expr)) {}
+    GlobalBindingStmt(std::string name, std::shared_ptr<Expr> expr,
+                      TypeRef declaredType = {})
+        : name(std::move(name)), expr(std::move(expr)),
+          declaredType(std::move(declaredType)) {}
 
     std::string name;
     std::shared_ptr<Expr> expr;
+    TypeRef declaredType;
 
     static constexpr StatementKind kKind = StatementKind::GlobalBinding;
     StatementKind kind() const override { return kKind; }
     std::string debug() const override {
-        return name + " := " + expr->debug() + ".";
+        return "def " + name + (declaredType.name.empty()
+            ? std::string{}
+            : ": " + declaredType.canonical()) +
+            " := " + expr->debug() + ".";
     }
 };
 
@@ -1387,7 +1410,7 @@ private:
         }
         oss << '\n';
         for (const auto& field : fields) {
-            oss << "  " << field.name << ": " << field.type.canonical();
+            oss << "  def " << field.name << ": " << field.type.canonical();
             if (field.defaultValue) oss << " := " << field.defaultValue->debug();
             oss << ".\n";
         }

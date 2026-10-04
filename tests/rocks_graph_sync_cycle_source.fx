@@ -1,2 +1,2 @@
-Employee(id: "e1").
-Employee(id: "e2").
+def Employee(id: "e1").
+def Employee(id: "e2").

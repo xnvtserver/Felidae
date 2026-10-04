@@ -12,11 +12,11 @@
 # so a later DML write persists back to that file automatically.
 import "csv".
 
-ImportedSchool(name: "", district: "", students: 0, active: 1.0).
+def ImportedSchool(name: "", district: "", students: 0, active: 1.0).
 
 def importExample() =>
-    raw := file.readFile(file: "datasets/examples/schools.csv").
-    imported := csv.toFacts(data: raw, type: "ImportedSchool", source: "build/runtime/language_tour_schools.csv").
+    def raw := file.readFile(file: "datasets/examples/schools.csv").
+    def imported := csv.toFacts(data: raw, type: "ImportedSchool", source: "build/runtime/language_tour_schools.csv").
     return count(data: imported).
 end
 
@@ -24,16 +24,16 @@ end
 # `extend` builds an ancestry: Mammal and Reptile both specialize Animal, so
 # hierarchy queries (section 8) find their shared ancestor without either
 # type knowing about the other.
-Animal(name: "").
-Mammal extend Animal(name: "").
-Reptile extend Animal(name: "").
+def Animal(name: "").
+def Mammal extend Animal(name: "").
+def Reptile extend Animal(name: "").
 
-School(id: 10, name: "North", district: "central", students: 420, active: 1.0).
-School(id: 20, name: "West", district: "west", students: 280, active: 0.0).
-School(id: 30, name: "Lake", district: "central", students: 350, active: 1.0).
-School(id: 99, name: "Remote", district: "remote", students: 25, active: 1.0).
-Teacher(name: "Ada", subject: "math", school_id: 10).
-Teacher(name: "Grace", subject: "science", school_id: 99).
+def School(id: 10, name: "North", district: "central", students: 420, active: 1.0).
+def School(id: 20, name: "West", district: "west", students: 280, active: 0.0).
+def School(id: 30, name: "Lake", district: "central", students: 350, active: 1.0).
+def School(id: 99, name: "Remote", district: "remote", students: 25, active: 1.0).
+def Teacher(name: "Ada", subject: "math", school_id: 10).
+def Teacher(name: "Grace", subject: "science", school_id: 99).
 Link(from: Teacher(name: "Ada"), to: School(id: 10), properties: {kind: "teaches_at"}).
 Link(from: Teacher(name: "Grace"), to: School(id: 99), properties: {kind: "teaches_at"}).
 
@@ -53,10 +53,10 @@ end
 # `.OrWhere` composes further conditions left to right, and `.limit(records:)`
 # bounds the result without truncating silently on invalid input.
 def queryExamples() =>
-    active_central := School.where(district: "central", active: 1.0).
-    central_or_west := School.where(district: "central").OrWhere(district: "west").
-    large_central := School.where(district: "central").AndWhere(active: 1.0).
-    top_one := School.where(active: 1.0).limit(records: 1).
+    def active_central := School.where(district: "central", active: 1.0).
+    def central_or_west := School.where(district: "central").OrWhere(district: "west").
+    def large_central := School.where(district: "central").AndWhere(active: 1.0).
+    def top_one := School.where(active: 1.0).limit(records: 1).
     return (
         active_central_count: count(data: active_central),
         central_or_west_count: count(data: central_or_west),
@@ -91,8 +91,8 @@ end
 # index, Link properties select an edge family, and a trailing where filters
 # left/properties/right fields.
 def joinExamples() =>
-    joined := School().join(properties: {kind: "teaches_at"}, direction: backward.class).
-    ada := joined.where(right.name == "Ada").
+    def joined := School().join(properties: {kind: "teaches_at"}, direction: backward.class).
+    def ada := joined.where(right.name == "Ada").
     return (joined_count: count(data: joined), ada_count: count(data: ada)).
 end
 
@@ -100,9 +100,9 @@ end
 # `match:` is mandatory for update and delete -- there is no conditionless
 # mutation, unlike a bare SQL UPDATE with no WHERE.
 def mutationExamples() =>
-    inserted := School.insert(values: {id: 40, name: "Riverside", district: "east", students: 210, active: 1.0}).
-    updated := School.where(district: "east").update(values: {students: 230.0}).
-    deleted := School.where(name: "Riverside").delete().
+    def inserted := School.insert(values: {id: 40, name: "Riverside", district: "east", students: 210, active: 1.0}).
+    def updated := School.where(district: "east").update(values: {students: 230.0}).
+    def deleted := School.where(name: "Riverside").delete().
     return (
         inserted_name: inserted.name,
         updated_count: updated,
@@ -114,8 +114,8 @@ end
 # commonAncestors reads the `extend` graph declared in section 1. Selecting
 # one candidate as contextually best belongs to the calling application.
 def ancestryExamples() =>
-    cat := Mammal(name: "cat").
-    lizard := Reptile(name: "lizard").
+    def cat := Mammal(name: "cat").
+    def lizard := Reptile(name: "lizard").
     return (
         common: commonAncestors(left: cat, right: lizard)
     ).

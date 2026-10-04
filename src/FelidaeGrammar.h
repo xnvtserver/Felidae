@@ -43,6 +43,7 @@ enum class BuiltinId {
 
     Throw,
     Type,
+    IsAtom,
     Instanceof,
 
     Count,
@@ -230,6 +231,7 @@ enum class LanguageTypeId {
     Float,
     Int,
     Number,
+    Atom,
     String,
     Expr,
     Mixfix,
@@ -250,6 +252,7 @@ inline constexpr std::string_view languageTypeName(LanguageTypeId type) {
         case LanguageTypeId::Float: return "float";
         case LanguageTypeId::Int: return "int";
         case LanguageTypeId::Number: return "number";
+        case LanguageTypeId::Atom: return "atom";
         case LanguageTypeId::String: return "string";
         case LanguageTypeId::Expr: return "expr";
         case LanguageTypeId::Mixfix: return "mixfix";
@@ -272,6 +275,7 @@ inline LanguageTypeId languageTypeIdForName(const std::string& name) {
     if (name == "float") return LanguageTypeId::Float;
     if (name == "int") return LanguageTypeId::Int;
     if (name == "number") return LanguageTypeId::Number;
+    if (name == "atom") return LanguageTypeId::Atom;
     if (name == "string") return LanguageTypeId::String;
     if (name == "expr") return LanguageTypeId::Expr;
     if (name == "mixfix") return LanguageTypeId::Mixfix;
@@ -285,14 +289,11 @@ inline bool isFelidaeBuiltinTypeName(const std::string& name) {
 }
 
 inline bool isFelidaeTypeAnnotationName(const std::string& name) {
-    return !name.empty() &&
-           (std::isupper(static_cast<unsigned char>(name.front())) ||
-            isFelidaeBuiltinTypeName(name));
+    return !name.empty();
 }
 
 inline bool isFelidaeLikelyTypeName(const std::string& name) {
-    return isFelidaeBuiltinTypeName(name) ||
-           (!name.empty() && std::isupper(static_cast<unsigned char>(name.front())));
+    return !name.empty();
 }
 
 // Model-generation spelling specification for fixed Felidae syntax. Runtime
@@ -387,6 +388,7 @@ inline constexpr bool isIdentifierBoundaryId(TokenId::Id id) {
         case TokenId::GREATER:
         case TokenId::GREATER_EQUAL:
         case TokenId::QUOTE:
+        case TokenId::ATOM_QUOTE:
         case TokenId::BACKSLASH:
         case TokenId::COMMENT:
         case TokenId::SPACE:

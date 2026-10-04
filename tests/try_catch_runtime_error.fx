@@ -2,11 +2,11 @@
 # {kind, message}, with kind "runtime".
 def main() =>
     try
-        rows := [{v: "b"}, {v: 1}].
-        sorted := rows.order_by(field: "v").
+        def rows := [{v: "b"}, {v: 1}].
+        def sorted := rows.order_by(field: "v").
     catch e then
-        caught_kind := e.kind.
-        caught_message := e.message.
+        def caught_kind := e.kind.
+        def caught_message := e.message.
     end
     return (kind: caught_kind, message: caught_message).
 end

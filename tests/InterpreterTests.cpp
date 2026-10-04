@@ -2,6 +2,9 @@
 #include "IntegerTokenList.h"
 #include "RocksFactStore.h"
 
+#include <rocksdb/db.h>
+#include <rocksdb/options.h>
+
 #include <chrono>
 #include <filesystem>
 #include <future>
@@ -81,6 +84,62 @@ void testSharedDatabaseHandleAndSerializedIds() {
             "First RocksDB session cannot read the second session's write");
 }
 
+void testAdditiveStoreFormatUpgrade() {
+    using Felidae::RocksFactStore;
+    namespace fs = std::filesystem;
+
+    const auto directory = fs::temp_directory_path() /
+        ("felidae-v8-upgrade-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    struct RemoveDirectory {
+        fs::path path;
+        ~RemoveDirectory() {
+            std::error_code ignored;
+            fs::remove_all(path, ignored);
+        }
+    } cleanup{directory};
+    fs::create_directories(directory);
+
+    const auto encodedVersion = [](std::uint64_t value) {
+        std::string encoded;
+        for (int shift = 56; shift >= 0; shift -= 8) {
+            encoded.push_back(static_cast<char>((value >> shift) & 0xffU));
+        }
+        return encoded;
+    };
+    {
+        rocksdb::Options options;
+        options.create_if_missing = true;
+        std::unique_ptr<rocksdb::DB> database;
+        require(rocksdb::DB::Open(
+                    options, directory.string(), &database).ok(),
+                "Cannot create the V8 migration fixture");
+        rocksdb::WriteOptions write;
+        write.sync = true;
+        require(database->Put(write, "Mformat", encodedVersion(8)).ok(),
+                "Cannot write the V8 format marker");
+        require(database->Put(write, "legacy-sentinel", "kept").ok(),
+                "Cannot write the V8 sentinel");
+    }
+
+    { RocksFactStore upgraded(directory); }
+
+    rocksdb::Options options;
+    std::unique_ptr<rocksdb::DB> database;
+    require(rocksdb::DB::Open(
+                options, directory.string(), &database).ok(),
+            "Cannot reopen the upgraded store");
+    std::string version;
+    require(database->Get(rocksdb::ReadOptions{}, "Mformat", &version).ok() &&
+            version == encodedVersion(9),
+            "V8 store format marker was not upgraded to V9");
+    std::string sentinel;
+    require(database->Get(
+                rocksdb::ReadOptions{}, "legacy-sentinel", &sentinel).ok() &&
+            sentinel == "kept",
+            "V8 store data changed during the additive upgrade");
+}
+
 void testLineColumnIndex() {
     // Lines end at \n, \r\n or a lone \r; columns count bytes from the line start.
     const Felidae::IntegerTokenList list(
@@ -120,6 +179,7 @@ int main() {
     try {
         testOrderedRocksFactKeys();
         testSharedDatabaseHandleAndSerializedIds();
+        testAdditiveStoreFormatUpgrade();
         testLineColumnIndex();
         testLargeSourceParses();
         std::cout << "RocksDB storage and parser unit tests passed\n";

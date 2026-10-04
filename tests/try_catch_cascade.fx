@@ -8,8 +8,8 @@ def main() =>
     catch k then
         throw(exception: {kind: "c", message: k.kind}).
     catch p then
-        got_kind := p.kind.
-        got_message := p.message.
+        def got_kind := p.kind.
+        def got_message := p.message.
     end
     return (kind: got_kind, message: got_message).
 end

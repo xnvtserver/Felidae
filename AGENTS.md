@@ -66,13 +66,38 @@
   remove, revert, or replace them during compatibility fixes or cleanup. Move
   fixes forward from the Dependabot-selected versions, and ask the user before
   changing a dependency pin or deleting dependency/submodule remnants.
-- Atoms exist only at the interpreter level, as the lowercase identifiers that
-  mixfix patterns and operator words are built from. An atom is never accepted
-  as a standard data value like a string, number, or float: it cannot be stored
-  in a fact, bound to a variable, passed as an argument, returned, or persisted
-  to RocksDB. Text must be quoted, and class and function references use
-  `Name.class` and `name.function`. Do not add an atom value type, an atom
-  literal, or an atom field type; atoms are designed for mixfix operations.
+- Keep syntax atoms and data atoms distinct. Syntax atoms are interned parser,
+  mixfix, and operator anchors; they are grammar metadata and are not persisted
+  merely because they occur in syntax. Data atoms are immutable first-class
+  symbolic runtime values selected by grammar context. They may be bound by an
+  explicitly declared `def`, passed, returned, unified, indexed, and persisted
+  in facts. An atom is distinct from a string with the same spelling. Persist
+  atom text with an explicit atom type tag and re-intern it when reading; never
+  use a process-local `SymbolId`, token ID, or `PatternId` as durable identity.
+  External strings remain strings unless source syntax, a schema, or an
+  explicit conversion requests an atom. Class and function references continue
+  to use `Name.class` and `name.function`.
+- Preserve Felidae's Erlang-inspired surface contract without casing rules:
+  `def` and grammar context distinguish bindings, fact patterns, persistent
+  seeds, and callables; an unresolved bare identifier in value position is a
+  data atom. `.` terminates a statement and `end` terminates a block.
+- `def name := value.` and `def name: Type := value.` create immutable
+  interpreter bindings. `def name: optional<T | U>.` may omit its initializer
+  and becomes nil; an untyped `def name.` is ambiguous and invalid. Top-level
+  `def Type(...).` is a persistent seed, while the same form inside a rule is
+  a fact pattern. Legacy `var` and declarations without `def` are errors.
+- Class fields also require `def`, for example `def id: string.` or
+  `def enabled: bool := false.` Structural class directives such as `key(...)`
+  and `index(...)` remain unprefixed.
+- `:=` is the binding/assignment operator. A single `=` is equality comparison
+  (alongside `!=` for inequality) and must never be accepted as assignment.
+- `is_atom(value)` is the canonical pure atom predicate. It is true only for a
+  runtime data atom, never for a string, syntax anchor, number, class reference,
+  or function reference.
+- A declared class/fact constructor accepts named fields or positional values.
+  Positional values map deterministically to the authoritative inherited-then-
+  declared field order used by class construction; persistent fact seeds and
+  transient constructors must share that same resolver.
 - Integer-only fast paths (token-id scans, hashing, id comparison) may be written
   as header-only C-style kernels: `static inline` functions over integers and raw
   arrays in the C subset, kept `extern "C"`-compatible, in `src/IntKernels.h`.

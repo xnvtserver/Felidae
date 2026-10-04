@@ -42,7 +42,10 @@ set(persistent_sources
   rocks_inheritance_seed.fx
   rocks_inheritance_read.fx
   rocks_config_set.fx
-  rocks_config_read.fx)
+  rocks_config_read.fx
+  rocks_atom_seed.fx
+  rocks_atom_read.fx
+  rocks_atom_reasoning.fx)
 list(FIND persistent_sources "${source_name}" persistent_index)
 
 if(persistent_index EQUAL -1)

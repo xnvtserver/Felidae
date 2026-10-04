@@ -1,7 +1,7 @@
 class PersistentMetric
     key(id).
-    id: string.
-    value: number.
+    def id: string.
+    def value: number.
 end
 
 def main() =>

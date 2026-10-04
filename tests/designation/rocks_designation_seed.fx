@@ -1,9 +1,9 @@
 class DesignatedNode
     key(id).
-    id: string.
+    def id: string.
 end
 
-DesignatedNode(id: "node-1") as preferred.
+def DesignatedNode(id: "node-1") as preferred.
 
 def main() =>
     return preferred.count().

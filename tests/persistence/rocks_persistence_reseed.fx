@@ -1,11 +1,11 @@
 class PersistentMetric
     key(id).
-    id: string.
-    value: number.
+    def id: string.
+    def value: number.
 end
 
 # A record is a key/value block; field order is not part of its identity.
-PersistentMetric(value: 42, id: "metric-1").
+def PersistentMetric(value: 42, id: "metric-1").
 
 def main() =>
     return PersistentMetric.count().

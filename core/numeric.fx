@@ -23,11 +23,11 @@ end
 
 def weightedAverage(a: number, b: number, weightA: number, weightB: number) =>
     where weightA + weightB == 0.
-    total := a + b.
+    def total := a + b.
     return total / 2.
 else
-    weighted := a * weightA + b * weightB.
-    totalWeight := weightA + weightB.
+    def weighted := a * weightA + b * weightB.
+    def totalWeight := weightA + weightB.
     return weighted / totalWeight.
 end
 

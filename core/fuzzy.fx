@@ -44,8 +44,8 @@ def fuzzyRecommendation(support: number, opposition: number) =>
 end
 
 def fuzzyEvidence(support: number, opposition: number, reliability: number) =>
-    supportDegree := fuzzyAnd(a: support, b: reliability).
-    oppositionDegree := fuzzyAnd(a: opposition, b: reliability).
+    def supportDegree := fuzzyAnd(a: support, b: reliability).
+    def oppositionDegree := fuzzyAnd(a: opposition, b: reliability).
     return GradedEvidence(
         support_degree: supportDegree,
         opposition_degree: oppositionDegree,
@@ -101,6 +101,6 @@ end
 # General-purpose numeric closeness degree: 1 when a == b, falling off with
 # their relative difference, clamped to [0, 1]. Deterministic and symmetric.
 def similarity(a: number, b: number) =>
-    spread := max([math.abs(value: a), math.abs(value: b), 1]).
+    def spread := max([math.abs(value: a), math.abs(value: b), 1]).
     return fuzzyClamp(value: 1 - (diff(a: a, b: b) / spread)).
 end

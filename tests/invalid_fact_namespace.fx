@@ -2,10 +2,10 @@
 # own class, as in Employee.count().
 class Employee
     key(id).
-    id: string.
+    def id: string.
 end
 
-Employee(id: "e1").
+def Employee(id: "e1").
 
 def main() =>
     return Fact.count().

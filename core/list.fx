@@ -7,12 +7,12 @@ def ListItem(list: string, pos: int, label: string, value: any) => ()
 end
 
 def list.get(list: string, pos: int) =>
-    ListItem(list: list, pos: pos, value: value).
+    def ListItem(list: list, pos: pos, value: value).
     return (value: value).
 end
 
 def list.get(list: string, label: string) =>
-    ListItem(list: list, label: label, value: value).
+    def ListItem(list: list, label: label, value: value).
     return (value: value).
 end
 
@@ -22,7 +22,7 @@ def list.first(list: string) =>
 end
 
 def list.pop(list: string) =>
-    ListItem(list: list, pos: pos, label: label, value: value).
+    def ListItem(list: list, pos: pos, label: label, value: value).
     if pos == 0 then
     return (value: value, label: label).
     end

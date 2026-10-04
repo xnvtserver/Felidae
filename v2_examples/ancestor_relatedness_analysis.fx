@@ -20,15 +20,15 @@
 import "ancestry".
 import "fuzzy".
 
-Animal(name: "", weight_kg: 0).
-Mammal extend Animal(name: "", weight_kg: 0).
-Bird extend Animal(name: "", weight_kg: 0).
-Canine extend Mammal(name: "", weight_kg: 0).
-Feline extend Mammal(name: "", weight_kg: 0).
-Dog extend Canine(name: "", weight_kg: 0).
-Wolf extend Canine(name: "", weight_kg: 0).
-Cat extend Feline(name: "", weight_kg: 0).
-Eagle extend Bird(name: "", weight_kg: 0).
+def Animal(name: "", weight_kg: 0).
+def Mammal extend Animal(name: "", weight_kg: 0).
+def Bird extend Animal(name: "", weight_kg: 0).
+def Canine extend Mammal(name: "", weight_kg: 0).
+def Feline extend Mammal(name: "", weight_kg: 0).
+def Dog extend Canine(name: "", weight_kg: 0).
+def Wolf extend Canine(name: "", weight_kg: 0).
+def Cat extend Feline(name: "", weight_kg: 0).
+def Eagle extend Bird(name: "", weight_kg: 0).
 
 # --- Pairwise relationship report -------------------------------------------
 #
@@ -50,11 +50,11 @@ def relationshipReport(left: any, right: any) =>
 end
 
 def main() =>
-    rex := Dog(name: "Rex", weight_kg: 30).
-    fido := Dog(name: "Fido", weight_kg: 28).
-    wolfie := Wolf(name: "Wolfie", weight_kg: 40).
-    tom := Cat(name: "Tom", weight_kg: 5).
-    aquila := Eagle(name: "Aquila", weight_kg: 6).
+    def rex := Dog(name: "Rex", weight_kg: 30).
+    def fido := Dog(name: "Fido", weight_kg: 28).
+    def wolfie := Wolf(name: "Wolfie", weight_kg: 40).
+    def tom := Cat(name: "Tom", weight_kg: 5).
+    def aquila := Eagle(name: "Aquila", weight_kg: 6).
 
     return {
         # Same species: distance 0, degree 1 - always "close" regardless of

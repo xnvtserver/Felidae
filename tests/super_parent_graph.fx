@@ -1,7 +1,7 @@
 class Entity
     key(id).
-    id: string.
-    label: string.
+    def id: string.
+    def label: string.
 
     def description() =>
         return this.label.
@@ -13,7 +13,7 @@ class Entity
 end
 
 class Employee extends Entity
-    department: string.
+    def department: string.
 
     def description() =>
         return super().description() + ":" + this.department.
@@ -25,7 +25,7 @@ class Employee extends Entity
 end
 
 def main() =>
-    employee := Employee(id: "employee-1", label: "Ada", department: "Research").
+    def employee := Employee(id: "employee-1", label: "Ada", department: "Research").
     return (
         description: employee.description(),
         parent_id: employee.parent_id(),

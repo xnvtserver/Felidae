@@ -1,4 +1,4 @@
 def main() =>
-    first := 1
+    def first := 1
     return first.
 end

@@ -140,6 +140,11 @@ if(FELIDAE_BUILD_TESTS)
   enable_testing()
   add_executable(felidae_storage_tests tests/InterpreterTests.cpp)
   target_link_libraries(felidae_storage_tests PRIVATE felidae_runtime)
+  if(TARGET RocksDB::rocksdb)
+    target_link_libraries(felidae_storage_tests PRIVATE RocksDB::rocksdb)
+  else()
+    target_link_libraries(felidae_storage_tests PRIVATE rocksdb)
+  endif()
   felidae_common(felidae_storage_tests)
   add_test(NAME storage_key_encoding_unit COMMAND felidae_storage_tests)
   set_tests_properties(storage_key_encoding_unit PROPERTIES TIMEOUT 120)
@@ -158,6 +163,26 @@ if(FELIDAE_BUILD_TESTS)
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/statement_terminators.fx)
   set_tests_properties(strict_statement_terminators PROPERTIES
     PASS_REGULAR_EXPRESSION "42")
+
+  add_test(NAME atom_runtime_values
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/atom_runtime.fx)
+  set_tests_properties(atom_runtime_values PROPERTIES
+    PASS_REGULAR_EXPRESSION "kind: \"atom\".*atom_check: true.*literal_check: true.*quoted_check: true.*string_check: false.*number_check: false.*function_check: false.*empty: nil.*global: approved.*distinct: true.*passed: active.*list_value: pending.*map_value: active.*term_value: fn:pair.*active")
+
+  add_test(NAME unified_def_casing
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/unified_def_casing.fx)
+  set_tests_properties(unified_def_casing PROPERTIES
+    PASS_REGULAR_EXPRESSION "matched: true.*atom: true.*quoted_atom: true.*payload: 7")
+
+  add_test(NAME atom_mixfix_context
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/atom_mixfix.fx)
+  set_tests_properties(atom_mixfix_context PROPERTIES
+    PASS_REGULAR_EXPRESSION "value: active.*equal: true")
+
+  add_test(NAME positional_class_fact
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/positional_class_fact.fx)
+  set_tests_properties(positional_class_fact PROPERTIES
+    PASS_REGULAR_EXPRESSION "count: 2.*persisted_name: \"ram\".*persisted_age: 10.*persisted_medium: english_medium.*persisted_atom: true.*transient_name: \"sam\".*transient_age: 11.*transient_medium: english_medium")
 
   foreach(invalid_case IN ITEMS
       missing_statement_period
@@ -383,9 +408,10 @@ if(FELIDAE_BUILD_TESTS)
   set_tests_properties(class_key_persistence PROPERTIES
     PASS_REGULAR_EXPRESSION "count: 2.*saved_name: \"West\".*stored_name: \"West\"")
 
-  add_test(NAME unquoted_identifier_rejected
-    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_unquoted_identifier.fx)
-  set_tests_properties(unquoted_identifier_rejected PROPERTIES WILL_FAIL TRUE)
+  add_test(NAME unquoted_atom
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/unquoted_atom.fx)
+  set_tests_properties(unquoted_atom PROPERTIES
+    PASS_REGULAR_EXPRESSION "value: unquoted_text.*atom: true")
 
   add_test(NAME control_flow
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/control_flow.fx)
@@ -477,15 +503,13 @@ if(FELIDAE_BUILD_TESTS)
   set_tests_properties(undeclared_fact_missing_key_rejected PROPERTIES
     PASS_REGULAR_EXPRESSION "Fact key field 'a' is missing")
 
-  add_test(NAME lowercase_fact_rejected
-    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_lowercase_fact.fx)
-  set_tests_properties(lowercase_fact_rejected PROPERTIES
-    PASS_REGULAR_EXPRESSION "Fact 'ghost' must begin with an uppercase letter at line 3")
+  add_test(NAME lowercase_fact
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/lowercase_fact.fx)
+  set_tests_properties(lowercase_fact PROPERTIES PASS_REGULAR_EXPRESSION "^1")
 
-  add_test(NAME lowercase_fact_extend_rejected
-    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_lowercase_fact_extend.fx)
-  set_tests_properties(lowercase_fact_extend_rejected PROPERTIES
-    PASS_REGULAR_EXPRESSION "Fact 'child' must begin with an uppercase letter")
+  add_test(NAME lowercase_fact_extend
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/lowercase_fact_extend.fx)
+  set_tests_properties(lowercase_fact_extend PROPERTIES PASS_REGULAR_EXPRESSION "^1")
 
   add_test(NAME fact_namespace_rejected
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_fact_namespace.fx)
@@ -852,6 +876,35 @@ if(FELIDAE_BUILD_TESTS)
   set_tests_properties(rocks_index_restart_read PROPERTIES
     FIXTURES_REQUIRED index_updated
     PASS_REGULAR_EXPRESSION "active: 1.*inactive: 1")
+
+  set(FELIDAE_ATOM_TEST_PROJECT
+    "${CMAKE_CURRENT_BINARY_DIR}/test-projects/persistent/atom")
+  set(FELIDAE_ATOM_TEST_DB "${FELIDAE_ATOM_TEST_PROJECT}/data.db")
+  add_test(NAME rocks_atom_clean
+    COMMAND ${CMAKE_COMMAND}
+      -DDATABASE_DIRECTORY=${FELIDAE_ATOM_TEST_DB}
+      -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
+  set_tests_properties(rocks_atom_clean PROPERTIES FIXTURES_SETUP atom_clean)
+
+  add_test(NAME rocks_atom_seed
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/atom/rocks_atom_seed.fx)
+  set_tests_properties(rocks_atom_seed PROPERTIES
+    FIXTURES_REQUIRED atom_clean
+    FIXTURES_SETUP atom_seeded
+    PASS_REGULAR_EXPRESSION "atoms: 1.*strings: 1.*distinct: true")
+
+  add_test(NAME rocks_atom_restart_read
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/atom/rocks_atom_read.fx)
+  set_tests_properties(rocks_atom_restart_read PROPERTIES
+    FIXTURES_REQUIRED atom_seeded
+    FIXTURES_SETUP atom_read
+    PASS_REGULAR_EXPRESSION "atoms: 1.*strings: 1.*noise: pending.*persisted_atom: true.*nested_list: approved.*nested_map: active.*nested_term: fn:pair.*active")
+
+  add_test(NAME rocks_atom_reasoning
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/atom/rocks_atom_reasoning.fx)
+  set_tests_properties(rocks_atom_reasoning PROPERTIES
+    FIXTURES_REQUIRED atom_read
+    PASS_REGULAR_EXPRESSION "atom: \"proved\".*distinct: \"unknown\".*reverse_distinct: \"unknown\".*string: \"proved\"")
 
   set(FELIDAE_INHERITANCE_TEST_PROJECT
     "${CMAKE_CURRENT_BINARY_DIR}/test-projects/persistent/inheritance")

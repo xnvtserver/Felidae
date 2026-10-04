@@ -39,9 +39,8 @@ public:
     explicit IntegerParser(const IntegerTokenList& input,
                            std::shared_ptr<OperatorRegistry> operators = {});
 
-    // A project manifest (init.fx) is a list of lowercase configuration calls
-    // such as db.location(...), which have fact shape. Manifest mode lets them
-    // through; everywhere else a fact must begin with an uppercase letter.
+    // A project manifest (init.fx) accepts configuration entry calls such as
+    // db.location(...). It never changes identifier casing semantics.
     void setManifestMode(bool enabled) noexcept { manifestMode_ = enabled; }
 
     Program parseProgram();
@@ -59,7 +58,6 @@ private:
         std::string spelling;
         SymbolId nameId = 0;
         BuiltinId builtinId = BuiltinId::Unknown;
-        bool isCapitalized = false;
     };
     const IntegerTokenList& input_;
     bool manifestMode_ = false;
@@ -70,6 +68,11 @@ private:
     std::size_t recursionDepth_ = 0;
     bool lastClauseUsedBlockEnd_ = false;
     bool insideClassMethod_ = false;
+    bool insideQuery_ = false;
+    bool parsingDeclarationHead_ = false;
+    bool parsingFactPattern_ = false;
+    std::unordered_set<SymbolId> localBindings_;
+    std::unordered_set<SymbolId> globalBindings_;
     IntegerParserMetrics metrics_;
 
     static constexpr std::size_t kMaximumRecursionDepth = 512;
@@ -124,6 +127,7 @@ private:
     const OperatorPatternDefinition& registerOperatorPattern(OperatorPatternDefinition pattern);
     std::string consumeNameRange();
     std::string consumeString();
+    std::string consumeAtom();
     double consumeNumber();
     bool atNameRange();
     void consumeStatementTerminator(const char* construct);

@@ -2,9 +2,9 @@
 # body stay visible afterwards.
 def main() =>
     try
-        outcome := "completed".
+        def outcome := "completed".
     catch e then
-        outcome := e.message.
+        def outcome := e.message.
     end
     return outcome.
 end

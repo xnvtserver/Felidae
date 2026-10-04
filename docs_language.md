@@ -6,25 +6,27 @@ the direct interpreter. A program never needs conversion to a binary file.
 ## Statements
 
 Facts, rules, methods, globals, imports, and annotations are source-level AST
-statements. Every function or rule starts with `def` and closes with `end`;
-constructor-shaped facts use neither keyword. Use `.` for ordinary fact
-declaration boundaries.
+statements. Every declaration starts with `def`, except `class`, imports, and
+builtin structural calls such as `key(...)` and `index(...)`. Functions close
+with `end`; bindings and persistent facts close with `.`.
 
 ```felidae
-Person(name: "Ada", active: true).
+def Person(name: "Ada", active: true).
 
 def Greeting(name: string) =>
-    return (message: "hello", name: name)
+    return (message: "hello", name: name).
 end
 
 def main() =>
-    return Greeting(name: "Ada")
+    return Greeting(name: "Ada").
 end
 ```
 
-`:=` is immutable single-assignment inside a goal sequence. Felidae has no
-atom value type: text must be quoted, while class and function references use
-`Name.class` and `name.function`. Conditions and solver truth are strictly
+`:=` is immutable single-assignment and binding declarations use
+`def name := value.`. Data atoms are first-class symbolic values: bare names
+in value context and raw single-quoted text are atoms, while double-quoted text
+is a string. Class and function references use `Name.class` and
+`name.function`. Conditions and solver truth are strictly
 boolean; fuzzy degrees are ordinary numbers produced by `core/fuzzy.fx`.
 
 `for` accepts a list, `range(...)`, fact selection, or graph selection.
@@ -33,17 +35,17 @@ and `switch` follows Java-style fallthrough until an explicit `break`.
 
 ```felidae
 for i in range(0, 10) then
-    if i == 5 then
-        continue
+    if i = 5 then
+        continue.
     end
 end
 
 switch status
 case "ready" then
-    start()
-    break
+    start().
+    break.
 default then
-    wait()
+    wait().
 end
 ```
 
@@ -63,9 +65,9 @@ prints its message.
 ```felidae
 def main() =>
     try
-        sorted := rows.order_by(field: "name").
+        def sorted := rows.order_by(field: "name").
     catch e then
-        reason := e.message.
+        def reason := e.message.
     end
     return reason
 end
@@ -78,11 +80,11 @@ enclosing `try` or ends the program. Each catch variable is scoped to its branch
 
 ```felidae
 try
-    risky()
+    risky().
 catch e then
-    repair(e.message)
+    repair(e.message).
 catch k then
-    fallback(k.message)
+    fallback(k.message).
 end
 ```
 
@@ -96,20 +98,20 @@ parent type. `end` explicitly closes a class, method, or nested control block.
 
 ```felidae
 class Person
-    name: string
-    index(name)
+    def name: string.
+    index(name).
 end
 
 class Student extends Person
-    grade: number
+    def grade: number.
 
     def promoted() =>
-        return Student(name: this.name, grade: this.grade + 1)
+        return Student(name: this.name, grade: this.grade + 1).
     end
 end
 
 def main() =>
-    return Student(name: "Ada", grade: 10)
+    return Student(name: "Ada", grade: 10).
 end
 ```
 
@@ -129,9 +131,10 @@ Facts live in RocksDB, which maintains ordered type buckets, indexes,
 provenance, temporal metadata, stable identities, and graph adjacency.
 Queries unify their fields with records selected directly from that store.
 
-A fact is a class constructor call, so its name begins with an uppercase letter, like
-a class name; the parser rejects `person(name: "Ada").` Functions and function calls
-may be lowercase or mixed case.
+A persistent fact seed is `def name(...).`; casing has no semantic role.
+An unprefixed `name(...)` is a function or builtin call, including `Link(...)`.
+Inside a rule, `def name(...)` is a fact pattern whose unknown bare field
+values introduce immutable unification bindings.
 
 If `class Person ... end` is declared,
 `Person(...)` is validated for argument names, types, and arity. If no class is
@@ -144,13 +147,13 @@ the stored facts and checks each one against the declaration.
 The direct fluent fact API is evaluated by that same store:
 
 ```felidae
-active := School.where(district: "central").AndWhere(active: 1.0)
-combined := School.where(district: "central").OrWhere(district: "west")
-first := School.where(active: 1.0).limit(records: 1)
-inserted := School.insert(values: {name: "Riverside", active: 1.0})
-changed := School.where(name: "Riverside").update(values: {active: 0.0})
-removed := School.where(name: "Riverside").delete()
-first := School.get(pos: 0)
+def active := School.where(district: "central").AndWhere(active: 1.0).
+def combined := School.where(district: "central").OrWhere(district: "west").
+def first := School.where(active: 1.0).limit(records: 1).
+def inserted := School.insert(values: {name: "Riverside", active: 1.0}).
+def changed := School.where(name: "Riverside").update(values: {active: 0.0}).
+def removed := School.where(name: "Riverside").delete().
+def first_row := School.get(pos: 0).
 ```
 
 Every stored fact is a graph node. `Link` stores one directed edge; `from`
@@ -163,12 +166,12 @@ Link(
     from: Employee(id: "employee-1"),
     to: Department(id: "department-1"),
     properties: {kind: "works_in", since: 2024, confidence: 0.9}
-)
+).
 
-rows := Employee().join(
+def rows := Employee().join(
     properties: {kind: "works_in"},
     direction: forward.class
-).where(right.id == "department-1")
+).where(right.id = "department-1").
 ```
 
 Traversal directions are typed internal class references:
@@ -177,7 +180,7 @@ Traversal directions are typed internal class references:
 Omit `properties:` to traverse every Link for the selected nodes. Recursive
 joins and shortest paths use the same optional property condition and require
 explicit depth bounds. The trailing `where(...)` can compare primary-key fields
-on both endpoints, for example `where(left.department_id == right.id)`.
+on both endpoints, for example `where(left.department_id = right.id)`.
 
 `db.sync(path:)` atomically reloads a fact-only `.fx` source file while
 preserving unchanged logical identities. Database operations are built into
@@ -217,11 +220,11 @@ fx.interpret(
 ```
 
 ```felidae
-Animal(name: "tiger", habitat: "forest").
-Animal(name: "otter", habitat: "river").
+def Animal(name: "tiger", habitat: "forest").
+def Animal(name: "otter", habitat: "river").
 
 def main() =>
-    return Animal(name: "tiger")
+    return Animal(name: "tiger").
 end
 ```
 
@@ -240,11 +243,11 @@ resolved as ordinary AST expressions; mixfix never uses a statistical model.
 ```felidae
 @mixfix(pattern: "reason {subject: expr} with {evidence: string}")
 def Reason() =>
-    return Explanation(subject: subject, evidence: evidence)
+    return Explanation(subject: subject, evidence: evidence).
 end
 
 def main() =>
-    return reason "tiger" with "observed"
+    return reason "tiger" with "observed".
 end
 ```
 

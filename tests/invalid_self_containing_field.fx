@@ -2,8 +2,8 @@
 # clone and persistence cannot traverse, so the assignment is rejected.
 class Cell
     key(id).
-    id: string.
-    next: any := 0.
+    def id: string.
+    def next: any := 0.
 
     def tie() =>
         this.next := this.
@@ -12,6 +12,6 @@ class Cell
 end
 
 def main() =>
-    a := Cell(id: "a").
+    def a := Cell(id: "a").
     return a.tie().
 end

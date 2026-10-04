@@ -1,11 +1,11 @@
 class Node
     key(id).
-    id: string.
-    label: string.
+    def id: string.
+    def label: string.
 end
 
 def main() =>
-    node := Node(id: "n1", label: "before").
+    def node := Node(id: "n1", label: "before").
     node.label := "after".
     return node.
 end

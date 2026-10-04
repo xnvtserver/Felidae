@@ -1,14 +1,14 @@
 class Entity
     key(id).
-    id: string.
+    def id: string.
 end
 
 class Employee extends Entity
-    name: string.
+    def name: string.
 end
 
-Entity(id: "root").
-Employee(id: "e1", name: "Ada").
+def Entity(id: "root").
+def Employee(id: "e1", name: "Ada").
 
 def main() =>
     return Entity.count().

@@ -1,7 +1,7 @@
 class Node
     key(id).
-    id: string.
-    coordinates: list<Pair<number, number>>.
+    def id: string.
+    def coordinates: list<Pair<number, number>>.
 end.
 
 def main() =>

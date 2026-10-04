@@ -1,7 +1,7 @@
 class Box
     key(id).
-    id: string.
-    value: number.
+    def id: string.
+    def value: number.
 
     def same() =>
         return this.
@@ -14,11 +14,11 @@ class Box
 end
 
 def main() =>
-    original := Box(id: "box-1", value: 1).
-    returned := original.same().
+    def original := Box(id: "box-1", value: 1).
+    def returned := original.same().
     returned.set(value: 2).
-    items := [original].
-    retrieved := items.get(pos: 0).
+    def items := [original].
+    def retrieved := items.get(pos: 0).
     retrieved.set(value: 3).
     for item in items then
         item.set(value: 4).

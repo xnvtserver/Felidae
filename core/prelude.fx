@@ -14,4 +14,4 @@
 # upper(value)
 # length(value)
 
-StdLib(name: "prelude").
+def StdLib(name: "prelude").

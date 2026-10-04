@@ -1,27 +1,27 @@
 class Entity
     key(id).
-    id: string.
+    def id: string.
 end
 
 class Employee extends Entity
-    name: string.
+    def name: string.
 end
 
 class Department
     key(id).
-    id: string.
+    def id: string.
 end
 
 def main() =>
-    graph: object := Graph().
-    edge := graph.add(
+    def graph: object := Graph().
+    def edge := graph.add(
         Entity.class,
         Department.class,
         properties: {kind: "belongs_to"},
         direction: both.class
     ).
-    neighbors := graph.neighbors(Employee.class).
-    direct := Graph(Employee.class, Department.class).
+    def neighbors := graph.neighbors(Employee.class).
+    def direct := Graph(Employee.class, Department.class).
     return (
         edge_from: edge.from,
         inherited_neighbor_count: neighbors.len(),

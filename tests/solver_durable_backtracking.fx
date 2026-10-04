@@ -1,8 +1,8 @@
 class Candidate
     key(id).
-    id: string.
+    def id: string.
 end
 
-Candidate(id: "a").
-Candidate(id: "b").
-Candidate(id: "c").
+def Candidate(id: "a").
+def Candidate(id: "b").
+def Candidate(id: "c").

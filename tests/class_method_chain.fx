@@ -1,5 +1,5 @@
 class Counter
-    value: number.
+    def value: number.
 
     def increment(amount: number) =>
         return Counter(value: this.value + amount).
@@ -11,6 +11,6 @@ class Counter
 end
 
 def main() =>
-    counter := Counter(value: 2).
+    def counter := Counter(value: 2).
     return counter.increment(amount: 3).doubled().value.
 end

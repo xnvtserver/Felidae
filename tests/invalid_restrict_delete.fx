@@ -1,15 +1,15 @@
 class Department
     key(id).
-    id: string.
+    def id: string.
 end
 
 class Employee
     key(id).
-    id: string.
+    def id: string.
 end
 
-Department(id: "d1").
-Employee(id: "e1").
+def Department(id: "d1").
+def Employee(id: "e1").
 Link(from: Employee(id: "e1"), to: Department(id: "d1")).
 
 def main() =>

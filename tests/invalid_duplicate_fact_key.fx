@@ -1,8 +1,8 @@
 class School
     key(id).
-    id: string.
-    name: string.
+    def id: string.
+    def name: string.
 end
 
-School(id: "school-1", name: "Central").
-School(id: "school-1", name: "Changed").
+def School(id: "school-1", name: "Central").
+def School(id: "school-1", name: "Changed").

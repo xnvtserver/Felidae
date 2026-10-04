@@ -1,28 +1,28 @@
 class Department
     key(id).
-    id: string.
-    name: string.
+    def id: string.
+    def name: string.
 end
 
 class Employee
     key(id).
-    id: string.
-    name: string.
+    def id: string.
+    def name: string.
 end
 
-Department(id: "department-debug", name: "Research").
-Employee(id: "employee-debug", name: "Ada").
+def Department(id: "department-debug", name: "Research").
+def Employee(id: "employee-debug", name: "Ada").
 
 def main() =>
-    schema_graph := Graph(Employee.class, Department.class).
-    employee := Employee.where(id: "employee-debug").first().
-    department := Department.where(id: "department-debug").first().
-    link := Link(
+    def schema_graph := Graph(Employee.class, Department.class).
+    def employee := Employee.where(id: "employee-debug").first().
+    def department := Department.where(id: "department-debug").first().
+    def link := Link(
         from: employee,
         to: department,
         properties: {since: 2024, confidence: 0.9}
     ).
-    rows := Employee.where(id: "employee-debug")
+    def rows := Employee.where(id: "employee-debug")
         .join(properties: {since: 2024}, direction: forward.class).
     return (
         class_edges: schema_graph.list().len(),

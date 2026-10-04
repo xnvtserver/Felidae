@@ -1,16 +1,16 @@
 # HVAC control with hierarchical observations, explicit unification predicates,
 # ordered proof alternatives, and fail-safe numeric truth.
 
-ClimateObservation(zone: "", temperature: 0, humidity: 0, occupied: 0)
-HotObservation extend ClimateObservation(zone: "", temperature: 0, humidity: 0, occupied: 0)
-ColdObservation extend ClimateObservation(zone: "", temperature: 0, humidity: 0, occupied: 0)
-ComfortableObservation extend ClimateObservation(zone: "", temperature: 0, humidity: 0, occupied: 0)
+def ClimateObservation(zone: "", temperature: 0, humidity: 0, occupied: 0).
+def HotObservation extend ClimateObservation(zone: "", temperature: 0, humidity: 0, occupied: 0).
+def ColdObservation extend ClimateObservation(zone: "", temperature: 0, humidity: 0, occupied: 0).
+def ComfortableObservation extend ClimateObservation(zone: "", temperature: 0, humidity: 0, occupied: 0).
 
-HvacPlant(name: "", available: 0, sensor_valid: 0)
-HeatPump extend HvacPlant(name: "", available: 0, sensor_valid: 0)
+def HvacPlant(name: "", available: 0, sensor_valid: 0).
+def HeatPump extend HvacPlant(name: "", available: 0, sensor_valid: 0).
 
 def observationUnifies(observation: any) =>
-    return isA(
+    return def isA(
         left: observation,
         right: ClimateObservation(
             zone: "",
@@ -18,7 +18,7 @@ def observationUnifies(observation: any) =>
             humidity: 0,
             occupied: 0
         )
-    )
+    ).
 end
 
 def proveCooling(observation: any, plant: any) =>
@@ -28,7 +28,7 @@ def proveCooling(observation: any, plant: any) =>
         and observation.occupied == 1.0
         and plant.available == 1.0
         and plant.sensor_valid == 1.0
-    )
+    ).
 end
 
 def proveHeating(observation: any, plant: any) =>
@@ -38,7 +38,7 @@ def proveHeating(observation: any, plant: any) =>
         and observation.occupied == 1.0
         and plant.available == 1.0
         and plant.sensor_valid == 1.0
-    )
+    ).
 end
 
 def proveVentilation(observation: any, plant: any) =>
@@ -47,76 +47,76 @@ def proveVentilation(observation: any, plant: any) =>
         and observation.humidity > 65.0
         and plant.available == 1.0
         and plant.sensor_valid == 1.0
-    )
+    ).
 end
 
 def proveIdle(observation: any, plant: any) =>
     return (
         observationUnifies(observation: observation) == 1.0
         and plant.sensor_valid == 1.0
-    )
+    ).
 end
 
 def chooseIdle(idle_proof: number) =>
     if idle_proof == 1.0 then
-        return "idle"
+        return "idle".
     else
-        return "fault_lockout"
+        return "fault_lockout".
     end
 end
 
 def chooseVentilation(ventilation_proof: number, idle_proof: number) =>
     if ventilation_proof == 1.0 then
-        return "ventilate"
+        return "ventilate".
     else
-        return chooseIdle(idle_proof: idle_proof)
+        return chooseIdle(idle_proof: idle_proof).
     end
 end
 
 def chooseHeating(heating_proof: number, ventilation_proof: number, idle_proof: number) =>
     if heating_proof == 1.0 then
-        return "heat"
+        return "heat".
     else
         return chooseVentilation(
             ventilation_proof: ventilation_proof,
             idle_proof: idle_proof
-        )
+        ).
     end
 end
 
 def chooseCooling(cooling_proof: number, heating_proof: number, ventilation_proof: number, idle_proof: number) =>
     if cooling_proof == 1.0 then
-        return "cool"
+        return "cool".
     else
         return chooseHeating(
             heating_proof: heating_proof,
             ventilation_proof: ventilation_proof,
             idle_proof: idle_proof
-        )
+        ).
     end
 end
 
 @mixfix(pattern: "{evidence: number} warrants {action: string}")
 def warrant(evidence: number, action: string) =>
     if evidence == 1.0 then
-        return action
+        return action.
     else
-        return "unproved"
+        return "unproved".
     end
 end
 
 def solve(observation: any, plant: any) =>
-    cooling_proof := proveCooling(observation: observation, plant: plant)
-    heating_proof := proveHeating(observation: observation, plant: plant)
-    ventilation_proof := proveVentilation(observation: observation, plant: plant)
-    idle_proof := proveIdle(observation: observation, plant: plant)
-    theorem := cooling_proof warrants "cooling"
-    action := chooseCooling(
+    def cooling_proof := proveCooling(observation: observation, plant: plant)
+    def heating_proof := proveHeating(observation: observation, plant: plant)
+    def ventilation_proof := proveVentilation(observation: observation, plant: plant)
+    def idle_proof := proveIdle(observation: observation, plant: plant)
+    def theorem := cooling_proof warrants "cooling"
+    def action := chooseCooling(
         cooling_proof: cooling_proof,
         heating_proof: heating_proof,
         ventilation_proof: ventilation_proof,
         idle_proof: idle_proof
-    )
+    ).
     return (
         action: action,
         theorem: theorem,
@@ -124,17 +124,17 @@ def solve(observation: any, plant: any) =>
         heating_proof: heating_proof,
         ventilation_proof: ventilation_proof,
         idle_proof: idle_proof
-    )
+    ).
 end
 
 def main() =>
-    plant := HeatPump(name: "north-wing", available: 1.0, sensor_valid: 1.0)
-    faulty := HeatPump(name: "south-wing", available: 1.0, sensor_valid: 0.0)
-    hot := HotObservation(zone: "office", temperature: 29, humidity: 52, occupied: 1.0)
-    humid_empty := HotObservation(zone: "store", temperature: 27, humidity: 72, occupied: 0.0)
+    def plant := HeatPump(name: "north-wing", available: 1.0, sensor_valid: 1.0)
+    def faulty := HeatPump(name: "south-wing", available: 1.0, sensor_valid: 0.0)
+    def hot := HotObservation(zone: "office", temperature: 29, humidity: 52, occupied: 1.0)
+    def humid_empty := HotObservation(zone: "store", temperature: 27, humidity: 72, occupied: 0.0)
     return (
         occupied_hot: solve(observation: hot, plant: plant),
         empty_humid: solve(observation: humid_empty, plant: plant),
         invalid_sensor: solve(observation: hot, plant: faulty)
-    )
+    ).
 end

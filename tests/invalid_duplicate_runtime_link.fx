@@ -1,10 +1,10 @@
 class Node
     key(id).
-    id: string.
+    def id: string.
 end
 
-Node(id: "a").
-Node(id: "b").
+def Node(id: "a").
+def Node(id: "b").
 
 def main() =>
     Link(Node(id: "a"), Node(id: "b")).

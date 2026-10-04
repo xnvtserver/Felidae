@@ -1,10 +1,10 @@
 class PersistentMetric
     key(id).
-    id: string.
-    value: number.
+    def id: string.
+    def value: number.
 end
 
-PersistentMetric(id: "metric-1", value: 42).
+def PersistentMetric(id: "metric-1", value: 42).
 
 def main() =>
     return PersistentMetric.count().

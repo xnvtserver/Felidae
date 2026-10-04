@@ -2,15 +2,15 @@
 # branch decides what to do about them.
 class Item
     key(id).
-    id: string.
+    def id: string.
 end
 
 def main() =>
     try
-        inserted := Item.insert(values: {id: "i1"}).
+        def inserted := Item.insert(values: {id: "i1"}).
         throw(exception: {kind: "late", message: "after the write"}).
     catch e then
-        reason := e.message.
+        def reason := e.message.
     end
     return (reason: reason, items: Item.count()).
 end

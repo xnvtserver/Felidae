@@ -1,13 +1,13 @@
 class Person
-    id: number.
-    name: string.
+    def id: number.
+    def name: string.
 end
 
-Person(id: 1, name: "Ada").
+def Person(id: 1, name: "Ada").
 
 def main() =>
-    person := Person.get(pos: 0).
-    people := Person.all().
-    from_array := people.get(pos: 0).
+    def person := Person.get(pos: 0).
+    def people := Person.all().
+    def from_array := people.get(pos: 0).
     return (person: person, from_array: from_array, name: person.get(key: "name")).
 end

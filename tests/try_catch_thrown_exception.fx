@@ -3,8 +3,8 @@ def main() =>
     try
         throw(exception: {kind: "custom", message: "boom"}).
     catch e then
-        caught_kind := e.kind.
-        caught_message := e.message.
+        def caught_kind := e.kind.
+        def caught_message := e.message.
     end
     return (kind: caught_kind, message: caught_message).
 end

@@ -69,7 +69,7 @@ ProjectConfiguration loadProjectConfiguration(const fs::path& projectDirectory) 
                 "init.fx may contain only imports and database configuration calls");
         }
         const auto clause = std::static_pointer_cast<ClauseStmt>(statement);
-        if (!clause->isFact() || !clause->parentNames.empty() ||
+        if (clause->clauseKind != ClauseKind::EntryCall || !clause->parentNames.empty() ||
             !clause->annotations.empty()) {
             throw std::runtime_error(
                 "init.fx database settings must be plain terminated calls");

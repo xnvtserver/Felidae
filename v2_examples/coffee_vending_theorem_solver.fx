@@ -1,12 +1,12 @@
 # Coffee vending as bounded theorem proving rather than a state-transition
 # table. Every predicate returns numeric truth: 0.0 is false, 1.0 is true.
 
-VendRequest(selection: "", credit: 0)
-CoffeeRequest extend VendRequest(selection: "coffee", credit: 0)
-TeaRequest extend VendRequest(selection: "tea", credit: 0)
+def VendRequest(selection: "", credit: 0).
+def CoffeeRequest extend VendRequest(selection: "coffee", credit: 0).
+def TeaRequest extend VendRequest(selection: "tea", credit: 0).
 
-VendingMachine(name: "", water: 0, beans: 0, tea: 0, ready: 0)
-HotDrinkMachine extend VendingMachine(name: "", water: 0, beans: 0, tea: 0, ready: 0)
+def VendingMachine(name: "", water: 0, beans: 0, tea: 0, ready: 0).
+def HotDrinkMachine extend VendingMachine(name: "", water: 0, beans: 0, tea: 0, ready: 0).
 
 def requestUnifies(request: any) =>
     return isA(
@@ -76,11 +76,11 @@ def entail(evidence: number, conclusion: string) =>
 end
 
 def solve(request: any, machine: any) =>
-    coffee_proof := proveCoffee(request: request, machine: machine)
-    tea_proof := proveTea(request: request, machine: machine)
-    refund_proof := proveRefund(request: request)
-    theorem := coffee_proof entails "coffee is dispensable"
-    action := chooseCoffee(
+    def coffee_proof := proveCoffee(request: request, machine: machine)
+    def tea_proof := proveTea(request: request, machine: machine)
+    def refund_proof := proveRefund(request: request)
+    def theorem := coffee_proof entails "coffee is dispensable"
+    def action := chooseCoffee(
         coffee_proof: coffee_proof,
         tea_proof: tea_proof,
         refund_proof: refund_proof
@@ -95,21 +95,21 @@ def solve(request: any, machine: any) =>
 end
 
 def main() =>
-    healthy := HotDrinkMachine(
+    def healthy := HotDrinkMachine(
         name: "lobby",
         water: 8,
         beans: 5,
         tea: 4,
         ready: 1.0
     )
-    depleted := HotDrinkMachine(
+    def depleted := HotDrinkMachine(
         name: "break-room",
         water: 8,
         beans: 0,
         tea: 4,
         ready: 1.0
     )
-    request := CoffeeRequest(selection: "coffee", credit: 2.0)
+    def request := CoffeeRequest(selection: "coffee", credit: 2.0)
     return (
         normal: solve(request: request, machine: healthy),
         degraded: solve(request: request, machine: depleted)

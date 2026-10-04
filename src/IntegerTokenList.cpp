@@ -8,7 +8,7 @@ namespace Felidae {
 namespace {
 
 std::size_t statementEnd(std::string_view source, std::size_t begin) {
-  bool quoted = false;
+  char quoted = 0;
   bool escaped = false;
   bool comment = false;
   for (std::size_t index = begin; index < source.size(); ++index) {
@@ -21,14 +21,14 @@ std::size_t statementEnd(std::string_view source, std::size_t begin) {
     if (quoted) {
       if (escaped)
         escaped = false;
-      else if (byte == '\\')
+      else if (quoted == '"' && byte == '\\')
         escaped = true;
-      else if (byte == '"')
-        quoted = false;
+      else if (byte == quoted)
+        quoted = 0;
       continue;
     }
-    if (byte == '"') {
-      quoted = true;
+    if (byte == '"' || byte == '\'') {
+      quoted = byte;
       continue;
     }
     if (byte == '#') {
@@ -104,6 +104,8 @@ void IntegerTokenList::encodeNextStatement() const {
     if (spelling == "super") return TokenId::SUPER;
     if (spelling == "try") return TokenId::TRY;
     if (spelling == "catch") return TokenId::CATCH;
+    if (spelling == "var") return TokenId::VAR;
+    if (spelling == "=") return TokenId::EQUAL;
     return TokenId::UNKNOWN;
   };
   for (std::size_t offset = 0; offset < statement.size();) {
@@ -130,6 +132,17 @@ void IntegerTokenList::encodeNextStatement() const {
       if (content != offset) push(TokenId::UNKNOWN, content, offset);
       if (offset < statement.size()) {
         push(TokenId::QUOTE, offset, offset + 1);
+        ++offset;
+      }
+      continue;
+    }
+    if (statement[offset] == '\'') {
+      push(TokenId::ATOM_QUOTE, offset, offset + 1);
+      const std::size_t content = ++offset;
+      while (offset < statement.size() && statement[offset] != '\'') ++offset;
+      if (content != offset) push(TokenId::UNKNOWN, content, offset);
+      if (offset < statement.size()) {
+        push(TokenId::ATOM_QUOTE, offset, offset + 1);
         ++offset;
       }
       continue;
@@ -183,7 +196,7 @@ void IntegerTokenList::encodeNextStatement() const {
         word == "index" || word == "extends" || word == "elif" || word == "new" ||
         word == "for" || word == "in" || word == "while" || word == "switch" ||
         word == "case" || word == "default" || word == "break" ||
-        word == "continue" || word == "def" ||
+        word == "continue" || word == "def" || word == "var" ||
         word == "try" || word == "catch") {
       push(keyword, first, offset);
       continue;

@@ -3,13 +3,13 @@
 # of staying unbound (v = v) and the solution count is not multiplied.
 class Candidate
     key(id).
-    id: string.
+    def id: string.
 end
 
-Candidate(id: "a").
-Candidate(id: "b").
+def Candidate(id: "a").
+def Candidate(id: "b").
 
 def pick(x, y) =>
-    Candidate(id: x).
-    Candidate(id: y).
+    def Candidate(id: x).
+    def Candidate(id: y).
 end

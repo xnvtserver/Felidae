@@ -1,7 +1,7 @@
 class CalculatedNode
     key(id).
-    id: string.
-    field1: string := "unset".
+    def id: string.
+    def field1: string := "unset".
 
     def populate() =>
         this.field1 := something().
@@ -16,10 +16,10 @@ def something() =>
 end
 
 def main() =>
-    node := new CalculatedNode(id: "node-1").
-    changed := node.populate().
-    saved := changed.save().
-    stored := CalculatedNode.where(id: "node-1").get(pos: 0).
+    def node := new CalculatedNode(id: "node-1").
+    def changed := node.populate().
+    def saved := changed.save().
+    def stored := CalculatedNode.where(id: "node-1").get(pos: 0).
     return (
         transient: changed.field1,
         stored: stored.field1,

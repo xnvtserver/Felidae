@@ -2,7 +2,7 @@ import "db".
 
 class Node
     key(id).
-    id: string.
+    def id: string.
 end
 
 def main() =>

@@ -1,11 +1,11 @@
 class Node
     key(id).
-    id: string.
-    label: string.
-    enabled: bool := false.
-    note: optional<string>.
-    scores: list<number> := [].
-    coordinates: list<Pair<number, number>> := [Pair(1, 2), Pair(3, 4)].
+    def id: string.
+    def label: string.
+    def enabled: bool := false.
+    def note: optional<string>.
+    def scores: list<number> := [].
+    def coordinates: list<Pair<number, number>> := [Pair(1, 2), Pair(3, 4)].
 
     def rename(label: string) =>
         this.label := label.
@@ -16,18 +16,18 @@ end
 
 class Holder
     key(id).
-    id: string.
-    item: obj.
-    payload: any.
+    def id: string.
+    def item: obj.
+    def payload: any.
 end
 
 def main() =>
-    node := Node(id: "n1", label: "before").
-    alias := node.
-    changed := node.rename(label: "after").
-    holder := Holder(id: "h1", item: node, payload: [1, "two", false]).
-    saved := node.save().
-    stored := Node.where(id: "n1").get(pos: 0).
+    def node := Node(id: "n1", label: "before").
+    def alias := node.
+    def changed := node.rename(label: "after").
+    def holder := Holder(id: "h1", item: node, payload: [1, "two", false]).
+    def saved := node.save().
+    def stored := Node.where(id: "n1").get(pos: 0).
     return (
         label: alias.label,
         changed_label: changed.label,

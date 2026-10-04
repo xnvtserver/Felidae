@@ -8,8 +8,8 @@ def main() =>
             throw(exception: inner).
         end
     catch outer then
-        kind := outer.kind.
-        message := outer.message.
+        def kind := outer.kind.
+        def message := outer.message.
     end
     return (kind: kind, message: message).
 end

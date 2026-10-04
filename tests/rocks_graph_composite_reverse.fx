@@ -1,17 +1,17 @@
 class City
     key(country, code).
-    country: string.
-    code: string.
-    name: string.
+    def country: string.
+    def code: string.
+    def name: string.
 end
 
 class Employee
     key(id).
-    id: string.
+    def id: string.
 end
 
-City(country: "IN", code: "BLR", name: "Bengaluru").
-Employee(id: "e1").
+def City(country: "IN", code: "BLR", name: "Bengaluru").
+def Employee(id: "e1").
 Link(
     from: Employee(id: "e1"),
     to: City(country: "IN", code: "BLR"),
@@ -19,9 +19,9 @@ Link(
 ).
 
 def main() =>
-    rows := City().where(code: "BLR")
+    def rows := City().where(code: "BLR")
         .join(properties: {kind: "located_in"}, direction: backward.class).
-    first := rows.get(position: 0).
+    def first := rows.get(position: 0).
     return (
         count: rows.len(),
         city: first.left.name,

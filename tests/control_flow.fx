@@ -1,7 +1,7 @@
 class Visit
     key(id).
-    id: number.
-    source: string.
+    def id: number.
+    def source: string.
 end
 
 def main() =>
@@ -13,7 +13,7 @@ def main() =>
     end
 
     while Visit.count() < 6 then
-        next := Visit.count().
+        def next := Visit.count().
         Visit.insert(values: {id: next + 10, source: "while"}).
     end
 
@@ -29,7 +29,7 @@ def main() =>
         Visit.insert(values: {id: 23, source: "default"}).
     end
 
-    selected := Visit.where(source: "for").
+    def selected := Visit.where(source: "for").
     for row in selected then
         # Iteration over a fact selection is valid; field access also verifies
         # that the loop receives records rather than an opaque cursor handle.

@@ -1,6 +1,6 @@
 class Node
     key(id).
-    id: optional<string>.
+    def id: optional<string>.
 end.
 
 def main() =>

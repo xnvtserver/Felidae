@@ -1,13 +1,13 @@
 class Person
     key(id).
-    id: string.
+    def id: string.
 end
 
 class School.Student extends Person
-    grade: number.
+    def grade: number.
 end
 
 def main() =>
-    student := new School.Student(id: "student-1", grade: 10).
+    def student := new School.Student(id: "student-1", grade: 10).
     return (type: type(student), id: student.id, grade: student.grade).
 end

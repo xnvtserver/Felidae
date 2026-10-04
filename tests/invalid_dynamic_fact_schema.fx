@@ -1,6 +1,6 @@
 class Measurement
-    sensor: string.
-    value: number.
+    def sensor: string.
+    def value: number.
 end
 
 def main() =>

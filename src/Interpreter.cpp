@@ -452,6 +452,7 @@ static bool removeEntry(std::vector<MapEntry>& entries, const std::string& key) 
 
 static std::string exprTextValue(const std::shared_ptr<Expr>& expr) {
     if (auto str = nodeAs<StringExpr>(expr)) return str->value;
+    if (auto atom = nodeAs<AtomExpr>(expr)) return atom->spelling;
     if (auto reference = nodeAs<ClassRefExpr>(expr)) {
         return reference->name;
     }
@@ -463,6 +464,10 @@ static std::string exprTextValue(const std::shared_ptr<Expr>& expr) {
 
 static bool exprEqualsLiteral(const std::shared_ptr<Expr>& a, const std::shared_ptr<Expr>& b) {
     if (!a || !b) return !a && !b;
+    if (auto aa = nodeAs<AtomExpr>(a)) {
+        auto ab = nodeAs<AtomExpr>(b);
+        return ab && aa->symbolId == ab->symbolId && aa->spelling == ab->spelling;
+    }
     if (auto sa = nodeAs<StringExpr>(a)) {
         auto sb = nodeAs<StringExpr>(b);
         return sb && sa->value == sb->value;
@@ -581,6 +586,7 @@ static std::string astNodeKind(const std::shared_ptr<AstNode>& node) {
     if (std::dynamic_pointer_cast<MapExpr>(node)) return "map";
     if (std::dynamic_pointer_cast<ArrayExpr>(node)) return "array";
     if (std::dynamic_pointer_cast<StringExpr>(node)) return "string_literal";
+    if (std::dynamic_pointer_cast<AtomExpr>(node)) return "atom_literal";
     if (std::dynamic_pointer_cast<ClassRefExpr>(node)) return "class_reference";
     if (std::dynamic_pointer_cast<FunctionRefExpr>(node)) return "function_reference";
     if (std::dynamic_pointer_cast<NumberExpr>(node)) return "number_literal";
@@ -633,6 +639,7 @@ static bool resolveRuntimeTypeName(const std::shared_ptr<Expr>& value, std::stri
         return true;
     }
     if (nodeAs<NumberExpr>(value)) { out = "number"; return true; }
+    if (nodeAs<AtomExpr>(value)) { out = "atom"; return true; }
     if (nodeAs<ClassRefExpr>(value)) { out = "class"; return true; }
     if (nodeAs<FunctionRefExpr>(value)) { out = "function"; return true; }
     if (nodeAs<StringExpr>(value)) { out = "string"; return true; }
@@ -671,6 +678,8 @@ static bool valueMatchesBuiltinType(const std::shared_ptr<Expr>& value,
         }
         case LanguageTypeId::String:
             return static_cast<bool>(nodeAs<StringExpr>(value));
+        case LanguageTypeId::Atom:
+            return static_cast<bool>(nodeAs<AtomExpr>(value));
         case LanguageTypeId::Array: {
             std::vector<std::shared_ptr<Expr>> items;
             return exprAsArray(value, items);
@@ -821,6 +830,9 @@ static fs::path resolveCoreImport(const fs::path& baseDir, const std::string& pa
 
 static std::string exprToJson(const std::shared_ptr<Expr>& expr) {
     if (auto s = nodeAs<StringExpr>(expr)) return "\"" + jsonEscape(s->value) + "\"";
+    if (auto atom = nodeAs<AtomExpr>(expr)) {
+        return "{\"__atom\":\"" + jsonEscape(atom->spelling) + "\"}";
+    }
     if (auto b = nodeAs<BoolExpr>(expr)) return b->value ? "true" : "false";
     if (auto n = nodeAs<NumberExpr>(expr)) {
         std::ostringstream out;
@@ -1437,6 +1449,13 @@ void Interpreter::addProgram(const Program& program) {
                     if (!evalExprValue(binding->expr, env, value)) {
                         throw InterpreterError("Cannot evaluate global binding '" + binding->name + "'");
                     }
+                    if (!binding->declaredType.name.empty() &&
+                        !valueMatchesFieldType(value, binding->declaredType)) {
+                        throw InterpreterError(
+                            "Global binding '" + binding->name + "' expects " +
+                            binding->declaredType.canonical() + ", got " +
+                            exprToString(value, env));
+                    }
                     globals_.bind(binding->name, value, currentLoadingFile_);
                     Call head(binding->name, std::vector<Arg>{{"value", value->clone()}});
                     addClause(std::make_shared<ClauseStmt>(std::move(head), std::vector<std::shared_ptr<Goal>>{}));
@@ -1444,6 +1463,13 @@ void Interpreter::addProgram(const Program& program) {
                 }
                 case StatementKind::Class: {
                     const auto declaration = std::static_pointer_cast<ClassStmt>(statement);
+                    if (const auto* sameName = findClauses(declaration->name, declaration->nameId);
+                        sameName && std::any_of(sameName->begin(), sameName->end(),
+                            [&](const auto& clause) { return !clause->isFact(); })) {
+                        throw InterpreterError(
+                            "Class/fact bucket '" + declaration->name +
+                            "' conflicts with an existing callable");
+                    }
                     const auto storedSchema = durableStore_
                         ? durableStore_->schemaFingerprint(declaration->name)
                         : std::optional<std::string>{};
@@ -1662,6 +1688,18 @@ void Interpreter::validateNegationStratification(const Program& program) const {
 
 void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
     const std::string clauseName = clause->head.name;
+    if (clause->isFact()) {
+        if (const auto* sameName = findClauses(clauseName, clause->head.nameId);
+            sameName && std::any_of(sameName->begin(), sameName->end(),
+                [&](const auto& existing) { return !existing->isFact(); })) {
+            throw InterpreterError(
+                "Fact bucket '" + clauseName + "' conflicts with an existing callable");
+        }
+    } else if (classDefinitions_.count(clause->head.nameId) != 0 ||
+               factTypeContracts_.count(clauseName) != 0) {
+        throw InterpreterError(
+            "Callable '" + clauseName + "' conflicts with an existing class/fact bucket");
+    }
     for (const auto& annotation : clause->annotations) {
         if (annotation.builtinId == BuiltinId::OverrideAnnotation) {
             if (!annotation.args.empty()) {
@@ -2028,19 +2066,17 @@ std::shared_ptr<Expr> Interpreter::callAutoEntry() {
 }
 
 std::shared_ptr<Expr> Interpreter::executeEntryCall(const Call& entryCall) {
-    auto clauses = findClauses(entryCall.name, entryCall.nameId);
-    if (!clauses) throw InterpreterError("Auto entry method '" + entryCall.name + "' not found");
-
-    for (const auto& clause : *clauses) {
-        if (!isMethodClause(*clause)) continue;
-        std::vector<Solution> out;
-        solveMethodCall(entryCall, clause, Env{}, out, 1, 0);
-        if (out.empty()) continue;
-        auto returned = findReturnValue(out.front().env);
-        if (returned) return returned->clone();
-        return std::make_shared<StringExpr>("true");
+    TermExpr expression(entryCall.name, entryCall.nameId, {}, entryCall.builtinId);
+    expression.args.reserve(entryCall.args.size());
+    for (const auto& argument : entryCall.args) {
+        expression.args.push_back(Arg{
+            argument.name, argument.nameId, argument.value->clone()});
     }
-    throw InterpreterError("Auto entry method '" + entryCall.name + "' produced no result");
+    std::shared_ptr<Expr> result;
+    if (evalExprValue(std::make_shared<TermExpr>(std::move(expression)), Env{}, result) && result) {
+        return result;
+    }
+    throw InterpreterError("Auto entry call '" + entryCall.name + "' produced no result");
 }
 
 // Type.where(...) stays a lazy, composable selection internally so
@@ -2203,8 +2239,14 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
                 frame.durableFactCall->designations);
             for (const auto& argument : frame.durableFactCall->args) {
                 if (argument.name.empty()) continue;
+                // Call arguments that are still variables belong to the
+                // reasoning engine. They must be unified with the streamed
+                // record, not evaluated as data atoms and pushed
+                // into the RocksDB filter.
+                const auto queryValue = resolveExpr(argument.value, frame.env);
+                if (nodeAs<VarExpr>(queryValue)) continue;
                 std::shared_ptr<Expr> resolved;
-                if (!evalExprValue(argument.value, frame.env, resolved) ||
+                if (!evalExprValue(queryValue, frame.env, resolved) ||
                     !isGroundLiteral(resolved)) continue;
                 selection->filters.push_back(FactSelectionFilter{
                     argument.name, argument.nameId, TokenId::EQUAL,
@@ -2572,13 +2614,24 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
         }
 
         const auto callGoal = std::static_pointer_cast<CallGoal>(goal);
-        auto clauses = findClauses(callGoal->call.name, callGoal->call.nameId);
-        if (!clauses && ensurePredicateLoaded(callGoal->call.name)) {
-            clauses = findClauses(callGoal->call.name, callGoal->call.nameId);
+        Call effectiveCall = callGoal->call;
+        if (!effectiveCall.patternBindings &&
+            effectiveCall.builtinId == BuiltinId::Unknown &&
+            effectiveCall.name != kMemberInvokeTerm) {
+            for (auto& argument : effectiveCall.args) {
+                const auto variable = nodeAs<VarExpr>(resolveExpr(argument.value, frame.env));
+                if (variable && globals_.find(variable->nameId) == globals_.end()) {
+                    argument.value = std::make_shared<AtomExpr>(variable->name);
+                }
+            }
+        }
+        auto clauses = findClauses(effectiveCall.name, effectiveCall.nameId);
+        if (!clauses && ensurePredicateLoaded(effectiveCall.name)) {
+            clauses = findClauses(effectiveCall.name, effectiveCall.nameId);
         }
         std::vector<TableBinding> tableBindings;
         if (tableCallAnswers(
-                callGoal->call,
+                effectiveCall,
                 frame.env,
                 tableBindings,
                 nullptr,
@@ -2595,18 +2648,18 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
             continue;
         }
         std::vector<WorkFrame> continuations;
-        const bool preferLocalClause = clauses && !nativeDeclarationFor(callGoal->call.name);
+        const bool preferLocalClause = clauses && !nativeDeclarationFor(effectiveCall.name);
         if (!preferLocalClause) {
             // A tokenized builtin with no user clauses has exactly one possible
             // continuation. Move the current environment into that path rather
             // than cloning it; fact and user-method calls retain their normal
             // backtracking isolation below.
             const bool deterministicBuiltin =
-                callGoal->call.builtinId != BuiltinId::Unknown && !clauses;
+                effectiveCall.builtinId != BuiltinId::Unknown && !clauses;
             Env builtinEnv = deterministicBuiltin
                 ? std::move(frame.env)
                 : copyExecutionEnvironment(frame.env);
-            if (solveBuiltin(callGoal->call, builtinEnv)) {
+            if (solveBuiltin(effectiveCall, builtinEnv)) {
                 continuations.push_back(WorkFrame{frame.goals, nextGoalIndex,
                                                   std::move(builtinEnv), frame.depth + 1});
             }
@@ -2616,7 +2669,7 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
                 ++clauseAttempts_;
                 if (isMethodClause(*originalClause)) {
                     std::vector<Solution> methodSolutions;
-                    solveMethodCall(callGoal->call, originalClause, copyExecutionEnvironment(frame.env),
+                    solveMethodCall(effectiveCall, originalClause, copyExecutionEnvironment(frame.env),
                                     methodSolutions, maxSolutions - out.size(), frame.depth + 1);
                     for (auto& solution : methodSolutions) {
                         continuations.push_back(WorkFrame{frame.goals, nextGoalIndex,
@@ -2625,7 +2678,7 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
                     continue;
                 }
                 const auto clause = standardizeApart(originalClause);
-                for (auto& nextEnv : unifyCallAlternatives(callGoal->call, clause->head, frame.env)) {
+                for (auto& nextEnv : unifyCallAlternatives(effectiveCall, clause->head, frame.env)) {
                     continuations.push_back(WorkFrame{
                         combinedGoals(clause->body, *frame.goals, nextGoalIndex),
                         0, std::move(nextEnv), frame.depth + 1});
@@ -2635,7 +2688,7 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
         if (durableStore_) {
           continuations.push_back(WorkFrame{
               frame.goals, nextGoalIndex, copyExecutionEnvironment(frame.env),
-              frame.depth + 1, std::make_shared<Call>(callGoal->call)});
+              frame.depth + 1, std::make_shared<Call>(effectiveCall)});
         }
         for (auto continuation = continuations.rbegin(); continuation != continuations.rend(); ++continuation) {
             work.push_back(std::move(*continuation));
@@ -4971,7 +5024,8 @@ std::vector<std::shared_ptr<Expr>> Interpreter::factKey(
     for (const auto& field : contract->second.keyFields) {
         const auto component = findMapValue(value, field);
         if (!component) throw InterpreterError("Fact key field '" + field + "' is missing");
-        if (component->kind() != ExprKind::String && component->kind() != ExprKind::Number &&
+        if (component->kind() != ExprKind::String && component->kind() != ExprKind::Atom &&
+            component->kind() != ExprKind::Number &&
             component->kind() != ExprKind::Bool) {
             throw InterpreterError("Fact key field '" + field + "' must be a scalar value");
         }
@@ -4998,6 +5052,7 @@ std::vector<StoredFactIndex> Interpreter::factIndexes(
             const auto component = findMapValue(value, field);
             if (!component) throw InterpreterError("Indexed field '" + field + "' is missing");
             if (component->kind() != ExprKind::String &&
+                component->kind() != ExprKind::Atom &&
                 component->kind() != ExprKind::Number &&
                 component->kind() != ExprKind::Bool) {
                 throw InterpreterError("Indexed field '" + field + "' must be scalar");
@@ -5451,7 +5506,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         out = createClassGraph({});
         return true;
     }
-    if (term.isCapitalized && term.args.empty()) {
+    if (term.args.empty()) {
         // Facts are built into RocksDB and are queried through their own class,
         // as in Employee.count(). `Fact` is only the root of the type lineage,
         // not a library or a class to query.
@@ -5460,9 +5515,11 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
                 "'Fact' is not a queryable class; query a class directly, for example Employee.count()");
         }
         ensurePredicateLoaded(term.name);
-        out = std::make_shared<FactSelectionExpr>(
-            term.name);
-        return true;
+        if (classDefinitions_.count(term.nameId) != 0 ||
+            factTypeContracts_.count(term.name) != 0) {
+            out = std::make_shared<FactSelectionExpr>(term.name);
+            return true;
+        }
     }
     if (term.name == "Object:new") {
         if (term.args.empty()) throw InterpreterError("Invalid new expression");
@@ -5583,17 +5640,46 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         if (term.args.size() < 2) {
             throw InterpreterError("Invalid member invocation expression");
         }
+        const auto lexicalName = [&](const auto& self,
+                                     const std::shared_ptr<Expr>& expression) -> std::string {
+            if (const auto variable = nodeAs<VarExpr>(expression)) return variable->name;
+            if (const auto access = nodeAs<AccessExpr>(expression)) {
+                const auto prefix = self(self, access->target);
+                return prefix.empty() ? std::string{} : prefix + "." + access->key;
+            }
+            return {};
+        };
+        const auto member = nodeAs<StringExpr>(term.args[1].value);
+        if (!member || member->value.empty()) {
+            throw InterpreterError("Invalid member name");
+        }
         std::shared_ptr<Expr> receiver;
-        if (!evalExprValue(term.args[0].value, env, receiver)) return false;
+        const std::string receiverName = lexicalName(lexicalName, term.args[0].value);
+        const auto resolvedReceiver = resolveExpr(term.args[0].value, env);
+        const bool receiverIsUnboundName = !receiverName.empty() &&
+            (nodeAs<VarExpr>(resolvedReceiver) || nodeAs<AccessExpr>(resolvedReceiver));
+        if (receiverIsUnboundName) {
+            ensurePredicateLoaded(receiverName);
+            const std::string dottedConstructor = receiverName + "." + member->value;
+            if (classDefinitions_.count(symbolIdForName(dottedConstructor)) != 0) {
+                std::vector<Arg> arguments;
+                for (std::size_t index = 2; index < term.args.size(); ++index) {
+                    arguments.push_back(Arg{term.args[index].name, term.args[index].nameId,
+                                            term.args[index].value->clone()});
+                }
+                return instantiateClass(TermExpr(dottedConstructor, std::move(arguments)), env, out);
+            }
+            if (classDefinitions_.count(symbolIdForName(receiverName)) != 0 ||
+                factTypeContracts_.count(receiverName) != 0) {
+                receiver = std::make_shared<ClassRefExpr>(receiverName);
+            }
+        }
+        if (!receiver && !evalExprValue(term.args[0].value, env, receiver)) return false;
         const auto superView = nodeAs<SuperExpr>(receiver);
         const auto object = superView ? superView->object
                                      : nodeAs<MapExpr>(receiver);
         const auto classReference = nodeAs<ClassRefExpr>(receiver);
         const auto factSelection = nodeAs<FactSelectionExpr>(receiver);
-        const auto member = nodeAs<StringExpr>(term.args[1].value);
-        if (!member || member->value.empty()) {
-            throw InterpreterError("Invalid member name");
-        }
         if (object && object->factType == "Graph") {
             std::vector<Arg> graphArguments;
             graphArguments.reserve(term.args.size() - 2);
@@ -5879,17 +5965,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
             // ordinary expressions. Unbound identifiers are rejected rather
             // than silently converted into data values.
             if (!evalDataValue(arg.value, env, value)) return false;
-        } else if (!evalExprValue(arg.value, env, value)) {
-            if (auto var = nodeAs<VarExpr>(arg.value)) {
-                if (var->isCapitalized) {
-                    value = arg.value->clone();
-                } else {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-        }
+        } else if (!evalExprValue(arg.value, env, value)) return false;
         args.push_back(value);
     }
 
@@ -6270,6 +6346,15 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
       return true;
     }
 
+    if (term.builtinId == BuiltinId::IsAtom) {
+        if (args.size() != 1) {
+            throw InterpreterError("is_atom expects exactly one value");
+        }
+        out = std::make_shared<BoolExpr>(
+            static_cast<bool>(nodeAs<AtomExpr>(args.front())));
+        return true;
+    }
+
     if (term.builtinId == BuiltinId::FnPair) {
         if (args.size() != 2) return false;
         out = std::make_shared<TermExpr>("fn:pair", std::vector<Arg>{{"first", args[0]}, {"last", args[1]}}, BuiltinId::FnPair);
@@ -6509,17 +6594,7 @@ bool Interpreter::evalCallAsValueOnce(
     args.reserve(term.args.size());
     for (const auto& arg : term.args) {
         std::shared_ptr<Expr> value;
-        if (!evalExprValue(arg.value, env, value)) {
-            if (auto var = nodeAs<VarExpr>(arg.value)) {
-                if (var->isCapitalized) {
-                    value = arg.value->clone();
-                } else {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-        }
+        if (!evalExprValue(arg.value, env, value)) return false;
         args.push_back(value);
     }
 
@@ -6639,9 +6714,8 @@ bool Interpreter::evalCallAsValueOnce(
     auto arrayItems = [&](const std::shared_ptr<Expr>& value) -> std::vector<std::shared_ptr<Expr>> {
         if (auto array = nodeAs<ArrayExpr>(value)) return array->items;
         if (auto var = nodeAs<VarExpr>(term.args.empty() ? nullptr : term.args[0].value)) {
-            if (var->isCapitalized) {
+            if (classDefinitions_.count(var->nameId) != 0 || factTypeContracts_.count(var->name) != 0)
                 return valuesForLambdaSource(term.args[0].value, env);
-            }
         }
         return {};
     };
@@ -7985,8 +8059,9 @@ bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& en
         const auto sourceVariable = nodeAs<VarExpr>(lambda->source);
         const bool sourceIsFactType =
             nodeAs<StringExpr>(lambda->source) != nullptr ||
-            (sourceVariable && sourceVariable->isCapitalized &&
-             globals_.find(sourceVariable->nameId) == globals_.end());
+            (sourceVariable && globals_.find(sourceVariable->nameId) == globals_.end() &&
+             (classDefinitions_.count(sourceVariable->nameId) != 0 ||
+              factTypeContracts_.count(sourceVariable->name) != 0));
         std::vector<std::shared_ptr<Expr>> results;
         for (const auto& item : sourceValues) {
             Env lambdaEnv = env;
@@ -8098,7 +8173,8 @@ bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& en
                 std::vector<std::string>{var->name});
             return true;
         }
-        return false;
+        out = std::make_shared<AtomExpr>(var->name);
+        return true;
     }
     out = resolved->clone();
     return true;
@@ -8163,13 +8239,8 @@ bool Interpreter::evalDataValue(const std::shared_ptr<Expr>& expression,
     if (evalExprValue(expression, env, out)) return true;
     const auto resolved = resolveExpr(expression, env);
     if (const auto symbol = nodeAs<VarExpr>(resolved)) {
-        if (!symbol->isCapitalized) {
-            throw InterpreterError(
-                "Unbound identifier '" + symbol->name +
-                "'; Felidae has no atom values, so text must be quoted and "
-                "class/function references must use .class or .function");
-        }
-        return false;
+        out = std::make_shared<AtomExpr>(symbol->name);
+        return true;
     }
     if (const auto array = nodeAs<ArrayExpr>(resolved)) {
         std::vector<std::shared_ptr<Expr>> values;
@@ -8202,9 +8273,9 @@ bool Interpreter::valueMatchesFieldType(
     const std::shared_ptr<Expr>& value,
     const ClassFieldDecl::TypeRef& type) const {
     if (type.name == "optional") {
-        if (type.arguments.size() != 1) return false;
         if (!value || nodeAs<NilExpr>(value)) return true;
-        return valueMatchesFieldType(value, type.arguments.front());
+        return std::any_of(type.arguments.begin(), type.arguments.end(),
+            [&](const TypeRef& member) { return valueMatchesFieldType(value, member); });
     }
     if (type.name == "list") {
         if (type.arguments.size() != 1) return false;
@@ -8626,6 +8697,9 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
         if (nodeAs<StringExpr>(value)) {
             return builtinRuntimeType(LanguageTypeId::String);
         }
+        if (nodeAs<AtomExpr>(value)) {
+            return builtinRuntimeType(LanguageTypeId::Atom);
+        }
         if (nodeAs<BoolExpr>(value)) {
             return builtinRuntimeType(LanguageTypeId::Bool);
         }
@@ -8692,10 +8766,19 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
         const ResolvedOperatorType direct = valueType(metadata);
         if (direct.known()) return direct;
         if (auto term = nodeAs<TermExpr>(metadata)) {
-            if (term->isCapitalized) {
+            if (classDefinitions_.count(term->nameId) != 0 || factTypeContracts_.count(term->name) != 0) {
                 return factRuntimeType(term->name);
             }
             return ResolvedOperatorType{};
+        }
+        // An unresolved identifier in a value-typed capture is a
+        // data atom. `{...: expr}` remains code-as-data and is handled by the
+        // invocation path below, so this inference does not turn syntax
+        // captures into runtime values.
+        if (const auto identifier = nodeAs<VarExpr>(metadata)) {
+            if (!identifier->name.empty()) {
+                return builtinRuntimeType(LanguageTypeId::Atom);
+            }
         }
         if (auto nested = nodeAs<OperatorExpression>(metadata)) {
             if (nested->coreOperator != CoreOperator::Unknown) {
@@ -9331,14 +9414,18 @@ bool Interpreter::unifyExpr(const std::shared_ptr<Expr>& a,
     // wildcards dropped every binding a rule made for its caller.
     if (auto va = nodeAs<VarExpr>(ra)) {
         std::shared_ptr<Expr> value;
-        value = evalExprValue(rb, env, value) ? value : rb->clone();
+        value = nodeAs<VarExpr>(rb)
+            ? rb->clone()
+            : (evalExprValue(rb, env, value) ? value : rb->clone());
         if (activeBindingTrail_) activeBindingTrail_->assign(env, va->nameId, std::move(value));
         else env[va->nameId] = std::move(value);
         return true;
     }
     if (auto vb = nodeAs<VarExpr>(rb)) {
         std::shared_ptr<Expr> value;
-        value = evalExprValue(ra, env, value) ? value : ra->clone();
+        value = nodeAs<VarExpr>(ra)
+            ? ra->clone()
+            : (evalExprValue(ra, env, value) ? value : ra->clone());
         if (activeBindingTrail_) activeBindingTrail_->assign(env, vb->nameId, std::move(value));
         else env[vb->nameId] = std::move(value);
         return true;
@@ -9347,6 +9434,10 @@ bool Interpreter::unifyExpr(const std::shared_ptr<Expr>& a,
     if (auto sa = nodeAs<StringExpr>(ra)) {
         auto sb = nodeAs<StringExpr>(rb);
         return sb && sa->value == sb->value;
+    }
+    if (auto aa = nodeAs<AtomExpr>(ra)) {
+        auto ab = nodeAs<AtomExpr>(rb);
+        return ab && aa->symbolId == ab->symbolId && aa->spelling == ab->spelling;
     }
     if (auto na = nodeAs<NumberExpr>(ra)) {
         auto nb = nodeAs<NumberExpr>(rb);
@@ -9582,6 +9673,7 @@ Call Interpreter::renameCall(const Call& call, RenameMap& names) {
     out.name = call.name;
     out.nameId = call.nameId;
     out.builtinId = call.builtinId;
+    out.patternBindings = call.patternBindings;
     for (const auto& a : call.args) {
         if ((call.builtinId == BuiltinId::Instanceof &&
              (a.name == "type" || a.name == "parent" || a.name == "of"))) {
@@ -9729,6 +9821,7 @@ std::shared_ptr<Expr> Interpreter::renameExpr(const std::shared_ptr<Expr>& expr,
     if (!exprNeedsRename(expr)) return expr;
     switch (expr->kind()) {
         case ExprKind::String:
+        case ExprKind::Atom:
         case ExprKind::ClassRef:
         case ExprKind::FunctionRef:
         case ExprKind::Number:
@@ -9852,6 +9945,7 @@ bool Interpreter::isSameVariable(const std::shared_ptr<Expr>& a, const std::shar
 
 bool Interpreter::isGroundLiteral(const std::shared_ptr<Expr>& expr) const {
     return static_cast<bool>(nodeAs<StringExpr>(expr)) ||
+           static_cast<bool>(nodeAs<AtomExpr>(expr)) ||
            static_cast<bool>(nodeAs<BoolExpr>(expr)) ||
            static_cast<bool>(nodeAs<NumberExpr>(expr)) ||
            static_cast<bool>(nodeAs<NilExpr>(expr));
@@ -10007,9 +10101,7 @@ Interpreter::MethodParamPlan Interpreter::makeMethodParamPlan(const Arg& param) 
     MethodParamPlan plan;
     plan.localName = param.name;
     auto typeExpr = nodeAs<VarExpr>(param.value);
-    plan.typedParam = typeExpr && (typeExpr->isCapitalized ||
-                                   typeExpr->languageTypeId != LanguageTypeId::Unknown ||
-                                   isFelidaeTypeAnnotationName(typeExpr->name));
+    plan.typedParam = typeExpr && !param.name.empty();
     if (typeExpr && !plan.typedParam && !typeExpr->name.empty() &&
         !isInternalGeneratedSymbolId(typeExpr->nameId)) {
         plan.localName = typeExpr->name;
@@ -10041,6 +10133,46 @@ Interpreter::FactMaterialization Interpreter::factToMap(const ClauseStmt& clause
     std::vector<MapEntry> temporalEntries;
     std::vector<MapEntry> inheritedFields;
     std::vector<std::uint64_t> parentFactIds;
+    std::vector<Arg> constructedArguments;
+    const std::vector<Arg>* factArguments = &clause.head.args;
+    const auto declaredFactClass = classDefinitions_.find(clause.head.nameId);
+    if (declaredFactClass != classDefinitions_.end()) {
+        std::vector<Arg> constructorArguments;
+        std::vector<Arg> temporalArguments;
+        constructorArguments.reserve(clause.head.args.size());
+        for (const auto& argument : clause.head.args) {
+            if (!argument.name.empty() && argument.name.rfind("fx:", 0) == 0) {
+                temporalArguments.push_back(Arg{
+                    argument.name, argument.nameId, cloneExprOrNil(argument.value)});
+            } else {
+                constructorArguments.push_back(Arg{
+                    argument.name, argument.nameId, cloneExprOrNil(argument.value)});
+            }
+        }
+        std::shared_ptr<Expr> constructed;
+        if (!instantiateClass(
+                TermExpr(clause.head.name, clause.head.nameId,
+                         std::move(constructorArguments), BuiltinId::Unknown),
+                Env{}, constructed)) {
+            throw InterpreterError(
+                "Cannot construct declared class '" + clause.head.name + "'");
+        }
+        const auto object = nodeAs<MapExpr>(constructed);
+        if (!object) {
+            throw InterpreterError(
+                "Class constructor did not produce a fact value for '" +
+                clause.head.name + "'");
+        }
+        constructedArguments.reserve(object->entries.size() + temporalArguments.size());
+        for (const auto& field : object->entries) {
+            constructedArguments.push_back(Arg{
+                field.key, field.keyId, cloneExprOrNil(field.value)});
+        }
+        for (auto& temporal : temporalArguments) {
+            constructedArguments.push_back(std::move(temporal));
+        }
+        factArguments = &constructedArguments;
+    }
     const auto parentNames = clause.parentNames.empty()
         ? std::vector<std::string>{clause.parentName}
         : clause.parentNames;
@@ -10050,8 +10182,8 @@ Interpreter::FactMaterialization Interpreter::factToMap(const ClauseStmt& clause
                    hierarchy_.isCompatibleType(parent, "OperatorRequirement");
         });
     std::set<std::string> childFields;
-    for (std::size_t index = 0; index < clause.head.args.size(); ++index) {
-        const auto& arg = clause.head.args[index];
+    for (std::size_t index = 0; index < factArguments->size(); ++index) {
+        const auto& arg = (*factArguments)[index];
         childFields.insert(arg.name.empty() ? "arg" + std::to_string(index) : arg.name);
     }
     for (const auto& parentType : parentNames) {
@@ -10063,10 +10195,10 @@ Interpreter::FactMaterialization Interpreter::factToMap(const ClauseStmt& clause
             constructorArgs.reserve(requiredFields.size());
             for (const auto* required : requiredFields) {
                 const auto supplied = std::find_if(
-                    clause.head.args.begin(), clause.head.args.end(), [&](const Arg& argument) {
+                    factArguments->begin(), factArguments->end(), [&](const Arg& argument) {
                         return argument.nameId == required->nameId && argument.name == required->name;
                     });
-                if (supplied == clause.head.args.end()) {
+                if (supplied == factArguments->end()) {
                     throw InterpreterError(
                         "Fact '" + clause.head.name + "' is missing class field '" + required->name + "'");
                 }
@@ -10112,8 +10244,8 @@ Interpreter::FactMaterialization Interpreter::factToMap(const ClauseStmt& clause
                     std::make_shared<StringExpr>(parentNames.front()));
     }
     Env env;
-    for (std::size_t argumentIndex = 0; argumentIndex < clause.head.args.size(); ++argumentIndex) {
-        const auto& arg = clause.head.args[argumentIndex];
+    for (std::size_t argumentIndex = 0; argumentIndex < factArguments->size(); ++argumentIndex) {
+        const auto& arg = (*factArguments)[argumentIndex];
         std::shared_ptr<Expr> value;
         const auto declaredType = nodeAs<VarExpr>(arg.value);
         if (requirementSchema && declaredType &&
@@ -10147,8 +10279,7 @@ std::vector<std::shared_ptr<Expr>> Interpreter::valuesForLambdaSource(const std:
     auto var = nodeAs<VarExpr>(source);
     // A string source is an explicit dynamic fact-type selector.  It keeps
     // multi-model .fx databases usable through normal lambda queries even
-    // when a model name is lowercase and therefore indistinguishable from a
-    // local variable in source syntax.
+    // when a model name is represented explicitly as text.
     if (const auto typeName = nodeAs<StringExpr>(source)) {
         ensurePredicateLoaded(typeName->value);
         return materializeFactSelection(std::make_shared<FactSelectionExpr>(
@@ -10170,13 +10301,12 @@ std::vector<std::shared_ptr<Expr>> Interpreter::valuesForLambdaSource(const std:
                     std::vector<SymbolId>{designationId},
                     std::vector<std::string>{var->name}))->items;
             if (!selected.empty()) return selected;
-            if (!var->isCapitalized) return {};
+            if (classDefinitions_.count(var->nameId) == 0 && factTypeContracts_.count(var->name) == 0)
+                return {};
         }
-        // A bare capitalized name that is neither a global nor a designation
-        // names a fact type. Fact types are queried with Type.all() or
-        // Type.where(...); resolving one through lambda used to yield an
-        // empty result silently.
-        if (var->isCapitalized) {
+        // A registered bare name identifies a fact type. Fact types are
+        // queried with Type.all() or Type.where(...).
+        if (classDefinitions_.count(var->nameId) != 0 || factTypeContracts_.count(var->name) != 0) {
             throw InterpreterError(
                 "lambda source '" + var->name + "' names a fact type; use " +
                 var->name + ".all() or " + var->name + ".where(...) as the source");

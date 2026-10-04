@@ -1,1 +1,1 @@
-ImportedSchool(name: "Synced", active: true).
+def ImportedSchool(name: "Synced", active: true).

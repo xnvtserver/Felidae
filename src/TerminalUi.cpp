@@ -165,7 +165,7 @@ void TerminalUi::banner(std::string_view name, std::string_view version,
     styled("1;96", "+------------------------------------------------------------+\n");
     styled("2", description);
     output_ << '\n';
-    styled("2", "Type :help for commands. def/class input closes with end.");
+    styled("2", "Type :help for commands. Function/class blocks close with end; statements with '.'.");
     output_ << "\n\n";
 }
 
@@ -204,6 +204,8 @@ void TerminalUi::redrawInput(bool continuation, const IntegerTokenList& tokens,
         if (inComment || id == TokenId::COMMENT) {
             inComment = true;
             styled("2;37", text);
+        } else if (id == TokenId::ATOM_QUOTE) {
+            styled("36", text);
         } else if (inString || id == TokenId::QUOTE) {
             styled("32", text);
             if (!inString && id == TokenId::QUOTE) {
@@ -222,8 +224,6 @@ void TerminalUi::redrawInput(bool continuation, const IntegerTokenList& tokens,
             styled("33", text);
         } else if (isOperatorOrPunctuation(id) || id == TokenId::AT) {
             styled("1;36", text);
-        } else if (isCapitalizedIdentifierStartId(id)) {
-            styled("1;34", text);
         } else {
             output_ << text;
         }

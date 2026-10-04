@@ -15,8 +15,8 @@ import "fuzzy".
 # fuzzyOr(a, b)  = max(a, b)   -- Zadeh disjunction
 # fuzzyNot(d)    = 1 - d       -- standard fuzzy negation
 def combinators() =>
-    warm := 0.8.
-    humid := 0.3.
+    def warm := 0.8.
+    def humid := 0.3.
     return {
         muggy: fuzzyAnd(a: warm, b: humid),
         uncomfortable: fuzzyOr(a: warm, b: humid),
@@ -30,7 +30,7 @@ end
 # returns the triangular degree of `score` in that set: 0 at or below
 # fades_in, rising to 1 at peak, falling back to 0 at fades_out.
 def temperatureReadings() =>
-    profile := {peak: 30, fades_in: 20, fades_out: 40}.
+    def profile := {peak: 30, fades_in: 20, fades_out: 40}.
     return {
         cold_reading: membership(score: 15, profile: profile),
         rising_reading: membership(score: 25, profile: profile),
@@ -57,10 +57,10 @@ end
 # A rule can combine two membership degrees deterministically instead of
 # branching: "comfortable" only where warm and NOT humid overlap.
 def comfortLevel(warm: number, humid: number) =>
-    warmProfile := {peak: 30, fades_in: 15, fades_out: 40}.
-    dryProfile := {peak: 0, fades_in: 0, fades_out: 60}.
-    warmDegree := membership(score: warm, profile: warmProfile).
-    dryDegree := membership(score: humid, profile: dryProfile).
+    def warmProfile := {peak: 30, fades_in: 15, fades_out: 40}.
+    def dryProfile := {peak: 0, fades_in: 0, fades_out: 60}.
+    def warmDegree := membership(score: warm, profile: warmProfile).
+    def dryDegree := membership(score: humid, profile: dryProfile).
     return fuzzyAnd(a: warmDegree, b: dryDegree).
 end
 

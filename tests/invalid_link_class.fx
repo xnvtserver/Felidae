@@ -1,4 +1,4 @@
 class Link
     key(id).
-    id: string.
+    def id: string.
 end

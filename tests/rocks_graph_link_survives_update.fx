@@ -1,16 +1,16 @@
 class Node
     key(id).
-    id: string.
-    label: string.
+    def id: string.
+    def label: string.
 end
 
-Node(id: "a", label: "before").
-Node(id: "b", label: "target").
+def Node(id: "a", label: "before").
+def Node(id: "b", label: "target").
 Link(from: Node(id: "a"), to: Node(id: "b"), properties: {kind: "connected"}).
 
 def main() =>
-    changed := Node.where(id: "a").update(values: {label: "after"}).
-    links := Node.where(id: "a").join(
+    def changed := Node.where(id: "a").update(values: {label: "after"}).
+    def links := Node.where(id: "a").join(
         properties: {kind: "connected"},
         direction: forward.class
     ).

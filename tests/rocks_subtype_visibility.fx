@@ -1,20 +1,20 @@
 class Entity
     key(id).
-    id: string.
+    def id: string.
 end
 
 class Employee extends Entity
-    name: string.
+    def name: string.
 end
 
 class Entity.Note
     key(id).
-    id: string.
-    text: string.
+    def id: string.
+    def text: string.
 end
 
-Employee(id: "e1", name: "Ada").
-Entity.Note(id: "n1", text: "related name only").
+def Employee(id: "e1", name: "Ada").
+def Entity.Note(id: "n1", text: "related name only").
 
 def main() =>
     return (

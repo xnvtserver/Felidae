@@ -1,15 +1,15 @@
-Root(code: "root", enabled: 1.0).
+def Root(code: "root", enabled: 1.0).
 
 class Layer extends Root
-    depth: number.
+    def depth: number.
 end
 
 class Leaf extends Layer
-    label: string.
+    def label: string.
 end
 
 def main() =>
-    leaf := Leaf(depth: 2, label: "mixed").save().
+    def leaf := Leaf(depth: 2, label: "mixed").save().
     return (
         inherited_fact_field: leaf.code,
         inherited_class_field: leaf.depth,

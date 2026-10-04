@@ -1,1 +1,1 @@
-Node(id: "a")
+def Node(id: "a").
