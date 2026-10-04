@@ -2,11 +2,14 @@
 #include "DebugSession.h"
 #include "Environment.h"
 #include "FelidaeRuntime.h"
+#include "IntegerParser.h"
 #include "ProjectConfiguration.h"
 #include "ReplLineEditor.h"
 #include "Symbol.h"
 #include "TerminalUi.h"
 #include "Version.h"
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -31,6 +34,8 @@ struct CliOptions {
     bool repl = false;
     bool debug = false;
     bool metricsJson = false;
+    bool checkJson = false;
+    bool checkStdin = false;
     size_t benchmarkRepeat = 1;
     std::optional<fs::path> programFile;
     std::optional<std::string> query;
@@ -62,8 +67,24 @@ static CliOptions parseCli(int argc, char** argv) {
             options.debug = true;
             continue;
         }
+        if (arg == "--query") {
+            if (i + 1 >= argc) {
+                throw std::runtime_error("--query expects a period-terminated Felidae expression");
+            }
+            if (options.query) throw std::runtime_error("--query may be specified only once");
+            options.query = argv[++i];
+            continue;
+        }
         if (arg == "--metrics-json") {
             options.metricsJson = true;
+            continue;
+        }
+        if (arg == "--check-json") {
+            options.checkJson = true;
+            continue;
+        }
+        if (arg == "--stdin") {
+            options.checkStdin = true;
             continue;
         }
         if (arg == "--benchmark-repeat") {
@@ -86,9 +107,9 @@ static CliOptions parseCli(int argc, char** argv) {
             options.programFile = fs::path(arg);
             continue;
         }
-        if (!options.query && !arg.empty() && arg[0] == '?') {
-            options.query = arg;
-            continue;
+        if (!arg.empty() && arg[0] == '?') {
+            throw std::runtime_error(
+                "External '?' queries were removed; use --query 'bucket.where(...).' instead");
         }
         options.remainingArgs.push_back(arg);
     }
@@ -105,6 +126,19 @@ static CliOptions parseCli(int argc, char** argv) {
     }
     if (options.repl && options.query) {
         throw std::runtime_error("--repl cannot be combined with an external query");
+    }
+    if (options.debug && options.query) {
+        throw std::runtime_error("--debug and --query cannot be used together");
+    }
+    if (options.checkStdin && !options.checkJson) {
+        throw std::runtime_error("--stdin is valid only with --check-json");
+    }
+    if (options.checkJson && (!options.programFile || options.repl || options.debug ||
+                              options.query || options.metricsJson ||
+                              options.benchmarkRepeat != 1 ||
+                              !options.remainingArgs.empty())) {
+        throw std::runtime_error(
+            "--check-json requires exactly one logical file and may only be combined with --stdin");
     }
     if ((options.debug || options.repl) && options.benchmarkRepeat != 1) {
         throw std::runtime_error(
@@ -138,20 +172,22 @@ static void printHelp(std::ostream& output) {
               << "Usage:\n"
               << "  felidae\n"
               << "  felidae program.fx\n"
-              << "  felidae program.fx '? Query(key: x)'\n"
+              << "  felidae program.fx --query 'bucket.where(active: true).'\n"
               << "  felidae --repl\n"
               << "  felidae program.fx --debug\n"
+              << "  felidae --check-json [--stdin] program.fx\n"
               << "  felidae program.fx --metrics-json\n"
               << "  felidae program.fx --benchmark-repeat 100 --metrics-json\n"
-              << "  felidae program.fx '? Query(key: x)' --benchmark-repeat 100 --metrics-json\n"
+              << "  felidae program.fx --query 'bucket.where(active: true).' --benchmark-repeat 100 --metrics-json\n"
               << "  felidae --help\n"
               << "  felidae --version\n\n"
               << "Commands:\n"
               << "  (no file)                          Start the REPL using ./init.fx\n"
               << "  program.fx                         Run program and execute main(...) if found\n"
-              << "  program.fx '? Query(key: x)'        Run external query mode\n"
+              << "  program.fx --query 'expression.'    Run a bucket/scalar expression query\n"
               << "  --repl                              Explicitly start the interactive REPL\n"
               << "  program.fx --debug                  Run with live interpreter debugging enabled\n"
+              << "  --check-json [--stdin] program.fx   Parse without opening RocksDB; emit JSON diagnostics and symbols\n"
               << "  --metrics-json                      Emit load and runtime performance counters to stderr\n"
               << "  --benchmark-repeat N                Repeat the entry method or external query in one runtime\n"
               << "  --help                              Show this help screen\n"
@@ -160,13 +196,13 @@ static void printHelp(std::ostream& output) {
               << "Examples:\n"
               << "  felidae\n"
               << "  felidae v2_examples/felidae_language_tour.fx\n"
-              << "  felidae tests/solver_durable_backtracking.fx '? Candidate(id: x)'\n";
+              << "  felidae project/main.fx --query 'employee.where(active: true).'\n";
 }
 
 static void printReplHelp(TerminalUi& ui) {
     ui.heading("REPL input");
     ui.command("expression", "Evaluate an expression");
-    ui.command("? Predicate(field: x)", "Run a logical query");
+    ui.command("bucket.where(field: value).", "Evaluate a lazy bucket query");
     ui.command("Fact(field: value).", "Install a persistent top-level fact");
     ui.command("def name := expression.", "Install an immutable global binding");
     ui.command("import \"library\"", "Load a normal Felidae import");
@@ -372,22 +408,6 @@ static void runRepl(Interpreter& interpreter, std::istream& input,
         });
     };
     const auto executeInteractiveExpression = [&](const std::string& command) {
-        if (command[0] == '?') {
-            auto before = interpreter.runtimeCounters();
-            const auto started = std::chrono::steady_clock::now();
-            auto activity = debugEnabled
-                ? std::shared_ptr<TerminalUi::Activity>{}
-                : ui.activity("solving query");
-            auto queryGoals = parseQueryText(
-                command, interpreter.tokenizer(), interpreter.operatorRegistry());
-            auto solutions = interpreter.solve(queryGoals, 1000);
-            activity.reset();
-            finishMeasurement("query", started, std::move(before));
-            ui.queryHeading();
-            printSolutions(interpreter, queryGoals, solutions, output);
-            printAutomaticMetrics();
-            return;
-        }
         if (isBareIdentifier(command) && interpreter.hasGlobal(command)) {
             auto before = interpreter.runtimeCounters();
             const auto started = std::chrono::steady_clock::now();
@@ -577,6 +597,102 @@ static ProjectConfiguration projectConfigurationFor(CliOptions& options) {
     return loadProjectConfiguration(projectDirectory);
 }
 
+static nlohmann::json sourcePosition(const SourceSpan& span, bool end) {
+    return {
+        {"line", end ? span.endLine : span.startLine},
+        {"column", end ? span.endColumn : span.startColumn}
+    };
+}
+
+static nlohmann::json statementSymbol(const std::shared_ptr<Statement>& statement) {
+    nlohmann::json symbol;
+    symbol["start"] = sourcePosition(statement->sourceSpan, false);
+    symbol["end"] = sourcePosition(statement->sourceSpan, true);
+    switch (statement->kind()) {
+        case StatementKind::Class: {
+            const auto declaration = std::static_pointer_cast<ClassStmt>(statement);
+            symbol["name"] = declaration->name;
+            symbol["kind"] = "class";
+            symbol["children"] = nlohmann::json::array();
+            for (const auto& method : declaration->methods) {
+                symbol["children"].push_back({
+                    {"name", method->head.name},
+                    {"kind", "method"},
+                    {"start", sourcePosition(method->sourceSpan, false)},
+                    {"end", sourcePosition(method->sourceSpan, true)}
+                });
+            }
+            return symbol;
+        }
+        case StatementKind::Clause: {
+            const auto declaration = std::static_pointer_cast<ClauseStmt>(statement);
+            symbol["name"] = declaration->head.name;
+            symbol["kind"] = declaration->clauseKind == ClauseKind::Fact
+                ? "fact" : declaration->clauseKind == ClauseKind::EntryCall
+                    ? "call" : "function";
+            return symbol;
+        }
+        case StatementKind::GlobalBinding: {
+            const auto declaration = std::static_pointer_cast<GlobalBindingStmt>(statement);
+            symbol["name"] = declaration->name;
+            symbol["kind"] = "binding";
+            return symbol;
+        }
+        case StatementKind::Import:
+            symbol["name"] = "import";
+            symbol["kind"] = "import";
+            return symbol;
+    }
+    return symbol;
+}
+
+static int runCheckJson(CliOptions options, std::istream& input,
+                        std::ostream& output) {
+    nlohmann::json result = {
+        {"version", 1},
+        {"path", ""},
+        {"diagnostics", nlohmann::json::array()},
+        {"symbols", nlohmann::json::array()}
+    };
+    try {
+        (void)projectConfigurationFor(options); // validates init.fx, never opens RocksDB
+        const auto logicalPath = options.programFile->string();
+        result["path"] = logicalPath;
+        const std::string source = options.checkStdin
+            ? std::string(std::istreambuf_iterator<char>(input),
+                          std::istreambuf_iterator<char>())
+            : readSourceFile(*options.programFile);
+        const Program program = parseProgramText(source);
+        for (const auto& statement : program.statements) {
+            result["symbols"].push_back(statementSymbol(statement));
+        }
+        output << result.dump() << '\n';
+        return 0;
+    } catch (const IntegerParserError& error) {
+        result["path"] = options.programFile ? options.programFile->string() : "";
+        result["diagnostics"].push_back({
+            {"code", "syntax"},
+            {"severity", "error"},
+            {"message", error.what()},
+            {"start", {{"line", 1}, {"column", 1}}},
+            {"end", {{"line", 1}, {"column", 1}}}
+        });
+        output << result.dump() << '\n';
+        return 1;
+    } catch (const std::exception& error) {
+        result["path"] = options.programFile ? options.programFile->string() : "";
+        result["diagnostics"].push_back({
+            {"code", "infrastructure"},
+            {"severity", "error"},
+            {"message", error.what()},
+            {"start", {{"line", 1}, {"column", 1}}},
+            {"end", {{"line", 1}, {"column", 1}}}
+        });
+        output << result.dump() << '\n';
+        return 2;
+    }
+}
+
 static int executeOptions(CliOptions options,
                           std::istream& input,
                           std::ostream& output,
@@ -590,6 +706,9 @@ static int executeOptions(CliOptions options,
         if (options.showVersion) {
             printVersion(output);
             return 0;
+        }
+        if (options.checkJson) {
+            return runCheckJson(std::move(options), input, output);
         }
         if (!options.programFile && !options.repl) {
             printHelp(output);
@@ -651,13 +770,14 @@ static int executeOptions(CliOptions options,
         }
 
         if (options.query) {
-            auto queryGoals = parseQueryText(
-                *options.query, interpreter.tokenizer(), interpreter.operatorRegistry());
-            std::vector<Solution> solutions;
+            if (options.query->empty() || options.query->back() != '.') {
+                throw std::runtime_error("--query expression must end with '.'");
+            }
+            std::shared_ptr<Expr> queryValue;
             double repeatedQueryTotalMs = 0.0;
             for (size_t run = 0; run < options.benchmarkRepeat; ++run) {
                 const auto queryStarted = Clock::now();
-                solutions = interpreter.solve(queryGoals, 1000);
+                queryValue = interpreter.evaluateExpressionText(*options.query);
                 const auto queryFinished = Clock::now();
                 const double queryMs = static_cast<double>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -673,7 +793,7 @@ static int executeOptions(CliOptions options,
                 repeatedQueryAverageMs =
                     repeatedQueryTotalMs / static_cast<double>(options.benchmarkRepeat - 1);
             }
-            printSolutions(interpreter, queryGoals, solutions, output);
+            interpreter.writeQueryResult(queryValue, output);
             reportMetrics();
             return 0;
         }
@@ -721,7 +841,7 @@ int main(int argc, char** argv) {
         // a second process opening the same directory fails with a
         // diagnostic from RocksFactStore.
         CliOptions options = parseCli(argc, argv);
-        if (options.showHelp || options.showVersion) {
+        if (options.showHelp || options.showVersion || options.checkJson) {
             return executeOptions(std::move(options),
                                   std::cin, std::cout, std::cerr);
         }

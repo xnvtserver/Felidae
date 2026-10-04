@@ -3,7 +3,6 @@
 #include "FelidaeGrammar.h"
 
 #include <cstddef>
-#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -16,22 +15,22 @@ struct EncodedToken {
   std::size_t end = 0;
 };
 
-// Deterministic, training-free tokenizer. IntegerTokenList separates fixed
-// syntax, strings, comments, numbers, and identifiers before calling this
-// class. Each byte in an identifier or mixfix anchor maps to one token after
-// the fixed grammar-token range. The complete vocabulary is compiled in;
-// parsing never depends on a model file or mutable process-local state.
-class WordVocabulary {
+// Deterministic ByteT5-style byte tokenizer. IntegerTokenList owns grammar,
+// strings, comments, and numbers; every identifier/mixfix byte maps directly
+// into the fixed 256-byte range following the grammar IDs. No generated model,
+// learned vocabulary, or mutable token assignment participates in parsing.
+class ByteTokenizer {
 public:
-  WordVocabulary() = default;
+  ByteTokenizer() = default;
 
   std::vector<int> encode(std::string_view text) const;
   std::vector<EncodedToken> encodeWithOffsets(std::string_view text) const;
-  std::string decode(std::span<const int> tokens) const;
 
-  static constexpr int kFirstByteToken =
-      static_cast<int>(std::size(kBuiltinTokens)) + 1;
-  static constexpr int kVocabularySize = kFirstByteToken + 256;
+  // Grammar IDs deliberately retain retired gaps for protocol stability, so
+  // this boundary is based on the highest grammar ID rather than token count.
+  static constexpr int kFirstByteToken = TokenId::DIGIT_9 + 1;
 };
+
+static_assert(ByteTokenizer::kFirstByteToken > TokenId::DIGIT_9);
 
 } // namespace Felidae

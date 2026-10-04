@@ -26,6 +26,8 @@ enum class ExprKind {
     Map,
     Access,
     Operator,
+    Sequence,
+    Conditional,
     Term,
     Lambda,
     FactSelection,
@@ -46,7 +48,7 @@ enum class GoalKind {
     Switch,
     Break,
     Continue,
-    Return,
+    Expression,
     Not,
     Group,
     Or,
@@ -557,6 +559,66 @@ private:
     std::uint8_t inlineCaptureCount_ = 0;
 };
 
+class SequenceExpr final : public Expr {
+public:
+    explicit SequenceExpr(std::vector<std::shared_ptr<Expr>> expressions)
+        : expressions(std::move(expressions)) {}
+
+    std::vector<std::shared_ptr<Expr>> expressions;
+    static constexpr ExprKind kKind = ExprKind::Sequence;
+    ExprKind kind() const override { return kKind; }
+    std::shared_ptr<Expr> clone() const override {
+        std::vector<std::shared_ptr<Expr>> copied;
+        copied.reserve(expressions.size());
+        for (const auto& expression : expressions) copied.push_back(expression->clone());
+        return std::make_shared<SequenceExpr>(std::move(copied));
+    }
+    std::string debug() const override {
+        std::ostringstream out;
+        for (std::size_t index = 0; index < expressions.size(); ++index) {
+            if (index) out << ", ";
+            out << expressions[index]->debug();
+        }
+        return out.str();
+    }
+};
+
+struct ConditionalBranch {
+    std::shared_ptr<Expr> condition;
+    std::shared_ptr<Expr> result;
+};
+
+class ConditionalExpr final : public Expr {
+public:
+    ConditionalExpr(std::vector<ConditionalBranch> branches,
+                    std::shared_ptr<Expr> fallback = {})
+        : branches(std::move(branches)), fallback(std::move(fallback)) {}
+
+    std::vector<ConditionalBranch> branches;
+    std::shared_ptr<Expr> fallback;
+    static constexpr ExprKind kKind = ExprKind::Conditional;
+    ExprKind kind() const override { return kKind; }
+    std::shared_ptr<Expr> clone() const override {
+        std::vector<ConditionalBranch> copied;
+        copied.reserve(branches.size());
+        for (const auto& branch : branches) {
+            copied.push_back({branch.condition->clone(), branch.result->clone()});
+        }
+        return std::make_shared<ConditionalExpr>(
+            std::move(copied), fallback ? fallback->clone() : nullptr);
+    }
+    std::string debug() const override {
+        std::ostringstream out;
+        for (std::size_t index = 0; index < branches.size(); ++index) {
+            if (index) out << " else ";
+            out << branches[index].condition->debug() << " then "
+                << branches[index].result->debug();
+        }
+        if (fallback) out << " else " << fallback->debug();
+        return out.str();
+    }
+};
+
 struct Arg {
     Arg() = default;
     Arg(std::string name, std::shared_ptr<Expr> value)
@@ -1047,31 +1109,22 @@ public:
     std::shared_ptr<Goal> clone() const override { return std::make_shared<ContinueGoal>(); }
     std::string debug() const override { return "continue"; }
 };
-class ReturnGoal final : public Goal {
+// One value expression in a period-terminated callable sequence. Evaluation
+// stores its value as the current implicit result without controlling flow;
+// later expressions in the sequence still execute.
+class ExpressionGoal final : public Goal {
 public:
-    explicit ReturnGoal(std::vector<Arg> fields) : fields(std::move(fields)) {}
+    explicit ExpressionGoal(std::shared_ptr<Expr> expression)
+        : expression(std::move(expression)) {}
 
-    std::vector<Arg> fields;
+    std::shared_ptr<Expr> expression;
 
-    static constexpr GoalKind kKind = GoalKind::Return;
+    static constexpr GoalKind kKind = GoalKind::Expression;
     GoalKind kind() const override { return kKind; }
     std::shared_ptr<Goal> clone() const override {
-        std::vector<Arg> copied;
-        copied.reserve(fields.size());
-        for (const auto& field : fields) copied.emplace_back(field.name, field.nameId, field.value->clone());
-        return std::make_shared<ReturnGoal>(std::move(copied));
+        return std::make_shared<ExpressionGoal>(expression->clone());
     }
-
-    std::string debug() const override {
-        std::ostringstream oss;
-        oss << "return (";
-        for (size_t i = 0; i < fields.size(); ++i) {
-            if (i) oss << ", ";
-            oss << fields[i].debug();
-        }
-        oss << ")";
-        return oss.str();
-    }
+    std::string debug() const override { return expression->debug(); }
 };
 
 class GroupGoal final : public Goal {

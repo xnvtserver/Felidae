@@ -117,12 +117,12 @@ KeyPress readKey(std::istream& input) {
 } // namespace
 
 ReplLineEditor::ReplLineEditor(TerminalUi& ui, std::istream& input,
-                               std::shared_ptr<WordVocabulary> tokenizer)
+                               std::shared_ptr<ByteTokenizer> tokenizer)
     : ui_(ui), input_(input), tokenizer_(std::move(tokenizer)) {
     // Highlighting uses the production lexer with an isolated vocabulary.
     // Partial words typed and erased must not consume dynamic token IDs in the
     // interpreter's authoritative tokenizer.
-    if (!tokenizer_) tokenizer_ = std::make_shared<WordVocabulary>();
+    if (!tokenizer_) tokenizer_ = std::make_shared<ByteTokenizer>();
 }
 
 bool ReplLineEditor::readLine(bool continuation, std::string& line) {

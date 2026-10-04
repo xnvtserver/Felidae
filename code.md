@@ -4,7 +4,7 @@ Felidae tokenizes source into a `Program` AST and executes it directly.
 
 ```text
 source.fx
-  -> byte-level tokenizer (stable IDs and byte offsets)
+  -> ByteT5-style byte tokenizer (stable IDs and byte offsets)
   -> IntegerTokenList
   -> IntegerParser
   -> Program AST / SymbolId interning
@@ -13,7 +13,7 @@ source.fx
   -> RocksDB fact and graph store
 ```
 
-`WordVocabulary` is a fixed, compile-time byte vocabulary. The normal lexer
+`ByteTokenizer` implements the fixed ByteT5-style byte vocabulary. The lexer
 owns syntax, comments, numbers, and strings; identifier and mixfix-anchor
 bytes are encoded after the grammar-token range. There is no tokenizer model,
 training step, generated vocabulary, or mutable token assignment.

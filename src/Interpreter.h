@@ -26,7 +26,7 @@
 namespace Felidae {
 
 class RocksFactStore;
-class WordVocabulary;
+class ByteTokenizer;
 struct StoredFactIndex;
 struct StoredLink;
 struct StoredClassEdge;
@@ -92,6 +92,9 @@ public:
     std::string valueToString(const std::shared_ptr<Expr>& value) const;
     std::string valueToDisplayString(const std::shared_ptr<Expr>& value) const;
     std::string valueToDebugString(const std::shared_ptr<Expr>& value) const;
+    // Query boundary: scalars print once; lazy fact/graph selections stream
+    // rows without first materializing an unbounded result array.
+    void writeQueryResult(const std::shared_ptr<Expr>& value, std::ostream& out);
     std::string runtimeMetricsJson() const;
     // Read-only snapshots used by interactive diagnostics. They are collected
     // only on request and add no work to normal file execution.
@@ -107,7 +110,7 @@ public:
                          ParserMetrics* metrics = nullptr);
     std::size_t syncFactSource(const std::filesystem::path& file);
     std::shared_ptr<OperatorRegistry> operatorRegistry() const { return operators_; }
-    std::shared_ptr<WordVocabulary> tokenizer() const { return tokenizer_; }
+    std::shared_ptr<ByteTokenizer> tokenizer() const { return tokenizer_; }
 
     // Real (not simulated) execution control for a driving debugger: called
     // once per goal, immediately before it runs, from solveIterative's
@@ -229,7 +232,7 @@ private:
 
     std::shared_ptr<ClauseTable> clauses_ = std::make_shared<ClauseTable>();
     std::shared_ptr<OperatorRegistry> operators_ = std::make_shared<OperatorRegistry>();
-    std::shared_ptr<WordVocabulary> tokenizer_;
+    std::shared_ptr<ByteTokenizer> tokenizer_;
     std::unordered_map<PatternId, std::vector<std::shared_ptr<ClauseStmt>>> operatorClauses_;
     std::unique_ptr<ModuleTransactionState> moduleTransaction_;
     std::vector<Call> autoEntryCalls_;
@@ -346,9 +349,9 @@ private:
     bool solveMultiAssignGoal(const MultiAssignGoal& goal, Env& env);
     bool solveBinaryGoal(const BinaryGoal& goal, Env& env);
     bool solveWhereGoal(const WhereGoal& goal, Env& env);
-    bool solveReturnGoal(const ReturnGoal& goal, Env& env);
+    bool solveExpressionGoal(const ExpressionGoal& goal, Env& env);
     bool solveNotGoal(const NotGoal& goal, Env& env, size_t depth);
-    bool bodyHasReturnGoal(const std::vector<std::shared_ptr<Goal>>& goals) const;
+    bool bodyHasExpressionGoal(const std::vector<std::shared_ptr<Goal>>& goals) const;
     bool evaluateGoalTruth(const std::shared_ptr<Goal>& goal, Env& env);
     // Runs one statement's store mutations as a single durable transaction, or
     // inside the caller's when one is already open (a module load). Any

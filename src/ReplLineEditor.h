@@ -8,18 +8,18 @@
 namespace Felidae {
 
 class TerminalUi;
-class WordVocabulary;
+class ByteTokenizer;
 
 class ReplLineEditor {
 public:
     ReplLineEditor(TerminalUi& ui, std::istream& input,
-                   std::shared_ptr<WordVocabulary> highlightingTokenizer = {});
+                   std::shared_ptr<ByteTokenizer> highlightingTokenizer = {});
     bool readLine(bool continuation, std::string& line);
 
 private:
     TerminalUi& ui_;
     std::istream& input_;
-    std::shared_ptr<WordVocabulary> tokenizer_;
+    std::shared_ptr<ByteTokenizer> tokenizer_;
     std::vector<std::string> history_;
 };
 

@@ -13,11 +13,9 @@ namespace Felidae {
 namespace {
 const SymbolId kMainSymbolId = symbolIdForName("main");
 
-bool hasValueReturn(const std::vector<std::shared_ptr<Goal>>& goals) {
+bool hasValueExpression(const std::vector<std::shared_ptr<Goal>>& goals) {
     for (const auto& goal : goals) {
-        if (const auto returned = nodeAs<ReturnGoal>(goal)) {
-            if (!returned->fields.empty()) return true;
-        }
+        if (nodeAs<ExpressionGoal>(goal)) return true;
     }
     return false;
 }
@@ -162,23 +160,6 @@ bool IntegerParser::atNameRange() {
     const auto& pieces = input_.entries();
     if (piece_ >= pieces.size()) return false;
     const auto id = pieces[piece_].id;
-    // `as` is an atomic grammar ID when it stands alone after a fact or query.
-    // The word vocabulary also emits that same ID as the prefix of identifiers such
-    // as `Assessment`; contiguous IDs are one identifier range, never a
-    // grammar boundary.
-    if (id == TokenId::AS) {
-        if (piece_ + 1 < pieces.size() &&
-            pieces[piece_ + 1].begin == pieces[piece_].end &&
-            !isIdentifierBoundaryId(pieces[piece_ + 1].id)) {
-            return true;
-        }
-        std::size_t following = piece_ + 1;
-        while (following < pieces.size() &&
-               (pieces[following].id == TokenId::SPACE || pieces[following].id == TokenId::TAB)) {
-            ++following;
-        }
-        if (following < pieces.size() && pieces[following].id == TokenId::COLON) return true;
-    }
     return id > TokenId::UNKNOWN && !isBuiltinTokenId(id);
 }
 
@@ -216,7 +197,7 @@ std::string IntegerParser::consumeNameRange() {
     const std::size_t begin = byte_;
     const auto& pieces = input_.entries();
     // A logical name is a contiguous run of non-grammar token IDs.
-    // The word vocabulary may split one source name into many adjacent pieces.
+    // The byte tokenizer represents one source name as adjacent byte tokens.
     while (piece_ < pieces.size()) {
         const auto id = pieces[piece_].id;
         if (id == TokenId::UNKNOWN || isIdentifierBoundaryId(id)) break;
@@ -234,7 +215,7 @@ std::string IntegerParser::consumeString() {
         if (id == TokenId::QUOTE) {
             const std::size_t end = input_.entries()[piece_].begin;
             byte_ = input_.entries()[piece_++].end;
-            // Literal content is a lexer-owned source span; the word vocabulary supplies IDs
+            // Literal content is a lexer-owned source span; the byte tokenizer supplies IDs
             // only for identifiers and mixfix anchors.
             const std::string value = input_.source().substr(begin, end - begin);
             std::string unescaped;
@@ -554,6 +535,14 @@ void IntegerParser::prepareOperatorAnnotation(const Call& annotation) {
 std::shared_ptr<Goal> IntegerParser::parseGoal() {
     skipTrivia();
     const std::size_t begin = byte_;
+    if (at(TokenId::RETURN)) {
+        throw IntegerParserError(
+            "'return' was removed; the final expression of a callable is its result");
+    }
+    if (at(TokenId::IF) || at(TokenId::ELIF)) {
+        throw IntegerParserError(
+            "Block-style 'if/elif' was removed; use 'condition then expression else expression'");
+    }
     if (match(TokenId::VAR)) {
         throw IntegerParserError("'var' was removed; declare immutable bindings with 'def'");
     }
@@ -691,54 +680,6 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
         stamp(result, begin, byte_);
         return result;
     }
-    if (match(TokenId::IF)) {
-        // `elif` is sugar, not a new AST shape: `if A then T1 elif B then T2
-        // else T3 end` desugars to exactly the nested
-        // `if A then T1 else if B then T2 else T3 end end` a user could
-        // already write by hand - one IfGoal
-        // per condition, each one's elseBranch holding the next. Only one
-        // `end` appears in the source for the whole chain, so matchBlockEnd
-        // runs once, after every branch is parsed, never per synthesized
-        // nesting level.
-        const auto parseCondition = [&]() -> std::shared_ptr<Goal> {
-            auto conditionExpression = parseBinaryExpression(
-                static_cast<int>(OperatorPrecedence::Control), TokenId::THEN);
-            require(TokenId::THEN, "Expected 'then' after if condition");
-            if (const auto comparison = nodeAs<OperatorExpression>(conditionExpression);
-                comparison && comparison->captureCount() == 2 &&
-                isComparisonOperator(comparison->coreOperator)) {
-                return std::make_shared<BinaryGoal>(comparison->capture(0),
-                    coreOperatorDefinition(comparison->coreOperator).token, comparison->capture(1));
-            }
-            return std::make_shared<BinaryGoal>(std::move(conditionExpression), TokenId::EQUAL,
-                                                std::make_shared<BoolExpr>(true), true);
-        };
-        struct Branch {
-            std::size_t begin;
-            std::shared_ptr<Goal> condition;
-            std::vector<std::shared_ptr<Goal>> thenBranch;
-        };
-        std::vector<Branch> branches;
-        branches.push_back({begin, parseCondition(), parseBlockBody()});
-        while (true) {
-            const auto branchBegin = byte_;
-            if (!match(TokenId::ELIF)) break;
-            branches.push_back({branchBegin, parseCondition(), parseBlockBody()});
-        }
-        std::vector<std::shared_ptr<Goal>> elseBranch;
-        if (match(TokenId::ELSE)) elseBranch = parseBlockBody();
-        requireBlockEnd("Expected 'end' after if statement");
-        std::shared_ptr<Goal> result;
-        auto tailElse = std::move(elseBranch);
-        for (auto branch = branches.rbegin(); branch != branches.rend(); ++branch) {
-            auto ifGoal = std::make_shared<IfGoal>(std::move(branch->condition),
-                                                   std::move(branch->thenBranch), std::move(tailElse));
-            stamp(ifGoal, branch->begin, byte_);
-            result = ifGoal;
-            tailElse = std::vector<std::shared_ptr<Goal>>{std::move(ifGoal)};
-        }
-        return result;
-    }
     if (match(TokenId::WHERE)) {
         auto expression = parseExpression();
         const auto comparison = nodeAs<OperatorExpression>(expression);
@@ -749,49 +690,6 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
         auto binary = std::make_shared<BinaryGoal>(comparison->capture(0),
             coreOperatorDefinition(comparison->coreOperator).token, comparison->capture(1));
         auto result = std::make_shared<WhereGoal>(std::move(binary));
-        stamp(result, begin, byte_);
-        return result;
-    }
-    if (match(TokenId::LPAREN)) {
-        auto grouped = parseGoalList(TokenId::RPAREN);
-        require(TokenId::RPAREN, "Expected ')' after grouped goals");
-        if (grouped.size() == 1) return grouped.front();
-        auto result = std::make_shared<GroupGoal>(std::move(grouped));
-        stamp(result, begin, byte_);
-        return result;
-    }
-    if (match(TokenId::RETURN)) {
-        std::vector<Arg> fields;
-        if (match(TokenId::LPAREN)) {
-            if (!at(TokenId::RPAREN)) {
-                do {
-                    skipTrivia();
-                    std::string name;
-                    const auto fieldByte = byte_;
-                    const auto fieldPiece = piece_;
-                    if (atNameRange()) {
-                        const auto candidate = consumeNameRange();
-                        if (match(TokenId::COLON)) name = candidate;
-                        else { byte_ = fieldByte; piece_ = fieldPiece; }
-                    }
-                    fields.emplace_back(std::move(name), parseExpression());
-                } while (match(TokenId::COMMA));
-            }
-            require(TokenId::RPAREN, "Expected ')' after return fields");
-        } else {
-            skipTrivia();
-            if (atAdjacentDot()) {
-                throw IntegerParserError(
-                    "Member access cannot begin with '.' at " +
-                    sourceLocation(byte_));
-            }
-            if (!atEnd() && !at(TokenId::ELSE) && !at(TokenId::ELIF) &&
-                !at(TokenId::CASE) && !at(TokenId::DEFAULT) &&
-                !atBlockEnd() && !at(TokenId::DOT)) {
-                fields.emplace_back("", parseExpression());
-            }
-        }
-        auto result = std::make_shared<ReturnGoal>(std::move(fields));
         stamp(result, begin, byte_);
         return result;
     }
@@ -830,42 +728,11 @@ std::shared_ptr<Goal> IntegerParser::parseGoal() {
         stamp(result, begin, byte_);
         return result;
     }
-    std::vector<QualifiedName> designations;
-    if (match(TokenId::AS)) {
-        do {
-            designations.push_back(consumeQualifiedName());
-        } while (match(TokenId::COMMA));
-    }
-    if (const auto comparison = nodeAs<OperatorExpression>(left);
-        comparison && comparison->captureCount() == 2 &&
-        isComparisonOperator(comparison->coreOperator)) {
-        const auto definition = coreOperatorDefinition(comparison->coreOperator);
-        auto result = std::make_shared<BinaryGoal>(comparison->capture(0), definition.token,
-                                                   comparison->capture(1));
-        stamp(result, begin, byte_);
-        return result;
-    }
-    skipTrivia();
-    if (piece_ < input_.entries().size() && input_.entries()[piece_].begin == byte_) {
-        const auto definition = infixOperatorForId(input_.entries()[piece_].id);
-        if (definition && isComparisonOperator(definition->id)) {
-            match(input_.entries()[piece_].id);
-            auto result = std::make_shared<BinaryGoal>(std::move(left), definition->token, parseExpression());
-            stamp(result, begin, byte_);
-            return result;
-        }
-    }
-    const auto term = nodeAs<TermExpr>(left);
-    if (!term) throw IntegerParserError(
-        "Expected a predicate call or comparison goal at " +
-        sourceLocation(begin));
-    Call call(term->name, term->nameId, term->args, term->builtinId);
-    call.patternBindings = insideQuery_;
-    for (auto& designation : designations) {
-        call.designations.push_back(std::move(designation.spelling));
-        call.designationIds.push_back(designation.nameId);
-    }
-    auto result = std::make_shared<CallGoal>(std::move(call));
+    // Ordinary expressions are values, including comparisons and calls. They
+    // never acquire solver failure semantics merely because they occur in a
+    // callable body. The most recently evaluated expression is the implicit
+    // callable result; explicit `def Fact(...)` remains the pattern form.
+    auto result = std::make_shared<ExpressionGoal>(std::move(left));
     stamp(result, begin, byte_);
     return result;
 }
@@ -907,6 +774,9 @@ std::vector<std::shared_ptr<Goal>> IntegerParser::parseBlockBody() {
 
         if (blockStatement) {
             // `end` is the complete terminator for a nested block.
+            continue;
+        }
+        if (match(TokenId::COMMA)) {
             continue;
         }
         if (match(TokenId::DOT)) {
@@ -1035,13 +905,6 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
     }
     parsingDeclarationHead_ = false;
     Call head(clauseName.spelling, clauseName.nameId, std::move(headArguments), clauseName.builtinId);
-    if (match(TokenId::AS)) {
-        do {
-            const auto designation = consumeQualifiedName();
-            head.designations.push_back(designation.spelling);
-            head.designationIds.push_back(designation.nameId);
-        } while (match(TokenId::COMMA));
-    }
     std::vector<std::shared_ptr<Goal>> body;
     std::vector<std::vector<std::shared_ptr<Goal>>> fallbackBranches;
     bool emptyDeclaration = false;
@@ -1066,13 +929,18 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
             for (const auto& binding : parsed.factors) localBindings_.insert(binding.nameId);
             for (const auto& binding : parsed.produces) localBindings_.insert(binding.nameId);
         }
-        if (match(TokenId::LPAREN)) {
-            require(TokenId::RPAREN, "Expected ')' after empty declaration");
-            emptyDeclaration = true;
-        } else if (match(TokenId::LBRACE)) {
-            require(TokenId::RBRACE, "Expected '}' after empty declaration");
+        const auto emptyByte = byte_;
+        const auto emptyPiece = piece_;
+        if (match(TokenId::LPAREN) && match(TokenId::RPAREN)) {
             emptyDeclaration = true;
         } else {
+            byte_ = emptyByte;
+            piece_ = emptyPiece;
+            if (match(TokenId::LBRACE) && match(TokenId::RBRACE)) {
+                emptyDeclaration = true;
+            } else {
+                byte_ = emptyByte;
+                piece_ = emptyPiece;
             body = parseBlockBody();
             while (match(TokenId::ELSE)) {
                 const auto beforeBranch = byte_;
@@ -1087,6 +955,7 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
                 fallbackBranches.push_back(std::move(branch));
             }
             lastClauseUsedBlockEnd_ = matchBlockEnd();
+            }
         }
         localBindings_ = outerBindings;
         if (emptyDeclaration) lastClauseUsedBlockEnd_ = matchBlockEnd();
@@ -1101,18 +970,15 @@ std::shared_ptr<Statement> IntegerParser::parseStatement() {
     if (!hasArrow) {
         consumeStatementTerminator("fact or rule declaration");
     }
-    // Annotations describe callable operator implementations.  They are
-    // methods even when their body has a bare `return` (or no value return),
-    // so classification must not depend solely on ReturnGoal fields.
+    // Value-producing callables are identified by their expression sequence;
+    // no return keyword or return-dependent fallback path exists.
     const ClauseKind kind = !hasArrow ? (hasDefKeyword ? ClauseKind::Fact : ClauseKind::EntryCall) :
         emptyDeclaration ? ClauseKind::NativeDeclaration :
-        (head.nameId == kMainSymbolId || !annotations.empty() || isMethodStyleHead(head) || hasValueReturn(body) || !fallbackBranches.empty() ? ClauseKind::Method :
+        (head.nameId == kMainSymbolId || !annotations.empty() || isMethodStyleHead(head) || hasValueExpression(body) || !fallbackBranches.empty() ? ClauseKind::Method :
          body.empty() ? ClauseKind::Fact : ClauseKind::Rule);
     auto result = std::make_shared<ClauseStmt>(std::move(head), std::move(parentNames), std::move(body),
                                                std::move(fallbackBranches),
                                                emptyDeclaration, kind);
-    result->designations = result->head.designations;
-    result->designationIds = result->head.designationIds;
     if (!annotations.empty() && result->clauseKind != ClauseKind::Method) {
         throw IntegerParserError("Annotations can only be applied to complete method declarations");
     }
@@ -1329,70 +1195,13 @@ std::shared_ptr<Statement> IntegerParser::parseNextProgramStatement() {
     return statement;
 }
 
-std::vector<std::shared_ptr<Goal>> IntegerParser::parseQuery() {
-    match(TokenId::QUESTION);
-    insideQuery_ = true;
-    std::vector<std::shared_ptr<Goal>> goals;
-    try {
-        goals = parseGoalList(TokenId::DOT);
-    } catch (...) {
-        insideQuery_ = false;
-        throw;
-    }
-    insideQuery_ = false;
-    if (match(TokenId::DOT) && !atEnd()) {
-        throw IntegerParserError("Unexpected source after query terminator");
-    }
-    if (!atEnd()) throw IntegerParserError("Expected end of query");
-    return goals;
-}
-
-bool IntegerParser::startsQuery() {
-    return at(TokenId::QUESTION);
-}
-
 bool IntegerParser::emptyInput() {
     return atEnd();
 }
 
-bool IntegerParser::startsProgramStatement() {
-    if (at(TokenId::DEF) || at(TokenId::CLASS) || at(TokenId::VAR) || at(TokenId::AT) ||
-        at(TokenId::IMPORT)) {
-        return true;
-    }
-
-    const auto savedByte = byte_;
-    const auto savedPiece = piece_;
-    bool globalBinding = false;
-    if (atNameRange()) {
-        (void)consumeNameRange();
-        globalBinding = at(TokenId::ASSIGN);
-    }
-    byte_ = savedByte;
-    piece_ = savedPiece;
-    if (globalBinding) return true;
-
-    // Calls are expressions by default in the REPL. A normal Felidae `.`
-    // terminator explicitly selects top-level fact/rule source semantics.
-    TokenId::Id last = TokenId::UNKNOWN;
-    bool inComment = false;
-    for (const auto& entry : input_.entries()) {
-        if (inComment) {
-            if (entry.id == TokenId::NEWLINE ||
-                entry.id == TokenId::CARRIAGE_RETURN) inComment = false;
-            continue;
-        }
-        if (entry.id == TokenId::COMMENT) {
-            inComment = true;
-            continue;
-        }
-        if (entry.id == TokenId::SPACE || entry.id == TokenId::TAB ||
-            entry.id == TokenId::NEWLINE || entry.id == TokenId::CARRIAGE_RETURN) {
-            continue;
-        }
-        last = entry.id;
-    }
-    return last == TokenId::DOT;
+bool IntegerParser::startsDeclaration() {
+    return at(TokenId::DEF) || at(TokenId::CLASS) || at(TokenId::AT) ||
+           at(TokenId::IMPORT);
 }
 
 std::shared_ptr<Expr> IntegerParser::parseMap() {
@@ -1487,6 +1296,26 @@ std::shared_ptr<Expr> IntegerParser::parsePrimary() {
     if (at(TokenId::LBRACKET)) return parseArray();
     if (at(TokenId::LBRACE)) return parseMap();
     if (match(TokenId::LPAREN)) {
+        const auto tupleByte = byte_;
+        const auto tuplePiece = piece_;
+        std::vector<MapEntry> fields;
+        if (atNameRange()) {
+            const auto name = consumeNameRange();
+            if (match(TokenId::COLON)) {
+                fields.emplace_back(name, parseExpression());
+                while (match(TokenId::COMMA)) {
+                    const auto field = consumeNameRange();
+                    require(TokenId::COLON, "Expected ':' after tuple field name");
+                    fields.emplace_back(field, parseExpression());
+                }
+                require(TokenId::RPAREN, "Expected ')' after named tuple");
+                auto result = std::make_shared<MapExpr>(std::move(fields));
+                stamp(result, begin, byte_);
+                return result;
+            }
+        }
+        byte_ = tupleByte;
+        piece_ = tuplePiece;
         auto result = parseExpression();
         require(TokenId::RPAREN, "Expected ')' after grouped expression");
         stamp(result, begin, byte_);
@@ -1523,7 +1352,48 @@ std::shared_ptr<Expr> IntegerParser::parsePrimary() {
 }
 
 std::shared_ptr<Expr> IntegerParser::parseExpression() {
-    return parseBinaryExpression(static_cast<int>(OperatorPrecedence::Control));
+    const auto sequence = [&]() -> std::shared_ptr<Expr> {
+        std::vector<std::shared_ptr<Expr>> expressions;
+        expressions.push_back(parseBinaryExpression(
+            static_cast<int>(OperatorPrecedence::Control), TokenId::ELSE));
+        while (match(TokenId::COMMA)) {
+            expressions.push_back(parseBinaryExpression(
+                static_cast<int>(OperatorPrecedence::Control), TokenId::ELSE));
+        }
+        if (expressions.size() == 1) return expressions.front();
+        return std::make_shared<SequenceExpr>(std::move(expressions));
+    };
+
+    auto condition = parseBinaryExpression(
+        static_cast<int>(OperatorPrecedence::Control), TokenId::THEN);
+    if (!match(TokenId::THEN)) return condition;
+
+    std::vector<ConditionalBranch> branches;
+    for (;;) {
+        branches.push_back({std::move(condition), sequence()});
+        if (!match(TokenId::ELSE)) {
+            return std::make_shared<ConditionalExpr>(std::move(branches));
+        }
+
+        const auto candidate = parseBinaryExpression(
+            static_cast<int>(OperatorPrecedence::Control), TokenId::THEN);
+        if (match(TokenId::THEN)) {
+            condition = candidate;
+            continue;
+        }
+
+        std::vector<std::shared_ptr<Expr>> fallbackExpressions;
+        fallbackExpressions.push_back(candidate);
+        while (match(TokenId::COMMA)) {
+            fallbackExpressions.push_back(parseBinaryExpression(
+                static_cast<int>(OperatorPrecedence::Control), TokenId::ELSE));
+        }
+        std::shared_ptr<Expr> fallback = fallbackExpressions.size() == 1
+            ? fallbackExpressions.front()
+            : std::make_shared<SequenceExpr>(std::move(fallbackExpressions));
+        return std::make_shared<ConditionalExpr>(
+            std::move(branches), std::move(fallback));
+    }
 }
 
 bool IntegerParser::atPatternLexeme(const PatternLexeme& lexeme) {
@@ -1931,8 +1801,23 @@ std::shared_ptr<Expr> IntegerParser::parseBinaryExpression(
 }
 
 std::shared_ptr<Expr> IntegerParser::parseExpressionText() {
+    if (at(TokenId::QUESTION)) {
+        throw IntegerParserError(
+            "External '?' queries were removed; use --query 'bucket.where(...).' instead");
+    }
     auto result = parseExpression();
     if (!atEnd()) throw IntegerParserError("Unexpected source after expression");
+    return result;
+}
+
+std::shared_ptr<Expr> IntegerParser::parseTerminatedExpressionText() {
+    if (at(TokenId::QUESTION)) {
+        throw IntegerParserError(
+            "External '?' queries were removed; use --query 'bucket.where(...).' instead");
+    }
+    auto result = parseExpression();
+    consumeStatementTerminator("expression");
+    if (!atEnd()) throw IntegerParserError("Unexpected source after expression terminator");
     return result;
 }
 

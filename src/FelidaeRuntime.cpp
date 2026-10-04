@@ -1,7 +1,6 @@
 #include "FelidaeRuntime.h"
 
 #include "IntegerParser.h"
-#include "Symbol.h"
 #include "Tokenizer.h"
 
 #include <algorithm>
@@ -81,10 +80,10 @@ Program parseProgramFile(const fs::path& path, bool manifest) {
 }
 
 Program parseProgramText(std::string text,
-                         std::shared_ptr<WordVocabulary> tokenizer,
+                         std::shared_ptr<ByteTokenizer> tokenizer,
                          std::shared_ptr<OperatorRegistry> operators,
                          bool manifest) {
-    if (!tokenizer) tokenizer = std::make_shared<WordVocabulary>();
+    if (!tokenizer) tokenizer = std::make_shared<ByteTokenizer>();
     IntegerTokenList input(std::move(tokenizer), std::move(text));
     IntegerParser parser(input, std::move(operators));
     parser.setManifestMode(manifest);
@@ -98,25 +97,11 @@ InteractiveProgramLoad loadInteractiveProgramText(
     IntegerTokenList input(interpreter.tokenizer(), std::move(text));
     IntegerParser parser(input, interpreter.operatorRegistry());
     if (parser.emptyInput()) return InteractiveProgramLoad::Empty;
-    // A terminated REPL query also ends in '.', but it is not a persistent
-    // top-level fact/rule declaration. Recognize the explicit query marker
-    // before the general statement classifier so the caller can route it to
-    // IntegerParser::parseQuery using the same grammar as file execution.
-    if (parser.startsQuery()) {
+    if (!parser.startsDeclaration()) {
+        // REPL expressions use the production parser as their completeness
+        // oracle and obey the same mandatory period as source files.
         try {
-            (void)parser.parseQuery();
-            return InteractiveProgramLoad::Expression;
-        } catch (const IntegerParserIncomplete&) {
-            return InteractiveProgramLoad::Incomplete;
-        }
-    }
-    if (!parser.startsProgramStatement()) {
-        // REPL expressions use the production expression parser as their
-        // completeness oracle. In particular, `Link(` and any other open
-        // call/collection remain at the continuation prompt until their
-        // delimiters close; no parallel bracket counter is maintained here.
-        try {
-            (void)parser.parseExpressionText();
+            (void)parser.parseTerminatedExpressionText();
             return InteractiveProgramLoad::Expression;
         } catch (const IntegerParserIncomplete&) {
             return InteractiveProgramLoad::Incomplete;
@@ -149,9 +134,9 @@ void parseProgramFileStatements(
     const std::function<void(std::shared_ptr<Statement>)>& consume,
     std::shared_ptr<OperatorRegistry> operators,
     ParserMetrics* metrics,
-    std::shared_ptr<WordVocabulary> tokenizer) {
+    std::shared_ptr<ByteTokenizer> tokenizer) {
     const fs::path normalized = resolveProgramEntryPath(path);
-    if (!tokenizer) tokenizer = std::make_shared<WordVocabulary>();
+    if (!tokenizer) tokenizer = std::make_shared<ByteTokenizer>();
     IntegerTokenList input(std::move(tokenizer), readSourceFile(normalized));
     IntegerParser parser(input, std::move(operators));
     // Publish each completed statement before parsing the next one. Import
@@ -172,7 +157,7 @@ void parseProgramFileChunks(const fs::path& path,
                             const std::function<void(Program&&)>& consume,
                             std::size_t statementsPerChunk,
                             std::shared_ptr<OperatorRegistry> operators,
-                            std::shared_ptr<WordVocabulary> tokenizer) {
+                            std::shared_ptr<ByteTokenizer> tokenizer) {
     if (statementsPerChunk == 0) statementsPerChunk = 1;
     Program chunk;
     parseProgramFileStatements(path, [&](std::shared_ptr<Statement> statement) {
@@ -269,107 +254,6 @@ std::vector<std::string> listCoreLibraries(const fs::path& startDir) {
     }
     std::sort(names.begin(), names.end());
     return names;
-}
-
-std::vector<std::shared_ptr<Goal>> parseQueryText(
-    const std::string& query,
-    std::shared_ptr<WordVocabulary> tokenizer,
-    std::shared_ptr<OperatorRegistry> operators) {
-    if (!tokenizer) tokenizer = std::make_shared<WordVocabulary>();
-    IntegerTokenList input(std::move(tokenizer), query);
-    return IntegerParser(input, std::move(operators)).parseQuery();
-}
-
-static void collectVarsExpr(const std::shared_ptr<Expr>& expr, std::vector<SymbolId>& vars) {
-    if (auto v = nodeAs<VarExpr>(expr)) {
-        if (v->nameId != InternalSymbol::SystemResultId &&
-            std::find(vars.begin(), vars.end(), v->nameId) == vars.end()) {
-            vars.push_back(v->nameId);
-        }
-    } else if (auto term = nodeAs<TermExpr>(expr)) {
-        for (const auto& arg : term->args) collectVarsExpr(arg.value, vars);
-    } else if (auto lambda = nodeAs<LambdaExpr>(expr)) {
-        collectVarsExpr(lambda->source, vars);
-        collectVarsExpr(lambda->body, vars);
-        if (lambda->right) collectVarsExpr(lambda->right, vars);
-    } else if (auto array = nodeAs<ArrayExpr>(expr)) {
-        for (const auto& item : array->items) collectVarsExpr(item, vars);
-    } else if (auto map = nodeAs<MapExpr>(expr)) {
-        for (const auto& entry : map->entries) collectVarsExpr(entry.value, vars);
-    } else if (auto access = nodeAs<AccessExpr>(expr)) {
-        auto targetVar = nodeAs<VarExpr>(access->target);
-        if (access->keyId == InternalSymbol::ResultId && targetVar && targetVar->nameId == InternalSymbol::SystemId) return;
-        collectVarsExpr(access->target, vars);
-    } else if (auto op = nodeAs<OperatorExpression>(expr)) {
-        for (size_t i = 0; i < op->captureCount(); ++i) collectVarsExpr(op->capture(i), vars);
-    }
-}
-
-static void collectVarsGoal(const std::shared_ptr<Goal>& goal, std::vector<SymbolId>& vars) {
-    if (auto cg = nodeAs<CallGoal>(goal)) {
-        for (const auto& arg : cg->call.args) collectVarsExpr(arg.value, vars);
-    } else if (auto ag = nodeAs<AssignGoal>(goal)) {
-        if (std::find(vars.begin(), vars.end(), ag->nameId) == vars.end()) {
-            vars.push_back(ag->nameId);
-        }
-        if (ag->expr) collectVarsExpr(ag->expr, vars);
-    } else if (auto bg = nodeAs<BinaryGoal>(goal)) {
-        collectVarsExpr(bg->left, vars);
-        collectVarsExpr(bg->right, vars);
-    } else if (auto wg = nodeAs<WhereGoal>(goal)) {
-        collectVarsGoal(wg->condition, vars);
-    } else if (auto ifGoal = nodeAs<IfGoal>(goal)) {
-        collectVarsGoal(ifGoal->condition, vars);
-        for (const auto& branchGoal : ifGoal->thenBranch) collectVarsGoal(branchGoal, vars);
-        for (const auto& branchGoal : ifGoal->elseBranch) collectVarsGoal(branchGoal, vars);
-    } else if (auto tg = nodeAs<TryGoal>(goal)) {
-        for (const auto& bodyGoal : tg->tryBody) collectVarsGoal(bodyGoal, vars);
-        for (const auto& clause : tg->catches) {
-            if (std::find(vars.begin(), vars.end(), clause.variableId) == vars.end()) {
-                vars.push_back(clause.variableId);
-            }
-            for (const auto& bodyGoal : clause.body) collectVarsGoal(bodyGoal, vars);
-        }
-    } else if (auto rg = nodeAs<ReturnGoal>(goal)) {
-        for (const auto& field : rg->fields) collectVarsExpr(field.value, vars);
-    } else if (auto gg = nodeAs<GroupGoal>(goal)) {
-        for (const auto& groupedGoal : gg->goals) collectVarsGoal(groupedGoal, vars);
-    } else if (auto og = nodeAs<OrGoal>(goal)) {
-        for (const auto& branch : og->branches) {
-            for (const auto& branchGoal : branch) collectVarsGoal(branchGoal, vars);
-        }
-    }
-}
-
-static std::vector<SymbolId> collectQueryVars(const std::vector<std::shared_ptr<Goal>>& goals) {
-    std::vector<SymbolId> vars;
-    for (const auto& g : goals) collectVarsGoal(g, vars);
-    return vars;
-}
-
-void printSolutions(Interpreter& interpreter,
-                    const std::vector<std::shared_ptr<Goal>>& queryGoals,
-                    const std::vector<Solution>& solutions,
-                    std::ostream& out) {
-    auto queryVars = collectQueryVars(queryGoals);
-    if (solutions.empty()) {
-        out << "false\n";
-        return;
-    }
-    if (queryVars.empty()) {
-        out << "true\n";
-        return;
-    }
-    for (size_t i = 0; i < solutions.size(); ++i) {
-        out << "Solution " << (i + 1) << ": ";
-        for (size_t j = 0; j < queryVars.size(); ++j) {
-            if (j) out << ", ";
-            const auto name = symbolNameForId(queryVars[j]);
-            auto varExpr = std::make_shared<VarExpr>(name, queryVars[j]);
-            out << name << " = " << interpreter.exprToString(varExpr, solutions[i].env);
-        }
-        out << "\n";
-    }
 }
 
 std::shared_ptr<Expr> makeSystemInput(const std::vector<std::string>& args) {

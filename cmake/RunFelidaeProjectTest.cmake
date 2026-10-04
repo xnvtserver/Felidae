@@ -37,8 +37,6 @@ set(persistent_sources
   rocks_index_seed.fx
   rocks_index_update.fx
   rocks_index_read.fx
-  rocks_designation_seed.fx
-  rocks_designation_read.fx
   rocks_inheritance_seed.fx
   rocks_inheritance_read.fx
   rocks_config_set.fx

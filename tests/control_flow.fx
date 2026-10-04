@@ -6,8 +6,7 @@ end
 
 def main() =>
     for i in range(0, 5) then
-        if i == 2 then
-            continue.
+         i == 2 then continue else nil.
         end
         Visit.insert(values: {id: i, source: "for"}).
     end

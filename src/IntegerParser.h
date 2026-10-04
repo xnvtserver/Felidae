@@ -46,11 +46,10 @@ public:
     Program parseProgram();
     bool programComplete();
     std::shared_ptr<Statement> parseNextProgramStatement();
-    std::vector<std::shared_ptr<Goal>> parseQuery();
     std::shared_ptr<Expr> parseExpressionText();
+    std::shared_ptr<Expr> parseTerminatedExpressionText();
     bool emptyInput();
-    bool startsQuery();
-    bool startsProgramStatement();
+    bool startsDeclaration();
     const IntegerParserMetrics& metrics() const noexcept { return metrics_; }
 
 private:

@@ -5,80 +5,19 @@
 #include <stdexcept>
 
 namespace Felidae {
-namespace {
-
-std::size_t statementEnd(std::string_view source, std::size_t begin) {
-  char quoted = 0;
-  bool escaped = false;
-  bool comment = false;
-  for (std::size_t index = begin; index < source.size(); ++index) {
-    const char byte = source[index];
-    if (comment) {
-      if (byte == '\n' || byte == '\r')
-        comment = false;
-      continue;
-    }
-    if (quoted) {
-      if (escaped)
-        escaped = false;
-      else if (quoted == '"' && byte == '\\')
-        escaped = true;
-      else if (byte == quoted)
-        quoted = 0;
-      continue;
-    }
-    if (byte == '"' || byte == '\'') {
-      quoted = byte;
-      continue;
-    }
-    if (byte == '#') {
-      comment = true;
-      continue;
-    }
-    if (byte != '.')
-      continue;
-    // Decimal points and adjacent member access are grammar punctuation, not
-    // framing. An explicit terminator is followed by trivia or end of input.
-    const auto next = index + 1;
-    if (next == source.size() || source[next] == ' ' || source[next] == '\t' ||
-        source[next] == '\r' || source[next] == '\n' || source[next] == '#') {
-      auto end = next;
-      for (;;) {
-        while (end < source.size() &&
-               (source[end] == ' ' || source[end] == '\t' ||
-                source[end] == '\r' || source[end] == '\n'))
-          ++end;
-        if (end == source.size() || source[end] != '#')
-          return end;
-        while (end < source.size() && source[end] != '\r' && source[end] != '\n')
-          ++end;
-      }
-    }
-  }
-  return source.size();
-}
-
-} // namespace
-
-IntegerTokenList::IntegerTokenList(std::shared_ptr<WordVocabulary> tokenizer,
+IntegerTokenList::IntegerTokenList(std::shared_ptr<ByteTokenizer> tokenizer,
                                    std::string source)
-    : source_(std::move(source)), tokenizer_(std::move(tokenizer)),
-      complete_(source_.empty()) {
+    : source_(std::move(source)), tokenizer_(std::move(tokenizer)) {
   if (!tokenizer_)
     throw std::invalid_argument("IntegerTokenList requires a tokenizer");
-  if (!complete_)
-    encodeNextStatement();
+  encodeSource();
 }
 
-void IntegerTokenList::encodeNextStatement() const {
-  if (complete_)
-    return;
-  const auto begin = nextStatementBegin_;
-  const auto end = statementEnd(source_, begin);
-  const std::string_view statement(source_.data() + begin, end - begin);
-  ++encodeCount_;
+void IntegerTokenList::encodeSource() {
+  const std::string_view statement(source_);
+  if (!statement.empty()) ++encodeCount_;
   const auto push = [&](TokenId::Id id, std::size_t first, std::size_t last) {
-    entries_.push_back(Entry{id, begin + first, begin + last});
+    entries_.push_back(Entry{id, first, last});
   };
   const auto fixedId = [](std::string_view spelling) -> TokenId::Id {
     for (std::size_t index = 0; index < std::size(kBuiltinTokens); ++index) {
@@ -104,7 +43,6 @@ void IntegerTokenList::encodeNextStatement() const {
     if (spelling == "super") return TokenId::SUPER;
     if (spelling == "try") return TokenId::TRY;
     if (spelling == "catch") return TokenId::CATCH;
-    if (spelling == "var") return TokenId::VAR;
     if (spelling == "=") return TokenId::EQUAL;
     return TokenId::UNKNOWN;
   };
@@ -162,7 +100,7 @@ void IntegerTokenList::encodeNextStatement() const {
     }
     bool matched = false;
     for (const std::string_view syntax : {std::string_view(":="), std::string_view("::"),
-                                           std::string_view("=>"), std::string_view("=="),
+                                           std::string_view("=>"),
                                            std::string_view("!="), std::string_view("<="),
                                            std::string_view(">=")}) {
       if (statement.substr(offset).starts_with(syntax)) {
@@ -196,7 +134,7 @@ void IntegerTokenList::encodeNextStatement() const {
         word == "index" || word == "extends" || word == "elif" || word == "new" ||
         word == "for" || word == "in" || word == "while" || word == "switch" ||
         word == "case" || word == "default" || word == "break" ||
-        word == "continue" || word == "def" || word == "var" ||
+        word == "continue" || word == "def" ||
         word == "try" || word == "catch") {
       push(keyword, first, offset);
       continue;
@@ -204,8 +142,6 @@ void IntegerTokenList::encodeNextStatement() const {
     for (const auto &piece : tokenizer_->encodeWithOffsets(word))
       push(static_cast<TokenId::Id>(piece.id), first + piece.begin, first + piece.end);
   }
-  nextStatementBegin_ = end;
-  complete_ = end == source_.size();
 }
 
 IntegerTokenList::LineColumn IntegerTokenList::lineColumn(std::size_t offset) const {
@@ -228,21 +164,17 @@ IntegerTokenList::LineColumn IntegerTokenList::lineColumn(std::size_t offset) co
 }
 
 bool IntegerTokenList::has(std::size_t index) const {
-  while (index >= entries_.size() && !complete_)
-    encodeNextStatement();
   return index < entries_.size();
 }
 
 const IntegerTokenList::Entry &
 IntegerTokenList::entry(std::size_t index) const {
   if (!has(index))
-    throw std::out_of_range("word vocabulary token index is out of range");
+    throw std::out_of_range("byte tokenizer token index is out of range");
   return entries_[index];
 }
 
 const std::vector<IntegerTokenList::Entry> &IntegerTokenList::entries() const {
-  while (!complete_)
-    encodeNextStatement();
   return entries_;
 }
 

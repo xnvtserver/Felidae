@@ -69,7 +69,7 @@ bool terminalColorAllowed() {
 bool isKeyword(TokenId::Id id) {
     switch (id) {
         case TokenId::IMPORT: case TokenId::NOT: case TokenId::AND:
-        case TokenId::OR: case TokenId::THEN: case TokenId::AS:
+        case TokenId::OR: case TokenId::THEN:
         case TokenId::IF: case TokenId::ELSE: case TokenId::RETURN:
         case TokenId::WHERE: case TokenId::EXTEND: case TokenId::LAMBDA:
         case TokenId::CLASS: case TokenId::END: case TokenId::INDEX:

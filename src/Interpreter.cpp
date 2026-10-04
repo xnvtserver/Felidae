@@ -610,7 +610,7 @@ static std::string astNodeKind(const std::shared_ptr<AstNode>& node) {
         std::dynamic_pointer_cast<ContinueGoal>(node)) return "stmt";
     if (std::dynamic_pointer_cast<AssignGoal>(node) ||
         std::dynamic_pointer_cast<MultiAssignGoal>(node)) return "stmt";
-    if (std::dynamic_pointer_cast<ReturnGoal>(node)) return "stmt";
+    if (std::dynamic_pointer_cast<ExpressionGoal>(node)) return "stmt";
     if (std::dynamic_pointer_cast<WhereGoal>(node)) return "stmt";
     if (std::dynamic_pointer_cast<CallGoal>(node)) return "stmt";
     if (std::dynamic_pointer_cast<NotGoal>(node)) return "stmt";
@@ -1037,7 +1037,7 @@ static std::string rowsToCsvText(const std::vector<std::shared_ptr<Expr>>& rows)
 }
 
 Interpreter::Interpreter()
-    : tokenizer_(std::make_shared<WordVocabulary>()) {}
+    : tokenizer_(std::make_shared<ByteTokenizer>()) {}
 
 Interpreter::~Interpreter() {
     joinThreads();
@@ -1846,11 +1846,11 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
                 }
                 return false;
             };
-            const ReturnGoal* returned = nullptr;
+            const ExpressionGoal* resultExpression = nullptr;
             for (const auto& goal : clause->body) {
-                if (auto candidate = nodeAs<ReturnGoal>(goal)) {
-                    if (returned) throw InterpreterError("@matcher must return exactly one RequirementMatch");
-                    returned = candidate.get();
+                if (auto candidate = nodeAs<ExpressionGoal>(goal)) {
+                    if (resultExpression) throw InterpreterError("@matcher must produce exactly one RequirementMatch");
+                    resultExpression = candidate.get();
                     continue;
                 }
                 if (auto guard = nodeAs<WhereGoal>(goal)) {
@@ -1867,15 +1867,15 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
                     continue;
                 } else {
                     throw InterpreterError(
-                        "@matcher bodies may contain only static where guards and RequirementMatch return");
+                        "@matcher bodies may contain only static where guards and a RequirementMatch expression");
                 }
             }
-            if (!returned || returned->fields.size() != 1 || !returned->fields.front().name.empty()) {
-                throw InterpreterError("@matcher must return RequirementMatch(...)");
+            if (!resultExpression) {
+                throw InterpreterError("@matcher must produce RequirementMatch(...)");
             }
-            const auto wrapper = nodeAs<TermExpr>(returned->fields.front().value);
+            const auto wrapper = nodeAs<TermExpr>(resultExpression->expression);
             if (!wrapper || wrapper->name != "RequirementMatch") {
-                throw InterpreterError("@matcher must return the RequirementMatch wrapper");
+                throw InterpreterError("@matcher must produce the RequirementMatch wrapper");
             }
             if (wrapper->args.size() != parsed.produces.size()) {
                 throw InterpreterError("RequirementMatch fields must exactly match @matcher 'produces'");
@@ -2012,7 +2012,7 @@ std::shared_ptr<Expr> Interpreter::evaluateGlobal(const std::string& name) const
 std::shared_ptr<Expr> Interpreter::evaluateExpressionText(const std::string& text) {
     IntegerTokenList tokenList(tokenizer_, text);
     IntegerParser parser(tokenList, operators_);
-    auto expr = parser.parseExpressionText();
+    auto expr = parser.parseTerminatedExpressionText();
     std::shared_ptr<Expr> value;
     Env env;
     if (!evalExprValue(expr, env, value)) {
@@ -2048,11 +2048,11 @@ std::shared_ptr<Expr> Interpreter::callMain(const std::shared_ptr<Expr>& systemI
     }
     strictValueFailures_ = previousStrictValueFailures;
     if (out.empty()) {
-        throw InterpreterError("main() produced no result. A goal in main failed; add an explicit return or check method calls used as values.");
+        throw InterpreterError("main() produced no result; check its final expression and any failed method calls");
     }
     auto returned = findReturnValue(out.front().env);
     if (!returned) {
-        throw InterpreterError("main() completed without a return value");
+        throw InterpreterError("main() completed without a final expression value");
     }
     return returned->clone();
 }
@@ -2176,6 +2176,27 @@ std::string Interpreter::valueToDebugString(const std::shared_ptr<Expr>& value) 
         rendered += ">";
     }
     return rendered;
+}
+
+void Interpreter::writeQueryResult(const std::shared_ptr<Expr>& value,
+                                   std::ostream& out) {
+    if (const auto selection = nodeAs<FactSelectionExpr>(value)) {
+        const FactSelectionVisitor visitor = [&](const std::shared_ptr<MapExpr>& row) {
+            out << publicDisplayString(row) << '\n';
+            return true;
+        };
+        (void)materializeFactSelection(selection, 0, nullptr, &visitor);
+        return;
+    }
+    if (const auto selection = nodeAs<GraphSelectionExpr>(value)) {
+        const GraphSelectionVisitor visitor = [&](const std::shared_ptr<MapExpr>& row) {
+            out << publicDisplayString(row) << '\n';
+            return true;
+        };
+        (void)materializeGraphSelection(selection, 0, &visitor);
+        return;
+    }
+    out << valueToDisplayString(value) << '\n';
 }
 void Interpreter::solveRecursive(const std::vector<std::shared_ptr<Goal>>& goals,
                                  Env env,
@@ -2321,9 +2342,9 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
                 if (solveWhereGoal(*where, frame.env)) continueFrame(std::move(frame.env));
                 continue;
             }
-            case GoalKind::Return: {
-                const auto returned = std::static_pointer_cast<ReturnGoal>(goal);
-                if (solveReturnGoal(*returned, frame.env)) continueFrame(std::move(frame.env));
+            case GoalKind::Expression: {
+                const auto expression = std::static_pointer_cast<ExpressionGoal>(goal);
+                if (solveExpressionGoal(*expression, frame.env)) continueFrame(std::move(frame.env));
                 continue;
             }
             case GoalKind::Not: {
@@ -2763,6 +2784,7 @@ bool Interpreter::solveAssignGoal(const AssignGoal& goal, Env& env) {
     // choice point. Bind the evaluated runtime value directly. Re-running it
     // through unifyExpr re-evaluated list containers and deep-cloned class
     // objects held by them, breaking reference identity across `list.get`.
+    env[InternalSymbol::ReturnId] = value;
     if (activeBindingTrail_) {
         activeBindingTrail_->assign(env, goal.nameId, std::move(value));
     } else {
@@ -2824,6 +2846,7 @@ bool Interpreter::solveMultiAssignGoal(const MultiAssignGoal& goal, Env& env) {
                 return false;
             }
         }
+        env[InternalSymbol::ReturnId] = value;
         activeBindingTrail_ = previousTrail;
         return true;
     } catch (...) {
@@ -2892,12 +2915,11 @@ bool Interpreter::solveWhereGoal(const WhereGoal& goal, Env& env) {
     return false;
 }
 
-bool Interpreter::solveReturnGoal(const ReturnGoal& goal, Env& env) {
-    if (goal.fields.size() == 1 && goal.fields.front().name.empty()) {
+bool Interpreter::solveExpressionGoal(const ExpressionGoal& goal, Env& env) {
         if (valueCallTrampolineDepth_ > 0 &&
             methodCallDepth_ == trampolineMethodDepth_ + 1) {
             if (auto tailCall =
-                    nodeAs<TermExpr>(goal.fields.front().value)) {
+                    nodeAs<TermExpr>(goal.expression)) {
                 // A user-method return can be executed by the iterative value
                 // call frame. Builtins and native calls retain their normal
                 // value contract: they may have output adaptation or ABI
@@ -2917,73 +2939,54 @@ bool Interpreter::solveReturnGoal(const ReturnGoal& goal, Env& env) {
             }
         }
         std::shared_ptr<Expr> value;
-        if (!evalExprValue(goal.fields.front().value, env, value)) {
+        if (!evalExprValue(goal.expression, env, value)) {
             if (strictValueFailures_) {
-                throw InterpreterError("return value '" + goal.fields.front().value->debug() + "' did not evaluate");
+                throw InterpreterError("expression '" + goal.expression->debug() + "' did not evaluate");
             }
             return false;
         }
         env[InternalSymbol::ReturnId] = value;
         return true;
-    }
-
-    std::vector<MapEntry> entries;
-    entries.reserve(goal.fields.size());
-    for (const auto& field : goal.fields) {
-        std::shared_ptr<Expr> value;
-        if (!evalExprValue(field.value, env, value)) {
-            if (strictValueFailures_) {
-                throw InterpreterError("return field '" + field.name + ": " + field.value->debug() + "' did not evaluate");
-            }
-            return false;
-        }
-        entries.push_back(MapEntry{field.name, value});
-    }
-    env[InternalSymbol::ReturnId] = std::make_shared<MapExpr>(std::move(entries));
-    return true;
 }
 
-bool Interpreter::bodyHasReturnGoal(const std::vector<std::shared_ptr<Goal>>& goals) const {
+bool Interpreter::bodyHasExpressionGoal(const std::vector<std::shared_ptr<Goal>>& goals) const {
     for (const auto& goal : goals) {
         switch (goal->kind()) {
-            case GoalKind::Return: {
-                auto returned = std::static_pointer_cast<ReturnGoal>(goal);
-                if (!returned->fields.empty()) return true;
-                break;
-            }
+            case GoalKind::Expression:
+                return true;
             case GoalKind::Group: {
                 auto group = std::static_pointer_cast<GroupGoal>(goal);
-                if (bodyHasReturnGoal(group->goals)) return true;
+                if (bodyHasExpressionGoal(group->goals)) return true;
                 break;
             }
             case GoalKind::Or: {
                 auto orGoal = std::static_pointer_cast<OrGoal>(goal);
                 for (const auto& branch : orGoal->branches) {
-                    if (bodyHasReturnGoal(branch)) return true;
+                    if (bodyHasExpressionGoal(branch)) return true;
                 }
                 break;
             }
             case GoalKind::If: {
                 auto ifGoal = std::static_pointer_cast<IfGoal>(goal);
-                if (bodyHasReturnGoal(ifGoal->thenBranch) || bodyHasReturnGoal(ifGoal->elseBranch)) return true;
+                if (bodyHasExpressionGoal(ifGoal->thenBranch) || bodyHasExpressionGoal(ifGoal->elseBranch)) return true;
                 break;
             }
             case GoalKind::For:
-                if (bodyHasReturnGoal(std::static_pointer_cast<ForGoal>(goal)->body)) return true;
+                if (bodyHasExpressionGoal(std::static_pointer_cast<ForGoal>(goal)->body)) return true;
                 break;
             case GoalKind::While:
-                if (bodyHasReturnGoal(std::static_pointer_cast<WhileGoal>(goal)->body)) return true;
+                if (bodyHasExpressionGoal(std::static_pointer_cast<WhileGoal>(goal)->body)) return true;
                 break;
             case GoalKind::Switch:
                 for (const auto& branch : std::static_pointer_cast<SwitchGoal>(goal)->cases) {
-                    if (bodyHasReturnGoal(branch.body)) return true;
+                    if (bodyHasExpressionGoal(branch.body)) return true;
                 }
                 break;
             case GoalKind::Try: {
                 const auto guarded = std::static_pointer_cast<TryGoal>(goal);
-                if (bodyHasReturnGoal(guarded->tryBody)) return true;
+                if (bodyHasExpressionGoal(guarded->tryBody)) return true;
                 for (const auto& clause : guarded->catches) {
-                    if (bodyHasReturnGoal(clause.body)) return true;
+                    if (bodyHasExpressionGoal(clause.body)) return true;
                 }
                 break;
             }
@@ -3060,7 +3063,7 @@ std::shared_ptr<Expr> Interpreter::successTruthTuple(const std::vector<std::shar
     std::vector<Arg> values;
     values.reserve(goals.size());
     for (const auto& goal : goals) {
-        if (nodeAs<ReturnGoal>(goal)) continue;
+        if (nodeAs<ExpressionGoal>(goal)) continue;
         values.push_back(Arg{"value", std::make_shared<BoolExpr>(true)});
     }
     if (values.empty()) {
@@ -3073,7 +3076,7 @@ std::shared_ptr<Expr> Interpreter::executeGoalTruthTuple(const std::vector<std::
     std::vector<Arg> values;
     values.reserve(goals.size());
     for (const auto& goal : goals) {
-        if (nodeAs<ReturnGoal>(goal)) continue;
+        if (nodeAs<ExpressionGoal>(goal)) continue;
         const bool ok = evaluateGoalTruth(goal, env);
         values.push_back(Arg{"value", std::make_shared<BoolExpr>(ok)});
     }
@@ -3152,7 +3155,7 @@ bool Interpreter::solveMethodCall(const Call& call,
         const Arg* callArg = findArg(call, param, paramIndex);
         for (auto& candidate : candidates) {
             if (!callArg) {
-                if (paramPlan.typedParam && bodyHasReturnGoal(originalClause->body)) continue;
+                if (paramPlan.typedParam && bodyHasExpressionGoal(originalClause->body)) continue;
                 nextCandidates.push_back(std::move(candidate));
                 continue;
             }
@@ -3352,7 +3355,7 @@ bool Interpreter::solveMethodCall(const Call& call,
     }
 
     for (auto& candidate : candidates) {
-        if (valueCallMode_ && originalClause->head.name != "main" && !bodyHasReturnGoal(originalClause->body)) {
+        if (valueCallMode_ && originalClause->head.name != "main" && !bodyHasExpressionGoal(originalClause->body)) {
             Env truthEnv;
             auto truthTuple = executeGoalTruthTuple(originalClause->body, candidate, truthEnv);
             truthEnv[InternalSymbol::ReturnId] = truthTuple;
@@ -3545,10 +3548,8 @@ bool Interpreter::isMethodTransitivelyPure(
                 }
             } else if (const auto assign = nodeAs<AssignGoal>(goal)) {
                 if (!inspectExpression(inspectExpression, assign->expr)) return false;
-            } else if (const auto returned = nodeAs<ReturnGoal>(goal)) {
-                for (const auto& field : returned->fields) {
-                    if (!inspectExpression(inspectExpression, field.value)) return false;
-                }
+            } else if (const auto expression = nodeAs<ExpressionGoal>(goal)) {
+                if (!inspectExpression(inspectExpression, expression->expression)) return false;
             } else if (const auto conditional = nodeAs<IfGoal>(goal)) {
                 if (!self(self, {conditional->condition}) ||
                     !self(self, conditional->thenBranch) ||
@@ -6065,35 +6066,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         try {
             IntegerTokenList tokenList(tokenizer_, source->value);
             IntegerParser parser(tokenList, operators_);
-            if (parser.startsQuery()) {
-                const auto solutions = solve(parser.parseQuery());
-                std::vector<std::shared_ptr<Expr>> resultItems;
-                resultItems.reserve(solutions.size());
-                for (const auto& solution : solutions) {
-                    std::vector<MapEntry> bindings;
-                    for (const auto& binding : solution.env) {
-                        if (binding.first <= InternalSymbol::SystemResultId) continue;
-                        const std::string name = symbolNameForId(binding.first);
-                        if (name.empty() || isInternalGeneratedSymbolId(binding.first)) continue;
-                        const auto value = resolveExpr(binding.second, solution.env);
-                        if (value) bindings.emplace_back(name, value->clone());
-                    }
-                    std::sort(bindings.begin(), bindings.end(), [](const MapEntry& left, const MapEntry& right) {
-                        return left.key < right.key;
-                    });
-                    auto solutionValue = std::make_shared<MapExpr>(std::move(bindings));
-                    solutionValue->factType = "QuerySolution";
-                    resultItems.push_back(std::move(solutionValue));
-                }
-                auto result = std::make_shared<MapExpr>(std::vector<MapEntry>{
-                    {"solutions", std::make_shared<ArrayExpr>(std::move(resultItems))},
-                    {"count", std::make_shared<NumberExpr>(static_cast<double>(solutions.size()))}
-                });
-                result->factType = "QueryResult";
-                out = std::move(result);
-                return true;
-            }
-            return evalExprValue(parser.parseExpressionText(), env, out);
+            return evalExprValue(parser.parseTerminatedExpressionText(), env, out);
         } catch (const IntegerParserError& error) {
             throw InterpreterError(std::string("system.run parse error: ") + error.what());
         }
@@ -6522,7 +6495,7 @@ bool Interpreter::evalCallAsValueOnce(
             // always use the method-call path below so class receivers cannot
             // be dropped or reconstructed as ordinary arguments.
             if (isMethodClause(*clause)) continue;
-            if (bodyHasReturnGoal(clause->body)) continue;
+            if (bodyHasExpressionGoal(clause->body)) continue;
             std::string outputName;
             size_t missingCount = 0;
             for (const auto& parameter : clause->head.args) {
@@ -8046,6 +8019,36 @@ bool Interpreter::evalCallAsValueOnce(
 }
 
 bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& env, std::shared_ptr<Expr>& out) {
+    if (auto sequence = nodeAs<SequenceExpr>(expr)) {
+        if (sequence->expressions.empty()) {
+            out = std::make_shared<NilExpr>();
+            return true;
+        }
+        for (const auto& expression : sequence->expressions) {
+            if (!evalExprValue(expression, env, out)) return false;
+        }
+        return true;
+    }
+    if (auto conditional = nodeAs<ConditionalExpr>(expr)) {
+        for (const auto& branch : conditional->branches) {
+            std::shared_ptr<Expr> condition;
+            if (!evalExprValue(branch.condition, env, condition)) return false;
+            const auto boolean = nodeAs<BoolExpr>(condition);
+            if (!boolean) {
+                throw InterpreterError(
+                    "Conditional condition must evaluate to bool, got " +
+                    condition->debug());
+            }
+            if (boolean->value) {
+                return evalExprValue(branch.result, env, out);
+            }
+        }
+        if (conditional->fallback) {
+            return evalExprValue(conditional->fallback, env, out);
+        }
+        out = std::make_shared<BoolExpr>(false);
+        return true;
+    }
     if (auto op = nodeAs<OperatorExpression>(expr)) {
         return evalOperatorExpr(*op, env, out);
     }
@@ -9101,12 +9104,12 @@ bool Interpreter::evalCustomOperatorExpr(const OperatorExpression& expression,
                 }
             }
             if (!guardsMatch) continue;
-            const ReturnGoal* returned = nullptr;
+            const ExpressionGoal* resultExpression = nullptr;
             for (const auto& goal : matcherClause->body) {
-                if (auto result = nodeAs<ReturnGoal>(goal)) returned = result.get();
+                if (auto result = nodeAs<ExpressionGoal>(goal)) resultExpression = result.get();
             }
-            if (!returned || returned->fields.size() != 1) continue;
-            const auto wrapper = nodeAs<TermExpr>(returned->fields.front().value);
+            if (!resultExpression) continue;
+            const auto wrapper = nodeAs<TermExpr>(resultExpression->expression);
             if (!wrapper) continue;
 
             std::vector<std::shared_ptr<Expr>> factorPrototypes;
@@ -9555,11 +9558,9 @@ std::shared_ptr<ClauseStmt> Interpreter::standardizeApart(const std::shared_ptr<
             }
             case GoalKind::Where:
                 return self(self, std::static_pointer_cast<WhereGoal>(goal)->condition);
-            case GoalKind::Return:
-                for (const auto& field : std::static_pointer_cast<ReturnGoal>(goal)->fields) {
-                    if (exprNeedsRename(field.value)) return true;
-                }
-                return false;
+            case GoalKind::Expression:
+                return exprNeedsRename(
+                    std::static_pointer_cast<ExpressionGoal>(goal)->expression);
             case GoalKind::Group:
                 for (const auto& nested : std::static_pointer_cast<GroupGoal>(goal)->goals) {
                     if (self(self, nested)) return true;
@@ -9786,12 +9787,10 @@ std::shared_ptr<Goal> Interpreter::renameGoal(const std::shared_ptr<Goal>& goal,
             return std::make_shared<BreakGoal>();
         case GoalKind::Continue:
             return std::make_shared<ContinueGoal>();
-        case GoalKind::Return: {
-            auto rg = std::static_pointer_cast<ReturnGoal>(goal);
-            std::vector<Arg> fields;
-            fields.reserve(rg->fields.size());
-            for (const auto& field : rg->fields) fields.push_back(Arg{field.name, field.nameId, renameExpr(field.value, names)});
-            return std::make_shared<ReturnGoal>(std::move(fields));
+        case GoalKind::Expression: {
+            auto expression = std::static_pointer_cast<ExpressionGoal>(goal);
+            return std::make_shared<ExpressionGoal>(
+                renameExpr(expression->expression, names));
         }
         case GoalKind::Group: {
             auto gg = std::static_pointer_cast<GroupGoal>(goal);
@@ -9896,6 +9895,25 @@ std::shared_ptr<Expr> Interpreter::renameExpr(const std::shared_ptr<Expr>& expr,
         renamed->module = op->module;
         return renamed;
     }
+    if (auto sequence = nodeAs<SequenceExpr>(expr)) {
+        std::vector<std::shared_ptr<Expr>> expressions;
+        expressions.reserve(sequence->expressions.size());
+        for (const auto& expression : sequence->expressions) {
+            expressions.push_back(renameExpr(expression, names));
+        }
+        return std::make_shared<SequenceExpr>(std::move(expressions));
+    }
+    if (auto conditional = nodeAs<ConditionalExpr>(expr)) {
+        std::vector<ConditionalBranch> branches;
+        branches.reserve(conditional->branches.size());
+        for (const auto& branch : conditional->branches) {
+            branches.push_back({renameExpr(branch.condition, names),
+                                renameExpr(branch.result, names)});
+        }
+        return std::make_shared<ConditionalExpr>(
+            std::move(branches),
+            conditional->fallback ? renameExpr(conditional->fallback, names) : nullptr);
+    }
     return expr;
 }
 
@@ -9930,6 +9948,19 @@ bool Interpreter::exprNeedsRename(const std::shared_ptr<Expr>& expr) const {
             if (exprNeedsRename(op->capture(i))) return true;
         }
         return false;
+    }
+    if (auto sequence = nodeAs<SequenceExpr>(expr)) {
+        for (const auto& expression : sequence->expressions) {
+            if (exprNeedsRename(expression)) return true;
+        }
+        return false;
+    }
+    if (auto conditional = nodeAs<ConditionalExpr>(expr)) {
+        for (const auto& branch : conditional->branches) {
+            if (exprNeedsRename(branch.condition) ||
+                exprNeedsRename(branch.result)) return true;
+        }
+        return conditional->fallback && exprNeedsRename(conditional->fallback);
     }
     // Lambda parameter names are invocation-local even when their current
     // source/body happens not to mention another ordinary variable.
@@ -10031,11 +10062,8 @@ bool Interpreter::goalMayHaveSideEffects(const std::shared_ptr<Goal>& goal) cons
         }
         return false;
     }
-    if (auto ret = nodeAs<ReturnGoal>(goal)) {
-        for (const auto& field : ret->fields) {
-            if (exprMayHaveSideEffects(field.value)) return true;
-        }
-        return false;
+    if (auto expression = nodeAs<ExpressionGoal>(goal)) {
+        return exprMayHaveSideEffects(expression->expression);
     }
     if (auto group = nodeAs<GroupGoal>(goal)) {
         for (const auto& nested : group->goals) {
@@ -10083,6 +10111,20 @@ bool Interpreter::exprMayHaveSideEffects(const std::shared_ptr<Expr>& expr) cons
             if (exprMayHaveSideEffects(op->capture(i))) return true;
         }
         return false;
+    }
+    if (auto sequence = nodeAs<SequenceExpr>(expr)) {
+        for (const auto& expression : sequence->expressions) {
+            if (exprMayHaveSideEffects(expression)) return true;
+        }
+        return false;
+    }
+    if (auto conditional = nodeAs<ConditionalExpr>(expr)) {
+        for (const auto& branch : conditional->branches) {
+            if (exprMayHaveSideEffects(branch.condition) ||
+                exprMayHaveSideEffects(branch.result)) return true;
+        }
+        return conditional->fallback &&
+               exprMayHaveSideEffects(conditional->fallback);
     }
     if (auto lambda = nodeAs<LambdaExpr>(expr)) {
         return exprMayHaveSideEffects(lambda->source) ||

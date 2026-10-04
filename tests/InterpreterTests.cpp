@@ -143,7 +143,7 @@ void testAdditiveStoreFormatUpgrade() {
 void testLineColumnIndex() {
     // Lines end at \n, \r\n or a lone \r; columns count bytes from the line start.
     const Felidae::IntegerTokenList list(
-        std::make_shared<Felidae::WordVocabulary>(), std::string("a\r\nb\rc\nd"));
+        std::make_shared<Felidae::ByteTokenizer>(), std::string("a\r\nb\rc\nd"));
     const auto check = [&](std::size_t offset, int line, int column) {
         const auto position = list.lineColumn(offset);
         require(position.line == line && position.column == column,

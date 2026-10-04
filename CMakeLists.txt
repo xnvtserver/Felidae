@@ -848,29 +848,6 @@ if(FELIDAE_BUILD_TESTS)
     FIXTURES_SETUP index_updated
     PASS_REGULAR_EXPRESSION "changed: 1.*active: 1")
 
-  set(FELIDAE_DESIGNATION_TEST_PROJECT
-    "${CMAKE_CURRENT_BINARY_DIR}/test-projects/persistent/designation")
-  set(FELIDAE_DESIGNATION_TEST_DB "${FELIDAE_DESIGNATION_TEST_PROJECT}/data.db")
-  add_test(NAME rocks_designation_clean
-    COMMAND ${CMAKE_COMMAND}
-      -DDATABASE_DIRECTORY=${FELIDAE_DESIGNATION_TEST_DB}
-      -P ${CMAKE_SOURCE_DIR}/cmake/CleanFelidaeTestDatabase.cmake)
-  set_tests_properties(rocks_designation_clean PROPERTIES
-    FIXTURES_SETUP designation_clean)
-
-  add_test(NAME rocks_designation_seed
-    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/designation/rocks_designation_seed.fx)
-  set_tests_properties(rocks_designation_seed PROPERTIES
-    FIXTURES_REQUIRED designation_clean
-    FIXTURES_SETUP designation_seeded
-    PASS_REGULAR_EXPRESSION "1")
-
-  add_test(NAME rocks_designation_read
-    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/designation/rocks_designation_read.fx)
-  set_tests_properties(rocks_designation_read PROPERTIES
-    FIXTURES_REQUIRED designation_seeded
-    PASS_REGULAR_EXPRESSION "1")
-
   add_test(NAME rocks_index_restart_read
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/index/rocks_index_read.fx)
   set_tests_properties(rocks_index_restart_read PROPERTIES

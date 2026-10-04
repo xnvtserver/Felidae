@@ -296,27 +296,27 @@ inline bool isFelidaeLikelyTypeName(const std::string& name) {
     return !name.empty();
 }
 
-// Model-generation spelling specification for fixed Felidae syntax. Runtime
-// grammar IDs are generated into FelidaeTokenizerIds.h; this file never
-// owns numeric token identities.
+// Fixed spelling table for Felidae syntax. Numeric grammar IDs are stable in
+// FelidaeTokenizerIds.h; runtime tokenization does not generate or load a
+// model.
 struct BuiltinTokenDefinition {
     std::string_view spelling;
     std::string_view idName;
 };
 
 inline constexpr BuiltinTokenDefinition kBuiltinTokens[] = {
-    {"import", "IMPORT"}, {"not", "NOT"}, {"and", "AND"}, {"or", "OR"}, {"then", "THEN"}, {"as", "AS"},
+    {"import", "IMPORT"}, {"not", "NOT"}, {"and", "AND"}, {"or", "OR"}, {"then", "THEN"},
     {"if", "IF"}, {"else", "ELSE"}, {"return", "RETURN"}, {"where", "WHERE"}, {"extend", "EXTEND"},
     {"lambda", "LAMBDA"}, {"true", "TRUE"}, {"false", "FALSE"}, {"nil", "NIL"},
     {"(", "LPAREN"}, {")", "RPAREN"}, {"{", "LBRACE"}, {"}", "RBRACE"}, {"[", "LBRACKET"},
     {"]", "RBRACKET"}, {",", "COMMA"}, {":", "COLON"}, {".", "DOT"}, {"|", "PIPE"},
     {"?", "QUESTION"}, {"@", "AT"}, {":=", "ASSIGN"}, {"::", "DOUBLE_COLON"}, {"=>", "ARROW"},
     {"+", "PLUS"}, {"-", "MINUS"}, {"*", "STAR"}, {"/", "SLASH"}, {"%", "PERCENT"},
-    {"==", "EQUAL"}, {"!=", "NOT_EQUAL"}, {"<", "LESS"}, {"<=", "LESS_EQUAL"}, {">", "GREATER"},
+    {"=", "EQUAL"}, {"!=", "NOT_EQUAL"}, {"<", "LESS"}, {"<=", "LESS_EQUAL"}, {">", "GREATER"},
     {">=", "GREATER_EQUAL"},
     // Literal and trivia delimiters are grammar IDs too.  The integer parser
-    // must not rediscover them by inspecting source characters after model
-    // encoding.
+    // must not rediscover them by inspecting source characters after byte
+    // tokenization.
     {"\"", "QUOTE"}, {"\\", "BACKSLASH"}, {"#", "COMMENT"}, {"▁", "SPACE"}, {"\t", "TAB"},
     {"\n", "NEWLINE"}, {"\r", "CARRIAGE_RETURN"},
     {"0", "DIGIT_0"}, {"1", "DIGIT_1"}, {"2", "DIGIT_2"}, {"3", "DIGIT_3"},
@@ -324,10 +324,8 @@ inline constexpr BuiltinTokenDefinition kBuiltinTokens[] = {
     {"8", "DIGIT_8"}, {"9", "DIGIT_9"},
 };
 
-#ifndef FELIDAE_GENERATING_MODEL
 static_assert(std::size(kBuiltinTokens) == std::size(kFelidaeBuiltinTokenIds),
-              "Regenerate FelidaeTokenizerIds.h after changing built-in syntax");
-#endif
+              "Felidae grammar token spellings and IDs must stay aligned");
 
 inline constexpr const BuiltinTokenDefinition* builtinTokenForSpelling(std::string_view spelling) {
     for (const auto& token : kBuiltinTokens) {
@@ -354,7 +352,7 @@ inline constexpr std::string_view builtinTokenSpelling(TokenId::Id id) {
 }
 
 // These IDs end an already-started identifier range.  Keyword IDs are
-// intentionally absent: if the word vocabulary emits (for example) the `or`
+// intentionally absent: if the byte tokenizer emits (for example) the `or`
 // ID in the middle of `Record`, the contiguous IDs still represent one
 // identifier.
 // At the start of a grammar position, atNameRange() rejects every built-in ID
@@ -401,10 +399,8 @@ inline constexpr bool isIdentifierBoundaryId(TokenId::Id id) {
     }
 }
 
-#ifndef FELIDAE_GENERATING_MODEL
 inline constexpr bool isDecimalDigitId(TokenId::Id id) {
     return id >= TokenId::DIGIT_0 && id <= TokenId::DIGIT_9;
 }
-#endif
 
 } // namespace Felidae

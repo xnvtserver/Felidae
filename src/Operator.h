@@ -372,7 +372,7 @@ public:
         if (pattern == "{left} <= {right}") return CoreOperator::LessEqual;
         if (pattern == "{left} > {right}") return CoreOperator::Greater;
         if (pattern == "{left} >= {right}") return CoreOperator::GreaterEqual;
-        if (pattern == "{left} == {right}") return CoreOperator::StrictEqual;
+        if (pattern == "{left} = {right}") return CoreOperator::StrictEqual;
         if (pattern == "{left} != {right}") return CoreOperator::StrictNotEqual;
         if (pattern == "{left} then {right}") return CoreOperator::Then;
         if (pattern == "{left} and {right}") return CoreOperator::LogicalAnd;
@@ -383,7 +383,7 @@ public:
 
     static std::string_view protectedCoreSpelling(CoreOperator core) {
         switch (core) {
-            case CoreOperator::StrictEqual: return "==";
+            case CoreOperator::StrictEqual: return "=";
             case CoreOperator::StrictNotEqual: return "!=";
             case CoreOperator::Then: return "then";
             case CoreOperator::LogicalAnd: return "and";
@@ -629,7 +629,7 @@ inline constexpr CoreOperatorDefinition coreOperatorDefinition(CoreOperator id) 
             return {id, corePatternId(id), TokenId::GREATER_EQUAL, ">=", OperatorPrecedence::Ordering,
                     OperatorAssociativity::None, OperatorFixity::Infix, true};
         case CoreOperator::StrictEqual:
-            return {id, corePatternId(id), TokenId::EQUAL, "==", OperatorPrecedence::Ordering,
+            return {id, corePatternId(id), TokenId::EQUAL, "=", OperatorPrecedence::Ordering,
                     OperatorAssociativity::None, OperatorFixity::Infix, false};
         case CoreOperator::StrictNotEqual:
             return {id, corePatternId(id), TokenId::NOT_EQUAL, "!=", OperatorPrecedence::Ordering,
@@ -673,7 +673,6 @@ inline constexpr std::optional<CoreOperatorDefinition> infixOperatorForId(TokenI
         case TokenId::NOT_EQUAL: return coreOperatorDefinition(CoreOperator::StrictNotEqual);
         case TokenId::AND: return coreOperatorDefinition(CoreOperator::LogicalAnd);
         case TokenId::OR: return coreOperatorDefinition(CoreOperator::LogicalOr);
-        case TokenId::THEN: return coreOperatorDefinition(CoreOperator::Then);
         default: return std::nullopt;
     }
 }

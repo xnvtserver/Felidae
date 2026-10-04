@@ -64,9 +64,9 @@ bool Interpreter::isTableEligibleGoal(
         case GoalKind::Assign:
             return !exprMayHaveSideEffects(
                 std::static_pointer_cast<AssignGoal>(goal)->expr);
-        case GoalKind::Return:
-            return std::static_pointer_cast<ReturnGoal>(goal)->fields.empty();
-        // Branching and value returns retain ordered method semantics.
+        case GoalKind::Expression:
+            return false;
+        // Branching and value expressions retain ordered method semantics.
         // Tabled rules are intentionally declarative conjunctions.
         case GoalKind::MultiAssign:
         case GoalKind::If:
@@ -247,9 +247,8 @@ std::vector<Interpreter::TableBinding> Interpreter::evaluateTableGoals(
             } else if (auto assign =
                            nodeAs<AssignGoal>(goal)) {
                 accepted = solveAssignGoal(*assign, input.env);
-            } else if (auto returned =
-                           nodeAs<ReturnGoal>(goal)) {
-                accepted = returned->fields.empty();
+            } else if (nodeAs<ExpressionGoal>(goal)) {
+                accepted = false;
             }
             if (accepted) next.push_back(std::move(input));
         }

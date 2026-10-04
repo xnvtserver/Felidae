@@ -1,4 +1,5 @@
-// Fixed word-vocabulary syntax IDs. Model line N owns ID N. Do not reorder.
+// Stable grammar token IDs. Byte-level identifier tokens begin after this
+// fixed range; do not renumber persisted/debug protocol identities casually.
 #pragma once
 
 #include <cstdint>
@@ -10,7 +11,6 @@ inline constexpr int kFelidaeBuiltinTokenIds[] = {
     3, // AND
     4, // OR
     5, // THEN
-    6, // AS
     7, // IF
     8, // ELSE
     9, // RETURN
@@ -73,7 +73,8 @@ constexpr Id NOT = 2;
 constexpr Id AND = 3;
 constexpr Id OR = 4;
 constexpr Id THEN = 5;
-constexpr Id AS = 6;
+// ID 6 is retired. It remains unused so stable grammar IDs are not renumbered.
+constexpr Id RETIRED_6 = 6;
 constexpr Id IF = 7;
 constexpr Id ELSE = 8;
 constexpr Id RETURN = 9;

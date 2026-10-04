@@ -11,7 +11,7 @@ def Employee(name: "maya", age: 20, medium: english_medium).
 def main() =>
     def transient := Employee("sam", 11, english_medium).
     def persisted := Employee.where(name: "ram").first().
-    return (
+    (
         count: Employee.count(),
         persisted_name: persisted.name,
         persisted_age: persisted.age,
