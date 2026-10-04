@@ -34,7 +34,7 @@ jobs:
       # its own project and is excluded by the configuration below, so it is not
       # checked out at all.
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Fetch header-only dependencies
         run: >-

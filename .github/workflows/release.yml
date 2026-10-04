@@ -40,7 +40,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dependencies
       - name: Cache compiler output
         if: runner.os != 'Windows'
@@ -72,7 +72,7 @@ jobs:
         run: ${{ matrix.executable }} --version
       - name: Stage executable
         run: cmake -E copy ${{ matrix.executable }} ${{ matrix.packaged }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.packaged }}
@@ -84,7 +84,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: felidae-*
           path: release-files
