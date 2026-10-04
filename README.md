@@ -57,27 +57,27 @@ Felidae is built around a few simple ideas:
 
 ## A Small Example
 
-```felidae
+```elixir
 def Animal(name: "tiger", habitat: "forest").
 def Animal(name: "otter", habitat: "river").
 
 def main() =>
-    return Animal(name: "tiger").
+    Animal(name: "tiger").
 end
 ```
 
 Felidae can also query stored facts:
 
-```felidae
+```elixir
 ? Animal(name: x)
 ```
 
 or filter them programmatically:
 
-```felidae
+```elixir
 def main() =>
     def forest_animals := Animal.where(habitat: "forest").
-    return forest_animals.
+    forest_animals.
 end
 ```
 
@@ -91,7 +91,7 @@ The idea is simple:
 
 Facts represent things Felidae knows.
 
-```felidae
+```elixir
 def Product(
     id: "product-1",
     name: "Laptop",
@@ -109,20 +109,20 @@ Felidae stores persistent facts so they can be queried later instead of disappea
 
 Felidae supports symbolic **atoms** in addition to normal strings.
 
-```felidae
+```elixir
 def status := active.
 def message := "active".
 ```
 
 Here:
 
-```text
+```erlang
 active
 ```
 
 is a symbolic value, while:
 
-```text
+```elixir
 "active"
 ```
 
@@ -136,7 +136,7 @@ This makes it natural to represent states, categories, concepts, and domain voca
 
 When you want a defined structure, you can declare a class.
 
-```felidae
+```ruby
 class Person
     def name: string.
     def age: number.
@@ -145,7 +145,7 @@ end
 
 Objects can then follow that structure:
 
-```felidae
+```elixir
 Person(
     name: "Ada",
     age: 30
@@ -154,7 +154,7 @@ Person(
 
 Felidae also supports inheritance when knowledge naturally forms a hierarchy.
 
-```felidae
+```ruby
 class Student extends Person
     def grade: number.
 end
@@ -168,7 +168,7 @@ Facts in Felidae can be connected.
 
 For example:
 
-```felidae
+```elixir
 def Employee(id: "employee-1", name: "Ada").
 def Department(id: "department-1", name: "Research").
 
@@ -205,12 +205,10 @@ This is useful for domains such as:
 
 Felidae also provides familiar programming constructs for building reusable query and reasoning logic.
 
-```felidae
+```elixir
 def Greeting(name: string) =>
-    return (
         message: "hello",
-        name: name
-    ).
+        name: name.
 end
 ```
 
@@ -230,7 +228,7 @@ felidae
 
 Then experiment directly:
 
-```felidae
+```elixir
 > def Person(name: "Ada", role: developer).
 
 > ? Person(name: x)
