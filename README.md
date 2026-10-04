@@ -1,138 +1,401 @@
 # Felidae
 
-Felidae is a deterministic, graph-oriented query and reasoning DSL. It has
-general programming constructs for writing query functions and Boolean logic,
-but it is not intended to be a general-purpose programming language. `.fx`
-source is tokenized, parsed to an AST, and evaluated directly; RocksDB is the
-authoritative store for durable facts and graph relationships. Fuzzy logic is
-provided by the standard library rather than the interpreter core.
+![Felidae — From Facts to Intelligence](Media/Felidae_%20From%20Facts%20to%20Intelligence.png)
+
+> **Knowledge is the runtime.**
+
+**Felidae** is an open-source, deterministic, graph-oriented query and reasoning language for `.fx` files.
+
+It is designed for software where **facts, relationships, queries, and explainable logic** are central to the application.
+
+Instead of treating knowledge as something hidden inside application code, Felidae lets you express it directly as data and logic.
 
 ```text
-source.fx -> tokenizer -> IntegerParser -> Program AST -> Interpreter <-> RocksDB -> output
+Facts → Relationships → Queries → Reasoning → Results
 ```
 
-## Build and run
+Felidae is **not intended to be a general-purpose programming language**.
 
-The default build uses the pinned `third_party/rocksdb` Git submodule. Clone
-with `--recurse-submodules`, or run
-`git submodule update --init --recursive` before configuring CMake. An
-installed RocksDB 11.8.1 package can instead be selected with
-`-DFELIDAE_USE_SYSTEM_ROCKSDB=ON`.
+It focuses on knowledge-heavy and reasoning-oriented applications where predictable execution and inspectable results matter.
 
-The build wrappers isolate each requested architecture beneath its named
-configuration directory:
+---
+
+## Why Felidae?
+
+Many applications eventually contain two different worlds:
+
+- data stored in a database
+- business knowledge buried inside application code
+
+Felidae brings them closer together.
+
+You can describe facts:
+
+```felidae
+def Person(name: "Ada", role: developer).
+def Person(name: "Grace", role: researcher).
+```
+
+Query them:
+
+```felidae
+? Person(name: x)
+```
+
+and build logic around the same knowledge.
+
+Felidae is built around a few simple ideas:
+
+- **Facts are first-class data**
+- **Relationships form a graph**
+- **Queries operate directly on knowledge**
+- **Reasoning stays deterministic**
+- **Persistent knowledge survives program execution**
+- **The same language works interactively through the REPL**
+
+---
+
+## A Small Example
+
+```felidae
+def Animal(name: "tiger", habitat: "forest").
+def Animal(name: "otter", habitat: "river").
+
+def main() =>
+    return Animal(name: "tiger").
+end
+```
+
+Felidae can also query stored facts:
+
+```felidae
+? Animal(name: x)
+```
+
+or filter them programmatically:
+
+```felidae
+def main() =>
+    def forest_animals := Animal.where(habitat: "forest").
+    return forest_animals.
+end
+```
+
+The idea is simple:
+
+> Store knowledge as facts, then ask questions about that knowledge.
+
+---
+
+## Facts
+
+Facts represent things Felidae knows.
+
+```felidae
+def Product(
+    id: "product-1",
+    name: "Laptop",
+    available: true
+).
+```
+
+Facts can represent people, products, events, observations, rules, business entities, or domain knowledge.
+
+Felidae stores persistent facts so they can be queried later instead of disappearing when a program finishes.
+
+---
+
+## Symbolic Values
+
+Felidae supports symbolic **atoms** in addition to normal strings.
+
+```felidae
+def status := active.
+def message := "active".
+```
+
+Here:
+
+```text
+active
+```
+
+is a symbolic value, while:
+
+```text
+"active"
+```
+
+is a string.
+
+This makes it natural to represent states, categories, concepts, and domain vocabulary.
+
+---
+
+## Classes
+
+When you want a defined structure, you can declare a class.
+
+```felidae
+class Person
+    def name: string.
+    def age: number.
+end
+```
+
+Objects can then follow that structure:
+
+```felidae
+Person(
+    name: "Ada",
+    age: 30
+)
+```
+
+Felidae also supports inheritance when knowledge naturally forms a hierarchy.
+
+```felidae
+class Student extends Person
+    def grade: number.
+end
+```
+
+---
+
+## Relationships
+
+Facts in Felidae can be connected.
+
+For example:
+
+```felidae
+def Employee(id: "employee-1", name: "Ada").
+def Department(id: "department-1", name: "Research").
+
+Link(
+    from: Employee(id: "employee-1"),
+    to: Department(id: "department-1"),
+    properties: {
+        kind: "works_in"
+    }
+).
+```
+
+This allows knowledge to form a graph:
+
+```text
+Employee ── works_in ──> Department
+```
+
+Relationships can then participate in queries and reasoning.
+
+This is useful for domains such as:
+
+- knowledge systems
+- business rules
+- recommendation logic
+- organizational relationships
+- dependency analysis
+- expert systems
+- explainable decision systems
+
+---
+
+## Functions
+
+Felidae also provides familiar programming constructs for building reusable query and reasoning logic.
+
+```felidae
+def Greeting(name: string) =>
+    return (
+        message: "hello",
+        name: name
+    ).
+end
+```
+
+Functions are intentionally part of the language so that knowledge can be transformed and queried without moving the reasoning into another programming language.
+
+---
+
+## Interactive REPL
+
+Felidae includes an interactive REPL.
+
+Start Felidae without giving it a program file:
+
+```bash
+felidae
+```
+
+Then experiment directly:
+
+```felidae
+> def Person(name: "Ada", role: developer).
+
+> ? Person(name: x)
+```
+
+The REPL is useful for:
+
+- exploring data
+- testing queries
+- experimenting with language syntax
+- inspecting results
+- learning Felidae interactively
+
+Run:
+
+```text
+:help
+```
+
+inside the REPL to see the available commands.
+
+---
+
+## Getting Started
+
+Clone the repository including its submodules:
+
+```bash
+git clone --recurse-submodules https://github.com/xnvtserver/Felidae.git
+cd Felidae
+```
+
+### Linux / macOS
+
+```bash
+./build.sh debug --test
+```
+
+### Windows
 
 ```powershell
-.\build.cmd debug --platform x64 --jobs 4
-.\build.cmd debug --platform x64 --jobs 4 --test
-.\build.cmd release --platform arm64
-# Windows executable: build\debug\x64\Debug\felidae.exe
+.\build.ps1 debug --test
 ```
 
-```sh
-./build.sh debug --platform native --jobs 4
-./build.sh debug --platform native --jobs 4 --test
-./build.sh release --platform arm64
-# Unix executable on an x64 host: build/debug/x64/felidae
-```
+Felidae is implemented in **C++20** and built with **CMake**.
 
-Windows accepts `x64`, `x86`, `arm`, and `arm64`. macOS accepts `x64` and
-`arm64`. Linux accepts its native architecture; a different target requires
-`CMAKE_TOOLCHAIN_FILE` to identify a real cross-compilation toolchain.
-Running the same command again is incremental: CMake keeps RocksDB and Felidae
-object files under that configuration/platform directory and rebuilds only
-sources whose inputs changed. Keep the same configuration, platform, and job
-count to maximize reuse.
+After building, run the generated `felidae` executable or start the REPL.
 
-Every executable project directory must contain an `init.fx` beside its entry
-program. The manifest selects the RocksDB directory and may apply supported
-runtime database settings:
+---
+
+## A Felidae Project
+
+Felidae programs use the `.fx` extension.
+
+A project contains an `init.fx` file that configures its persistent knowledge store.
+
+A minimal `init.fx` looks like:
 
 ```felidae
 import "db".
 db.location("./data/felidae.db").
-db.configure(options: {max_background_jobs: 4}).
 ```
 
-Relative database locations resolve from the directory containing `init.fx`.
-Felidae rejects missing, empty, duplicate, or invalid manifests and never
-creates an implicit temporary database. The retired `--db` option is not
-supported.
+You can then create `.fx` files containing your facts, queries, classes, relationships, and reasoning logic.
 
-Direct CMake configuration on Linux or macOS remains available:
+---
 
-```sh
-cmake -S . -B build/debug -DCMAKE_BUILD_TYPE=Debug -DFELIDAE_BUILD_TESTS=ON
-cmake --build build/debug --target felidae --parallel 2
-./build/debug/felidae tests/direct_ast_smoke.fx
-./build/debug/felidae v2_examples/mixfix_nested_expression.fx
-./build/debug/felidae tests/direct_ast_smoke.fx --debug
+## Where to Learn More
+
+The README intentionally gives only an introduction.
+
+Detailed documentation lives separately:
+
+### Language Reference
+
+See [`docs_language.md`](docs_language.md)
+
+Use it for:
+
+- language syntax
+- facts and queries
+- classes
+- control flow
+- atoms
+- exceptions
+- graph traversal
+- mixfix expressions
+- database operations
+
+### Interpreter & Architecture
+
+See [`code.md`](code.md)
+
+Use it when you want to understand how Felidae itself works internally.
+
+### Examples
+
+Explore [`v2_examples/`](v2_examples/) for executable Felidae examples.
+
+### Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) if you want to contribute to the language, interpreter, tooling, documentation, or editor integrations.
+
+---
+
+## Editor Support
+
+The Felidae ecosystem includes integrations for several editors, including:
+
+- Visual Studio Code
+- IntelliJ IDEA
+- Vim
+- Zed
+- Sublime Text
+- Emacs
+- Notepad++
+- Nano
+
+Editor integrations live alongside the main project and use Felidae's language tooling.
+
+---
+
+## What Felidae Is Exploring
+
+Felidae is built around a broader question:
+
+> **What would software look like if knowledge itself were a native runtime concept?**
+
+Instead of spreading domain knowledge across database schemas, application services, condition trees, and disconnected rule engines, Felidae explores a model where facts and relationships can be queried and reasoned about directly.
+
+The goal is not to replace existing programming languages.
+
+The goal is to provide a focused language for systems where **knowledge is the application**.
+
+---
+
+## Open Source
+
+Felidae is open source under the MIT License.
+
+If the project interests you:
+
+⭐ **Star the repository**  
+🍴 **Fork it and experiment**  
+💬 **Join GitHub Discussions**  
+🐛 **Report issues**  
+🧩 **Contribute features, examples, tooling, or documentation**
+
+Every contribution helps shape the language.
+
+---
+
+## Project
+
+**Felidae**
+
+A deterministic, graph-oriented query and reasoning DSL.
+
+**From facts to intelligence.**
+
+Website: [xnovity.com/felidae](https://www.xnovity.com/felidae)
+
+Built as an open-source project by **Xnovity Softwares Pvt. Ltd.**
 ```
 
-Live breakpoints and stepping are enabled only by `--debug`; normal execution
-leaves the goal hook unset.
-Use `--metrics-json` for machine-readable runtime counters and
-`--benchmark-repeat N` to measure repeated entry or query execution in one
-interpreter process.
+This version deliberately removes things that currently make the README feel like internal engineering documentation: RocksDB version specifics, AST pipeline details, ByteT5/tokenizer internals, database locking semantics, benchmark flags, cache/SST metrics, debugger internals, cross-compilation rules, source fingerprints, parser implementation details, and similar material. Those belong in `code.md`, `docs_language.md`, `CONTRIBUTING.md`, or dedicated documentation. The current repo already has those destinations. :chatgpt-content-reference{index="3"}
 
-Every execution process opens the RocksDB directory selected by `init.fx`
-directly. RocksDB's lock file permits one process to own that database at a
-time; another process attempting to open the same directory fails explicitly.
-
-## Interactive REPL
-
-Run `felidae` without a source file to open the REPL using `./init.fx`. On
-Windows:
-
-```powershell
-.\build\debug\x64\Debug\felidae.exe
-```
-
-Expressions and `?` queries execute immediately. Function declarations using
-`def name(...) =>` and `class` declarations enter multiline input until their
-required `end`; `def` bindings and persistent fact seeds end with `.`. Nested control-flow blocks are
-tracked. A failed declaration is rolled back. Type `:help` for the full command
-list. Passing a program file together with `--repl` is intentionally rejected;
-a file always uses normal program execution. Interactive terminals use colored
-prompts and status messages on Windows, Linux, and macOS; redirected output is
-plain text, and setting `NO_COLOR` disables styling explicitly.
-
-Use `:debug on` for real goal-hook traces and `:debug locals on` to include
-live bindings. `:metrics` reports the last action's interpreter/solver/storage
-counters together with RocksDB key, memory, cache, and SST statistics;
-`:metrics on` adds a compact summary after each action. Slow interactive
-operations show a delayed minimal spinner. These facilities are created only
-for a no-file REPL session and add no metrics, animation, formatting, or debug
-hook work to normal `.fx` file execution.
-
-The interactive editor highlights Felidae keywords, literals, strings,
-comments, and operators using the production lexer. Backspace and
-Delete remove one character, Left/Right/Home/End move the cursor, and Up/Down
-navigate session history. The highlighter owns an isolated vocabulary so
-partially typed or erased words cannot affect interpreter token identities.
-Functions, classes, annotations, imports, `def` bindings, expressions, queries,
-and dot-terminated persistent facts use the same parser and interpreter as `.fx`
-files. The activity indicator is deliberately limited to one, two, or three
-small `#` blocks and appears only for perceptibly slow interactive work.
-Use `:clear` to clear and redraw the terminal without discarding definitions,
-facts, history, debugger settings, or measurements from the current session.
-
-## Facts and memory
-
-RocksDB is the authoritative durable fact and graph store. Each fact is an
-independently keyed node. Schemas, indexes, explicit `Link` edges, adjacency,
-provenance, and temporal metadata use fixed internal keyspaces.
-Interpreter memory is reserved for ASTs, immutable variable bindings,
-temporary values and objects, debugger frames, cursors, and bounded result
-batches. The required project `init.fx` selects the RocksDB directory before
-execution starts.
-
-## Tokenization
-
-Felidae uses a deterministic, training-free byte vocabulary compiled into the
-interpreter. The lexer handles syntax, reserved words, comments, strings,
-punctuation, and numbers; identifier and mixfix-anchor bytes are encoded after
-the fixed grammar-token range. No model file is loaded or generated at runtime.
-
-See [code.md](code.md) for the execution architecture and
-[docs_language.md](docs_language.md) for language semantics.
+The new media image is also a much better opening than an architecture diagram because it communicates the project concept immediately while the README progressively explains the language. :chatgpt-content-reference{index="4"}
