@@ -2,14 +2,14 @@
 # relays to k, k relays to p, and p finally handles it.
 def main() =>
     try
-        throw(exception: {kind: "a", message: "from try"}).
+        throw(kind: a, message: "from try").
     catch e then
-        throw(exception: {kind: "b", message: e.message}).
+        throw(kind: b, message: e.message).
     catch k then
-        throw(exception: {kind: "c", message: k.kind}).
+        throw(kind: c, message: "b").
     catch p then
         def got_kind := p.kind.
         def got_message := p.message.
     end
-    return (kind: got_kind, message: got_message).
+    (kind: got_kind, message: got_message).
 end

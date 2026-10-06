@@ -24,7 +24,7 @@ def main() =>
     ).
     def rows := Employee.where(id: "employee-debug")
         .join(properties: {since: 2024}, direction: forward.class).
-    return (
+    (
         class_edges: schema_graph.list().len(),
         links: rows.len(),
         department: rows.get(position: 0).right.name

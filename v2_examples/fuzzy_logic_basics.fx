@@ -17,7 +17,7 @@ import "fuzzy".
 def combinators() =>
     def warm := 0.8.
     def humid := 0.3.
-    return {
+    {
         muggy: fuzzyAnd(a: warm, b: humid),
         uncomfortable: fuzzyOr(a: warm, b: humid),
         cool: fuzzyNot(degree: warm)
@@ -31,7 +31,7 @@ end
 # fades_in, rising to 1 at peak, falling back to 0 at fades_out.
 def temperatureReadings() =>
     def profile := {peak: 30, fades_in: 20, fades_out: 40}.
-    return {
+    {
         cold_reading: membership(score: 15, profile: profile),
         rising_reading: membership(score: 25, profile: profile),
         peak_reading: membership(score: 30, profile: profile),
@@ -42,10 +42,10 @@ end
 
 # --- Similarity: a general-purpose closeness degree -----------------------
 #
-# similarity(a, b) is 1 when a == b and falls off with their relative
+# similarity(a, b) is 1 when a = b and falls off with their relative
 # difference, clamped to [0, 1].
 def closenessChecks() =>
-    return {
+    {
         identical: similarity(a: 70, b: 70),
         close: similarity(a: 70, b: 75),
         far: similarity(a: 70, b: 10)
@@ -61,11 +61,11 @@ def comfortLevel(warm: number, humid: number) =>
     def dryProfile := {peak: 0, fades_in: 0, fades_out: 60}.
     def warmDegree := membership(score: warm, profile: warmProfile).
     def dryDegree := membership(score: humid, profile: dryProfile).
-    return fuzzyAnd(a: warmDegree, b: dryDegree).
+    fuzzyAnd(a: warmDegree, b: dryDegree).
 end
 
 def main() =>
-    return {
+    {
         combinators: combinators(),
         temperature: temperatureReadings(),
         closeness: closenessChecks(),

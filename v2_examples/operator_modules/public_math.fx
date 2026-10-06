@@ -1,5 +1,5 @@
 @mixfix(
-    pattern: "{left: number} blend {right: number}",
+    pattern: '{left: number} blend {right: number}',
     result: number.class,
     precedence: "additive",
     associativity: "left",
@@ -8,11 +8,11 @@
     visibility: "public"
 )
 def blendNumbers() =>
-    return left / 2 + right / 2
+    left / 2 + right / 2.
 end
 
 @mixfix(
-    pattern: "{left: number} difference {right: number}",
+    pattern: '{left: number} difference {right: number}',
     result: number.class,
     precedence: "additive",
     associativity: "left",
@@ -21,5 +21,5 @@ end
     visibility: "public"
 )
 def differenceBetweenNumbers() =>
-    return left / 2 - right / 2
+    left / 2 - right / 2.
 end

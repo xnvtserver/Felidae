@@ -11,7 +11,7 @@ end
 
 def main() =>
     def proof := reasoning.prove(query: eligible(id: "observation-1")).
-    return (
+    (
         truth: proof.truth_status,
         support: proof.support_count,
         provenance: proof.supporting_facts.len(),

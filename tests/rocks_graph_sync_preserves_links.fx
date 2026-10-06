@@ -19,7 +19,7 @@ def main() =>
         properties: {kind: "connected"},
         direction: forward.class
     ).
-    return (
+    (
         first_sync: first_sync,
         changed: changed,
         second_sync: second_sync,

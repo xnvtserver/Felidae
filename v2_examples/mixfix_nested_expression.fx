@@ -5,10 +5,10 @@ def Evidence(kind: "observed").
 def Context(domain: "animal-behaviour").
 
 @mixfix(
-    pattern: "reason {subject: expr} using {evidence: Evidence} within {context: Context}"
+    pattern: 'reason {subject: expr} using {evidence: Evidence} within {context: Context}'
 )
 def reasonFactValue() =>
-    return Explanation(
+    Explanation(
         subject: subject,
         evidence: evidence,
         context: context
@@ -16,10 +16,10 @@ def reasonFactValue() =>
 end
 
 @mixfix(
-    pattern: "validate {claim: expr} with {expected: string}"
+    pattern: 'validate {claim: expr} with {expected: string}'
 )
 def validateReasonValue() =>
-    return Validation(
+    Validation(
         claim: claim,
         expected: expected
     ).
@@ -31,5 +31,5 @@ def main() =>
     def claim := (reason "tiger" using evidence within context).
     def result := validate claim with "explanation".
     def direct := validate (reason "cat" using evidence within context) with "explanation".
-    return (bound: result, direct: direct).
+    (bound: result, direct: direct).
 end

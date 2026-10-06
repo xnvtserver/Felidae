@@ -4,7 +4,7 @@ class Measurement
 end
 
 def main() =>
-    return Measurement.insert(values: {
+    Measurement.insert(values: {
         sensor: "temperature",
         value: "not-a-number"
     }).

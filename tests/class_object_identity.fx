@@ -4,12 +4,12 @@ class Box
     def value: number.
 
     def same() =>
-        return this.
+        this.
     end
 
     def set(value: number) =>
         this.value := value.
-        return this.
+        this.
     end
 end
 
@@ -23,7 +23,7 @@ def main() =>
     for item in items then
         item.set(value: 4).
     end
-    return (
+    (
         original: original.value,
         returned: returned.value,
         retrieved: retrieved.value

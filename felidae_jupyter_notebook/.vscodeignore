@@ -1,0 +1,18 @@
+# esbuild.js bundles src/** into dist/extension.js, the only code the
+# packaged VSIX needs; everything below is source, tests or tooling.
+.git
+.gitignore
+.vscode/**
+.vscodeignore
+
+*.vsix
+*.map
+
+node_modules/**
+out/**
+src/**
+test/**
+
+tsconfig.json
+esbuild.js
+package-lock.json

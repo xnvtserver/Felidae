@@ -8,22 +8,20 @@ end
 
 def list.get(list: string, pos: int) =>
     def ListItem(list: list, pos: pos, value: value).
-    return (value: value).
+    (value: value).
 end
 
 def list.get(list: string, label: string) =>
     def ListItem(list: list, label: label, value: value).
-    return (value: value).
+    (value: value).
 end
 
 def list.first(list: string) =>
     list.get(list: list, pos: 0, value: value).
-    return (value: value).
+    (value: value).
 end
 
 def list.pop(list: string) =>
     def ListItem(list: list, pos: pos, label: label, value: value).
-    if pos == 0 then
-    return (value: value, label: label).
-    end
+    pos = 0 then (value: value, label: label).
 end

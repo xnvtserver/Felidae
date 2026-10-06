@@ -12,5 +12,5 @@ def IndexedReading(id: "b", active: true, category: "keep").
 def main() =>
     def selected := IndexedReading.where(active: true, category: "keep").
     def first := selected.limit(1).get(0).
-    return (count: selected.count(), id: first.id).
+    (count: selected.count(), id: first.id).
 end

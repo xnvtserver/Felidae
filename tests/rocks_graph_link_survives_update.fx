@@ -14,7 +14,7 @@ def main() =>
         properties: {kind: "connected"},
         direction: forward.class
     ).
-    return (
+    (
         changed: changed,
         source: links.get(position: 0).left.label,
         target: links.get(position: 0).right.label

@@ -8,9 +8,9 @@ end
 def main() =>
     try
         def inserted := Item.insert(values: {id: "i1"}).
-        throw(exception: {kind: "late", message: "after the write"}).
+        throw(kind: late, message: "after the write").
     catch e then
         def reason := e.message.
     end
-    return (reason: reason, items: Item.count()).
+     (reason: reason, items: Item.count()).
 end

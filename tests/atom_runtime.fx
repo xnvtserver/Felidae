@@ -1,7 +1,7 @@
 def global_status: atom := approved.
 
 def identity(value: any) =>
-    return value.
+    value.
 end
 
 def main() =>
@@ -10,8 +10,14 @@ def main() =>
     def values := [status, pending].
     def record := {state: status, label: "active"}.
     def pair := Pair(status, approved).
-    return (
+    (
         kind: type(status),
+        string_type: type("active"),
+        number_type: type(1),
+        boolean_type: type(true),
+        array_type: type(values),
+        object_type: type(record),
+        nil_type: type(empty),
         atom_check: is_atom(status),
         literal_check: is_atom(active),
         quoted_check: is_atom('active state'),

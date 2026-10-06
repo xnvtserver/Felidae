@@ -19,7 +19,7 @@ def main() =>
         min_depth: 1,
         max_depth: 5
     ).
-    return (
+    (
         synchronized: synchronized,
         direct: direct.len(),
         recursive: recursive.len()

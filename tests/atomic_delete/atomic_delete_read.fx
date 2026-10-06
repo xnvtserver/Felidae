@@ -7,5 +7,5 @@ class Department
 end
 
 def main() =>
-    return Department.count().
+    Department.count().
 end

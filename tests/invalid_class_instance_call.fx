@@ -3,10 +3,10 @@ class Employee
     def id: string.
 
     def get_id() =>
-        return this.id.
+        this.id.
     end
 end
 
 def main() =>
-    return Employee.get_id().
+    Employee.get_id().
 end

@@ -6,5 +6,5 @@ class Node
 end
 
 def main() =>
-    return db.sync(path: "invalid_sync_link_source.fx").
+    db.sync(path: "invalid_sync_link_source.fx").
 end

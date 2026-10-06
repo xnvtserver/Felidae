@@ -38,7 +38,7 @@ def math.ceil(value: number) => ()
 end
 def math.round(value: number) => ()
 end
-# Signed cube root (cbrt(-8) == -2): the one operation below that plain
+# Signed cube root (cbrt(-8) = -2): the one operation below that plain
 # arithmetic cannot reproduce, since pow(value, 1/3) is undefined for
 # negative bases in the reals.
 def math.cbrt(value: number) => ()

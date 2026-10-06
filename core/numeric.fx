@@ -10,60 +10,45 @@
 # registered native libraries, not namespaces.
 
 def clamp(value: number, low: number, high: number) =>
-    return max([low, min([high, value])]).
+    max([low, min([high, value])]).
 end
 
 def lerp(a: number, b: number, t: number) =>
-    return a + (b - a) * t.
+    a + (b - a) * t.
 end
 
 def diff(a: number, b: number) =>
-    return math.abs(value: a - b).
+    math.abs(value: a - b).
 end
 
 def weightedAverage(a: number, b: number, weightA: number, weightB: number) =>
-    where weightA + weightB == 0.
-    def total := a + b.
-    return total / 2.
-else
-    def weighted := a * weightA + b * weightB.
-    def totalWeight := weightA + weightB.
-    return weighted / totalWeight.
+    weightA + weightB = 0 then (a + b) / 2
+    else (a * weightA + b * weightB) / (weightA + weightB).
 end
 
 def square(value: number) =>
-    return value * value.
+    value * value.
 end
 
 def cube(value: number) =>
-    return value * value * value.
+    value * value * value.
 end
 
 def reciprocal(value: number) =>
-    where value == 0.
-    return 0.
-else
-    return 1 / value.
+    value = 0 then 0 else 1 / value.
 end
 
 def sign(value: number) =>
-    if value > 0 then
-        return 1.
-    elif value < 0 then
-        return -1.
-    else
-        return 0.
-    end
+    value > 0 then 1
+    else value < 0 then -1
+    else 0.
 end
 
 def trunc(value: number) =>
-    if value >= 0 then
-        return math.floor(value: value).
-    else
-        return math.ceil(value: value).
-    end
+    value >= 0 then math.floor(value: value)
+    else math.ceil(value: value).
 end
 
 def inRange(value: number, low: number, high: number) =>
-    return value >= low and value <= high.
+    value >= low and value <= high.
 end

@@ -7,11 +7,11 @@ class Cell
 
     def tie() =>
         this.next := this.
-        return this.
+        this.
     end
 end
 
 def main() =>
     def a := Cell(id: "a").
-    return a.tie().
+    a.tie().
 end

@@ -27,6 +27,7 @@ namespace Felidae {
 
 class RocksFactStore;
 class ByteTokenizer;
+class CallSignatureRegistry;
 struct StoredFactIndex;
 struct StoredLink;
 struct StoredClassEdge;
@@ -106,11 +107,22 @@ public:
     // open) with currentLoadingFile_ set to it. Class source locators, fact
     // origins and relative imports all depend on that, so the entry file must
     // be loaded through here as well as imports.
+    // `entrySource`, when given, is this file's text instead of its contents on
+    // disk; it applies to this file only, never to files it imports.
     void loadProgramFile(const std::filesystem::path& file,
-                         ParserMetrics* metrics = nullptr);
+                         ParserMetrics* metrics = nullptr,
+                         const std::string* entrySource = nullptr);
     std::size_t syncFactSource(const std::filesystem::path& file);
     std::shared_ptr<OperatorRegistry> operatorRegistry() const { return operators_; }
     std::shared_ptr<ByteTokenizer> tokenizer() const { return tokenizer_; }
+    std::shared_ptr<CallSignatureRegistry> callSignatureRegistry() const {
+        return callSignatures_;
+    }
+    // Read-only import resolution shared by execution and parse-only tooling.
+    // Native modules have no Felidae source file and therefore return no path.
+    std::vector<std::filesystem::path> resolveSourceImports(
+        const std::filesystem::path& baseDir,
+        const std::string& pattern) const;
 
     // Real (not simulated) execution control for a driving debugger: called
     // once per goal, immediately before it runs, from solveIterative's
@@ -132,6 +144,8 @@ public:
     void setGoalHook(GoalHook hook) { goalHook_ = std::move(hook); }
 
 private:
+    std::string locatedInFile(const std::filesystem::path& file,
+                              const std::string& message) const;
     struct ThreadTask {
         explicit ThreadTask(std::string functionName) : functionName(std::move(functionName)) {}
         std::string functionName;
@@ -232,6 +246,7 @@ private:
 
     std::shared_ptr<ClauseTable> clauses_ = std::make_shared<ClauseTable>();
     std::shared_ptr<OperatorRegistry> operators_ = std::make_shared<OperatorRegistry>();
+    std::shared_ptr<CallSignatureRegistry> callSignatures_;
     std::shared_ptr<ByteTokenizer> tokenizer_;
     std::unordered_map<PatternId, std::vector<std::shared_ptr<ClauseStmt>>> operatorClauses_;
     std::unique_ptr<ModuleTransactionState> moduleTransaction_;
@@ -302,11 +317,16 @@ private:
     bool valueCallMode_ = false;
     size_t valueCallTrampolineDepth_ = 0;
     size_t methodCallDepth_ = 0;
+    size_t expressionEvaluationDepth_ = 0;
     // methodCallDepth_ when the innermost value-call trampoline started. A
     // `return call(...)` may jump through TailCallSignal only when it executes
     // in the body of the method that trampoline itself began (depth + 1); a
     // goal-position call nested deeper must evaluate its return normally.
     size_t trampolineMethodDepth_ = 0;
+    // The last goal of the method body currently being solved. Only that goal
+    // is a tail position: a call in any earlier expression statement must run
+    // and let the following statements run (the final expression is the result).
+    const Goal* tailGoal_ = nullptr;
     std::vector<std::shared_ptr<Expr>> pipelineResults_;
     std::size_t clauseAttempts_ = 0;
     std::size_t unificationAttempts_ = 0;
@@ -359,7 +379,6 @@ private:
     void withStoreTransaction(const std::function<void()>& work);
     // Truth tuple of a body that already solved: every goal succeeded, so no
     // goal is evaluated a second time.
-    static std::shared_ptr<Expr> successTruthTuple(const std::vector<std::shared_ptr<Goal>>& goals);
     std::shared_ptr<Expr> executeGoalTruthTuple(const std::vector<std::shared_ptr<Goal>>& goals, Env env, Env& outEnv);
     bool solveMethodCall(const Call& call,
                          const std::shared_ptr<ClauseStmt>& clause,

@@ -37,8 +37,8 @@ def main() =>
         .join(properties: {kind: "reverse_example"}, direction: forward.class).
     def key_match := Node().where(id: "a")
         .join(properties: {kind: "connected"}, direction: forward.class)
-        .where(right.id == "c").
-    return (
+        .where(right.id = "c").
+    (
         all_links: all_links.len(),
         connected: connected.len(),
         assigned: assigned.len(),

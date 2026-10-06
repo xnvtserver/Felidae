@@ -8,11 +8,11 @@ end
 def main() =>
     try
         def first := Item.insert(values: {id: "before"}).
-        throw(exception: {kind: "stop", message: "first error"}).
+        throw(kind: stop, message: "first error").
         def second := Item.insert(values: {id: "after"}).
-        throw(exception: {kind: "stop", message: "second error"}).
+        throw(kind: stop, message: "second error").
     catch e then
         def reason := e.message.
     end
-    return (reason: reason, items: Item.count()).
+    (reason: reason, items: Item.count()).
 end

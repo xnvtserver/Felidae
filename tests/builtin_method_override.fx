@@ -3,11 +3,11 @@ class Employee
     def id: string.
     @override
     def count() =>
-        return 77.
+        77.
     end
     @override
     def join() =>
-        return "custom-join".
+        "custom-join".
     end
 end
 
@@ -15,12 +15,12 @@ class Department
     key(id).
     def id: string.
     def count() =>
-        return 88.
+        88.
     end
 end
 
 def main() =>
-    return (
+    (
         overridden_count: Employee.count(),
         overridden_join: Employee.join(),
         builtin_without_override: Department.count()

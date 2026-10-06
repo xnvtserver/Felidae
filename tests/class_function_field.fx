@@ -5,14 +5,14 @@ class CalculatedNode
 
     def populate() =>
         this.field1 := something().
-        return this.
+        this.
     end
 end
 
 # Deliberately declared after the class: module loading must register the
 # complete source before main invokes CalculatedNode.populate().
 def something() =>
-    return "computed".
+    "computed".
 end
 
 def main() =>
@@ -20,9 +20,9 @@ def main() =>
     def changed := node.populate().
     def saved := changed.save().
     def stored := CalculatedNode.where(id: "node-1").get(pos: 0).
-    return (
+    (
         transient: changed.field1,
         stored: stored.field1,
-        same_identity: changed == node
+        same_identity: changed = node
     ).
 end

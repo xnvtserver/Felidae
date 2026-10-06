@@ -23,5 +23,5 @@ def main() =>
     for row in rows then
         Seen.insert(values: {id: row.right.id}).
     end
-    return (edge_count: edge_count, seen_count: Seen.count()).
+    (edge_count: edge_count, seen_count: Seen.count()).
 end

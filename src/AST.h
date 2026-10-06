@@ -2,6 +2,7 @@
 
 #include "Operator.h"
 #include "FelidaeGrammar.h"
+#include <cmath>
 #include <cstdint>
 #include <iomanip>
 #include <memory>
@@ -200,7 +201,15 @@ public:
     static constexpr ExprKind kKind = ExprKind::Number;
     ExprKind kind() const override { return kKind; }
     std::shared_ptr<Expr> clone() const override { return std::make_shared<NumberExpr>(value); }
+    // Numbers are IEEE doubles. A whole number below 2^63 prints in full digits
+    // (9007199254740992, not 9.00719925474099e+15); everything else keeps 15
+    // significant digits. Above 2^53 a double cannot tell neighbouring integers
+    // apart, so such a literal prints as the nearest double it became.
     std::string debug() const override {
+        constexpr double kInt64Limit = 9223372036854775808.0;  // 2^63
+        if (value == std::floor(value) && value > -kInt64Limit && value < kInt64Limit) {
+            return std::to_string(static_cast<std::int64_t>(value));
+        }
         std::ostringstream oss;
         oss << std::setprecision(15) << value;
         return oss.str();

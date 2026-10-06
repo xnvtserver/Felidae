@@ -20,7 +20,7 @@ def main() =>
         properties: {since: 2024, confidence: 0.9}
     ).
     def rows := Employee().join(properties: {since: 2024}, direction: forward.class).
-    return (
+    (
         created_to: created.to.id,
         count: rows.len(),
         confidence: rows.get(position: 0).properties.confidence

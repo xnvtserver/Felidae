@@ -5,9 +5,9 @@ import "console".
 def noisy(x: number) =>
     console.writeLine(value: "EFFECT").
     x > 5.
-    return x.
+    x.
 end
 
 def main() =>
-    return noisy(1).
+    noisy(1).
 end

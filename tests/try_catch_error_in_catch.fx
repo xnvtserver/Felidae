@@ -3,13 +3,13 @@
 def main() =>
     try
         try
-            throw(exception: {kind: "first", message: "original"}).
+            throw(kind: first, message: "original").
         catch inner then
-            throw(exception: {kind: "second", message: "raised while handling"}).
+            throw(kind: second, message: "raised while handling").
         end
     catch outer then
         def kind := outer.kind.
         def message := outer.message.
     end
-    return (kind: kind, message: message).
+    (kind: kind, message: message).
 end

@@ -37,7 +37,7 @@ def Eagle extend Bird(name: "", weight_kg: 0).
 # degree 1) and siblings (distance 2, degree 0.333) both clear it; cousins
 # and unrelated pairs (both distance 4, degree 0.2) fall under it.
 def relationshipReport(left: any, right: any) =>
-    return {
+    {
         left: left,
         right: right,
         lca: lca(left: left, right: right).selected,
@@ -56,7 +56,7 @@ def main() =>
     def tom := Cat(name: "Tom", weight_kg: 5).
     def aquila := Eagle(name: "Aquila", weight_kg: 6).
 
-    return {
+    {
         # Same species: distance 0, degree 1 - always "close" regardless of
         # weight, but weight_similarity still varies independently.
         same_species: relationshipReport(left: rex, right: fido),

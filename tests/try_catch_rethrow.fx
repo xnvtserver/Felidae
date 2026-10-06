@@ -3,13 +3,13 @@
 def main() =>
     try
         try
-            throw(exception: {kind: "disk", message: "full"}).
+            throw(kind: disk, message: "full").
         catch inner then
-            throw(exception: inner).
+            throw(kind: inner.kind, message: inner.message).
         end
     catch outer then
         def kind := outer.kind.
         def message := outer.message.
     end
-    return (kind: kind, message: message).
+    (kind: kind, message: message).
 end

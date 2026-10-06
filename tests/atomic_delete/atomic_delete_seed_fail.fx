@@ -19,5 +19,5 @@ def Employee(id: "e1").
 Link(from: Employee(id: "e1"), to: Department(id: "d3"), properties: {kind: "works_in"}).
 
 def main() =>
-    return Department.where(kind: "x").delete().
+    Department.where(kind: "x").delete().
 end

@@ -167,12 +167,32 @@ if(FELIDAE_BUILD_TESTS)
   add_test(NAME atom_runtime_values
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/atom_runtime.fx)
   set_tests_properties(atom_runtime_values PROPERTIES
-    PASS_REGULAR_EXPRESSION "kind: \"atom\".*atom_check: true.*literal_check: true.*quoted_check: true.*string_check: false.*number_check: false.*function_check: false.*empty: nil.*global: approved.*distinct: true.*passed: active.*list_value: pending.*map_value: active.*term_value: fn:pair.*active")
+    PASS_REGULAR_EXPRESSION "kind: \"atom\".*string_type: \"string\".*number_type: \"number\".*boolean_type: \"bool\".*array_type: \"array\".*object_type: \"object\".*nil_type: \"nil\".*atom_check: true.*literal_check: true.*quoted_check: true.*string_check: false.*number_check: false.*function_check: false.*empty: nil.*global: approved.*distinct: true.*passed: active.*list_value: pending.*map_value: active.*term_value: fn:pair.*active")
 
   add_test(NAME unified_def_casing
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/unified_def_casing.fx)
   set_tests_properties(unified_def_casing PROPERTIES
     PASS_REGULAR_EXPRESSION "matched: true.*atom: true.*quoted_atom: true.*payload: 7")
+
+  add_test(NAME whitespace_calls
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/whitespace_calls.fx)
+  set_tests_properties(whitespace_calls PROPERTIES
+    PASS_REGULAR_EXPRESSION "hello world.*contextual_var: 10.*three_arguments: 42.*parenthesized: 30.*comma_form: 42.*space_form: 42.*nested_spaces: 62.*nested_mixed: 62.*nested_parenthesized: 62.*imported: 42.*recursive: 10")
+
+  add_test(NAME ambiguous_whitespace_call_rejected
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_ambiguous_whitespace_call.fx)
+  set_tests_properties(ambiguous_whitespace_call_rejected PROPERTIES
+    PASS_REGULAR_EXPRESSION "Call to 'choose' has multiple declared arities; use parentheses to select one")
+
+  add_test(NAME legacy_return_rejected
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_legacy_return.fx)
+  set_tests_properties(legacy_return_rejected PROPERTIES
+    PASS_REGULAR_EXPRESSION "'return' was removed; the final expression of a callable is its result")
+
+  add_test(NAME equal_equal_rejected
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_equal_equal.fx)
+  set_tests_properties(equal_equal_rejected PROPERTIES
+    PASS_REGULAR_EXPRESSION "'==' was removed; use '=' for equality comparison")
 
   add_test(NAME atom_mixfix_context
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/atom_mixfix.fx)
@@ -202,6 +222,12 @@ if(FELIDAE_BUILD_TESTS)
       -DFELIDAE_EXE=$<TARGET_FILE:felidae>
       -DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/repl-test
       -P ${CMAKE_SOURCE_DIR}/cmake/RunReplTest.cmake)
+
+  add_test(NAME stdin_program
+    COMMAND ${CMAKE_COMMAND}
+      -DFELIDAE_EXE=$<TARGET_FILE:felidae>
+      -DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/stdin-test
+      -P ${CMAKE_SOURCE_DIR}/cmake/RunStdinTest.cmake)
 
   add_test(NAME project_configuration
     COMMAND ${CMAKE_COMMAND}
@@ -418,6 +444,23 @@ if(FELIDAE_BUILD_TESTS)
   set_tests_properties(control_flow PROPERTIES
     PASS_REGULAR_EXPRESSION "for_count: 4.*while_count: 2.*middle_count: 1.*fallthrough_count: 1.*default_count: 0")
 
+  add_test(NAME loop_every_iteration
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/loop_every_iteration.fx)
+  set_tests_properties(loop_every_iteration PROPERTIES
+    PASS_REGULAR_EXPRESSION "rows: 6.*from_for: 1")
+
+  # Exactly one warning, for `whoo`: `who`, `a`, `_` and `_unused` are not
+  # singleton variables.
+  add_test(NAME singleton_pattern_variable_warned
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/singleton_pattern_variable.fx --check-json)
+  set_tests_properties(singleton_pattern_variable_warned PROPERTIES
+    PASS_REGULAR_EXPRESSION "'whoo' is bound by a fact pattern but never used again.*\"severity\":\"warning\""
+    FAIL_REGULAR_EXPRESSION "'(who|a|_unused|_)' is bound")
+
+  add_test(NAME literal_parameter_rejected
+    COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_literal_parameter.fx)
+  set_tests_properties(literal_parameter_rejected PROPERTIES WILL_FAIL TRUE)
+
   add_test(NAME for_non_iterable_rejected
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_for_non_iterable.fx)
   set_tests_properties(for_non_iterable_rejected PROPERTIES WILL_FAIL TRUE)
@@ -544,12 +587,12 @@ if(FELIDAE_BUILD_TESTS)
   add_test(NAME try_catch_runtime_error
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_runtime_error.fx)
   set_tests_properties(try_catch_runtime_error PROPERTIES
-    PASS_REGULAR_EXPRESSION "kind: \"runtime\".*order_by supports only numeric values: field 'v' of row 0 is")
+    PASS_REGULAR_EXPRESSION "kind: runtime.*order_by supports only numeric values: field 'v' of row 0 is")
 
   add_test(NAME try_catch_thrown_exception
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_thrown_exception.fx)
   set_tests_properties(try_catch_thrown_exception PROPERTIES
-    PASS_REGULAR_EXPRESSION "kind: \"custom\".*message: \"boom\"")
+    PASS_REGULAR_EXPRESSION "kind: custom.*message: \"boom\"")
 
   add_test(NAME try_catch_no_error
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_no_error.fx)
@@ -569,7 +612,7 @@ if(FELIDAE_BUILD_TESTS)
   add_test(NAME throw_without_kind_rejected
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/invalid_throw_without_kind.fx)
   set_tests_properties(throw_without_kind_rejected PROPERTIES
-    PASS_REGULAR_EXPRESSION "throw exception must be an object with a string 'kind' field")
+    PASS_REGULAR_EXPRESSION "throw requires kind: atom and message: string")
 
   add_test(NAME try_catch_sequential
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_sequential.fx)
@@ -584,12 +627,12 @@ if(FELIDAE_BUILD_TESTS)
   add_test(NAME try_catch_error_in_catch
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_error_in_catch.fx)
   set_tests_properties(try_catch_error_in_catch PROPERTIES
-    PASS_REGULAR_EXPRESSION "kind: \"second\".*message: \"raised while handling\"")
+    PASS_REGULAR_EXPRESSION "kind: second.*message: \"raised while handling\"")
 
   add_test(NAME try_catch_rethrow
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_rethrow.fx)
   set_tests_properties(try_catch_rethrow PROPERTIES
-    PASS_REGULAR_EXPRESSION "kind: \"disk\".*message: \"full\"")
+    PASS_REGULAR_EXPRESSION "kind: disk.*message: \"full\"")
 
   add_test(NAME try_catch_first_error_wins
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_first_error_wins.fx)
@@ -604,7 +647,7 @@ if(FELIDAE_BUILD_TESTS)
   add_test(NAME try_catch_cascade
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_cascade.fx)
   set_tests_properties(try_catch_cascade PROPERTIES
-    PASS_REGULAR_EXPRESSION "kind: \"c\".*message: \"b\"")
+    PASS_REGULAR_EXPRESSION "kind: c.*message: \"b\"")
 
   add_test(NAME try_catch_cascade_stops
     COMMAND ${FELIDAE_FX_TEST_COMMAND} ${CMAKE_SOURCE_DIR}/tests/try_catch_cascade_stops.fx)

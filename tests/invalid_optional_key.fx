@@ -4,5 +4,5 @@ class Node
 end.
 
 def main() =>
-    return true.
+    true.
 end

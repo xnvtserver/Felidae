@@ -5,7 +5,7 @@ def main() =>
     def converse := logicalConverse(rule: rule).
     def contrapositive := logicalContrapositive(rule: rule).
     def contradiction := logicalContradiction(positive: "wet", negative: "dry").
-    return (
+    (
         antecedent: converse.antecedent,
         consequent: converse.consequent,
         negated_antecedent: contrapositive.antecedent.input,

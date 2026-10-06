@@ -9,7 +9,7 @@ def employee(id: "e1", state: active, payload: 7).
 
 def FIND_ACTIVE(id: string) =>
     def employee(id: id, state: state, payload: payload).
-    return (
+    (
         matched: state = active,
         atom: is_atom(state),
         quoted_atom: is_atom('active state'),

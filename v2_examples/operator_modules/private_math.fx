@@ -1,5 +1,5 @@
 @mixfix(
-    pattern: "{left: number} secretBlend {right: number}",
+    pattern: '{left: number} secretBlend {right: number}',
     result: number.class,
     precedence: "additive",
     associativity: "left",
@@ -8,5 +8,5 @@
     visibility: "private"
 )
 def secretBlendNumbers() =>
-    return left + right
+    left + right
 end

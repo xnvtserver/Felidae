@@ -19,7 +19,7 @@ Link(from: Engineer(id: "e1"), to: Department(id: "d1"), properties: {kind: "wor
 
 def main() =>
     def rows := Engineer().join(properties: {kind: "works_in"}, direction: forward.class).
-    return (
+    (
         count: rows.len(),
         department: rows.get(position: 0).right.name
     ).

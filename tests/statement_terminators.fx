@@ -13,5 +13,5 @@ end
 def main() =>
     def a := Root(branch: Branch(leaf: Leaf(value: 42))).
     def k := a.branch.leaf.value.
-    return k.
+    k.
 end

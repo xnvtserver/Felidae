@@ -9,5 +9,5 @@ def main() =>
     def person := Person.get(pos: 0).
     def people := Person.all().
     def from_array := people.get(pos: 0).
-    return (person: person, from_array: from_array, name: person.get(key: "name")).
+    (person: person, from_array: from_array, name: person.get(key: "name")).
 end

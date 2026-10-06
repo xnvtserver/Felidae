@@ -10,7 +10,7 @@ class Node
     def rename(label: string) =>
         this.label := label.
         this.enabled := true.
-        return this.
+        this.
     end
 end
 
@@ -28,7 +28,7 @@ def main() =>
     def holder := Holder(id: "h1", item: node, payload: [1, "two", false]).
     def saved := node.save().
     def stored := Node.where(id: "n1").get(pos: 0).
-    return (
+    (
         label: alias.label,
         changed_label: changed.label,
         enabled: node.enabled,

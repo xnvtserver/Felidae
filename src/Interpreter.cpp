@@ -41,6 +41,9 @@ namespace {
 // stack. This is intentionally independent from the iterative goal limit.
 constexpr size_t kMaxNativeMethodCallDepth = 8;
 constexpr size_t kMaxNativeGoalFrameDepth = 256;
+// Evaluator frames are substantially larger than parser frames. Keep this
+// conservative and fail in Felidae before the native stack is exhausted.
+constexpr size_t kMaxExpressionEvaluationDepth = 64;
 constexpr std::string_view kMethodOwnerBinding = "\x1fmethod_owner";
 
 class CounterScope {
@@ -645,8 +648,21 @@ static bool resolveRuntimeTypeName(const std::shared_ptr<Expr>& value, std::stri
     if (nodeAs<StringExpr>(value)) { out = "string"; return true; }
     if (nodeAs<BoolExpr>(value)) { out = "bool"; return true; }
     if (nodeAs<ArrayExpr>(value)) { out = "array"; return true; }
+    if (nodeAs<MapExpr>(value)) { out = "object"; return true; }
     if (nodeAs<NilExpr>(value)) { out = "nil"; return true; }
     return false;
+}
+
+[[noreturn]] static void raiseFelidaeException(
+    const std::shared_ptr<Expr>& kindValue,
+    const std::shared_ptr<Expr>& messageValue) {
+    const auto kind = nodeAs<AtomExpr>(kindValue);
+    if (!kind) {
+        throw InterpreterError("throw 'kind' must be a data atom, for example kind: late");
+    }
+    const auto message = nodeAs<StringExpr>(messageValue);
+    if (!message) throw InterpreterError("throw 'message' must be a string");
+    throw FelidaeException(kind->spelling, message->value);
 }
 
 // Persisted schema fingerprints of undeclared (schemaless) fact types start with
@@ -713,6 +729,16 @@ static bool valueMatchesBuiltinType(const std::shared_ptr<Expr>& value,
 static bool valueMatchesBuiltinType(const std::shared_ptr<Expr>& value,
                                     const std::string& type) {
     return valueMatchesBuiltinType(value, languageTypeIdForName(type));
+}
+
+// Strings are UTF-8. Their length is the number of characters (code points):
+// every byte except a continuation byte (10xxxxxx) starts one.
+static std::size_t utf8CodePointCount(const std::string& text) {
+    std::size_t count = 0;
+    for (const unsigned char byte : text) {
+        if ((byte & 0xC0) != 0x80) ++count;
+    }
+    return count;
 }
 
 static double requireNumber(const std::shared_ptr<Expr>& expr, const std::string& fn, const std::string& arg) {
@@ -1037,7 +1063,8 @@ static std::string rowsToCsvText(const std::vector<std::shared_ptr<Expr>>& rows)
 }
 
 Interpreter::Interpreter()
-    : tokenizer_(std::make_shared<ByteTokenizer>()) {}
+    : callSignatures_(std::make_shared<CallSignatureRegistry>()),
+      tokenizer_(std::make_shared<ByteTokenizer>()) {}
 
 Interpreter::~Interpreter() {
     joinThreads();
@@ -1079,7 +1106,10 @@ void Interpreter::openDatabase(const std::filesystem::path& directory) {
             parsed = parseProgramText(fingerprint);
         } catch (const std::exception& error) {
             throw InterpreterError(
-                "Cannot restore schema for '" + type + "': " + error.what());
+                "Database schema '" + type +
+                "' uses syntax that this Felidae version cannot read. "
+                "Reimport the project into a new database after a grammar change. "
+                "Stored schema detail: " + error.what());
         }
         if (parsed.classes.size() != 1 || parsed.statements.size() != 1 ||
             parsed.classes.front()->name != type) {
@@ -1787,7 +1817,10 @@ void Interpreter::addClause(std::shared_ptr<ClauseStmt> clause) {
         if (annotation.builtinId == BuiltinId::MixfixAnnotation &&
             !clause->head.args.empty()) {
             throw InterpreterError(
-                "@mixfix implementations receive captures implicitly; remove method parameters");
+                "@mixfix implementation '" + clauseName +
+                "' receives pattern captures implicitly and must not declare parameters at line " +
+                std::to_string(clause->sourceSpan.startLine) + ", column " +
+                std::to_string(clause->sourceSpan.startColumn));
         }
         if (annotation.builtinId != BuiltinId::MixfixAnnotation &&
             !clause->head.args.empty()) {
@@ -1962,6 +1995,13 @@ void Interpreter::addImport(const std::filesystem::path& baseDir, const std::str
     for (const auto& file : files) loadProgramFile(file);
 }
 
+std::vector<std::filesystem::path> Interpreter::resolveSourceImports(
+    const std::filesystem::path& baseDir,
+    const std::string& pattern) const {
+    if (pattern == "db") return {};
+    return expandImportPattern(baseDir, pattern);
+}
+
 std::vector<Solution> Interpreter::solve(const std::vector<std::shared_ptr<Goal>>& queryGoals,
                                          size_t maxSolutions) {
     ++solveEpoch_;
@@ -2011,7 +2051,7 @@ std::shared_ptr<Expr> Interpreter::evaluateGlobal(const std::string& name) const
 
 std::shared_ptr<Expr> Interpreter::evaluateExpressionText(const std::string& text) {
     IntegerTokenList tokenList(tokenizer_, text);
-    IntegerParser parser(tokenList, operators_);
+    IntegerParser parser(tokenList, operators_, callSignatures_);
     auto expr = parser.parseTerminatedExpressionText();
     std::shared_ptr<Expr> value;
     Env env;
@@ -2413,7 +2453,7 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
                 const auto exceptionObject = [](const std::exception& error) {
                     const auto thrown = dynamic_cast<const FelidaeException*>(&error);
                     return std::make_shared<MapExpr>(std::vector<MapEntry>{
-                        MapEntry{"kind", std::make_shared<StringExpr>(
+                        MapEntry{"kind", std::make_shared<AtomExpr>(
                             thrown ? thrown->kind : std::string("runtime"))},
                         MapEntry{"message", std::make_shared<StringExpr>(error.what())}});
                 };
@@ -2503,14 +2543,10 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
                     } catch (const ContinueSignal&) {
                         return true;
                     }
-                    if (!iterationSolutions.empty()) {
-                        const auto returned = iterationSolutions.front().env.find(InternalSymbol::ReturnId);
-                        if (returned != iterationSolutions.front().env.end()) {
-                            continuationEnv[returned->first] = returned->second;
-                            stopped = true;
-                            return false;
-                        }
-                    }
+                    // Only `break` ends the loop early. Every expression statement
+                    // and binding records its value as ReturnId (the callable's
+                    // result is its final expression), so a ReturnId in the
+                    // iteration environment says nothing about leaving the loop.
                     return true;
                 };
                 if (durableStore_ &&
@@ -2567,13 +2603,10 @@ void Interpreter::solveIterative(const std::vector<std::shared_ptr<Goal>>& goals
                     } catch (const ContinueSignal&) {
                         continue;
                     }
+                    // A body that fails ends the loop. A ReturnId in the iteration
+                    // environment does not: it is just the value of the body's last
+                    // expression or binding (see the `for` loop above).
                     if (iterationSolutions.empty()) {
-                        finished = true;
-                        break;
-                    }
-                    const auto returned = iterationSolutions.front().env.find(InternalSymbol::ReturnId);
-                    if (returned != iterationSolutions.front().env.end()) {
-                        continuationEnv[returned->first] = returned->second;
                         finished = true;
                         break;
                     }
@@ -2917,7 +2950,8 @@ bool Interpreter::solveWhereGoal(const WhereGoal& goal, Env& env) {
 
 bool Interpreter::solveExpressionGoal(const ExpressionGoal& goal, Env& env) {
         if (valueCallTrampolineDepth_ > 0 &&
-            methodCallDepth_ == trampolineMethodDepth_ + 1) {
+            methodCallDepth_ == trampolineMethodDepth_ + 1 &&
+            static_cast<const Goal*>(&goal) == tailGoal_) {
             if (auto tailCall =
                     nodeAs<TermExpr>(goal.expression)) {
                 // A user-method return can be executed by the iterative value
@@ -3059,19 +3093,6 @@ static bool containsObject(const std::shared_ptr<Expr>& value, const MapExpr* ta
     return false;
 }
 
-std::shared_ptr<Expr> Interpreter::successTruthTuple(const std::vector<std::shared_ptr<Goal>>& goals) {
-    std::vector<Arg> values;
-    values.reserve(goals.size());
-    for (const auto& goal : goals) {
-        if (nodeAs<ExpressionGoal>(goal)) continue;
-        values.push_back(Arg{"value", std::make_shared<BoolExpr>(true)});
-    }
-    if (values.empty()) {
-        values.push_back(Arg{"value", std::make_shared<BoolExpr>(true)});
-    }
-    return std::make_shared<TermExpr>("fn:tuple", std::move(values), BuiltinId::FnTuple);
-}
-
 std::shared_ptr<Expr> Interpreter::executeGoalTruthTuple(const std::vector<std::shared_ptr<Goal>>& goals, Env env, Env& outEnv) {
     std::vector<Arg> values;
     values.reserve(goals.size());
@@ -3096,10 +3117,16 @@ bool Interpreter::solveMethodCall(const Call& call,
                                   const std::shared_ptr<Expr>& receiver) {
     if (methodCallDepth_ >= kMaxNativeMethodCallDepth) {
         throw InterpreterError(
-            "Maximum non-tail method recursion depth reached; use an explicit tail return");
+            "Maximum non-tail callable recursion depth reached; make the recursive call the final expression");
     }
     CounterScope methodDepth(methodCallDepth_);
     if (originalClause->emptyDeclaration) return false;
+    struct TailGoalScope {
+        const Goal*& slot;
+        const Goal* saved;
+        ~TailGoalScope() { slot = saved; }
+    } tailGoalScope{tailGoal_, tailGoal_};
+    tailGoal_ = originalClause->body.empty() ? nullptr : originalClause->body.back().get();
     // Overloads are selected by their complete call shape.  Accepting an
     // otherwise compatible prefix silently discarded later named arguments,
     // which routed rich fact APIs through their short overloads.
@@ -3358,8 +3385,13 @@ bool Interpreter::solveMethodCall(const Call& call,
         if (valueCallMode_ && originalClause->head.name != "main" && !bodyHasExpressionGoal(originalClause->body)) {
             Env truthEnv;
             auto truthTuple = executeGoalTruthTuple(originalClause->body, candidate, truthEnv);
-            truthEnv[InternalSymbol::ReturnId] = truthTuple;
-            if (appendReturnedSolution(truthEnv, truthTuple)) return true;
+            // A rule whose goals all held is just `true` to its caller. A failing
+            // rule keeps its tuple, which records which goals failed.
+            const std::shared_ptr<Expr> ruleResult = isMethodTruthTupleWithFalse(truthTuple)
+                ? truthTuple
+                : std::static_pointer_cast<Expr>(std::make_shared<BoolExpr>(true));
+            truthEnv[InternalSymbol::ReturnId] = ruleResult;
+            if (appendReturnedSolution(truthEnv, ruleResult)) return true;
             continue;
         }
 
@@ -3380,7 +3412,7 @@ bool Interpreter::solveMethodCall(const Call& call,
                 if (originalClause->head.name == "main") {
                     solution.env[InternalSymbol::ReturnId] = std::make_shared<MapExpr>(std::vector<MapEntry>{});
                 } else {
-                    solution.env[InternalSymbol::ReturnId] = successTruthTuple(originalClause->body);
+                    solution.env[InternalSymbol::ReturnId] = std::make_shared<BoolExpr>(true);
                 }
                 returnedIt = solution.env.find(InternalSymbol::ReturnId);
             }
@@ -4034,17 +4066,13 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
     if (call.builtinId == BuiltinId::Throw) {
         // throw raises: it unwinds to the nearest enclosing try/catch, or to
         // the top level, where the message is reported as an error.
-        if (!valueArg({"exception"}, 0, a)) {
-            throw InterpreterError("throw expects an exception object");
-        }
-        const auto exceptionKind = nodeAs<StringExpr>(findMapValue(a, "kind"));
-        if (!nodeAs<MapExpr>(a) || !exceptionKind) {
+        if (namedArg("exception")) {
             throw InterpreterError(
-                "throw exception must be an object with a string 'kind' field");
+                "throw(exception: {...}) was removed; use throw(kind: some_atom, message: \"...\")");
         }
-        const auto exceptionMessage = nodeAs<StringExpr>(findMapValue(a, "message"));
-        throw FelidaeException(exceptionKind->value,
-                               exceptionMessage ? exceptionMessage->value : std::string{});
+        if (!valueArg({"kind"}, 0, a)) throw InterpreterError("throw requires kind: atom");
+        if (!valueArg({"message"}, 1, b)) throw InterpreterError("throw requires message: string");
+        raiseFelidaeException(a, b);
     }
 
     if (call.builtinId == BuiltinId::Type) {
@@ -4073,6 +4101,8 @@ bool Interpreter::solveBuiltin(const Call& call, Env& env) {
             expected = expectedString->value;
         } else if (auto expectedVar = nodeAs<VarExpr>(typeArg->value)) {
             expected = expectedVar->name;
+        } else if (auto expectedClass = nodeAs<ClassRefExpr>(typeArg->value)) {
+            expected = expectedClass->name;
         } else {
             return false;
         }
@@ -5970,6 +6000,23 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         args.push_back(value);
     }
 
+    if (term.builtinId == BuiltinId::Throw) {
+        std::size_t kindIndex = 0;
+        std::size_t messageIndex = 1;
+        for (std::size_t index = 0; index < term.args.size(); ++index) {
+            if (term.args[index].name == "exception") {
+                throw InterpreterError(
+                    "throw(exception: {...}) was removed; use throw(kind: some_atom, message: \"...\")");
+            }
+            if (term.args[index].name == "kind") kindIndex = index;
+            if (term.args[index].name == "message") messageIndex = index;
+        }
+        if (args.size() < 2 || kindIndex >= args.size() || messageIndex >= args.size()) {
+            throw InterpreterError("throw requires kind: atom and message: string");
+        }
+        raiseFelidaeException(args[kindIndex], args[messageIndex]);
+    }
+
     if (term.name == "Graph") {
         out = createClassGraph(args);
         return true;
@@ -6065,7 +6112,7 @@ bool Interpreter::evalBuiltinTerm(const TermExpr& term, const Env& env, std::sha
         if (!source) throw InterpreterError("system.run expects a string source");
         try {
             IntegerTokenList tokenList(tokenizer_, source->value);
-            IntegerParser parser(tokenList, operators_);
+            IntegerParser parser(tokenList, operators_, callSignatures_);
             return evalExprValue(parser.parseTerminatedExpressionText(), env, out);
         } catch (const IntegerParserError& error) {
             throw InterpreterError(std::string("system.run parse error: ") + error.what());
@@ -7926,7 +7973,7 @@ bool Interpreter::evalCallAsValueOnce(
         }
         std::string text;
         if (argAsString(data, text)) {
-            out = std::make_shared<NumberExpr>(static_cast<double>(text.size()));
+            out = std::make_shared<NumberExpr>(static_cast<double>(utf8CodePointCount(text)));
             return true;
         }
         auto items = arrayItems(data);
@@ -8019,6 +8066,11 @@ bool Interpreter::evalCallAsValueOnce(
 }
 
 bool Interpreter::evalExprValue(const std::shared_ptr<Expr>& expr, const Env& env, std::shared_ptr<Expr>& out) {
+    if (expressionEvaluationDepth_ >= kMaxExpressionEvaluationDepth) {
+        throw InterpreterError(
+            "Maximum expression evaluation depth reached; simplify nested expressions or recursive calls");
+    }
+    CounterScope expressionDepth(expressionEvaluationDepth_);
     if (auto sequence = nodeAs<SequenceExpr>(expr)) {
         if (sequence->expressions.empty()) {
             out = std::make_shared<NilExpr>();
@@ -10583,8 +10635,19 @@ bool Interpreter::ensurePredicateLoaded(const std::string& predicate) {
     return findClauses(predicate, predicateId) != nullptr;
 }
 
+// Diagnostics name the file once. A nested import has already prefixed the
+// innermost file, so a message that starts with any loaded file path is kept.
+std::string Interpreter::locatedInFile(const std::filesystem::path& file,
+                                       const std::string& message) const {
+    for (const auto& loaded : loadedFiles_) {
+        if (message.rfind(loaded.string(), 0) == 0) return message;
+    }
+    return file.string() + ": " + message;
+}
+
 void Interpreter::loadProgramFile(const std::filesystem::path& file,
-                                  ParserMetrics* metrics) {
+                                  ParserMetrics* metrics,
+                                  const std::string* entrySource) {
     fs::path normalized = fs::absolute(file).lexically_normal();
     if (loadedFiles_.count(normalized)) return;
     const bool ownsTransaction = !moduleTransaction_;
@@ -10604,12 +10667,20 @@ void Interpreter::loadProgramFile(const std::filesystem::path& file,
                 return;
             }
             addStreamedStatement(std::move(statement));
-        }, operators_, metrics, tokenizer_);
+        }, operators_, metrics, tokenizer_, callSignatures_, entrySource);
         streamedModuleMicros_ += static_cast<std::size_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - streamStarted).count());
         currentLoadingFile_ = previous;
         if (ownsTransaction) commitModuleTransaction();
+    } catch (const IntegerParserError& error) {
+        currentLoadingFile_ = previous;
+        if (ownsTransaction) rollbackModuleTransaction();
+        throw IntegerParserError(locatedInFile(normalized, error.what()));
+    } catch (const InterpreterError& error) {
+        currentLoadingFile_ = previous;
+        if (ownsTransaction) rollbackModuleTransaction();
+        throw InterpreterError(locatedInFile(normalized, error.what()));
     } catch (...) {
         currentLoadingFile_ = previous;
         if (ownsTransaction) rollbackModuleTransaction();
@@ -11083,7 +11154,7 @@ std::size_t Interpreter::syncFactSource(const std::filesystem::path& file) {
                 std::move(materialized.parentFactIds),
                 clause->designationIds});
         }
-    }, 1, operators_, tokenizer_);
+    }, 1, operators_, tokenizer_, callSignatures_);
 
     {
         const std::string origin = normalized.generic_string();

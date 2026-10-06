@@ -10,9 +10,9 @@ end
 def Student(name: "Ada", grade: 10).
 
 def increment(value: number) =>
-    return value + 1.
+    value + 1.
 end
 
 def main() =>
-    return (count: Person.count(), answer: increment(value: 41)).
+    (count: Person.count(), answer: increment(value: 41)).
 end

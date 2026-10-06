@@ -1,2 +1,2 @@
 import "db".
-db.location("../build/test-data/default.db").
+db.location("../build/test-data/default").

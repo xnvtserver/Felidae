@@ -1,3 +1,3 @@
 def main() =>
-    return Entity.count().
+    Entity.count().
 end

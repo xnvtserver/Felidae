@@ -5,15 +5,15 @@
 # exists; user rules must evaluate the returned antecedent/consequent facts.
 
 def logicalNegate(input: any) =>
-    return Negation(input: input).
+    Negation(input: input).
 end
 
 def logicalImplication(antecedent: any, consequent: any) =>
-    return Implication(antecedent: antecedent, consequent: consequent).
+    Implication(antecedent: antecedent, consequent: consequent).
 end
 
 def logicalConverse(rule: any) =>
-    return Implication(
+    Implication(
         antecedent: rule.consequent,
         consequent: rule.antecedent,
         transformation: "converse"
@@ -21,7 +21,7 @@ def logicalConverse(rule: any) =>
 end
 
 def logicalContrapositive(rule: any) =>
-    return Implication(
+    Implication(
         antecedent: logicalNegate(input: rule.consequent),
         consequent: logicalNegate(input: rule.antecedent),
         transformation: "contrapositive"
@@ -29,7 +29,7 @@ def logicalContrapositive(rule: any) =>
 end
 
 def logicalContradiction(positive: any, negative: any) =>
-    return ContradictionEvidence(
+    ContradictionEvidence(
         positive: positive,
         negative: negative
     ).

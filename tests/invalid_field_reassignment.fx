@@ -7,5 +7,5 @@ end
 def main() =>
     def node := Node(id: "n1", label: "before").
     node.label := "after".
-    return node.
+    node.
 end

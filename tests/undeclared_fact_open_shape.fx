@@ -6,5 +6,5 @@ def Ghost(a: 2).
 def Ghost(a: 3, c: [1, 2], b: 0).
 
 def main() =>
-    return (count: Ghost.count(), only_a: Ghost.where(a: 2).count()).
+    (count: Ghost.count(), only_a: Ghost.where(a: 2).count()).
 end

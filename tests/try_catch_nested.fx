@@ -2,7 +2,7 @@
 def main() =>
     try
         try
-            throw(exception: {kind: "inner", message: "inner error"}).
+            throw(kind: inner, message: "inner error").
         catch inner then
             def handled := inner.message.
         end
@@ -10,5 +10,5 @@ def main() =>
     catch outer then
         def outcome := outer.message.
     end
-    return (handled: handled, outcome: outcome).
+    (handled: handled, outcome: outcome).
 end

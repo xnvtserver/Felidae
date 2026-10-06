@@ -48,6 +48,14 @@ inline ParsedOperatorAnnotation decodeOperatorAnnotation(const Call& annotation)
     };
     const auto text = [&](std::string_view name, bool required = false) -> std::string {
         auto value = argument(name);
+        if (name == "pattern" && annotation.builtinId == BuiltinId::MixfixAnnotation) {
+            if (auto atom = nodeAs<AtomExpr>(value)) return atom->spelling;
+            if (nodeAs<StringExpr>(value)) {
+                throw std::runtime_error(
+                    "@mixfix 'pattern' is symbolic syntax and must be an atom literal, "
+                    "for example pattern: 'left plus right'");
+            }
+        }
         if (auto literal = nodeAs<StringExpr>(value)) return literal->value;
         if (name == "operator") {
             if (auto function = nodeAs<FunctionRefExpr>(value)) {
@@ -144,7 +152,7 @@ inline ParsedOperatorAnnotation decodeOperatorAnnotation(const Call& annotation)
                 "@mixfix declares captures inside 'pattern'; remove 'captures'");
         }
         if (parsed.pattern.empty()) {
-            throw std::runtime_error("@mixfix requires a typed pattern string");
+            throw std::runtime_error("@mixfix requires a typed pattern atom");
         }
         std::string normalized;
         std::size_t cursor = 0;
@@ -202,7 +210,7 @@ inline ParsedOperatorAnnotation decodeOperatorAnnotation(const Call& annotation)
         }
     }
     if (annotation.builtinId != BuiltinId::MixfixAnnotation) {
-        parsed.captures = bindings("captures");
+        parsed.captures = bindings("captures", true);
     }
     if (parsed.hasFactor && parsed.hasFactors) {
         throw std::runtime_error("@" + annotation.name + " cannot use both 'factor' and 'factors'");

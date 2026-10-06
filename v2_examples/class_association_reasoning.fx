@@ -24,9 +24,9 @@ end
 def Person(id: 1, name: "Ada").
 def Company(id: 7, name: "Felidae").
 
-@mixfix(pattern: "{person: Person} works at {company: Company}")
+@mixfix(pattern: '{person: Person} works at {company: Company}')
 def worksAt() =>
-    return Association(
+    Association(
         left_id: person.id,
         right_id: company.id,
         relation: "works at",
@@ -37,5 +37,5 @@ end
 def main() =>
     def person := Person.get(pos: 0).
     def company := Company.get(pos: 0).
-    return person works at company.
+    person works at company.
 end

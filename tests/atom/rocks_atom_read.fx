@@ -3,7 +3,7 @@ def main() =>
     # identity is its tagged UTF-8 spelling, never its process-local SymbolId.
     def noise := pending.
     def record := AtomRecord.where(id: "a1").first().
-    return (
+    (
         atoms: AtomRecord.where(state: active).count(),
         strings: AtomRecord.where(state: "active").count(),
         noise: noise,

@@ -7,11 +7,11 @@
 # shared ancestor TYPE.
 
 def lca(left: any, right: any) =>
-    return lowestCommonAncestor(left: left, right: right).
+    lowestCommonAncestor(left: left, right: right).
 end
 
 def mca(left: any, right: any) =>
-    return highestCommonAncestor(left: left, right: right).
+    highestCommonAncestor(left: left, right: right).
 end
 
 # Deterministic [0, 1] relatedness degree from the LCA's combined hierarchy
@@ -21,20 +21,20 @@ end
 # is needed since 1 / (1 + distance) is already bounded to (0, 1].
 def relatedness(left: any, right: any) =>
     def found := lca(left: left, right: right).
-    where found.status == "none".
-    return 0.
+    where found.status = "none".
+    0.
 else
     def nearest := found.lowest.get(pos: 0).
     def totalDistance := nearest.left_distance + nearest.right_distance.
-    return 1 / (1 + totalDistance).
+    1 / (1 + totalDistance).
 end
 
 # A pair counts as close relatives when their relatedness degree is at or
 # above `threshold` (default 0.5, i.e. combined hierarchy distance <= 1).
 def isCloseRelative(left: any, right: any, threshold: number) =>
-    return relatedness(left: left, right: right) >= threshold.
+    relatedness(left: left, right: right) >= threshold.
 end
 
 def isDistantRelative(left: any, right: any, threshold: number) =>
-    return relatedness(left: left, right: right) < threshold.
+    relatedness(left: left, right: right) < threshold.
 end

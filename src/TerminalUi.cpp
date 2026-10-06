@@ -154,15 +154,23 @@ void TerminalUi::styled(std::string_view style, std::string_view text) {
     if (color_) output_ << "\x1b[0m";
 }
 
+// The one logo, shared by the REPL banner and --help.
+void TerminalUi::logo() {
+    static constexpr std::string_view art = R"logo( _____         _  _      _
+|  ___|  ___  | |(_)  __| |  __ _   ___
+| |_    / _ \ | || | / _` | / _` | / _ \
+|  _|  |  __/ | || || (_| || (_| ||  __/
+|_|     \___| |_||_| \__,_| \__,_| \___|
+)logo";
+    styled("1;96", art);
+    styled("2", "\n:=Bow(:) | Grr(..) | Roar(<) | Meow(>).\n\n");
+}
+
 void TerminalUi::banner(std::string_view name, std::string_view version,
                         std::string_view description) {
-    const std::string title = std::string(name) + " REPL  v" + std::string(version);
-    styled("1;96", "+------------------------------------------------------------+\n");
-    styled("1;96", "|  ");
-    styled("1;97", title);
-    if (title.size() < 57) output_ << std::string(57 - title.size(), ' ');
-    styled("1;96", "|\n");
-    styled("1;96", "+------------------------------------------------------------+\n");
+    logo();
+    styled("1;97", std::string(name) + " REPL  v" + std::string(version));
+    output_ << '\n';
     styled("2", description);
     output_ << '\n';
     styled("2", "Type :help for commands. Function/class blocks close with end; statements with '.'.");

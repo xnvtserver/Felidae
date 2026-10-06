@@ -95,7 +95,8 @@ InteractiveProgramLoad loadInteractiveProgramText(
     const fs::path& importBase,
     Interpreter& interpreter) {
     IntegerTokenList input(interpreter.tokenizer(), std::move(text));
-    IntegerParser parser(input, interpreter.operatorRegistry());
+    IntegerParser parser(input, interpreter.operatorRegistry(),
+                         interpreter.callSignatureRegistry());
     if (parser.emptyInput()) return InteractiveProgramLoad::Empty;
     if (!parser.startsDeclaration()) {
         // REPL expressions use the production parser as their completeness
@@ -134,11 +135,14 @@ void parseProgramFileStatements(
     const std::function<void(std::shared_ptr<Statement>)>& consume,
     std::shared_ptr<OperatorRegistry> operators,
     ParserMetrics* metrics,
-    std::shared_ptr<ByteTokenizer> tokenizer) {
+    std::shared_ptr<ByteTokenizer> tokenizer,
+    std::shared_ptr<CallSignatureRegistry> signatures,
+    const std::string* sourceOverride) {
     const fs::path normalized = resolveProgramEntryPath(path);
     if (!tokenizer) tokenizer = std::make_shared<ByteTokenizer>();
-    IntegerTokenList input(std::move(tokenizer), readSourceFile(normalized));
-    IntegerParser parser(input, std::move(operators));
+    IntegerTokenList input(std::move(tokenizer),
+                           sourceOverride ? *sourceOverride : readSourceFile(normalized));
+    IntegerParser parser(input, std::move(operators), std::move(signatures));
     // Publish each completed statement before parsing the next one. Import
     // consumers can thereby register public mixfix syntax in the shared
     // operator registry before the following statement is assembled.
@@ -157,7 +161,8 @@ void parseProgramFileChunks(const fs::path& path,
                             const std::function<void(Program&&)>& consume,
                             std::size_t statementsPerChunk,
                             std::shared_ptr<OperatorRegistry> operators,
-                            std::shared_ptr<ByteTokenizer> tokenizer) {
+                            std::shared_ptr<ByteTokenizer> tokenizer,
+                            std::shared_ptr<CallSignatureRegistry> signatures) {
     if (statementsPerChunk == 0) statementsPerChunk = 1;
     Program chunk;
     parseProgramFileStatements(path, [&](std::shared_ptr<Statement> statement) {
@@ -166,12 +171,20 @@ void parseProgramFileChunks(const fs::path& path,
             consume(std::move(chunk));
             chunk = Program{};
         }
-    }, std::move(operators), nullptr, std::move(tokenizer));
+    }, std::move(operators), nullptr, std::move(tokenizer), std::move(signatures));
     if (!chunk.statements.empty()) consume(std::move(chunk));
 }
 
 void loadProgramRoot(const fs::path& file, Interpreter& interpreter) {
     loadProgramRoot(file, interpreter, {});
+}
+
+void loadProgramRootFromText(const fs::path& logicalFile,
+                             const std::string& source,
+                             Interpreter& interpreter) {
+    ParserMetrics parserMetrics;
+    interpreter.loadProgramFile(resolveProgramEntryPath(logicalFile), &parserMetrics, &source);
+    interpreter.recordParserMetrics(parserMetrics);
 }
 
 void loadProgramRoot(const fs::path& file,
@@ -194,7 +207,8 @@ void loadProgramRoot(const fs::path& file,
             }
             interpreter.addProgram(program);
             afterChunk(program);
-        }, 1, interpreter.operatorRegistry(), interpreter.tokenizer());
+        }, 1, interpreter.operatorRegistry(), interpreter.tokenizer(),
+           interpreter.callSignatureRegistry());
         interpreter.commitModuleTransaction();
         interpreter.recordStreamedModuleMicros(static_cast<std::size_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(

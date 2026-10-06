@@ -17,7 +17,7 @@ def ImportedSchool(name: "", district: "", students: 0, active: 1.0).
 def importExample() =>
     def raw := file.readFile(file: "datasets/examples/schools.csv").
     def imported := csv.toFacts(data: raw, type: "ImportedSchool", source: "build/runtime/language_tour_schools.csv").
-    return count(data: imported).
+    count(data: imported).
 end
 
 # --- 1. Facts and hierarchy -------------------------------------------------
@@ -37,15 +37,11 @@ def Teacher(name: "Grace", subject: "science", school_id: 99).
 Link(from: Teacher(name: "Ada"), to: School(id: 10), properties: {kind: "teaches_at"}).
 Link(from: Teacher(name: "Grace"), to: School(id: 99), properties: {kind: "teaches_at"}).
 
-# --- 2. Guard clauses --------------------------------------------------------
-# `where` narrows a method to the cases it actually handles; the implicit
-# `else` branch runs when the guard does not hold. Interpreter truth is
-# strictly boolean; numeric fuzzy degrees remain ordinary library values.
+# --- 2. Conditional expressions ---------------------------------------------
+# Interpreter conditions are strictly boolean; numeric fuzzy degrees remain
+# ordinary library values and must be compared explicitly.
 def classifyEnrollment(count: number) =>
-    where count >= 400.
-    return "large".
-else
-    return "standard".
+    count >= 400 then "large" else "standard".
 end
 
 # --- 3. Fact queries: where / AndWhere / OrWhere / limit --------------------
@@ -57,7 +53,7 @@ def queryExamples() =>
     def central_or_west := School.where(district: "central").OrWhere(district: "west").
     def large_central := School.where(district: "central").AndWhere(active: 1.0).
     def top_one := School.where(active: 1.0).limit(records: 1).
-    return (
+    (
         active_central_count: count(data: active_central),
         central_or_west_count: count(data: central_or_west),
         large_central_count: count(data: large_central),
@@ -70,13 +66,13 @@ end
 # whole fact -- useful once a query is answering a specific question rather
 # than handing back full records.
 def projectionExample() =>
-    return School.select(fields: ["name", "district"], match: {active: 1.0}).
+    School.select(fields: ["name", "district"], match: {active: 1.0}).
 end
 
 # --- 5. Aggregates: count / sum / average / min / max -----------------------
 # Each aggregate accepts the same optional `match:` a query would use.
 def aggregateExamples() =>
-    return (
+    (
         total_schools: School.count(),
         total_students: School.sum(field: "students"),
         average_students: School.average(field: "students", match: {active: 1.0}),
@@ -92,8 +88,8 @@ end
 # left/properties/right fields.
 def joinExamples() =>
     def joined := School().join(properties: {kind: "teaches_at"}, direction: backward.class).
-    def ada := joined.where(right.name == "Ada").
-    return (joined_count: count(data: joined), ada_count: count(data: ada)).
+    def ada := joined.where(right.name = "Ada").
+    (joined_count: count(data: joined), ada_count: count(data: ada)).
 end
 
 # --- 7. DML: insert / update / delete ----------------------------------------
@@ -103,7 +99,7 @@ def mutationExamples() =>
     def inserted := School.insert(values: {id: 40, name: "Riverside", district: "east", students: 210, active: 1.0}).
     def updated := School.where(district: "east").update(values: {students: 230.0}).
     def deleted := School.where(name: "Riverside").delete().
-    return (
+    (
         inserted_name: inserted.name,
         updated_count: updated,
         deleted_count: deleted
@@ -116,7 +112,7 @@ end
 def ancestryExamples() =>
     def cat := Mammal(name: "cat").
     def lizard := Reptile(name: "lizard").
-    return (
+    (
         common: commonAncestors(left: cat, right: lizard)
     ).
 end
@@ -124,17 +120,17 @@ end
 # --- 9. Mixfix syntax --------------------------------------------------------
 # @mixfix declares a natural-language-shaped call pattern; it lowers to an
 # ordinary call underneath, so it composes with everything above it.
-@mixfix(pattern: "{value:number} rated above {minimum:number}")
+@mixfix(pattern: '{value:number} rated above {minimum:number}')
 def ratedAbove() =>
-    return value > minimum.
+    value > minimum.
 end
 
 def mixfixExample() =>
-    return 82 rated above 75.
+    82 rated above 75.
 end
 
 def main() =>
-    return (
+    (
         imported_count: importExample(),
         classification: classifyEnrollment(count: 420),
         queries: queryExamples(),

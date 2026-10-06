@@ -5,10 +5,16 @@ class Visit
 end
 
 def main() =>
+    # `continue` is a statement, not an expression, so it cannot be a branch of
+    # `cond then a else b.`; a switch is the way to skip an iteration. Every
+    # iteration must run: 5 values, one skipped, leaves 4 rows.
     for i in range(0, 5) then
-         i == 2 then continue else nil.
+        switch i
+        case 2 then
+            continue.
+        default then
+            Visit.insert(values: {id: i, source: "for"}).
         end
-        Visit.insert(values: {id: i, source: "for"}).
     end
 
     while Visit.count() < 6 then
@@ -34,7 +40,7 @@ def main() =>
         # that the loop receives records rather than an opaque cursor handle.
         row.id >= 0.
     end
-    return (
+    (
         for_count: selected.count(),
         while_count: Visit.where(source: "while").count(),
         middle_count: Visit.where(source: "middle").count(),

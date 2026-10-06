@@ -36,13 +36,19 @@ void parseProgramFileChunks(
     const std::function<void(Program&&)>& consume,
     std::size_t statementsPerChunk = 1,
     std::shared_ptr<OperatorRegistry> operators = {},
-    std::shared_ptr<ByteTokenizer> tokenizer = {});
+    std::shared_ptr<ByteTokenizer> tokenizer = {},
+    std::shared_ptr<CallSignatureRegistry> signatures = {});
+// `sourceOverride`, when given, is the text of `path` instead of reading the
+// file (the path then only names the file: project directory, import base and
+// diagnostics). Null, the default, reads from disk exactly as before.
 void parseProgramFileStatements(
     const std::filesystem::path& path,
     const std::function<void(std::shared_ptr<Statement>)>& consume,
     std::shared_ptr<OperatorRegistry> operators = {},
     ParserMetrics* metrics = nullptr,
-    std::shared_ptr<ByteTokenizer> tokenizer = {});
+    std::shared_ptr<ByteTokenizer> tokenizer = {},
+    std::shared_ptr<CallSignatureRegistry> signatures = {},
+    const std::string* sourceOverride = nullptr);
 std::string readSourceFile(const std::filesystem::path& path);
 void readSourceLines(const std::filesystem::path& path,
                      const std::function<void(const std::string&)>& onLine);
@@ -55,6 +61,11 @@ void loadProgramRoot(
 void loadProgramRoot(const std::filesystem::path& file,
                      const Program& program,
                      Interpreter& interpreter);
+// Loads `source` as the entry program named `logicalFile`, which need not exist
+// on disk: it only locates init.fx and relative imports (felidae --stdin).
+void loadProgramRootFromText(const std::filesystem::path& logicalFile,
+                             const std::string& source,
+                             Interpreter& interpreter);
 std::shared_ptr<Expr> makeSystemInput(const std::vector<std::string>& args);
 std::string trim(const std::string& text);
 bool isBareIdentifier(const std::string& text);

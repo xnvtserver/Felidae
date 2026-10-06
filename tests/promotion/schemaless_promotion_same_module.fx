@@ -7,11 +7,11 @@ class Metric
     def value: number.
 
     def doubled() =>
-        return this.value * 2.
+        this.value * 2.
     end
 end
 
 def main() =>
     def stored := Metric.where(value: 10).get(pos: 0).
-    return (count: Metric.count(), doubled: stored.doubled()).
+    (count: Metric.count(), doubled: stored.doubled()).
 end

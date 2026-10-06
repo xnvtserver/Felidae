@@ -5,5 +5,5 @@ def Metric(id: "m2", value: "any type is accepted").
 def Metric(id: "m3", unit: "ms").
 
 def main() =>
-    return Metric.count().
+    Metric.count().
 end

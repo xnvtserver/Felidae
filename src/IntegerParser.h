@@ -5,7 +5,10 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <stdexcept>
+#include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace Felidae {
@@ -30,6 +33,19 @@ public:
         : IntegerParserError(message) {}
 };
 
+// Parser-owned callable metadata shared by every source in one import graph.
+// A whitespace application is legal only when a name has exactly one fixed
+// arity. Parenthesized calls do not depend on this registry.
+class CallSignatureRegistry {
+public:
+    void registerFixed(std::string name, std::size_t arity);
+    std::optional<std::size_t> uniqueFixedArity(const std::string& name) const;
+    bool hasAmbiguousFixedArities(const std::string& name) const;
+
+private:
+    std::unordered_map<std::string, std::unordered_set<std::size_t>> fixedArities_;
+};
+
 // Direct word-vocabulary-token-ID grammar assembler. It has no secondary
 // tokenizer, source-character syntax scanner, or spelling-to-token lookup
 // table. IDs determine all syntax; original source is retained only to copy
@@ -37,7 +53,8 @@ public:
 class IntegerParser {
 public:
     explicit IntegerParser(const IntegerTokenList& input,
-                           std::shared_ptr<OperatorRegistry> operators = {});
+                           std::shared_ptr<OperatorRegistry> operators = {},
+                           std::shared_ptr<CallSignatureRegistry> signatures = {});
 
     // A project manifest (init.fx) accepts configuration entry calls such as
     // db.location(...). It never changes identifier casing semantics.
@@ -52,6 +69,14 @@ public:
     bool startsDeclaration();
     const IntegerParserMetrics& metrics() const noexcept { return metrics_; }
 
+    // Something suspicious that is still valid Felidae. Collected while parsing
+    // and reported only by --check-json; a run never prints them.
+    struct Warning {
+        std::string message;
+        SourceSpan span;
+    };
+    const std::vector<Warning>& warnings() const noexcept { return warnings_; }
+
 private:
     struct QualifiedName {
         std::string spelling;
@@ -62,6 +87,7 @@ private:
     bool manifestMode_ = false;
     std::size_t statementIterations_ = 0;
     std::shared_ptr<OperatorRegistry> operators_;
+    std::shared_ptr<CallSignatureRegistry> signatures_;
     std::size_t piece_ = 0;
     std::size_t byte_ = 0;
     std::size_t recursionDepth_ = 0;
@@ -72,9 +98,25 @@ private:
     bool parsingFactPattern_ = false;
     std::unordered_set<SymbolId> localBindings_;
     std::unordered_set<SymbolId> globalBindings_;
+
+    // Singleton variables. A name a fact pattern introduces
+    // (`def Person(name: who, age: a)` binds `a`) that is mentioned nowhere else
+    // in its function is almost always a typo for a name that was meant to be
+    // shared, and it silently matches every fact. Counted per function body.
+    struct PatternVariable {
+        std::string name;
+        SymbolId id = 0;
+        SourceSpan span;
+    };
+    bool insideMethodBody_ = false;
+    std::unordered_map<SymbolId, std::size_t> variableMentions_;
+    std::vector<PatternVariable> patternVariables_;
+    std::vector<Warning> warnings_;
     IntegerParserMetrics metrics_;
 
-    static constexpr std::size_t kMaximumRecursionDepth = 512;
+    // Kept below native Windows stack exhaustion; malformed/deep source must
+    // report a parser error rather than terminating the process.
+    static constexpr std::size_t kMaximumRecursionDepth = 128;
     // Per top-level statement; the cumulative count is metrics_.iterations.
     static constexpr std::size_t kMaximumIterations = 1'000'000;
 
@@ -94,7 +136,7 @@ private:
     bool atAdjacentDot();
     bool atBlockEnd();
     bool matchBlockEnd();
-    void requireBlockEnd(const char* message);
+    void requireBlockEnd(const char* message, std::size_t blockBegin);
     void require(TokenId::Id id, const char* message);
     bool atEnd();
     std::shared_ptr<Expr> parseExpression();
@@ -113,6 +155,8 @@ private:
     std::shared_ptr<Expr> parseArray();
     std::shared_ptr<Expr> parseMap();
     std::vector<Arg> parseArguments(bool allowAnnotationBindings = false);
+    std::vector<Arg> parseWhitespaceArguments(std::size_t arity);
+    void indexCallableSignatures();
     TypeRef parseTypeReference();
     QualifiedName consumeQualifiedName(bool allowDottedName = true);
     Call parseCall();

@@ -7,5 +7,5 @@ end
 def PersistentMetric(id: "metric-1", value: 42).
 
 def main() =>
-    return PersistentMetric.count().
+    PersistentMetric.count().
 end

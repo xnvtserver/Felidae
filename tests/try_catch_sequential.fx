@@ -2,14 +2,14 @@
 # to its own catch body.
 def main() =>
     try
-        throw(exception: {kind: "first", message: "one"}).
+        throw(kind: first, message: "one").
     catch e then
         def first := e.message.
     end
     try
-        throw(exception: {kind: "second", message: "two"}).
+        throw(kind: second, message: "two").
     catch e then
         def second := e.message.
     end
-    return (first: first, second: second).
+    (first: first, second: second).
 end

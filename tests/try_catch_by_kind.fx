@@ -1,26 +1,20 @@
 # Different exceptions are told apart by kind inside one catch body.
 def classify(kind: string) =>
     try
-        if kind == "missing" then
-            throw(exception: {kind: "not_found", message: "no such row"}).
-        elif kind == "bad" then
-            throw(exception: {kind: "invalid", message: "bad input"}).
-        end
+        kind = "missing" then throw(kind: not_found, message: "no such row")
+        else kind = "bad" then throw(kind: invalid, message: "bad input")
+        else true.
         def verdict := "ok".
     catch e then
-        if e.kind == "not_found" then
-            def verdict := "handled not_found".
-        elif e.kind == "invalid" then
-            def verdict := "handled invalid".
-        else
-            def verdict := "unknown".
-        end
+        def verdict := e.kind = not_found then "handled not_found"
+            else e.kind = invalid then "handled invalid"
+            else "unknown".
     end
-    return verdict.
+    verdict.
 end
 
 def main() =>
-    return (
+    (
         a: classify(kind: "missing"),
         b: classify(kind: "bad"),
         c: classify(kind: "fine")

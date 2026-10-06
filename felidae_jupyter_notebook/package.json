@@ -1,0 +1,163 @@
+{
+  "name": "felidae-notebook",
+  "displayName": "Felidae Notebook",
+  "description": "Notebooks for the Felidae DSL: code and markdown cells, Run buttons and saved outputs, each cell run by the felidae interpreter.",
+  "version": "0.3.4",
+  "publisher": "local",
+  "icon": "icons/felidae-icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xnvtserver/Felidae.git"
+  },
+  "homepage": "https://github.com/xnvtserver/Felidae/tree/main/felidae_jupyter_notebook",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Notebooks",
+    "Programming Languages"
+  ],
+  "extensionDependencies": [
+    "local.felidae-vscode"
+  ],
+  "activationEvents": [
+    "onNotebook:felidae-notebook"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "notebooks": [
+      {
+        "type": "felidae-notebook",
+        "displayName": "Felidae Notebook",
+        "selector": [
+          {
+            "filenamePattern": "*.fxnb"
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "felidae.notebook.new",
+        "title": "Felidae: New Notebook"
+      },
+      {
+        "command": "felidae.notebook.exportFx",
+        "title": "Felidae: Export Notebook as .fx"
+      },
+      {
+        "command": "felidae.notebook.selectInterpreter",
+        "title": "Felidae: Select Interpreter"
+      },
+      {
+        "command": "felidae.notebook.setProjectFolder",
+        "title": "Felidae: Set Notebook Project Folder"
+      },
+      {
+        "command": "felidae.notebook.createInit",
+        "title": "Felidae: Create init.fx for Notebook"
+      },
+      {
+        "command": "felidae.notebook.openInit",
+        "title": "Felidae: Open Notebook init.fx"
+      },
+      {
+        "command": "felidae.notebook.openRepl",
+        "title": "Felidae: Open Notebook REPL"
+      },
+      {
+        "command": "felidae.notebook.sendToRepl",
+        "title": "Felidae: Send Cell to REPL"
+      },
+      {
+        "command": "felidae.notebook.showOutput",
+        "title": "Felidae: Show Notebook Output"
+      },
+      {
+        "command": "felidae.notebook.menu",
+        "title": "Felidae: Notebook Menu"
+      }
+    ],
+    "menus": {
+      "notebook/toolbar": [
+        {
+          "command": "felidae.notebook.menu",
+          "when": "notebookType == felidae-notebook",
+          "group": "felidae@0"
+        },
+        {
+          "command": "felidae.notebook.selectInterpreter",
+          "when": "notebookType == felidae-notebook",
+          "group": "felidae@2"
+        },
+        {
+          "command": "felidae.notebook.setProjectFolder",
+          "when": "notebookType == felidae-notebook",
+          "group": "felidae@3"
+        },
+        {
+          "command": "felidae.notebook.openInit",
+          "when": "notebookType == felidae-notebook",
+          "group": "felidae@4"
+        },
+        {
+          "command": "felidae.notebook.openRepl",
+          "when": "notebookType == felidae-notebook",
+          "group": "felidae@5"
+        },
+        {
+          "command": "felidae.notebook.sendToRepl",
+          "when": "notebookType == felidae-notebook",
+          "group": "felidae@6"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "felidae.notebook.openInit",
+          "when": "notebookType == felidae-notebook"
+        },
+        {
+          "command": "felidae.notebook.setProjectFolder",
+          "when": "notebookType == felidae-notebook"
+        },
+        {
+          "command": "felidae.notebook.createInit",
+          "when": "notebookType == felidae-notebook"
+        },
+        {
+          "command": "felidae.notebook.exportFx",
+          "when": "notebookType == felidae-notebook"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Felidae Notebook",
+      "properties": {
+        "felidae.notebook.runTimeoutSeconds": {
+          "type": "number",
+          "default": 60,
+          "description": "Stop a cell's felidae process if it has not finished after this many seconds."
+        },
+        "felidae.notebook.showMetrics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Add the interpreter's metrics (run time, work done, database reads and writes, hints) as a second output under each cell."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "tsc -p ./ && node esbuild.js --production",
+    "compile": "tsc -p ./ && node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "watch:types": "tsc -watch -p ./ --noEmit",
+    "test": "tsc -p ./ && node test/run-all.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.3.3"
+  }
+}

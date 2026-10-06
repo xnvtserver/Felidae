@@ -1,0 +1,128 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Diagnostic reports
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Instrumented libs
+lib-cov
+
+# Coverage
+coverage
+*.lcov
+.nyc_output
+
+# Grunt
+.grunt
+
+# Bower
+bower_components
+
+# Compiled addons
+build/Release
+
+# Dependencies
+node_modules/
+jspm_packages/
+web_modules/
+
+# TypeScript
+*.tsbuildinfo
+
+# Optional caches
+.npm
+.eslintcache
+.stylelintcache
+
+# REPL history
+.node_repl_history
+
+# npm pack output
+*.tgz
+
+# Yarn integrity
+.yarn-integrity
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Parcel
+.cache
+.parcel-cache
+
+# Next.js
+.next
+out
+
+# Nuxt.js
+.nuxt
+dist
+.output
+
+# Gatsby
+.cache/
+
+# Vuepress
+.vuepress/dist
+.temp
+
+# SvelteKit
+.svelte-kit/
+
+# VitePress
+**/.vitepress/dist
+**/.vitepress/cache
+
+# Docusaurus
+.docusaurus
+
+# Serverless
+.serverless/
+
+# FuseBox
+.fusebox/
+
+# DynamoDB Local
+.dynamodb/
+
+# Firebase
+.firebase/
+
+# TernJS
+.tern-port
+
+# VSCode test
+.vscode-test
+
+# pnpm
+.pnpm-store
+
+# Yarn v3
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+.vite/
+
+#vscode 
+*.vsix

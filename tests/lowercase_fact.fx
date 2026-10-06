@@ -2,5 +2,5 @@
 def ghost(a: 1).
 
 def main() =>
-    return ghost.count().
+    ghost.count().
 end

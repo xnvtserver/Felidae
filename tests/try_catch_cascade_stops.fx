@@ -7,11 +7,11 @@ end
 
 def main() =>
     try
-        throw(exception: {kind: "a", message: "from try"}).
+        throw(kind: a, message: "from try").
     catch e then
         def handled := e.message.
     catch k then
         def extra := Item.insert(values: {id: "never"}).
     end
-    return (handled: handled, items: Item.count()).
+    (handled: handled, items: Item.count()).
 end

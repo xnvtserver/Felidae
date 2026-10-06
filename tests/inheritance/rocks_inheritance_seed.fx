@@ -11,5 +11,5 @@ def Entity(id: "root").
 def Employee(id: "e1", name: "Ada").
 
 def main() =>
-    return Entity.count().
+    Entity.count().
 end

@@ -36,7 +36,7 @@ def main() =>
             direction: both.class,
             max_depth: 8
         ).
-    return (
+    (
         direct_count: direct.len(),
         limited_count: limited.len(),
         both_count: both_from_source.len(),

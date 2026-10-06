@@ -17,5 +17,5 @@ Link(
 ).
 
 def main() =>
-    return Employee().join(direction: forward.class).where(properties.confidence).
+    Employee().join(direction: forward.class).where(properties.confidence).
 end

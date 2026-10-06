@@ -22,7 +22,7 @@ def main() =>
     def rows := City().where(code: "BLR")
         .join(properties: {kind: "located_in"}, direction: backward.class).
     def first := rows.get(position: 0).
-    return (
+    (
         count: rows.len(),
         city: first.left.name,
         employee: first.right.id

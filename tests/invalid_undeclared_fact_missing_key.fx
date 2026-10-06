@@ -4,5 +4,5 @@ def Ghost(a: 1, b: "x").
 def Ghost(b: 2).
 
 def main() =>
-    return Ghost.count().
+    Ghost.count().
 end

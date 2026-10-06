@@ -23,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -127,11 +128,15 @@ static CliOptions parseCli(int argc, char** argv) {
     if (options.repl && options.query) {
         throw std::runtime_error("--repl cannot be combined with an external query");
     }
-    if (options.debug && options.query) {
-        throw std::runtime_error("--debug and --query cannot be used together");
-    }
-    if (options.checkStdin && !options.checkJson) {
-        throw std::runtime_error("--stdin is valid only with --check-json");
+    // --stdin: the program text arrives on stdin and the file argument is only
+    // its logical path (project directory, import base, diagnostics). With
+    // --check-json it checks that text; otherwise it runs it, with or without
+    // --query. --debug already uses stdin for its command protocol.
+    if (options.checkStdin && !options.checkJson &&
+        (!options.programFile || options.repl || options.debug)) {
+        throw std::runtime_error(
+            "--stdin needs a program file argument (its logical path) and cannot be "
+            "combined with --debug or --repl");
     }
     if (options.checkJson && (!options.programFile || options.repl || options.debug ||
                               options.query || options.metricsJson ||
@@ -147,25 +152,13 @@ static CliOptions parseCli(int argc, char** argv) {
     return options;
 }
 
-static const char* bannerText() {
-    return R"(        ______    _ _     _            
-       |  ____|  | (_)   | |           
-       | |__ ___ | |_  __| | __ _  ___ 
-       |  __/ _ \| | |/ _` |/ _` |/ _ \
-       | | |  __/| | | (_| | (_| |  __/
-       |_|  \___||_|_|\__,_|\__, |\___|
-
-       :=Bow(:)|Grr(..)|Roar(<)|Meow(>).                             
-
-)";
-}
 static void printVersion(std::ostream& output) {
     output << LANGUAGE_NAME << " v" << LANGUAGE_VERSION << "\n";
 }
 
 static void printHelp(std::ostream& output) {
-    output << bannerText() << "\n"
-              << LANGUAGE_NAME << " v" << LANGUAGE_VERSION << "\n"
+    TerminalUi(output).logo();
+    output << LANGUAGE_NAME << " v" << LANGUAGE_VERSION << "\n"
               << LANGUAGE_DESCRIPTION << "\n\n"
               << "File extension:\n"
               << "  " << FILE_EXTENSION << "\n\n"
@@ -175,7 +168,9 @@ static void printHelp(std::ostream& output) {
               << "  felidae program.fx --query 'bucket.where(active: true).'\n"
               << "  felidae --repl\n"
               << "  felidae program.fx --debug\n"
+              << "  felidae program.fx --debug --query 'function(argument: value).'\n"
               << "  felidae --check-json [--stdin] program.fx\n"
+              << "  felidae program.fx --stdin [--query 'expression.']   (program text from stdin)\n"
               << "  felidae program.fx --metrics-json\n"
               << "  felidae program.fx --benchmark-repeat 100 --metrics-json\n"
               << "  felidae program.fx --query 'bucket.where(active: true).' --benchmark-repeat 100 --metrics-json\n"
@@ -187,7 +182,9 @@ static void printHelp(std::ostream& output) {
               << "  program.fx --query 'expression.'    Run a bucket/scalar expression query\n"
               << "  --repl                              Explicitly start the interactive REPL\n"
               << "  program.fx --debug                  Run with live interpreter debugging enabled\n"
+              << "  --debug with --query                Debug one expression instead of main(...)\n"
               << "  --check-json [--stdin] program.fx   Parse without opening RocksDB; emit JSON diagnostics and symbols\n"
+              << "  --stdin                             Read the program text from stdin; program.fx only names it (project, imports)\n"
               << "  --metrics-json                      Emit load and runtime performance counters to stderr\n"
               << "  --benchmark-repeat N                Repeat the entry method or external query in one runtime\n"
               << "  --help                              Show this help screen\n"
@@ -330,36 +327,6 @@ static void printReplMetrics(TerminalUi& ui, const Interpreter& interpreter,
     ui.note("These are observed counters and storage state, not a predictive SQL cost estimate.");
 }
 
-static std::string formatReplDiagnostic(std::string message,
-                                        std::string_view source) {
-    constexpr std::string_view marker = " at source byte ";
-    const auto markerPosition = message.rfind(marker);
-    if (markerPosition == std::string::npos) return message;
-    const std::string offsetText = message.substr(markerPosition + marker.size());
-    std::size_t consumed = 0;
-    std::size_t offset = 0;
-    try {
-        offset = std::stoull(offsetText, &consumed);
-    } catch (const std::exception&) {
-        return message;
-    }
-    if (consumed == 0) return message;
-    offset = std::min(offset, source.size());
-    std::size_t line = 1;
-    std::size_t column = 1;
-    for (std::size_t index = 0; index < offset; ++index) {
-        if (source[index] == '\n') {
-            ++line;
-            column = 1;
-        } else {
-            ++column;
-        }
-    }
-    message.erase(markerPosition);
-    return "line " + std::to_string(line) + ", column " +
-           std::to_string(column) + ": " + message;
-}
-
 static void runRepl(Interpreter& interpreter, std::istream& input,
                     std::ostream& output) {
     TerminalUi ui(output);
@@ -479,7 +446,7 @@ static void runRepl(Interpreter& interpreter, std::istream& input,
             } catch (const std::exception& e) {
                 activity.reset();
                 ui.codeBlock(source);
-                ui.error(formatReplDiagnostic(e.what(), source));
+                ui.error(e.what());
             }
             source.clear();
             readingSource = false;
@@ -568,7 +535,7 @@ static void runRepl(Interpreter& interpreter, std::istream& input,
             ui.codeBlock(source);
             const std::string diagnosticSource = source;
             source.clear();
-            ui.error(formatReplDiagnostic(e.what(), diagnosticSource));
+            ui.error(e.what());
             continue;
         }
 
@@ -576,7 +543,7 @@ static void runRepl(Interpreter& interpreter, std::istream& input,
             executeInteractiveExpression(command);
         } catch (const std::exception& e) {
             ui.codeBlock(command);
-            ui.error(formatReplDiagnostic(e.what(), command));
+            ui.error(e.what());
         }
     }
     interpreter.setGoalHook({});
@@ -646,6 +613,23 @@ static nlohmann::json statementSymbol(const std::shared_ptr<Statement>& statemen
     return symbol;
 }
 
+static nlohmann::json diagnosticPosition(const std::string& message) {
+    const auto lineMarker = message.rfind("line ");
+    if (lineMarker == std::string::npos) return {{"line", 1}, {"column", 1}};
+    const auto lineBegin = lineMarker + 5;
+    const auto comma = message.find(", column ", lineBegin);
+    if (comma == std::string::npos) return {{"line", 1}, {"column", 1}};
+    const auto columnBegin = comma + 9;
+    try {
+        return {
+            {"line", std::max(1, std::stoi(message.substr(lineBegin, comma - lineBegin)))},
+            {"column", std::max(1, std::stoi(message.substr(columnBegin)))}
+        };
+    } catch (...) {
+        return {{"line", 1}, {"column", 1}};
+    }
+}
+
 static int runCheckJson(CliOptions options, std::istream& input,
                         std::ostream& output) {
     nlohmann::json result = {
@@ -662,25 +646,64 @@ static int runCheckJson(CliOptions options, std::istream& input,
             ? std::string(std::istreambuf_iterator<char>(input),
                           std::istreambuf_iterator<char>())
             : readSourceFile(*options.programFile);
-        const Program program = parseProgramText(source);
-        for (const auto& statement : program.statements) {
-            result["symbols"].push_back(statementSymbol(statement));
-        }
+        Interpreter parseContext;
+        std::unordered_set<fs::path> loaded;
+        const auto parseSource = [&](const auto& self,
+                                     const fs::path& path,
+                                     std::string text,
+                                     bool entryFile) -> void {
+            const fs::path normalized = fs::absolute(path).lexically_normal();
+            if (!loaded.insert(normalized).second) return;
+            result["path"] = normalized.string();
+            IntegerTokenList tokens(parseContext.tokenizer(), std::move(text));
+            IntegerParser parser(tokens, parseContext.operatorRegistry(),
+                                 parseContext.callSignatureRegistry());
+            while (!parser.programComplete()) {
+                auto statement = parser.parseNextProgramStatement();
+                auto symbol = statementSymbol(statement);
+                symbol["path"] = normalized.string();
+                result["symbols"].push_back(std::move(symbol));
+                if (statement->kind() != StatementKind::Import) continue;
+                const auto imported = std::static_pointer_cast<ImportStmt>(statement);
+                for (const auto& pattern : imported->paths) {
+                    for (const auto& importedFile :
+                         parseContext.resolveSourceImports(normalized.parent_path(), pattern)) {
+                        self(self, importedFile, readSourceFile(importedFile), false);
+                    }
+                }
+            }
+            // Diagnostics carry no file name, so only the entry file's warnings
+            // are reported: an imported file's positions would land in this one.
+            if (!entryFile) return;
+            for (const auto& warning : parser.warnings()) {
+                result["diagnostics"].push_back({
+                    {"code", "warning"},
+                    {"severity", "warning"},
+                    {"message", warning.message},
+                    {"start", {{"line", warning.span.startLine}, {"column", warning.span.startColumn}}},
+                    {"end", {{"line", warning.span.endLine}, {"column", warning.span.endColumn}}}
+                });
+            }
+        };
+        parseSource(parseSource, *options.programFile, source, true);
+        result["path"] = logicalPath;
         output << result.dump() << '\n';
         return 0;
     } catch (const IntegerParserError& error) {
-        result["path"] = options.programFile ? options.programFile->string() : "";
+        const auto position = diagnosticPosition(error.what());
         result["diagnostics"].push_back({
             {"code", "syntax"},
             {"severity", "error"},
             {"message", error.what()},
-            {"start", {{"line", 1}, {"column", 1}}},
-            {"end", {{"line", 1}, {"column", 1}}}
+            {"start", position},
+            {"end", position}
         });
         output << result.dump() << '\n';
         return 1;
     } catch (const std::exception& error) {
-        result["path"] = options.programFile ? options.programFile->string() : "";
+        if (result["path"].get<std::string>().empty() && options.programFile) {
+            result["path"] = options.programFile->string();
+        }
         result["diagnostics"].push_back({
             {"code", "infrastructure"},
             {"severity", "error"},
@@ -741,7 +764,13 @@ static int executeOptions(CliOptions options,
             // parser was still producing chunks made later declarations invisible
             // and could leave effects behind when a later error rejected the file.
             // Registration remains streaming; publication is the execution boundary.
-            loadProgramRoot(*options.programFile, interpreter);
+            if (options.checkStdin) {
+                const std::string source((std::istreambuf_iterator<char>(input)),
+                                         std::istreambuf_iterator<char>());
+                loadProgramRootFromText(*options.programFile, source, interpreter);
+            } else {
+                loadProgramRoot(*options.programFile, interpreter);
+            }
         }
         const auto executionStarted = Clock::now();
         double firstQueryMs = 0.0;
@@ -828,6 +857,9 @@ static int executeOptions(CliOptions options,
 
         reportMetrics();
         return 0;
+    } catch (const std::bad_alloc&) {
+        errorOutput << "error: Felidae ran out of memory while executing the program\n";
+        return 1;
     } catch (const std::exception& e) {
         errorOutput << "error: " << e.what() << "\n";
         return 1;
@@ -849,6 +881,9 @@ int main(int argc, char** argv) {
         return executeOptions(std::move(options),
                               std::cin, std::cout, std::cerr,
                               std::move(project));
+    } catch (const std::bad_alloc&) {
+        std::cerr << "error: Felidae ran out of memory while initializing the program\n";
+        return 1;
     } catch (const std::exception& error) {
         std::cerr << "error: " << error.what() << '\n';
         return 1;

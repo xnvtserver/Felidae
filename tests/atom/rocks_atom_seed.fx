@@ -24,7 +24,7 @@ def AtomRecord(
 ).
 
 def main() =>
-    return (
+    (
         atoms: AtomRecord.where(state: active).count(),
         strings: AtomRecord.where(state: "active").count(),
         distinct: active != "active"

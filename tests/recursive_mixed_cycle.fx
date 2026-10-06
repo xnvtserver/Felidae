@@ -5,5 +5,5 @@ end
 def Second extend First(first_value: 1, second_value: 2).
 
 def main() =>
-    return Second.count().
+    Second.count().
 end

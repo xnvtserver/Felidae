@@ -1,3 +1,3 @@
 def main() =>
-    return .kk.
+    .kk.
 end

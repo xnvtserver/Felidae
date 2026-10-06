@@ -3,5 +3,5 @@
 def main() =>
     def result := nil.
     def result := 42.
-    return result.
+    result.
 end

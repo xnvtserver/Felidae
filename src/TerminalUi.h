@@ -8,13 +8,14 @@
 
 namespace Felidae {
 
-// Small ANSI terminal facade used only by the interactive REPL. Redirected
-// output remains plain text, and NO_COLOR disables styling explicitly.
+// Small ANSI terminal facade used by the interactive REPL and the help text.
+// Redirected output remains plain text, and NO_COLOR disables styling explicitly.
 class TerminalUi {
 public:
     class Activity;
     explicit TerminalUi(std::ostream& output);
 
+    void logo();
     void banner(std::string_view name, std::string_view version,
                 std::string_view description);
     void clearScreen();

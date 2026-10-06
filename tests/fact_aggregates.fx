@@ -12,7 +12,7 @@ def AggregateReading(id: "b", region: "north", active: true, value: 20).
 def AggregateReading(id: "c", region: "south", active: false, value: 90).
 
 def main() =>
-    return (
+    (
         total: AggregateReading.sum(field: "value"),
         north_total: AggregateReading.sum(
             field: "value",

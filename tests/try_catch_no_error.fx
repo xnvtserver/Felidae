@@ -6,5 +6,5 @@ def main() =>
     catch e then
         def outcome := e.message.
     end
-    return outcome.
+    outcome.
 end

@@ -2,12 +2,12 @@ class Employee
     key(id).
     def id: string.
     def get_data() =>
-        return this.id.
+        this.id.
     end
 end
 
 def main() =>
-    return fx.interpret(
+    fx.interpret(
         class: Employee.class,
         function: get_data.function,
         object: new Employee(id: "employee-1"),

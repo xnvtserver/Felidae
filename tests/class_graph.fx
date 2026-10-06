@@ -22,7 +22,7 @@ def main() =>
     ).
     def neighbors := graph.neighbors(Employee.class).
     def direct := Graph(Employee.class, Department.class).
-    return (
+    (
         edge_from: edge.from,
         inherited_neighbor_count: neighbors.len(),
         adjacency_count: graph.adjacency.list.len(),

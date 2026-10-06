@@ -15,5 +15,5 @@ def Candidate(id: "c10", region: "south", role: "analyst", active: 0.0).
 
 def main() =>
     def matches := Candidate.select(region: "north", role: "analyst", active: 1.0).
-    return (matches: matches, count: count(data: matches)).
+    (matches: matches, count: count(data: matches)).
 end

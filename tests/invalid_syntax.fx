@@ -1,3 +1,3 @@
 main( =>
-    return 42
+    42
 end

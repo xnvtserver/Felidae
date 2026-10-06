@@ -27,9 +27,9 @@ def main() =>
     def strong := Employee().join(direction: forward.class)
         .where(properties.confidence >= 0.9).
     def primary_key_match := Employee().join(direction: forward.class)
-        .where(left.department_id == right.id).
+        .where(left.department_id = right.id).
     def first := rows.get(position: 0).
-    return (
+    (
         count: rows.len(),
         strong: strong.len(),
         primary_key_match: primary_key_match.len(),

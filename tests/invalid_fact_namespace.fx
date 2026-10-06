@@ -8,5 +8,5 @@ end
 def Employee(id: "e1").
 
 def main() =>
-    return Fact.count().
+    Fact.count().
 end

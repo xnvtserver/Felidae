@@ -8,5 +8,5 @@ def main() =>
         def caught_kind := e.kind.
         def caught_message := e.message.
     end
-    return (kind: caught_kind, message: caught_message).
+    (kind: caught_kind, message: caught_message).
 end

@@ -1,5 +1,5 @@
-# An exception object must carry a string kind.
+# A throw must carry an atom kind.
 def main() =>
-    throw(exception: {message: "no kind"}).
-    return "unreachable".
+    throw(message: "no kind").
+    "unreachable".
 end
